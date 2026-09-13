@@ -250,7 +250,7 @@ class TestSeek:
 # Browser access (GH #709): the CORS + Private Network Access opt-in
 # ---------------------------------------------------------------------------
 
-ORIGIN = "https://sts2-workbench.pages.dev"
+ORIGIN = "https://your-workbench.example.com"
 
 
 def _request(

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -31,7 +32,9 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 PYCLI = HERE.parent
 WEB = PYCLI / "web"
-DEFAULT_SITE = "https://sts2-workbench.pages.dev"
+# The hosted workbench's origin. The real one is private (set STS2_WORKBENCH_SITE,
+# which sts2-pycli/deploy/justfile exports); the default is a placeholder.
+DEFAULT_SITE = os.environ.get("STS2_WORKBENCH_SITE", "https://your-workbench.example.com")
 DEFAULT_OUT = PYCLI / "logs" / "bugreports"
 KEY_PREFIX = "bugreports/"
 USER_AGENT = "sts2-bug-reports/1 (https://github.com/tfriedel/sts2-sim)"

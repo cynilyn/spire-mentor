@@ -1,13 +1,13 @@
 // GH #709 transport spike (the browser half; run it through
 // ../../scripts/spike_bridge_transport.py, which starts the two fake control
 // planes and passes their ports in $PORTS): from the real
-// https://sts2-workbench.pages.dev page, fetch the advisor control plane on
+// https://your-workbench.example.com page, fetch the advisor control plane on
 // loopback in Chromium and Firefox. Two planes: one with the page origin
 // allow-listed (CORS + Private Network Access headers), one with none (the
 // server before the opt-in). $FIREFOX_PATH overrides the Firefox binary.
 // Findings: docs/browser-workbench.md, "Live-game bridge".
 import { chromium, firefox } from "@playwright/test";
-const PAGE = process.env.PAGE_URL || "https://sts2-workbench.pages.dev/";
+const PAGE = process.env.PAGE_URL || "https://your-workbench.example.com/";
 const ports = JSON.parse(process.env.PORTS);
 const hosts = ["127.0.0.1", "localhost"];
 async function probe(page, base, path, init) {

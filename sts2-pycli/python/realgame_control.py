@@ -16,7 +16,7 @@ Endpoints (all JSON):
     POST /search_tree  — companion MCTS tree over the current combat board
 
 Browser access (GH #709). The Python workbench reaches this server through a
-same-origin proxy; the browser-only workbench (``https://sts2-workbench.pages.dev``)
+same-origin proxy; the browser-only workbench (``https://your-workbench.example.com``)
 has no server to proxy for it and must call this loopback server from an
 ``https://`` page. That crosses three browser gates — mixed content (a
 loopback ``http://`` target is exempt as a potentially trustworthy origin),
@@ -180,7 +180,7 @@ class ControlPlane:
 
         Args:
             port: TCP port (``0`` = ephemeral; see :attr:`port`).
-            allow_origins: Page origins (``https://sts2-workbench.pages.dev``)
+            allow_origins: Page origins (``https://your-workbench.example.com``)
                 allowed to call this server from a browser. Each gets the CORS
                 headers and the Private Network Access opt-in on every reply
                 and on the preflight; anything else gets none. Default: none.

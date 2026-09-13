@@ -108,7 +108,7 @@ as they are fetched; the topbar's **⬇ Download for offline** button
 `/ppo/index.json` (~110 MB once per device, resumable), after which any fight
 renders with the network off.
 
-Hosted: **`https://sts2-workbench.pages.dev`** (Cloudflare Pages, public
+Hosted: the owner's deployment (URL not published; `https://your-workbench.example.com` stands in for it below) on Cloudflare Pages (public
 unlisted, free plan with no bandwidth cap; `just deploy-static-cf`, and
 `just deploy-static-cf-preview [branch]` for a preview origin to test a phone
 against). It started on Firebase Hosting, whose free plan caps transfer at
@@ -511,7 +511,7 @@ mod's rewind lane: `GET /status`, `/tree`, `/snapshots`, `POST /restore`,
 `/search_tree` on `127.0.0.1:8079`, `sts2-pycli/python/realgame_control.py`).
 The Python workbench reached it through a same-origin proxy (`/api/bridge/*`);
 the browser build has no server, so the page calls the control plane itself:
-a cross-origin fetch from `https://sts2-workbench.pages.dev` to a loopback
+a cross-origin fetch from `https://your-workbench.example.com` to a loopback
 `http://` address. Whether a browser allows that was the open question.
 
 ### The transport question, measured (2026-09-08)
@@ -540,7 +540,7 @@ two opt-ins, both off by default.
 
 1. **On the advisor** (the machine running the game): allow this page's
    origin. In the mod's settings, **Browser workbench origin** =
-   `https://sts2-workbench.pages.dev` (`SimBridgeModConfig.BrowserWorkbenchOrigin`
+   `https://your-workbench.example.com` (`SimBridgeModConfig.BrowserWorkbenchOrigin`
    → the advisor's `--control-allow-origin`), or pass the flag yourself.
    The control plane then answers that origin — and no other — with
    `Access-Control-Allow-Origin` (echoed, never `*`), the methods / headers

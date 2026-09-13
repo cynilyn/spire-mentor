@@ -33,7 +33,7 @@ function fakeKv() {
   return { kv, values, options, env: { BUGREPORTS: kv } as Env };
 }
 
-const ORIGIN = "https://sts2-workbench.pages.dev";
+const ORIGIN = "https://your-workbench.example.com";
 
 function dump(extra: Record<string, unknown> = {}) {
   return {

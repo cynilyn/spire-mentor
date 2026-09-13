@@ -5,11 +5,11 @@
  * mod's rewind lane: `GET /status`, `/tree`, `/snapshots`, `POST /restore`,
  * `/search_tree` on `127.0.0.1:8079`) through a same-origin proxy. The
  * browser-only build has no server, so the page calls the control plane
- * itself — a cross-origin fetch from `https://sts2-workbench.pages.dev` to a
+ * itself — a cross-origin fetch from `https://your-workbench.example.com` to a
  * loopback `http://` address. That clears the browser's gates only with two
  * opt-ins, both off by default:
  *
- *  - on the advisor: `--control-allow-origin https://sts2-workbench.pages.dev`
+ *  - on the advisor: `--control-allow-origin https://your-workbench.example.com`
  *    (the mod's "Browser workbench origin" setting), which makes the control
  *    plane answer CORS + Private Network Access headers for that origin and
  *    no other;

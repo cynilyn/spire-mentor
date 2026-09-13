@@ -1568,7 +1568,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         metavar="ORIGIN",
         help="Page origin allowed to call the control plane from a browser "
-        "(repeatable), e.g. https://sts2-workbench.pages.dev — the browser-only "
+        "(repeatable), e.g. https://your-workbench.example.com — the browser-only "
         "workbench's live-game views (GH #709). Off by default: without it no "
         "web page can read the control plane, only the same-machine proxy.",
     )

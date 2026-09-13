@@ -3,7 +3,7 @@
 
 Starts two fake advisor control planes on loopback (realgame_control
 with the test suite's FakeClient answering the rewind verbs) — one with
-https://sts2-workbench.pages.dev allow-listed (the CORS + Private Network
+https://your-workbench.example.com allow-listed (the CORS + Private Network
 Access opt-in), one with no allow-list (the server before the opt-in) — then
 runs web/scripts/bridge-transport-spike.mjs, which loads the REAL deployed
 page in Playwright's Chromium and Firefox and fetches both planes from it.
@@ -41,7 +41,7 @@ def plane(allow: list[str]) -> ControlPlane:
 
 
 def main() -> None:
-    opt_in = plane(["https://sts2-workbench.pages.dev"])
+    opt_in = plane(["https://your-workbench.example.com"])
     plain = plane([])
     ports = {"opt-in": opt_in.port, "no-headers": plain.port}
     print("planes", ports, file=sys.stderr)
