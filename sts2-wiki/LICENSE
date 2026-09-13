@@ -1,8 +1,8 @@
 This license covers the original generator and tooling code in this
-repository only. The decompiled/ and data/ trees, extracted game assets
-(site/public/images/ and similar), and committed wiki content describing the
-game are NOT covered by this grant and are not redistributable — see
-../PROVENANCE.md.
+repository only. The decompiled/ tree, the extracted game data and text
+under data/, extracted game assets (site/public/images/, site/public/audio/)
+and committed wiki content describing the game are Mega Crit's and are NOT
+covered by this grant — see ../PROVENANCE.md for what is redistributed.
 
 MIT License
 

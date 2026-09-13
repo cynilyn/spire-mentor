@@ -2,8 +2,10 @@ sts2-sim — public snapshot
 ==========================
 
 This repository is a snapshot export of a private monorepo (sts2-sim-private).
-It contains original work only, under the MIT licenses in LICENSE,
-sts2-rs/LICENSE, sts2-pycli/LICENSE and sts2-wiki/LICENSE.
+The original work in it — the code, the documentation, the trained networks —
+is licensed under the MIT licenses in LICENSE, sts2-rs/LICENSE,
+sts2-pycli/LICENSE and sts2-wiki/LICENSE. Those grants cover the original
+work only; nothing below that belongs to Mega Crit is licensed by them.
 
 Slay the Spire 2 is (c) Mega Crit. Nothing here is affiliated with or endorsed
 by Mega Crit. The game's English text and extracted card/relic/monster data

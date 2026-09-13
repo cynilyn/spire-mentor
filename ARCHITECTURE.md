@@ -50,7 +50,7 @@ The most entangled node, by design. Concerns:
   and `data/run-parity-cache/` replay the C# side at Rust speed.
 - **PPO training** — trains run-policy champions against the Rust engine via
   the `sts2_rs` PyO3 module; promotion flows through `champions.toml` (below).
-- **Workbench** — web app + Cloud Run deploy (root `Dockerfile`).
+- **Workbench** — web app (Python-backed server, or browser-only via the wasm build; the private repo also carries a Docker deploy image).
 - **Bridge client / advisor** — talks to sts2-bridge's TCP protocol; the
   advisor ships as a frozen exe (`packaging/SimAdvisor.spec`).
 
@@ -67,7 +67,7 @@ files; couples to sts2-pycli only at dev-deploy/packaging time.
 ### Root infrastructure
 
 - `justfile` — umbrella tasks dispatching into the subprojects.
-- `Dockerfile` — workbench deploy image; its build context spans sts2-rs,
+- `Dockerfile` (private repo only) — workbench deploy image; its build context spans sts2-rs,
   sts2-pycli, and sts2-wiki data, and it contains a generated champions COPY
   block (see below).
 - `release/` — the manifest + exporter that produce the public snapshot repo.

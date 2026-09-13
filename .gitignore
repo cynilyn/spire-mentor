@@ -17,6 +17,9 @@ node_modules/
 **/.beads/*.db-shm
 **/.beads/*.db-wal
 
+# hegel (property-testing) per-crate caches + server logs
+**/.hegel/
+
 # understand-anything skill cache (local knowledge graph) — the skill can
 # run from any subproject, so ignore it repo-wide rather than per-subdir.
 **/.understand-anything/
