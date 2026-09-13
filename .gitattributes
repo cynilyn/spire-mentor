@@ -1,0 +1,8 @@
+* text=auto
+*.rs text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.golden text eol=lf
+justfile text eol=lf
+sts2-rs/tests/parity/** text eol=lf
+sts2-pycli/python/fixtures/*.jsonl text eol=lf

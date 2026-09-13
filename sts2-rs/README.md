@@ -1,0 +1,192 @@
+# sts2-rs
+
+Deterministic Rust simulator of **Slay the Spire 2** combat and full runs
+(pinned to game build **v0.107.1**), built for fast MCTS rollouts and RL
+training.
+
+- **Game-behavior source of truth:** the C# decompilation at
+  `../sts2-wiki/decompiled/v0.107.1/` (a sibling in the monorepo — useful for
+  verifying mechanics, **not** required to build or test this workspace).
+- **Port provenance:** the engine scaffolding was originally ported from an
+  archived Python sim; see [`PYTHON_SIM_PIN.md`](PYTHON_SIM_PIN.md) for what the
+  `// Ported from sts2-rl-agent@…` headers mean.
+- **What is and is not redistributable:** see [`../PROVENANCE.md`](../PROVENANCE.md).
+
+## Quickstart (standalone)
+
+No sibling projects are needed to build and test:
+
+```sh
+cargo check --workspace --all-targets
+cargo nextest run --workspace     # canonical test runner (see note)
+cargo test --workspace --doc      # doctests — nextest cannot run these
+```
+
+The toolchain is pinned by [`rust-toolchain.toml`](rust-toolchain.toml) to
+**Rust 1.96.0**; the MSRV is **1.96** (`rust-version` in
+[`Cargo.toml`](Cargo.toml)). All workspace crates share version **0.0.1**
+(there is no published release).
+
+> **Use `cargo nextest`, not `cargo test`.** Tests run one-per-process under
+> nextest, which isolates the process-global effect/relic registry — plain
+> `cargo test` shares one process and produces order-dependent false failures.
+> Slow tests (name prefix `slow_`) are excluded from the default run; execute
+> them with `cargo nextest run --profile slow`. Install with
+> `cargo install cargo-nextest --locked`. The one correct `cargo test`
+> invocation is `cargo test --workspace --doc`, because nextest cannot run
+> doctests at all.
+
+## Crates
+
+Nine of the ten workspace members live under `crates/` (the tenth,
+`xtask/`, is unshipped repo dev tooling — `cargo run -p xtask -- <cmd>`):
+
+| Crate | What it is |
+|---|---|
+| `sts2-core` | Deterministic combat engine: state, hooks, commands, RNG, damage, powers. |
+| `sts2-content` | Card / power / monster / relic / potion / orb definitions for all five characters. |
+| `sts2-mcts` | UCT MCTS search over `sts2-core` states. |
+| `sts2-runai` | Run-level AI: arena harness, seed panels, baseline policies, PPO policy/value nets (ONNX inference), MCTS combat bridge. |
+| `sts2-cli` | Debug REPL + scripted-replay driver. Main binaries: `sts2-cli`, `sts2-corpus-gen`, `sts2-fight-replay`, `sts2-replay-audit`, `run_arena`; further auto-discovered dataset-extraction bins live in `src/bin/`. |
+| `sts2-wire` | PyO3-free wire-format parse + `CombatState` reconstruction (the hint/bridge dialect used by the real-game bridge and advisor). |
+| `sts2-py` | PyO3 bindings — builds the `sts2_rs` Python extension module. |
+| `sts2-bench` | Criterion benchmarks (`transitions_per_sec`, `mcts_smoke`, …). |
+| `sts2-srchash` | Dependency-free content hashing of a crate's build inputs; shared by engine `build.rs` scripts and a runtime recompute so the parity harness can prove a loaded extension matches its source. |
+
+### Dependency sketch
+
+Arrows point from dependent to dependency; `sts2-srchash` is a
+`build.rs` dependency of the engine crates. Note `sts2-mcts` is
+deliberately content-agnostic: it depends only on `sts2-core`
+(`sts2-content` appears only in its dev-dependencies).
+
+```text
+Engine stack:
+
+  sts2-runai ─► sts2-mcts ─► sts2-core
+  sts2-runai ─► sts2-content ─► sts2-core
+
+Consumers (direct dependencies):
+
+  sts2-wire  ─► sts2-core, sts2-content, sts2-runai
+  sts2-cli   ─► sts2-core, sts2-content, sts2-mcts, sts2-runai
+  sts2-bench ─► sts2-core, sts2-content, sts2-mcts, sts2-cli
+  sts2-py    ─► sts2-core, sts2-content, sts2-mcts, sts2-wire,
+                sts2-runai, sts2-cli, sts2-srchash
+```
+
+In words: `sts2-core` is the foundation; `sts2-content` layers game content on
+it; `sts2-mcts` searches over both; `sts2-runai` drives full runs on top of the
+search; `sts2-wire`, `sts2-cli`, `sts2-bench`, and `sts2-py` are consumers that
+each pull in the slice they need.
+
+Besides `crates/`, the workspace carries `tests/parity/` (fixture store for the
+parity harnesses — see its README), `fuzz/` (a deliberately separate cargo-fuzz
+workspace; needs nightly to *run*, stable to `cargo check`), and `docs/`
+(plans, audits, perf notes — largely lab-notebook history).
+
+## `data/` directories
+
+| Directory | Contents |
+|---|---|
+| `data/seed-panels/` | Fixed seed-panel JSON files consumed by the `sts2-runai` arena harness — pinned seed sets so win-rate evaluations are reproducible and comparable across policies. |
+| `data/run-corpus/` | Vendored corpus of real human `.run` files (git-lfs, `files.tar.zst` + `unpack.sh`) used by the replay/parity harnesses. Game-derived data — see `data/run-corpus/README.md` and [`../PROVENANCE.md`](../PROVENANCE.md). |
+| `data/runai/` | Serialized nets + `nets/manifest.json` provenance ledger for the run-AI. Only `value_human_a0.json` remains deployable (`STS2_RUNAI_VALUE` + `--policy value-net`); the ranker pipeline was removed 2026-07-12 and its files are historical. `nets/recipe/` scripts are historical provenance, not runnable. |
+| `data/run-trajectories/` | Recorded run trajectories (e.g. `ppo-ironclad-a0`) from training/eval sweeps. |
+| `data/value_policy_net/` | Value/policy-net experiment artifacts (embeddings, configs). |
+
+The **PPO run-policy champions** served per character are managed from the
+sibling `../sts2-pycli` project: `data/ppo/champions.toml` there is the single
+source of truth, and the Rust-side resolver match arms in
+`crates/sts2-runai/src/ppo/net.rs` are **generated** from it by
+`sync_champions.py` (`just check-champions` gates the sync). Do not hand-edit
+the generated blocks. See `../docs/ppo-champion-training-playbook.md`.
+
+## CLI
+
+`sts2-cli` is the debug REPL / scripted-replay driver, subcommand-shaped:
+
+```sh
+cargo run -p sts2-cli -- combat --seed 0 --encounter nibbit
+cargo run -p sts2-cli -- combat --agent random --seed 0 --steps 1000 --jsonl /tmp/out.jsonl
+cargo run -p sts2-cli -- list relics
+```
+
+Every starter surface — deck, relics, potion belt, encounter group — is
+selectable via inline flags (`--deck Strike,Strike,Bash+`), presets
+(`--deck-preset`, `--relic-preset`, `--potion-preset`), external files, or a
+single bundled TOML scenario (`--scenario path.toml`; examples in
+`docs/scenarios/`, dump the resolved form with `--print-scenario`). Card /
+relic / potion names are accepted in both `PascalCase` and display-string
+form, case-insensitively. During interactive play, `hint [SIMS]` runs
+`sts2-mcts` on the current state and prints the top root actions.
+
+`sts2-cli --help` and `sts2-cli combat --help` list the full flag surface;
+`list <kind>` accepts `encounters`, `cards`, `relics`, `potions`, or `content`
+for a cross-cutting implemented-surface inventory (`--all` dumps full enums).
+
+## Python extension
+
+`sts2-py` builds the `sts2_rs` Python module via PyO3/maturin, installed into
+the consuming venv:
+
+```sh
+uv pip install maturin
+cd crates/sts2-py
+maturin develop --release
+python -c "import sts2_rs; print(sts2_rs.version())"
+```
+
+There is no PyPI release — the consumer is the sibling `../sts2-pycli` project,
+which wires the dependency via `maturin develop` (or a portable wheel from
+`maturin build --release`). See
+[`crates/sts2-py/README.md`](crates/sts2-py/README.md) for the full build path
+and rationale.
+
+## Performance
+
+Measured on a typical Linux developer workstation, single-threaded. Reproduce
+with `cargo bench -p sts2-bench` on as quiet a host as possible.
+
+| Metric | Bench | Band (2026-05-21, `1c9c643`) |
+|---|---|---|
+| Engine state transitions | `transitions_per_sec/endturn_full_combat` | ~1.4–1.5 M tx/sec |
+| Random-play combats (derived) | — | ~100–110 k combats/sec |
+| MCTS @ 1000 sims/move (Ironclad vs Nibbit) | `mcts_smoke/ironclad_vs_nibbit_1000sims` | ~45–48 searches/sec |
+
+A later MCTS single-thread speedup branch landed a 1.76× (plain release) /
+2.05× (PGO, `scripts/pgo_build.sh`) speedup on the realistic-deck search
+workload — see `docs/perf/2026-07-05-mcts-single-thread-speedup.md`; the bands
+above predate it. The **Performance anchor** section in
+[`CLAUDE.md`](CLAUDE.md) carries the authoritative anchor history and drift
+attribution, and `docs/perf/2026-05-14-perf-bisect.md` the bisect narrative.
+A `mimalloc` cargo feature on `sts2-core` exists for allocator experiments
+(default off).
+
+## Testing & parity
+
+Beyond the quickstart gates, see [`CLAUDE.md`](CLAUDE.md) for the full
+validation-gate list (clippy, fmt, the fuzz-workspace `cargo check`, the
+`release-checked` profile) and `tests/parity/README.md` for the parity fixture
+store: frozen Python-sim-era fixtures plus the live C#-oracle-era artifacts
+(the oracle harness itself is driven from `../sts2-pycli`).
+
+## CI
+
+**No CI runs for this project.** The monorepo root deliberately has no
+`.github/workflows/` (local gates are the only gate — see the root
+`CLAUDE.md`), and this directory sits at subproject depth where GitHub Actions
+would not read workflows anyway. The workflow files that a standalone export
+*could* activate are preserved, inert, in
+[`docs/ci-templates/`](docs/ci-templates/) with a README explaining how they
+would be restored deliberately.
+
+## Status
+
+All five characters (Ironclad, Silent, Defect, Necrobinder, Regent) reached
+zero combat-parity divergences against the C# oracle, whole-run parity is
+100/100, and full-run PPO champions are trained and served for every character.
+[`CHANGELOG.md`](CHANGELOG.md) records the phase-by-phase history (its
+"0.1.0" entry is a combat-engine milestone label from the porting plan, not
+a released version — the workspace version is 0.0.1). Historical phase
+snapshots live under `docs/audits/` and `docs/reality-checks/`.

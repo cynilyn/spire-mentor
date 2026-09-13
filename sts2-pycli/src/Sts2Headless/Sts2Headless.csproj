@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Pin to the .NET 9 runtime family. The vendored Harmony (0Harmony.dll /
+         MonoMod) cannot install detours on CoreCLR 10+ ("CoreCLR version 10.0.8
+         is not supported"), so under the previous `LatestMajor` roll-forward a
+         machine with .NET 10 installed would silently run the oracle with EVERY
+         Harmony patch disabled — Cmd.Wait timers never fire, VFX-node-deref NREs
+         in card OnPlay handlers abort mid-play, etc. — degrading the whole C#
+         reference. `LatestMinor` keeps us on the highest installed 9.x patch and
+         never rolls to a major where the patches break. (A .NET-10-only host
+         would fail to launch rather than degrade silently — the correct signal,
+         since Harmony support is what makes the headless oracle correct.) -->
+    <RollForward>LatestMinor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Our GodotStubs (outputs as GodotSharp.dll to satisfy sts2.dll references) -->
+    <ProjectReference Include="..\GodotStubs\GodotStubs.csproj" />
+  </ItemGroup>
+
+  <!-- Reference game DLL and its non-Godot dependencies -->
+  <ItemGroup>
+    <Reference Include="sts2">
+      <HintPath>..\..\lib\sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SmartFormat">
+      <HintPath>..\..\lib\SmartFormat.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SmartFormat.ZString">
+      <HintPath>..\..\lib\SmartFormat.ZString.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sentry">
+      <HintPath>..\..\lib\Sentry.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Steamworks.NET">
+      <HintPath>..\..\lib\Steamworks.NET.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.Backports">
+      <HintPath>..\..\lib\MonoMod.Backports.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.ILHelpers">
+      <HintPath>..\..\lib\MonoMod.ILHelpers.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>..\..\lib\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

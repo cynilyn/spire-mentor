@@ -1,0 +1,99 @@
+{
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "rollout_policy": "heuristic",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
+ },
+ "pv": null,
+ "scores": [
+  {
+   "action": "drink Weak Potion",
+   "is_best": true,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -0.2079,
+   "q_saturated": false,
+   "stable_idx": -100,
+   "target_index": null,
+   "ties": 0,
+   "visits": 13,
+   "win_prob": 0.4615,
+   "wins": 6
+  },
+  {
+   "action": "Spore Mind",
+   "is_best": false,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -0.298,
+   "q_saturated": false,
+   "stable_idx": 4,
+   "target_index": null,
+   "ties": 0,
+   "visits": 12,
+   "win_prob": 0.4167,
+   "wins": 5
+  },
+  {
+   "action": "end turn",
+   "is_best": false,
+   "losses": 6,
+   "low_confidence": false,
+   "q": -0.4941,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "ties": 0,
+   "visits": 9,
+   "win_prob": 0.3333,
+   "wins": 3
+  },
+  {
+   "action": "Bulk Up",
+   "is_best": false,
+   "losses": 4,
+   "low_confidence": false,
+   "q": -0.8021,
+   "q_saturated": false,
+   "stable_idx": 1,
+   "target_index": null,
+   "ties": 0,
+   "visits": 5,
+   "win_prob": 0.2,
+   "wins": 1
+  },
+  {
+   "action": "Defend",
+   "is_best": false,
+   "losses": 5,
+   "low_confidence": false,
+   "q": -1.2576,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": null,
+   "ties": 0,
+   "visits": 5,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "Boot Sequence",
+   "is_best": false,
+   "losses": 4,
+   "low_confidence": false,
+   "q": -1.2736,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "ties": 0,
+   "visits": 4,
+   "win_prob": 0.0,
+   "wins": 0
+  }
+ ]
+}

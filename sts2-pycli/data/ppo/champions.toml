@@ -1,0 +1,75 @@
+# The deployed PPO run-policy champions. THIS FILE IS THE SOURCE OF TRUTH.
+#
+# Every lane that serves a champion reads it from here:
+#
+#   * python/champions.py            <- the loader
+#   * python/workbench/ppo_policy.py <- both inference backends
+#   * python/synergy/embed_geometry.py
+#   * packaging/SimAdvisor.spec      <- the shipped advisor exe
+#   * sts2-rs/crates/sts2-runai/src/ppo/net.rs   (GENERATED region)
+#   * ./Dockerfile                               (GENERATED region)
+#
+# The last two cannot read this file at runtime -- a Rust worktree has no
+# sibling sts2-pycli/, and `COPY` is Dockerfile syntax -- so they are generated
+# from it by `just sync-champions` and byte-checked by `just check-champions`.
+# Never hand-edit inside their markers.
+#
+# WHY EXACT FILENAMES. The old resolver globbed `<stem>*.onnx` and took the
+# highest <N> *present in whatever tree it ran in* -- and the repo, the Cloud
+# Run image, and the frozen advisor bundle are three different trees. That let
+# a promotion silently no-op (PR #339 shipped a retired Ironclad net for a
+# release) and let a leftover retired file with a higher iteration outrank the
+# real champion. Naming the file removes both: a stale net on disk is now inert,
+# and a MISSING champion is a loud error instead of a quiet demotion.
+#
+# To promote:   just promote-champion <character> <onnx-filename>
+# Then:         just check-champions   (also runs inside `just check` / `just ci`)
+#
+# Fields
+#   onnx    served by the Rust/ONNX backend, the container and the advisor exe.
+#   ckpt    the torch checkpoint. Named explicitly so it cannot drift to a
+#           different iteration than the .onnx.
+#   sha256  of the .onnx AS SHIPPED. The playbook requires shipping the exact
+#           file the gate swept rather than re-exporting; this is what makes
+#           that checkable. Verified by the test suite and the exe build, not
+#           on every runtime load.
+#   gate    one line on what promoted it. Full story: <net>.provenance.md.
+#   features  encoder features this net was TRAINED with (ppo.schema's
+#             STS2_PPO_FEATURES names, comma-separated). Empty = the default
+#             schema. Read at serve time so a champion is never handed a
+#             column it never trained on (GH #545).
+
+[ironclad]
+onnx = "ppo_fullrun_ironclad_plr_it550.onnx"
+ckpt = "ppo_fullrun_ironclad_plr_it550.pt"
+sha256 = "25c1971067c516cae689817f53f72abab63187856ece836af50f47b1f14e8639"
+gate = "PASSED its pre-registered gate 2026-09-02. +5.23pp pooled on 2200 paired cells (200 seeds x A0-A10, panel 73,000,000), McNemar exact two-sided p=1.0e-06; seed-clustered p=1.2e-03 (design effect 2.31x). Worst level A10 -1.50pp against a -5.0pp guard; 10 of 11 levels positive; 0 errored rows in 4,400. Gate run OFF world (STS2_RUNAI_POTION_SWAP unset both arms), net_greedy, eval-cheap 1000/4000, --act1 roll, one binary, vs the deployed ppo_fullrun_ironclad_underdocks_it400. Recipe: Prioritized Level Replay (--plr-replay-p 0.5, beta=0.1, rho=0.1, cap 4096) over a 150-iteration continuation, --resume-from-iter 400 --iterations 550. CAVEAT: the gain is NOT attributed to PLR -- there was no no-PLR control arm, so PLR, the horizon extension and the LR re-anneal it re-opened (lr_frac 0.30->0.49->0.30) are perfectly confounded, and the gain landed at A0-A4 while PLR spent its replay budget on A7-A9. A paired two-arm A/B is scheduled on Silent to separate them. See data/ppo/ppo_fullrun_ironclad_plr_it550.provenance.md and docs/experiments/2026-08-31-ironclad-plr-continuation.md."
+features = "reward_upgrade"
+
+[silent]
+onnx = "ppo_fullrun_silent_cont_it300.onnx"
+ckpt = "ppo_fullrun_silent_cont_it300.pt"
+sha256 = "6397316f497f2faac9335acb0f73992edfb4b0e1834342d46be91fdc1e3a2b07"
+gate = "PASSED its pre-registered gate 2026-09-08. +5.64pp pooled on 2200 paired cells (200 seeds x A0-A10, panel 76,000,000) vs ppo_fullrun_silent_deckmut_it150, McNemar exact two-sided p=6.9e-07; seed-clustered p=7.5e-04 (design effect 2.19x). ALL 11 levels positive, worst +2.50pp against a -5.0pp guard; overall 46.91% -> 52.55%; 0 errored rows in 4,400. This is the CONTROL arm of the Silent PLR A/B: PLR itself measured NULL on a separate 4400-cell panel (-1.07pp +/- 1.33pp, clustered p=0.42, |effect| < 2.60pp at 95%), so the promoted recipe is PLR-FREE. The gain is a 150-iteration continuation bundled with --act1 roll, reward_upgrade, cheap sims and 960 games/iter, and ATTRIBUTES NOTHING among them. Trained with STS2_RUNAI_POTION_SWAP=1, served with it OFF. See ppo_fullrun_silent_cont_it300.provenance.md and docs/experiments/2026-09-02-silent-plr-ab.md."
+features = "reward_upgrade"
+
+[defect]
+onnx = "ppo_fullrun_defect_deckmut_it150.onnx"
+ckpt = "ppo_fullrun_defect_deckmut_it150.pt"
+sha256 = "c1908ec4659903926d25779b44805e993a93bead7d1e3f1b61ccdd436835537e"
+gate = "first flags-on (deck-mutation) Defect champion: +5.5pp pooled vs asc_it230 (58.1% -> 63.6%), McNemar p=2.0e-06, A0-A10 x200 paired, panel 43M, 10/11 levels positive, worst A10 -1.5pp (GH #429). NOT attributable to learned deck mutation -- the baseline never trained on this env; see provenance."
+features = ""
+
+[regent]
+onnx = "ppo_fullrun_regent_deckmut_it150.onnx"
+ckpt = "ppo_fullrun_regent_deckmut_it150.pt"
+sha256 = "6baf20cf151ab0870e05ffd83cda7300ce2c25e3af96bb864f35e64f89582336"
+gate = "50.6% pooled A0-A10 flags-on, +4.55pp over the retired asc_it200 on 2200 paired cells (fresh panel 47,000,000), McNemar exact p=1.1e-04, 9/11 levels positive, worst A10 -4.0pp (rule allows -5.0). Last of the five deck-mutation legs (GH #399/#427); the #432 stopgap retired with it. NOT attributable to learned deck mutation -- the baseline never trained on this env; see provenance."
+features = ""
+
+[necrobinder]
+onnx = "ppo_fullrun_necrobinder_deckmut_it150.onnx"
+ckpt = "ppo_fullrun_necrobinder_deckmut_it150.pt"
+sha256 = "01f1fa84872b31de6b5f166ac57dab25e258298a3549be0133ebf138bd2619dc"
+gate = "33.1% pooled A0-A10 flags-on, +6.8pp over the retired asc_it300 on 2200 paired cells (fresh panel 41,000,000), McNemar exact p=6.1e-10, ALL 11 levels positive and NONE regressing (worst +1.0pp). First boss-conditioned champion (N_CAT 10). NOT attributable to any single cause -- see provenance (GH #431)."
+features = ""

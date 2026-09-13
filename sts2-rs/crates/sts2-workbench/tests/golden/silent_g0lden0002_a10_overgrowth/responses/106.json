@@ -1,0 +1,57 @@
+{
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "rollout_policy": "heuristic",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
+ },
+ "pv": null,
+ "scores": [
+  {
+   "action": "Shiv",
+   "is_best": true,
+   "losses": 0,
+   "low_confidence": false,
+   "q": 1.053,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": 2,
+   "ties": 0,
+   "visits": 18,
+   "win_prob": 1.0,
+   "wins": 18
+  },
+  {
+   "action": "Shiv",
+   "is_best": false,
+   "losses": 0,
+   "low_confidence": false,
+   "q": 1.0452,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": 1,
+   "ties": 0,
+   "visits": 17,
+   "win_prob": 1.0,
+   "wins": 17
+  },
+  {
+   "action": "end turn",
+   "is_best": false,
+   "losses": 1,
+   "low_confidence": false,
+   "q": 0.8647,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "ties": 0,
+   "visits": 13,
+   "win_prob": 0.9231,
+   "wins": 12
+  }
+ ]
+}

@@ -1,0 +1,113 @@
+{
+ "config": {
+  "c_puct": 2.5,
+  "depth": 200,
+  "draw_widening_c": 2.0,
+  "hidden_info": "beliefdraw",
+  "rollout_policy": "heuristic",
+  "seed": 1,
+  "sims": 48,
+  "threads": 1
+ },
+ "pv": null,
+ "scores": [
+  {
+   "action": "Reap",
+   "is_best": true,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -1.2317,
+   "q_saturated": false,
+   "stable_idx": 1,
+   "target_index": 0,
+   "ties": 0,
+   "visits": 7,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "Bodyguard",
+   "is_best": false,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -1.243,
+   "q_saturated": false,
+   "stable_idx": 6,
+   "target_index": null,
+   "ties": 0,
+   "visits": 7,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "Negative Pulse",
+   "is_best": false,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -1.2638,
+   "q_saturated": false,
+   "stable_idx": 5,
+   "target_index": null,
+   "ties": 0,
+   "visits": 7,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "Snap",
+   "is_best": false,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -1.2741,
+   "q_saturated": false,
+   "stable_idx": 2,
+   "target_index": 0,
+   "ties": 0,
+   "visits": 7,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "end turn",
+   "is_best": false,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -1.2896,
+   "q_saturated": false,
+   "stable_idx": -1,
+   "target_index": null,
+   "ties": 0,
+   "visits": 7,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "Strike",
+   "is_best": false,
+   "losses": 7,
+   "low_confidence": false,
+   "q": -1.2908,
+   "q_saturated": false,
+   "stable_idx": 4,
+   "target_index": 0,
+   "ties": 0,
+   "visits": 7,
+   "win_prob": 0.0,
+   "wins": 0
+  },
+  {
+   "action": "Strike",
+   "is_best": false,
+   "losses": 6,
+   "low_confidence": false,
+   "q": -1.3044,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": 0,
+   "ties": 0,
+   "visits": 6,
+   "win_prob": 0.0,
+   "wins": 0
+  }
+ ]
+}

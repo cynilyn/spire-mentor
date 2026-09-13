@@ -1,0 +1,24 @@
+[build]
+# Cache rustc invocations via sccache so parallel worktree/swarm builds reuse
+# artifacts. Install with `cargo binstall sccache`. To bypass for a single
+# invocation, run with `RUSTC_WRAPPER= cargo …`.
+rustc-wrapper = "sccache"
+# sccache refuses to cache incremental builds and falls back to plain rustc,
+# which defeats cross-worktree reuse. Disable incremental so every crate
+# compilation is cacheable. For solo iteration where incremental is faster,
+# override with `CARGO_INCREMENTAL=1 cargo …`.
+incremental = false
+
+# macOS needs `-undefined dynamic_lookup` so that PyO3 cdylibs built with the
+# `extension-module` feature (crates/sts2-py) can link as part of
+# `cargo build --all-targets`. Without this, ld errors out on unresolved
+# `_Py*` symbols because `extension-module` tells PyO3 not to link libpython
+# directly — the host interpreter provides those at load time.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+# getrandom 0.4 (via tract-onnx → rand 0.10, PPO in the browser workbench)
+# refuses wasm32-unknown-unknown unless told which backend to use. Nothing
+# first-party asks it for entropy; the cfg only unblocks the build.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
