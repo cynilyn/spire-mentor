@@ -1,0 +1,6 @@
+bin/
+obj/
+*.user
+# package.ps1 outputs (GH #380)
+staging/
+*.zip

@@ -237,9 +237,16 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    // `vite preview` inherits host/allowedHosts from here. Default: this
+    // machine only — the build carries the game's art, which is for the
+    // user's own use. STS2_WEB_HOST=0.0.0.0 (or an address) opens it to the
+    // LAN; STS2_WEB_ALLOWED_HOSTS=name1,name2 admits other Host headers.
     server: {
-      host: true,
-      allowedHosts: ["a4000"],
+      host: process.env.STS2_WEB_HOST || "127.0.0.1",
+      allowedHosts: (process.env.STS2_WEB_ALLOWED_HOSTS ?? "")
+        .split(",")
+        .map((h) => h.trim())
+        .filter(Boolean),
       // Single backend serves both the workbench and SimLab APIs. Nothing to
       // proxy in static mode: /api/* never leaves the page.
       proxy: isStatic ? undefined : { "/api": backend, "/assets": backend },

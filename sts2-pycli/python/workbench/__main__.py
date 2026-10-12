@@ -24,15 +24,17 @@ def main() -> None:
             repo's parent directory.
         STS2_LOGS_DIR: path to the directory containing recorded run JSONL
             logs. Defaults to ``logs/`` in the repo root.
-        STS2_HOST / STS2_PORT: bind address. Defaults to ``0.0.0.0:8077``
-            (binds all interfaces so the workbench is reachable from other
-            machines on the LAN; 8077 avoids the commonly-occupied 8000). The
-            Vite dev proxy in ``web/vite.config.ts`` targets the same port.
+        STS2_HOST / STS2_PORT: bind address. Defaults to ``127.0.0.1:8077``
+            (this machine only — the workbench serves the game's art, which
+            is for the user's own use; set ``STS2_HOST=0.0.0.0`` to reach it
+            from other machines on the LAN; 8077 avoids the commonly-occupied
+            8000). The Vite dev proxy in ``web/vite.config.ts`` targets the
+            same port.
         STS2_RELOAD: when truthy (default), auto-reload on Python changes
             under ``python/workbench`` so backend edits don't require a
             manual restart. Set ``STS2_RELOAD=0`` to disable.
     """
-    host = os.environ.get("STS2_HOST", "0.0.0.0")
+    host = os.environ.get("STS2_HOST", "127.0.0.1")
     port = int(os.environ.get("STS2_PORT", "8077"))
     reload = os.environ.get("STS2_RELOAD", "1").lower() not in ("0", "false", "")
 

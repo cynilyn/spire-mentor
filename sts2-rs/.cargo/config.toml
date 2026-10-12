@@ -1,13 +1,10 @@
-[build]
-# Cache rustc invocations via sccache so parallel worktree/swarm builds reuse
-# artifacts. Install with `cargo binstall sccache`. To bypass for a single
-# invocation, run with `RUSTC_WRAPPER= cargo …`.
-rustc-wrapper = "sccache"
-# sccache refuses to cache incremental builds and falls back to plain rustc,
-# which defeats cross-worktree reuse. Disable incremental so every crate
-# compilation is cacheable. For solo iteration where incremental is faster,
-# override with `CARGO_INCREMENTAL=1 cargo …`.
-incremental = false
+# Public-export copy of the private tree's sts2-rs/.cargo/config.toml
+# (release/public-overlay/). The private file routes every rustc call through
+# sccache and disables incremental builds for cross-worktree cache reuse; here
+# neither is forced, so a plain `cargo` works on a fresh machine. To use
+# sccache anyway: `export RUSTC_WRAPPER=sccache` (PowerShell:
+# `$env:RUSTC_WRAPPER="sccache"`). Everything below this header must stay
+# identical to the private file (release/test_export_unit.py checks it).
 
 # macOS needs `-undefined dynamic_lookup` so that PyO3 cdylibs built with the
 # `extension-module` feature (crates/sts2-py) can link as part of

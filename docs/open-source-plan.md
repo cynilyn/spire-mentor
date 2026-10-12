@@ -28,10 +28,10 @@ were deleted (recoverable with
 | D2 | History export strategy | **Fresh-history snapshot + squashed syncs.** The private history is irrecoverably mixed (deleted game paths under two prefix sets, ~4 GB of `.beads/issues.jsonl` with pasted C#); it is never filtered or published. Each sync = export → mirror onto the public checkout → one `sync: sts2-sim-private@<sha>` commit. |
 | D3 | Champions manifest ownership | **Moot** — one public monorepo keeps `champions.toml` where it is; the exporter reads it to select exactly the deployed `.onnx` files (sha256-verified). |
 | D4 | Publishing a `sts2_rs` wheel | **Moot** — the public repo is the whole monorepo; `uv sync` builds the wheel from the sibling path dep. |
-| D5 | sts2-bridge donor license | **Excluded** from the export until a donor grant or a clean-room rewrite exists. |
+| D5 | sts2-bridge donor license | **Resolved 2026-10-11 — ships.** Game side: the files that mirrored the game's AutoSlay framework (`SimAutoSlayer.cs` and four handlers) were rewritten clean-room from a behavioural spec, and the exporter's decompiled-overlap gate (`[gates] decomp_*` in the manifest) fails any exported `.cs` file that reproduces decompiled code. Donor side: zhiyue/sts2-rl-agent has no LICENSE file (its README only says the project is "for research and educational purposes"), so every donor-derived region was also rewritten clean-room (round 2, 2026-10-11); the same gate compares every exported `.cs` file against the pinned donor source (`donor_dirs`, fetched by `just fetch-donors`). `sts2-bridge/LICENSE` is plain MIT with a credit line. Was: excluded until a donor grant or a clean-room rewrite existed. |
 | D6 | Scraped run corpus and derived nets | **Excluded** (corpus, codex fixtures, `value_human_a0*`, `*ranker*`, synergy catalogs). PPO champions (own-sim) ship as plain blobs; `.pt` checkpoints and retired nets do not. |
 | D7 | Workbench Docker image | **Private** (`Dockerfile` excluded); the browser build is what the public repo produces. |
-| D8 | CI | **Public repo only.** `release/public-overlay/.github/workflows/ci.yml` is added at export; the private repo keeps its no-Actions policy (ADR-0002). |
+| D8 | CI | **Public repo only.** `release/public-overlay/.github/workflows/ci.yml` (and `pages.yml`, which publishes `docs/site/` to GitHub Pages) is added at export; the private repo keeps its no-Actions policy (ADR-0002). |
 
 Also settled: one public monorepo (not four unit repos); no git-LFS in the
 public repo (nothing that would need it ships); nets ship as plain blobs
@@ -65,7 +65,13 @@ git add -A && git commit -m "sync: sts2-sim-private@<sha>" && git push
 Outside contributions land in the public repo as normal PRs, are re-applied
 to the private `main` (`git format-patch` / cherry-pick), and reappear in
 the next sync commit — the public tree never diverges for long because the
-mirror is unconditional.
+mirror is unconditional. Because it is unconditional, the sync guards against
+a forgotten port: any path changed on the public side since the newest sync
+commit must come out of the export byte-identical to public HEAD, or the sync
+refuses (listing the paths and public commits); it also refuses a dirty public
+worktree or one with no sync commit. `--allow-revert` overrides with a warning.
+Commit syncs with the exact `sync: sts2-sim-private@<sha>` subject — the guard
+keys on it.
 
 ## Recorded non-actions
 

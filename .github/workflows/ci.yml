@@ -19,9 +19,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # sts2-rs/.cargo/config.toml hard-wires sccache as the rustc wrapper; an
-  # empty RUSTC_WRAPPER disables it (cargo treats empty as unset).
-  RUSTC_WRAPPER: ""
 
 jobs:
   rust:

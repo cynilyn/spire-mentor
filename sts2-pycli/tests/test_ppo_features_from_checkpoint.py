@@ -66,3 +66,35 @@ def test_by_onnx_filename_ignores_a_matching_basename_outside_the_champions_dir(
     decoy.write_bytes(b"not a real onnx graph")
 
     assert champions.by_onnx_filename(str(decoy)) is None
+
+
+def test_the_acting_checkpoint_carries_the_campaign_feature_schema(tmp_path):
+    """The actor the collection workers load must declare the campaign's
+    features, or training silently runs at the DEFAULT schema.
+
+    `NetPolicy` resolves its schema from the checkpoint's own cfg so a
+    committed champion is served at the schema it trained with. A checkpoint
+    with no cfg falls back to the default -- right for the champions, and
+    silently wrong for a campaign: the trainer's rolling acting snapshot IS
+    the actor, so a cfg-less snapshot collects every trajectory with the
+    feature off while the banner, the `--features` flag and every saved cfg
+    all say it is on. `reward_upgrade` appends no slot, so nothing in the
+    tensor reveals the mismatch.
+
+    Observed 2026-09-13: two consecutive Defect campaign legs, one launched
+    with the feature and one without, produced bit-identical iteration-0
+    win rate, `dec_per_run` and `act1_frac` across 960 runs.
+    """
+    import torch
+    from ppo.net_policy import NetPolicy
+    from ppo.trainer import PPOConfig, acting_payload
+
+    cfg = PPOConfig(features="reward_upgrade")
+    ckpt = tmp_path / "main.acting.pt"
+    torch.save(acting_payload({}, cfg), ckpt)
+
+    assert NetPolicy(str(ckpt)).features == frozenset({"reward_upgrade"}), (
+        "the acting checkpoint lost the campaign's feature schema -- collection "
+        "will run at the default schema and the campaign will train without "
+        "the feature it declares"
+    )

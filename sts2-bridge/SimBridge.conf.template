@@ -1,0 +1,20 @@
+{
+  "_readme": "Defaults for a PLAYER install: the mod loads but does nothing until you switch Advisor mode on (F8, or the mod settings page). Set auto_start to true only if you want the AI to play whole runs by itself.",
+  "port": 9002,
+  "auto_start": false,
+  "advisor_autoplay": false,
+  "speed_patches": true,
+  "fast_mode": "normal",
+  "time_scale": 1.0,
+  "character": "Ironclad",
+  "ascension": 0,
+  "seed": null,
+  "num_runs": 1,
+  "agent_timeout_seconds": 0,
+  "client_run_config": false,
+  "debug_player_hp": 0,
+  "overlay": true,
+  "stall_timeout_seconds": 300,
+  "think_fps": 10,
+  "run_timeout_minutes": 360
+}

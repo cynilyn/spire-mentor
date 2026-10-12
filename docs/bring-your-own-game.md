@@ -28,12 +28,14 @@ source the extractors and the mechanics work read plus real art
   describe a different game).
 - [`just`](https://just.systems), [`uv`](https://docs.astral.sh/uv/), Python 3.13.
 - Rust 1.96 (pinned by `sts2-rs/rust-toolchain.toml`; rustup installs it on
-  first use) and `cargo-nextest`. `sts2-rs/.cargo/config.toml` hard-wires
-  `sccache` as the rustc wrapper — install it, or run with `RUSTC_WRAPPER=`
-  (empty) to bypass.
+  first use) and `cargo-nextest`. `sccache` is optional
+  (`export RUSTC_WRAPPER=sccache`).
 - **oracle tier:** the [.NET 9 SDK](https://dotnet.microsoft.com/download).
 - **workbench tier:** ILSpy's CLI — `dotnet tool install -g ilspycmd`
-  (lands in `~/.dotnet/tools`). Node 20+ for the web app.
+  (lands in `~/.dotnet/tools`). Node 20+ for the web app, plus
+  `rustup target add wasm32-unknown-unknown` and
+  `cargo install wasm-bindgen-cli --version 0.2.120` (must match the
+  `wasm-bindgen` crate in `sts2-rs/Cargo.lock`) for the browser build.
 - **sound tier:** the FMOD Studio API (free, registration-gated download from
   fmod.com, Linux tarball `fmodstudioapi*linux.tar.gz`). Unpack it anywhere
   and export `FMOD_SDK_ROOT=<that dir>`. Also `ffmpeg` for the Opus encode.
@@ -78,8 +80,8 @@ output and re-run.
 cd sts2-pycli && uv sync --dev
 just build-cs                          # C# oracle (oracle tier)
 uv run pytest tests                    # the whole suite, oracle tests included
-just wasm-build && just workbench-static   # browser workbench (workbench tier)
-just workbench                         # Python-backed workbench on :8077
+just workbench-static-preview          # after `just workbench-static`: serve on 127.0.0.1:4173
+just workbench                         # Python-backed workbench on 127.0.0.1:8077
 cd ../sts2-rs && cargo nextest run --workspace   # game-gated tests now run too
 ```
 

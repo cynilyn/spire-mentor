@@ -1,0 +1,134 @@
+// SimHotkeys.cs -- global hotkeys for live mod control.
+//
+// Uses the game's own NHotkeyManager (NHotkeyManager.cs): bindings are
+// looked up by InputMap ACTION NAME, invoked via CallDeferred (so handlers
+// run on the main thread), skipped while the dev console is open or a
+// LineEdit has focus, and SetInputAsHandled() only fires when a binding
+// matched. Our custom action names are not in MegaInput.AllInputs, so the
+// game's "blocking screen" mechanism (pause menu etc.) never blocks them --
+// which is what we want: mode/speed/HUD control should work on any screen.
+//
+// Defaults (chosen from keys the game leaves unbound):
+//   F1  help panel -- mode, every key, where the files are
+//   F4  toggle HUD visibility
+//   F3  toggle the action-log panel
+//   F6  AI takes this decision (advisor mode, combat)
+//   F7  AI plays until I stop (toggle)
+//   F8  Advisor mode on/off (from Autopilot: stop the AI and take over)
+//   F9  game speed down 0.1x
+//   F10 game speed up 0.1x
+//
+// Key survey (v0.107.1 decomp), so these don't fight the game:
+//   F2  is TAKEN and ungated -- NFeedbackScreenOpener.cs:72 opens the
+//       feedback screen on keycode 4194333 with no debug/release check. It
+//       was our HUD key until 2026-08-05, when pressing it in a live session
+//       opened feedback instead. Do not re-use it.
+//   F11 is TAKEN -- NDevConsole.
+//   F1/F3-F10 map to DebugHotkey.* actions in NInputManager's _debugInputMap,
+//       but ProcessDebugKeyInput returns early unless NGame.IsTrailerMode
+//       (NInputManager.cs:463), which only the `trailer` console command
+//       sets -- so they are free in a normal session. F1 (keycode 4194332 =
+//       DebugHotkey.hideRestSite) was re-checked for the help panel, 0.2.1.
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Godot;
+using MegaCrit.Sts2.Core.AutoSlay.Helpers;
+using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
+
+namespace SimBridge;
+
+public static class SimHotkeys
+{
+    private const string ActionHelp = "simbridge_help";
+    private const string ActionToggleHud = "simbridge_toggle_hud";
+    private const string ActionToggleLog = "simbridge_toggle_log";
+    private const string ActionAiOnce = "simbridge_ai_once";
+    private const string ActionAiAuto = "simbridge_ai_auto";
+    private const string ActionToggleAdvisor = "simbridge_toggle_advisor";
+    private const string ActionSpeedDown = "simbridge_speed_down";
+    private const string ActionSpeedUp = "simbridge_speed_up";
+    private const string ActionUndoTurn = "simbridge_undo_turn";
+    private const string ActionRestartRoom = "simbridge_restart_room";
+    private const string ActionCopyState = "simbridge_copy_state";
+
+    private static bool _installed;
+
+    /// <summary>Wait for the game to come up, then install on the main
+    /// thread. Run via TaskHelper.RunSafely from MainFile.Initialize.</summary>
+    public static async Task InstallWhenReadyAsync()
+    {
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        await WaitHelper.Until(
+            () => NGame.Instance != null && NHotkeyManager.Instance != null,
+            cts.Token, TimeSpan.FromSeconds(120), "NHotkeyManager not available");
+        Callable.From(Install).CallDeferred();
+    }
+
+    private static void Install()
+    {
+        if (_installed)
+        {
+            return;
+        }
+        try
+        {
+            NHotkeyManager? manager = NHotkeyManager.Instance;
+            if (manager == null)
+            {
+                return;
+            }
+
+            RegisterAction(ActionHelp, Key.F1);
+            RegisterAction(ActionToggleHud, Key.F4);
+            RegisterAction(ActionToggleLog, Key.F3);
+            RegisterAction(ActionAiOnce, Key.F6);
+            RegisterAction(ActionAiAuto, Key.F7);
+            RegisterAction(ActionToggleAdvisor, Key.F8);
+            RegisterAction(ActionSpeedDown, Key.F9);
+            RegisterAction(ActionSpeedUp, Key.F10);
+            // Ctrl-chorded, not F-keys: Z alone is a card hotkey surface and
+            // the remaining F-keys are taken (F2 feedback, F11 console).
+            RegisterAction(ActionUndoTurn, Key.Z, ctrl: true);
+            RegisterAction(ActionRestartRoom, Key.Z, ctrl: true, shift: true);
+            // Also Ctrl-chorded, and SHIFTed: plain Ctrl+C is the OS copy every
+            // text field expects, and stealing it from the settings panel's
+            // fields would be a worse trade than a two-modifier chord.
+            RegisterAction(ActionCopyState, Key.C, ctrl: true, shift: true);
+
+            manager.PushHotkeyPressedBinding(ActionHelp, SimActions.ToggleHelp);
+            manager.PushHotkeyPressedBinding(ActionToggleHud, SimActions.ToggleHud);
+            manager.PushHotkeyPressedBinding(ActionToggleLog, SimActions.ToggleLog);
+            manager.PushHotkeyPressedBinding(ActionAiOnce, () => SimActions.AiOnce("F6 (AI takes this decision)"));
+            manager.PushHotkeyPressedBinding(ActionAiAuto, () => SimActions.ToggleAutoplay("F7 (AI plays until you stop)"));
+            manager.PushHotkeyPressedBinding(ActionToggleAdvisor, SimActions.ToggleAdvisor);
+            manager.PushHotkeyPressedBinding(ActionSpeedDown, () => SimActions.NudgeSpeed(-0.1));
+            manager.PushHotkeyPressedBinding(ActionSpeedUp, () => SimActions.NudgeSpeed(0.1));
+            manager.PushHotkeyPressedBinding(ActionUndoTurn, SimActions.UndoTurn);
+            manager.PushHotkeyPressedBinding(ActionRestartRoom, SimActions.RestartRoom);
+            manager.PushHotkeyPressedBinding(ActionCopyState, SimActions.CopyState);
+
+            _installed = true;
+            GD.Print("[SimBridge] Hotkeys installed: F1=help, F4=HUD, F3=log, F6=AI once, F7=AI auto, F8=advisor mode, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state");
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[SimBridge] Hotkey install failed: {ex.Message}");
+        }
+    }
+
+    private static void RegisterAction(string name, Key key, bool ctrl = false, bool shift = false)
+    {
+        var actionName = new StringName(name);
+        if (InputMap.HasAction(actionName))
+        {
+            return;
+        }
+        InputMap.AddAction(actionName);
+        var ev = new InputEventKey { Keycode = key, CtrlPressed = ctrl, ShiftPressed = shift };
+        InputMap.ActionAddEvent(actionName, ev);
+    }
+
+}

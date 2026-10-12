@@ -251,6 +251,8 @@ workbench-web: _web-deps
 # rebuilds the Rust engine if changed, frees the port, builds the SPA, serves.
 
 SIM_PORT := "8078"
+# Bind address for the SimLab server; this machine only unless overridden.
+SIM_HOST := env("STS2_HOST", "127.0.0.1")
 
 # Run a SimLab sweep, e.g.: just sim --name demo --encounter MAWLER_NORMAL --seeds 1000
 sim *ARGS: _sim-engine-fresh
@@ -265,13 +267,13 @@ sim-ui: _sim-engine-fresh _web-deps
     -fuser -k {{SIM_PORT}}/tcp 2>/dev/null
     @sleep 1
     cd web && npm run build
-    PYTHONPATH=python .venv/bin/python -m uvicorn simlab.web.app:app --host 0.0.0.0 --port {{SIM_PORT}}
+    PYTHONPATH=python .venv/bin/python -m uvicorn simlab.web.app:app --host {{SIM_HOST}} --port {{SIM_PORT}}
 
 # SimLab backend only on :8078 (no SPA build) — fast engine-dev loop; pair with `just workbench-web`.
 sim-api: _sim-engine-fresh
     -fuser -k {{SIM_PORT}}/tcp 2>/dev/null
     @sleep 1
-    PYTHONPATH=python .venv/bin/python -m uvicorn simlab.web.app:app --host 0.0.0.0 --port {{SIM_PORT}}
+    PYTHONPATH=python .venv/bin/python -m uvicorn simlab.web.app:app --host {{SIM_HOST}} --port {{SIM_PORT}}
 
 # Force-rebuild the sts2_rs engine wheel into .venv (after editing ../sts2-rs).
 # Uses maturin via wheel-venv.sh (real recompile + post-build freshness gate),
@@ -408,11 +410,13 @@ check-workbench-data:
 workbench-web-static: _web-deps
     cd web && npm run build:static
 
-# Serve that static build (vite preview on :4173) with the game art mounted
-# from ../sts2-wiki when VITE_ASSETS_BASE is unset — a browser check of the
-# exact bundle before it is deployed anywhere.
+# Serve that static build (vite preview on 127.0.0.1:4173 — see the host note
+# in web/vite.config.ts) with the game art mounted from ../sts2-wiki when
+# VITE_ASSETS_BASE is unset — a browser check of the exact bundle. Runs vite
+# directly rather than `npm run preview:static`: npm scripts run under cmd.exe
+# on Windows, where the `VAR=value cmd` prefix does not parse.
 workbench-static-preview: _web-deps
-    cd web && npm run preview:static
+    cd web && VITE_WORKBENCH_MODE=static npx vite preview
 
 # Golden HTTP fixtures of the PYTHON workbench server (the oracle) for the Rust
 # port's replay test: scripted play over tests/workbench/golden/scenarios/*.json,
@@ -514,6 +518,15 @@ wasm-build:
         echo ">> note: wasm-opt not found (system or web/node_modules) — shipping the unoptimized wasm"
     fi
     ls -la "$out"/*.wasm
+
+# Stamped into the static build as VITE_BUILD_ID: the cache-buster on the VFX
+# manifest fetched from the immutable art bucket (src/effects/manifest.ts,
+# bindings.ts) and the service worker's shell-cache name (public/sw.js via
+# vite.config.ts). `-dirty` when the tree has uncommitted changes; `local` in
+# a checkout with no commits yet (a fresh public export). Defined here, not in
+# deploy/justfile, because `workbench-static` uses it and deploy/ never ships
+# in the public export. Override: VITE_BUILD_ID=x just deploy-static-cf.
+wb_build_id := env_var_or_default("VITE_BUILD_ID", `git describe --always --dirty --abbrev=12 --exclude '*' 2>/dev/null || echo local`)
 
 # Full static build: wasm bundle + SPA in static mode -> web/dist, with the
 # art tree inside it (`_art-into-dist`). The art is served same-origin from

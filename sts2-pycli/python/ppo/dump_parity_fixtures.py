@@ -172,6 +172,22 @@ def dump(ckpt: str, out: str, seeds: list[int], max_rows: int, asc_seeds: list[i
     # environment (`ppo_encoder_parity.rs::row_features`).
     features = sorted(schema.ACTIVE_FEATURES)
     pol = NetPolicy(ckpt)
+    # The TAG and the COMPUTATION must be the same schema. They come from
+    # different places -- the tag from this process's environment, the policy
+    # from the checkpoint's own cfg -- and when they disagree the fixture is
+    # silently mislabeled: rows claiming one schema holding pi/V recorded at
+    # another. That is not hypothetical. `ppo_encoder_parity.jsonl` was dumped
+    # with the env unset against a checkpoint whose cfg declared
+    # `reward_upgrade`, so its "default schema" rows held reward_upgrade pi/V;
+    # scored at the schema they claimed, the worst per-action probability drift
+    # was 0.676, and scored at reward_upgrade it was 0.000001.
+    if sorted(pol.features) != features:
+        raise SystemExit(
+            f"schema mismatch: rows would be TAGGED {features} but the policy "
+            f"loaded from {ckpt} featurizes at {sorted(pol.features)}. Set "
+            f"STS2_PPO_FEATURES to match the checkpoint's cfg, or dump against "
+            f"a checkpoint whose cfg matches the schema you want to record."
+        )
     reward_upgrade_rows = 0
     rows: list[dict] = []
     seen: set[str] = set()

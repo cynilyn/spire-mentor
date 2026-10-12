@@ -72,13 +72,20 @@ exporter strips those blocks (leaving one placeholder line) and fails on a
 (`MegaCrit.Sts2.Core.…`) are references, not content, and remain; their count
 is ratcheted by `release/content-marker-baseline.json`.
 
+**`sts2-bridge/` (D5, resolved 2026-10-11 — see the plan).** It started as a port of
+zhiyue's STS2BridgeMod; the run driver and four room/screen handlers, which
+had mirrored the game's own AutoSlay framework, were rewritten clean-room
+from a behavioural spec. The exporter's decompiled-overlap gate fails any
+exported `.cs` file that shares more than a handful of lines (single API
+calls, interface signatures) with the game's decompilation. The mod links
+the game's assemblies at build time (Harmony); none of them ships.
+Every region derived from zhiyue/sts2-rl-agent (which has no license) was
+rewritten clean-room as well; the exporter also compares every exported `.cs`
+file against the pinned donor source (`just fetch-donors`), and
+`sts2-bridge/LICENSE` is plain MIT with a credit line.
+
 ## 2. Excluded for other reasons
 
-- **`sts2-bridge/`** — the SimBridge mod is original C# with no decomp
-  snippets, but it is a port of zhiyue's unlicensed STS2BridgeMod and
-  `SimAutoSlayer.cs` is doubly derived from MegaCrit's own AutoSlayer; it is
-  also a Harmony mod linking the game's assemblies (a ToS/mod-policy
-  question). Private until a donor grant or a clean-room rewrite exists (D5).
 - **Scraped player runs and the nets trained on them (D6)** —
   `sts2-rs/data/run-corpus/files.tar.zst` (6,451 community-uploaded `.run`
   files, git-LFS), `sts2-pycli/python/synergy/tests/fixtures/codex/**`,

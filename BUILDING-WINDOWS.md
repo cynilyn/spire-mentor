@@ -95,11 +95,14 @@ show CRLF locally, re-checkout them or strip `\r`.
 
 ## Caveats
 
-- The `just` recipes and `setup.sh` / `scripts/wheel-venv.sh` are written for
-  Unix shells (bash shebangs, `.venv/bin/activate`, `fuser`, macOS/Linux Steam
-  paths). `just` on Windows shells out to Git Bash's `sh`, but recipes like
-  `workbench`, `sim-ui`, `build-rust`, and `setup` will break on those Unix-isms.
-- The C# headless runner also needs the game DLLs — run `git lfs pull` inside
-  `sts2-pycli/`.
+- The root `justfile` runs under PowerShell on Windows (`rs-check`,
+  `rs-test`, `rs-doc-test`, `py-test`, `web-test`). The subproject justfiles
+  and `setup.sh` / `scripts/wheel-venv.sh` are written for Unix shells (bash
+  shebangs, `.venv/bin/activate`, `fuser`, macOS/Linux Steam paths); they need
+  an `sh` on PATH (Git Bash) and recipes like `workbench`, `sim-ui`,
+  `build-rust`, and `setup` will still break on those Unix-isms.
+- `sccache` is not required; set `$env:RUSTC_WRAPPER="sccache"` to use it.
+- The C# headless runner also needs the game DLLs — `just import-game`
+  (docs/bring-your-own-game.md) stages them from your install.
 - For the full Python + C# + workbench stack, **WSL2 (Ubuntu) is the path of
   least resistance.** The Rust engine alone is happy on native Windows.

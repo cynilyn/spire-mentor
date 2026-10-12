@@ -90,6 +90,9 @@ fmodstudioapi*linux.tar.gz
 # `just import-game` run log (runtime noise; the steps are idempotent)
 logs/import-game.log
 
+# `just fetch-donors`: unlicensed donor sources for the export's overlap gate
+release/donors/
+
 # ---------------------------------------------------------------------------
 # Generated from YOUR game copy by `just import-game` (docs/bring-your-own-game.md):
 # art, audio, the game assembly, decompiled code, the raw pck extraction.

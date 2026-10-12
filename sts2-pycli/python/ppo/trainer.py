@@ -353,6 +353,15 @@ def plasticity_sample(
     return plasticity_stats(net, batch)
 
 
+def acting_payload(state_dict: dict, cfg: PPOConfig) -> dict:
+    """The checkpoint the collection workers act under.
+
+    Module-level so the `cfg` invariant is testable without standing up a
+    training loop; see `tests/test_ppo_features_from_checkpoint.py`.
+    """
+    return {"state_dict": state_dict, "cfg": cfg.__dict__}
+
+
 def collect_rows(cfg: PPOConfig, it: int, acting_ckpt: str, sampler=None) -> list[dict]:
     """Play iteration `it`'s batch of runs under the weights in `acting_ckpt`.
 
@@ -903,8 +912,20 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
         Called from the MAIN thread before the update runs, so the background
         collector (async mode) reads an on-disk θ snapshot and never races the
         in-place optimizer step.
+
+        **The `cfg` rides along, and it is load-bearing.**
+        `NetPolicy.__init__` resolves its feature schema from the checkpoint's
+        own cfg — deliberately, so a committed champion is served at the schema
+        it trained with rather than the shell's (`9df0210ba`). A checkpoint with
+        no cfg falls back to the DEFAULT schema. That fallback is right for the
+        champions, and silently wrong here: without this field a campaign
+        launched with `--features reward_upgrade` banners the feature, records
+        it into every saved cfg, and then collects EVERY trajectory with the
+        feature off, because the actor is this cfg-less rolling snapshot. The
+        gated branch changes what goes into an existing slot rather than adding
+        one, so nothing in the tensor reveals it.
         """
-        torch.save({"state_dict": _cpu_state_dict(net)}, acting_ckpt)
+        torch.save(acting_payload(_cpu_state_dict(net), cfg), acting_ckpt)
 
     def collect(it: int) -> tuple[list[dict], float]:
         """Play iteration ``it``'s batch under whatever weights are currently in

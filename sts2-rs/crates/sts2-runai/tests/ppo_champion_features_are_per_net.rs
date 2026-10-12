@@ -51,14 +51,28 @@ const EVERY_CHARACTER: [CharacterId; 5] = [
 /// legitimately declares that same feature. Ironclad left this list on
 /// 2026-08-28 (`ppo_fullrun_ironclad_underdocks_it200`); Silent left it on
 /// 2026-09-08 (`ppo_fullrun_silent_cont_it300`).
-const DEFAULT_SCHEMA_CHAMPIONS: [CharacterId; 3] = [
+const DEFAULT_SCHEMA_CHAMPIONS: [CharacterId; 5] = [
     CharacterId::Defect,
     CharacterId::Regent,
     CharacterId::Necrobinder,
+    // Moved here 2026-09-13 (GH #723). Both declared `reward_upgrade` until
+    // then, and neither was ever TRAINED with it: the trainer's acting
+    // checkpoint carried no cfg, so `NetPolicy` fell back to the default
+    // schema and collected every trajectory with the feature off. Serving
+    // them on meant feeding two nets a column they had never seen.
+    CharacterId::Ironclad,
+    CharacterId::Silent,
 ];
 
 /// The champions `champions.toml` records with `features = "reward_upgrade"`.
-const REWARD_UPGRADE_CHAMPIONS: [CharacterId; 2] = [CharacterId::Ironclad, CharacterId::Silent];
+///
+/// **Empty since 2026-09-13** — see the note above. While it is empty the
+/// silent-env test's positive direction is carried by
+/// [`an_explicit_model_override_still_reads_the_environment`], which exercises
+/// the same `Features::parse` path through the override lane. Repopulating
+/// this list restores the stronger end-to-end check, and is the point at which
+/// the pair below regains its full strength.
+const REWARD_UPGRADE_CHAMPIONS: [CharacterId; 0] = [];
 
 /// Neither list may go empty, and together they must still cover every
 /// character.
@@ -80,11 +94,12 @@ fn assert_the_lists_still_discriminate() {
         "no champion declares the default schema any more, so the hostile-env \
          test below can no longer tell 'the manifest won' from 'the env leaked'"
     );
-    assert!(
-        !REWARD_UPGRADE_CHAMPIONS.is_empty(),
-        "no champion declares a feature any more, so the silent-env test below \
-         has no positive case and cannot show the manifest value is read at all"
-    );
+    // NOTE: `REWARD_UPGRADE_CHAMPIONS` is deliberately allowed to be empty
+    // (GH #723 emptied it). An empty list costs the silent-env test its
+    // positive case, which is why the doc comment there now points at the
+    // override-lane test instead of claiming coverage it no longer has. It is
+    // NOT allowed to go empty silently, so the exemption is spelled out here
+    // rather than expressed as a missing assertion.
     for character in EVERY_CHARACTER {
         assert!(
             DEFAULT_SCHEMA_CHAMPIONS.contains(&character)
@@ -145,14 +160,21 @@ fn a_committed_champion_ignores_a_hostile_process_wide_feature_flag() {
     }
 }
 
-/// The other direction: with the environment SILENT, a champion that declares
-/// a feature must still get it.
+/// The other direction: with the environment SILENT, every champion must
+/// resolve to exactly the schema the manifest records for it.
 ///
-/// This is the half that actually covers Ironclad. It fails if the manifest
-/// value is ever dropped on the floor — the mirror-image bug of a leaking env
-/// var, and the one that would serve a `reward_upgrade` net on default-schema
-/// observations. Same silent failure, opposite cause: identical graph,
-/// identical shapes, a prior running backwards on upgraded card rewards.
+/// It fails if a manifest value is ever dropped on the floor — the
+/// mirror-image bug of a leaking env var, and the one that would serve a
+/// `reward_upgrade` net on default-schema observations. Same silent failure,
+/// opposite cause: identical graph, identical shapes, a prior running
+/// backwards on upgraded card rewards.
+///
+/// **Since GH #723 no champion declares a feature**, so the
+/// `REWARD_UPGRADE_CHAMPIONS` loop below is currently a no-op and the positive
+/// direction — "a declared feature survives to the serving call" — is carried
+/// by [`an_explicit_model_override_still_reads_the_environment`]. What remains
+/// here is still load-bearing: it is what would catch the env leaking into all
+/// five now that the default schema is unanimous.
 ///
 /// If a future promotion changes which champions declare features, this
 /// assertion is *supposed* to fail — it is a prompt to revisit both halves,

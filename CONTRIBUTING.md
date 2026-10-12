@@ -10,7 +10,9 @@ mirrored here as one `sync: sts2-sim-private@<sha>` commit. So:
 - The history here is a series of snapshots, not the development history.
 - Pull requests are welcome. A merged PR is re-applied to the private repo
   and comes back in the next sync commit (which may also rewrite unrelated
-  files). Keep PRs focused so they apply cleanly.
+  files); the sync tooling refuses to run while a merged PR is still
+  unported, so it cannot be silently undone. Keep PRs focused so they apply
+  cleanly.
 - Never commit game art, audio, assemblies or decompiled code. The paths
   `just import-game` produces are git-ignored (see the block at the end of
   `.gitignore`); if you find yourself force-adding one, stop. (The game's

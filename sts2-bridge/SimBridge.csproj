@@ -1,0 +1,98 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    SimBridge: phase 0 real-game bridge mod for Slay the Spire 2 v0.107.1.
+    See ../docs/plans/2026-07-10-real-game-bridge.md for the design.
+
+    Deliberately plain Microsoft.NET.Sdk (NOT Godot.NET.Sdk): we only consume
+    Godot/sts2 types via direct assembly references, we do not author scenes,
+    signals, or [Export]ed properties, so no Godot source generators are
+    needed. This mirrors refs/STS2MCP (proven to compile this way) rather
+    than the Alchyr BaseLib template (which needs Godot.NET.Sdk to build a
+    .pck; phase 0 ships has_pck:false, so we don't need that machinery).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>true</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>SimBridge</RootNamespace>
+    <AssemblyName>SimBridge</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <!-- The game ships a platform-specific sts2.dll; mods are MSIL and run on any platform. -->
+    <NoWarn>$(NoWarn);MSB3270</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    Game install discovery. Override with -p:STS2_GAME_DIR="C:/path/to/Slay the Spire 2"
+    if it's not in the default Steam library. Verified on this machine:
+    C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2
+  -->
+  <PropertyGroup>
+    <AutoSteamPath>$(registry:HKEY_CURRENT_USER\Software\Valve\Steam@SteamPath)\steamapps</AutoSteamPath>
+    <SteamLibraryPath Condition="Exists('$(AutoSteamPath)/common/Slay the Spire 2')">$(AutoSteamPath)</SteamLibraryPath>
+    <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">C:/Program Files (x86)/Steam/steamapps</SteamLibraryPath>
+    <STS2_GAME_DIR Condition="'$(STS2_GAME_DIR)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</STS2_GAME_DIR>
+    <Sts2DataDir>$(STS2_GAME_DIR)/data_sts2_windows_x86_64</Sts2DataDir>
+    <ModsPath>$(STS2_GAME_DIR)/mods/</ModsPath>
+  </PropertyGroup>
+
+  <Target Name="CheckDependencyPaths" BeforeTargets="Build;Restore">
+    <Error
+        Text="Slay the Spire 2 game data not found at '$(Sts2DataDir)'. Pass -p:STS2_GAME_DIR=&quot;C:/path/to/Slay the Spire 2&quot; if it's installed somewhere else."
+        Condition="'$(Sts2DataDir)' == '' or !Exists('$(Sts2DataDir)')" />
+    <Error
+        Text="BaseLib not found at '$(ModsPath)BaseLib/BaseLib.dll'. SimBridge depends on Alchyr's BaseLib (settings-UI framework); install its release (dll + pck + json) into &lt;game&gt;/mods/BaseLib/. See https://github.com/Alchyr/BaseLib-StS2/releases (v3.4.1 verified against game v0.107.1)."
+        Condition="!Exists('$(ModsPath)BaseLib/BaseLib.dll')" />
+  </Target>
+
+  <ItemGroup Condition="Exists('$(Sts2DataDir)')">
+    <Reference Include="sts2">
+      <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GodotSharp">
+      <HintPath>$(Sts2DataDir)/GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Installed mod, not game data: the game loads mods/BaseLib/BaseLib.dll
+         into the shared ALC, so referencing the deployed copy guarantees we
+         compile against exactly the assembly we run against. -->
+    <Reference Include="BaseLib" Condition="Exists('$(ModsPath)BaseLib/BaseLib.dll')">
+      <HintPath>$(ModsPath)BaseLib/BaseLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Deploy target (validation gate #2): copies the built DLL + manifest + config
+    template to <game>/mods/SimBridge/ so the game's ModManager picks it up.
+    Runs automatically after every Build; `deploy.ps1` is a standalone wrapper
+    for re-running deployment without a rebuild.
+  -->
+  <!-- Pass -p:SimBridgeSkipDeploy=true to compile without touching the game
+       dir (the running game locks mods/SimBridge/SimBridge.dll). -->
+  <Target Name="DeploySimBridge" AfterTargets="Build" Condition="Exists('$(STS2_GAME_DIR)') and '$(SimBridgeSkipDeploy)' != 'true'">
+    <MakeDir Directories="$(ModsPath)SimBridge" />
+    <ItemGroup>
+      <DeployFiles Include="$(TargetDir)SimBridge.dll" />
+      <DeployFiles Include="$(MSBuildProjectDirectory)/SimBridge.json" />
+      <DeployFiles Include="$(MSBuildProjectDirectory)/SimBridge.conf.template" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(ModsPath)SimBridge/" />
+    <!-- Default advisor launcher (phase 8): SimAdvisorProcess falls back to
+         this script when the settings page leaves the command blank. The
+         sts2-pycli path is baked in at deploy time from this repo layout. -->
+    <PropertyGroup>
+      <SimPycliDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../sts2-pycli'))</SimPycliDir>
+    </PropertyGroup>
+    <WriteLinesToFile
+        File="$(ModsPath)SimBridge/SimAdvisor.cmd"
+        Overwrite="true"
+        Lines="@echo off;cd /d &quot;$(SimPycliDir)&quot;;uv run python python/realgame_advisor.py %25*" />
+    <Message Text="SimBridge deployed to $(ModsPath)SimBridge/" Importance="high" />
+  </Target>
+</Project>
