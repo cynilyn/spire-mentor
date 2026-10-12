@@ -130,7 +130,7 @@ export default function ImportStateDialog({
 
         <div style={{ padding: 16, display: "grid", gap: 12 }}>
           <div className="mono" style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.5 }}>
-            In the game: <b>Copy state</b> on the SimBridge strip, or <b>Ctrl+Shift+C</b>.
+            In the game: <b>Copy state</b> on the SpireCoach strip, or <b>Ctrl+Shift+C</b>.
             Then paste it here. An advisor log line, or a whole log, works too —
             the newest position in it wins.
           </div>

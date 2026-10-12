@@ -1,19 +1,19 @@
-// SimConfig.cs -- SimBridge runtime configuration.
+// SimConfig.cs -- SpireCoach runtime configuration.
 //
 // Port note: new file, not present in the donor (zhiyue/sts2-rl-agent bridge_mod),
 // which hardcoded its port/character/timeouts. Modeled loosely on
 // refs/STS2MCP McpMod.LoadPort()'s "read JSON next to the DLL, write a default
 // if missing" idiom.
 //
-// Reads SimBridge.conf (JSON). Read precedence: next to SimBridge.dll first
+// Reads SpireCoach.conf (JSON). Read precedence: next to SpireCoach.dll first
 // (dev machines and the climb tooling keep their existing conf), else
-// %LOCALAPPDATA%\SimBridge (the only place a packaged install under Program
+// %LOCALAPPDATA%\SpireCoach (the only place a packaged install under Program
 // Files can write -- GH #380). All fields are optional; missing/invalid
 // fields fall back to defaults. When BOTH exist the mod-dir one wins and the
 // ignored path is printed as an error -- README.txt sends users to the
 // %LOCALAPPDATA% file, so a leftover mod-dir conf otherwise makes their edits
-// look inert. If neither file exists, a copy of SimBridge.conf.template is
-// written to %LOCALAPPDATA%\SimBridge so the user has something to edit; the
+// look inert. If neither file exists, a copy of SpireCoach.conf.template is
+// written to %LOCALAPPDATA%\SpireCoach so the user has something to edit; the
 // mod dir is never written.
 
 using System;
@@ -23,12 +23,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Godot;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public sealed class SimConfig
 {
-    private const string ConfigFileName = "SimBridge.conf";
-    private const string TemplateFileName = "SimBridge.conf.template";
+    private const string ConfigFileName = "SpireCoach.conf";
+    private const string TemplateFileName = "SpireCoach.conf.template";
+    /// <summary>The mod's name, mod id and file stem before 0.3.0.</summary>
+    internal const string LegacyModId = "SimBridge";
 
     public int Port { get; init; } = 9002;
     public string Character { get; init; } = "Ironclad";
@@ -50,7 +52,7 @@ public sealed class SimConfig
     /// the whole run by itself (it only ENGAGES once an agent connects -- see
     /// SimRuntime.AutopilotEngaged).
     ///
-    /// Defaults to FALSE, which is also what SimBridge.conf.template ships.
+    /// Defaults to FALSE, which is also what SpireCoach.conf.template ships.
     /// The mod must never take the controls off someone who did not ask for
     /// it: a packaged install used to boot armed, and since the advisor
     /// auto-launches and IS an agent, starting the game started a run
@@ -216,11 +218,12 @@ public sealed class SimConfig
             try
             {
                 appDataPath = Path.Combine(SimAdvisorProcess.AppDataDir(), ConfigFileName);
+                TryMigrateLegacyConfig(appDataPath);
             }
             catch (Exception ex)
             {
                 GD.PrintErr(
-                    $"[SimBridge] %LOCALAPPDATA%\\SimBridge is unusable ({ex.Message}); " +
+                    $"[SpireCoach] %LOCALAPPDATA%\\SpireCoach is unusable ({ex.Message}); " +
                     $"only a {ConfigFileName} next to the DLL can be read.");
             }
             // Mod-dir conf wins when present (back-compat: this dev machine and
@@ -237,7 +240,7 @@ public sealed class SimConfig
                     // earlier install, a dev deploy or the climb tooling makes
                     // every edit they make there look simply inert.
                     GD.PrintErr(
-                        $"[SimBridge] TWO {ConfigFileName} files exist. Using {configPath} and " +
+                        $"[SpireCoach] TWO {ConfigFileName} files exist. Using {configPath} and " +
                         $"IGNORING {appDataPath} -- delete the former if you meant to edit the latter.");
                 }
             }
@@ -253,7 +256,7 @@ public sealed class SimConfig
                 }
                 return new SimConfig();
             }
-            GD.Print($"[SimBridge] Loading config from {configPath}");
+            GD.Print($"[SpireCoach] Loading config from {configPath}");
 
             string content = File.ReadAllText(configPath);
             using JsonDocument doc = JsonDocument.Parse(content);
@@ -286,8 +289,37 @@ public sealed class SimConfig
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SimBridge] Failed to load {ConfigFileName}: {ex.Message}. Using defaults.");
+            GD.PrintErr($"[SpireCoach] Failed to load {ConfigFileName}: {ex.Message}. Using defaults.");
             return new SimConfig();
+        }
+    }
+
+    /// <summary>
+    /// The mod was called SimBridge before 0.3.0, with its config at
+    /// %LOCALAPPDATA%\SimBridge\SimBridge.conf. Copy that file to the new
+    /// home once, so the rename does not silently reset a user's settings.
+    /// The old directory is left alone (it also holds snapshots and logs).
+    /// </summary>
+    private static void TryMigrateLegacyConfig(string appDataPath)
+    {
+        if (File.Exists(appDataPath))
+        {
+            return;
+        }
+        string legacyPath = Path.Combine(
+            System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+            LegacyModId, LegacyModId + ".conf");
+        try
+        {
+            if (Path.IsPathRooted(legacyPath) && File.Exists(legacyPath))
+            {
+                File.Copy(legacyPath, appDataPath);
+                GD.Print($"[SpireCoach] Carried over the old SimBridge config: {legacyPath} -> {appDataPath}");
+            }
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            GD.PrintErr($"[SpireCoach] Could not carry over {legacyPath} ({ex.Message}); starting from defaults.");
         }
     }
 
@@ -296,7 +328,7 @@ public sealed class SimConfig
         try
         {
             // The template ships in the mod dir (read-only is fine); the
-            // editable copy goes to %LOCALAPPDATA%\SimBridge, which is
+            // editable copy goes to %LOCALAPPDATA%\SpireCoach, which is
             // writable without elevation on a default Steam install.
             string? templatePath = modDir != null ? Path.Combine(modDir, TemplateFileName) : null;
             if (templatePath != null && File.Exists(templatePath))
@@ -308,11 +340,11 @@ public sealed class SimConfig
                 File.WriteAllText(configPath, JsonSerializer.Serialize(new SimConfig(),
                     new JsonSerializerOptions { WriteIndented = true }));
             }
-            GD.Print($"[SimBridge] Created default config at {configPath}");
+            GD.Print($"[SpireCoach] Created default config at {configPath}");
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-            GD.Print($"[SimBridge] No config found at {configPath}; using built-in defaults ({ex.Message})");
+            GD.Print($"[SpireCoach] No config found at {configPath}; using built-in defaults ({ex.Message})");
         }
     }
 

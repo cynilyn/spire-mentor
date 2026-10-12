@@ -97,7 +97,7 @@ export function buildCommands(c: CommandContext): Command[] {
     out.push({ id: "load", group: "run", label: "Load", title: "load a saved run", run: a.load });
     if (c.stateImport) {
       out.push({ id: "import-state", group: "run", label: "📋 Import state",
-        title: "paste a state copied out of the live game (SimBridge: Copy state / Ctrl+Shift+C) and play it from here",
+        title: "paste a state copied out of the live game (SpireCoach: Copy state / Ctrl+Shift+C) and play it from here",
         run: a.importState });
     }
     out.push({ id: "end-run", group: "run", label: "End run", title: "end the current run", danger: true,

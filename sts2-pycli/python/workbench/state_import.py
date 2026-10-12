@@ -1,6 +1,6 @@
 """Parse a state pasted out of the live game into something the workbench can play.
 
-The SimBridge mod stamps every outbound message with the whole run
+The SpireCoach mod stamps every outbound message with the whole run
 (``SimStateExtractor.ApplyEnvelope``): the string seed, the act and floor, the
 full ``run_state`` (deck / relics / potions / gold / HP / ascension /
 character), the act map graph *including its visited coords and the current
@@ -546,7 +546,7 @@ def parse_pasted_state(text: str) -> ImportedState:
     if last_error is not None:
         raise last_error
     raise StateImportError(
-        "No game state in that paste. Expected a SimBridge wire message "
+        "No game state in that paste. Expected a SpireCoach wire message "
         "(advice_request / combat_action / a screen), an advisor log line, or "
         "a whole advisor log."
     )

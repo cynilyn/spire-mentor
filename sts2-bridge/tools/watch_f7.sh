@@ -12,8 +12,8 @@
 set -u
 
 GLOG="${GLOG:-$APPDATA/SlayTheSpire2/logs/godot.log}"
-# advisor_stdout.log moved to %LOCALAPPDATA%\SimBridge with GH #380.
-ALOG="${ALOG:-$LOCALAPPDATA/SimBridge/advisor_stdout.log}"
+# advisor_stdout.log moved to %LOCALAPPDATA%\SpireCoach with GH #380.
+ALOG="${ALOG:-$LOCALAPPDATA/SpireCoach/advisor_stdout.log}"
 OUT="${OUT:-$(dirname "$0")/../../logs/f7_realrun/progress.log}"
 STALL_SECS="${STALL_SECS:-300}"
 POLL="${POLL:-45}"

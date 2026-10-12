@@ -1,7 +1,7 @@
 /**
  * The live-game bridge from the BROWSER build (GH #709).
  *
- * The Python workbench reaches the advisor's control plane (the SimBridge
+ * The Python workbench reaches the advisor's control plane (the SpireCoach
  * mod's rewind lane: `GET /status`, `/tree`, `/snapshots`, `POST /restore`,
  * `/search_tree` on `127.0.0.1:8079`) through a same-origin proxy. The
  * browser-only build has no server, so the page calls the control plane

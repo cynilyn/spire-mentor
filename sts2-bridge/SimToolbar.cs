@@ -19,7 +19,7 @@
 // Refresh model: SimRuntime.Changed handles mode flips from any surface;
 // a 150 ms Godot.Timer handles the state that raises no event (SimSpeed,
 // AdvisorAutoplayArmed, top-bar drift). No source generators -> no _Process
-// (see SimBridge.csproj header).
+// (see SpireCoach.csproj header).
 
 using System;
 using System.Collections.Generic;
@@ -30,7 +30,7 @@ using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal sealed class SimToolbar
 {
@@ -170,17 +170,17 @@ internal sealed class SimToolbar
                 return false;
             }
 
-            _expanded = SimBridgeModConfig.ToolbarExpanded && SimRuntime.Mode != SimMode.Off;
+            _expanded = SpireCoachModConfig.ToolbarExpanded && SimRuntime.Mode != SimMode.Off;
 
             var layer = new CanvasLayer
             {
-                Name = "SimBridgeToolbarLayer",
+                Name = "SpireCoachToolbarLayer",
                 Layer = 98,
             };
 
             var container = new VBoxContainer
             {
-                Name = "SimBridgeToolbar",
+                Name = "SpireCoachToolbar",
                 Position = new Vector2(PanelLeft, SimTopBarLayout.FallbackTop),
                 MouseFilter = Control.MouseFilterEnum.Ignore,
             };
@@ -194,7 +194,7 @@ internal sealed class SimToolbar
             };
             row.AddThemeConstantOverride("separation", 6);
 
-            _pill = SimUiKit.MakeButton("SimBridge", "Show / hide the SimBridge toolbar", TogglePill, SetHint);
+            _pill = SimUiKit.MakeButton("Spire Coach", "Show / hide the Spire Coach toolbar", TogglePill, SetHint);
             row.AddChild(_pill);
 
             var strip = new PanelContainer
@@ -284,7 +284,7 @@ internal sealed class SimToolbar
 
             var ticker = new Godot.Timer
             {
-                Name = "SimBridgeToolbarTicker",
+                Name = "SpireCoachToolbarTicker",
                 WaitTime = 0.15,
                 Autostart = true,
                 OneShot = false,
@@ -320,8 +320,8 @@ internal sealed class SimToolbar
     private void TogglePill()
     {
         _expanded = !_expanded;
-        SimBridgeModConfig.ToolbarExpanded = _expanded;
-        SimBridgeModConfig.SaveSoon();
+        SpireCoachModConfig.ToolbarExpanded = _expanded;
+        SpireCoachModConfig.SaveSoon();
         Refresh();
     }
 
@@ -419,12 +419,12 @@ internal sealed class SimToolbar
     /// </summary>
     private string PillText(SimMode mode) =>
         _advisorStatus == SimAdvisorStatus.Building
-            ? $"▸ SimBridge — building engine… {BuildElapsed()} (leave running)"
+            ? $"▸ Spire Coach — building engine… {BuildElapsed()} (leave running)"
             : _expanded
-                ? "▾ SimBridge"
+                ? "▾ Spire Coach"
                 : mode == SimMode.Off
-                    ? "▸ SimBridge — AI coach off (click)"
-                    : $"▸ SimBridge · {mode}";
+                    ? "▸ Spire Coach — AI coach off (click)"
+                    : $"▸ Spire Coach · {mode}";
 
     /// <summary>Wall-clock since the engine build started, as "m:ss".</summary>
     private string BuildElapsed()
@@ -478,7 +478,7 @@ internal sealed class SimToolbar
         {
             return;
         }
-        string status = $"SimBridge · {SimRuntime.Mode}";
+        string status = $"Spire Coach · {SimRuntime.Mode}";
         // Autopilot armed by the config file but with nobody driving it: say
         // so, and say how to get out. Silence here is what let a human play a
         // whole run with the AI's modifiers on (2026-08-05).

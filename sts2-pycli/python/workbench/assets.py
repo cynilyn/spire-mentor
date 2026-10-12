@@ -114,7 +114,7 @@ def normalize_kind(kind: str | None) -> str | None:
 
     THE TWO PRODUCERS SPELL IT DIFFERENTLY. The engine emits the PascalCase
     ``MonsterKind`` (``state_dict.rs``: ``species.python_name()`` ->
-    ``"DecimillipedeSegmentFront"``); SimBridge emits the game's own
+    ``"DecimillipedeSegmentFront"``); SpireCoach emits the game's own
     ``Creature.Monster.Id.Entry``, which is SCREAMING_SNAKE
     (``"DECIMILLIPEDE_SEGMENT_FRONT"``, verified against the raw v2 captures in
     ``logs/realgame/``). Keying the tables on one spelling silently no-ops the

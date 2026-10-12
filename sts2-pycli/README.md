@@ -19,8 +19,8 @@ This project began as a fork of [wuhao21/sts2-cli](https://github.com/wuhao21/st
 | Parity harness | `python/parity_audit.py`, `python/parity_fuzz*.py`, `python/run_parity.py`, … | Locksteps the sibling Rust engine (`../sts2-rs`) against the C# oracle and buckets divergences. Map: `docs/parity-suite.md`. |
 | PPO training | `python/ppo/`, `data/ppo/champions.toml` | Full-run self-play PPO for the run policy; champion nets are promoted via `just promote-champion`. Playbook: `../docs/ppo-champion-training-playbook.md`. |
 | Web workbench | `python/workbench/` + `web/` | FastAPI backend + Vite frontend for replaying recorded runs, regret review, and live advice. |
-| Real-game bridge client | `python/realgame_*.py`, `python/sts2_realgame.py` | TCP clients for the SimBridge mod (`../sts2-bridge/PROTOCOL.md`) that drive or observe the live game process. |
-| Advisor exe | `packaging/SimAdvisor.spec`, `scripts/build_advisor_exe.ps1` | PyInstaller-frozen `realgame_advisor` shipped alongside the SimBridge mod. |
+| Real-game bridge client | `python/realgame_*.py`, `python/sts2_realgame.py` | TCP clients for the Spire Coach mod (`../sts2-bridge/PROTOCOL.md`) that drive or observe the live game process. |
+| Advisor exe | `packaging/SimAdvisor.spec`, `scripts/build_advisor_exe.ps1` | PyInstaller-frozen `realgame_advisor` shipped alongside the Spire Coach mod. |
 | MCP server | `python/sts2_mcp.py` | Lets Claude (or any MCP client) play the game through typed tools. |
 
 `python/` itself is a flat script tree with several packages inside; see [`python/README.md`](python/README.md) for the per-concern file map and entry points.
@@ -255,7 +255,7 @@ directly on the Rust engine:
   refused). **Play it out** sweeps the exact board — trials per strategy, one
   cell per legal first move if you like — and **search** runs the workbench's
   MCTS on it. The workbench's **🧪 SimLab from here** opens the sandbox on the
-  live board, and a SimBridge **Copy state** paste loads straight into the
+  live board, and a Spire Coach **Copy state** paste loads straight into the
   Position JSON box. See `docs/live-state-import.md`.
 - **Studies** — the batch sweep: deck variants × encounters × ascensions from
   turn 1 under five strategies — `random`, `block_first`, `attack_first`,

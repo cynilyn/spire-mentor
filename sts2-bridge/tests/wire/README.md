@@ -1,7 +1,7 @@
 # BridgeServer wire test
 
-A black-box differential test of SimBridge's TCP server. It hosts
-`BridgeServer` from a built `SimBridge.dll` in-process (no game, no Godot: the
+A black-box differential test of Spire Coach's TCP server. It hosts
+`BridgeServer` from a built `SpireCoach.dll` in-process (no game, no Godot: the
 headless GodotSharp stub from `sts2-pycli/src/GodotStubs` stands in), drives it
 over real loopback TCP with a scripted client, and records a normalized
 transcript of everything on the wire. Two builds behave identically on the
@@ -10,7 +10,7 @@ wire if and only if their transcripts are identical.
 ```sh
 # 1. build the mod (Windows: `dotnet build` in sts2-bridge/; elsewhere see
 #    ../../README.md "Compile-only"), then:
-sts2-bridge/tests/wire/run_wire_test.sh <path/to/SimBridge.dll> /tmp/wire-out
+sts2-bridge/tests/wire/run_wire_test.sh <path/to/SpireCoach.dll> /tmp/wire-out
 # readable diff of any two runs:
 python3 sts2-bridge/tests/wire/diff_transcripts.py A/transcript.jsonl B/transcript.jsonl [--semantic] [--only 11_] [--skip 13_]
 ```
@@ -44,7 +44,7 @@ produce byte-identical transcripts.
 
 ## API surface used (the only coupling to the server)
 
-All via reflection on `SimBridge.BridgeServer` (no compile-time reference), i.e.
+All via reflection on `SpireCoach.BridgeServer` (no compile-time reference), i.e.
 exactly what the rest of the mod calls (`MainFile`, `SimShutdown`,
 `SimAgentGate`, `SimAdvisor`, `SimMode`, `SimSnapshots`/`SimRestore`/
 `SimCombatUndo`/`SimProtocolHelpers` callers):
@@ -75,10 +75,10 @@ touched.
   every token of a method it patches). sts2.dll = real v0.107.1;
   0Harmony/MonoMod = real (`sts2-pycli/lib`).
 * Harmony prefixes (skip original):
-  * `SimBridge.Logger.Log` → `server.log`.
-  * `SimBridge.SimRestore.RequestRestore(string)` → recorded as a `hook` event
+  * `SpireCoach.Logger.Log` → `server.log`.
+  * `SpireCoach.SimRestore.RequestRestore(string)` → recorded as a `hook` event
     (normally `CallDeferred` onto the Godot main thread → game restore).
-  * `SimBridge.SimCombatUndo.RequestUndoTurn(int, string?)` → `hook` event.
+  * `SpireCoach.SimCombatUndo.RequestUndoTurn(int, string?)` → `hook` event.
 * `SimSnapshots`' in-memory store (`Metas`, `_currentStartTime` — private
   statics of SimSnapshots, not of BridgeServer) is seeded with two fixed
   snapshot entries midway through scenario 09, so `list_snapshots` has

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Differential black-box test of SimBridge's BridgeServer.
+# Differential black-box test of SpireCoach's BridgeServer.
 #
-# Usage: run_wire_test.sh <SimBridge.dll> <out-dir>
+# Usage: run_wire_test.sh <SpireCoach.dll> <out-dir>
 #
-# Hosts the given SimBridge.dll's BridgeServer in-process (GodotSharp resolved
+# Hosts the given SpireCoach.dll's BridgeServer in-process (GodotSharp resolved
 # to the headless STUB build, real sts2.dll, real Harmony), drives it with a
 # scripted TCP client, and writes <out-dir>/transcript.jsonl (+ server.log,
 # meta.json, harness.stderr). If a baseline transcript exists it is then
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[[ $# -eq 2 ]] || { echo "usage: $0 <SimBridge.dll> <out-dir>" >&2; exit 64; }
+[[ $# -eq 2 ]] || { echo "usage: $0 <SpireCoach.dll> <out-dir>" >&2; exit 64; }
 DLL="$(realpath "$1")"
 OUT="$(mkdir -p "$2" && cd "$2" && pwd)"
 REPO="${REPO:-$(cd "$HERE/../../.." && pwd)}"
@@ -37,7 +37,7 @@ STUB_SRC="$REPO/sts2-pycli/src/GodotStubs"
 BUILD="${WIRE_BUILD:-$HERE/.build}"
 
 die() { echo "run_wire_test.sh: ERROR: $*" >&2; exit 3; }
-[[ -f "$DLL" ]] || die "SimBridge.dll not found: $DLL"
+[[ -f "$DLL" ]] || die "SpireCoach.dll not found: $DLL"
 [[ -f "$STS2_DLL" ]] || die "sts2.dll not found: $STS2_DLL (run \`just import-game <game> --tier oracle\`, or set STS2_DLL)"
 [[ -f "$LIB/0Harmony.dll" ]] || die "0Harmony.dll not found in $LIB"
 [[ -d "$STUB_SRC" ]] || die "GodotStubs sources not found: $STUB_SRC"
@@ -46,7 +46,7 @@ mkdir -p "$BUILD"
 # 1) GodotSharp STUB: copy sources out of the repo, build there (repo untouched).
 mkdir -p "$BUILD/godotstubs-src"
 cp "$STUB_SRC"/*.cs "$STUB_SRC"/*.csproj "$BUILD/godotstubs-src/"   # overwrite each run
-# Stub augmentation (on the COPY only): SimBridge's SimCombatUndo/SimRestore
+# Stub augmentation (on the COPY only): SpireCoach's SimCombatUndo/SimRestore
 # call Callable.From(Func<Task>) (real GodotSharp has From<TResult>(Func<TResult>));
 # the stub lacks it, and Harmony must resolve every token of a method it patches.
 grep -q 'From<TResult>(Func<TResult>' "$BUILD/godotstubs-src/Types.cs" || \
@@ -64,7 +64,7 @@ STUB_DLL="$BUILD/godotstub/GodotSharp.dll"
   || { cat "$BUILD/host.build.log" >&2; die "harness build failed"; }
 
 # 3) Run.
-args=(--simbridge "$DLL" --out "$OUT" --godot-stub "$STUB_DLL" --sts2 "$STS2_DLL" --lib "$LIB")
+args=(--spirecoach "$DLL" --out "$OUT" --godot-stub "$STUB_DLL" --sts2 "$STS2_DLL" --lib "$LIB")
 [[ -n "$BASELIB_DLL" && -f "$BASELIB_DLL" ]] && args+=(--baselib "$(realpath "$BASELIB_DLL")")
 [[ "${NO_PLATFORM_SHIM:-0}" == 1 ]] && args+=(--no-platform-shim)
 set +e

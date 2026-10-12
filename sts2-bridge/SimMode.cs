@@ -1,6 +1,6 @@
 // SimMode.cs -- runtime operating mode + live settings layer.
 //
-// SimConfig (SimBridge.conf) stays the authoritative, immutable, file-based
+// SimConfig (SpireCoach.conf) stays the authoritative, immutable, file-based
 // configuration: the parity/win-rate sweep lane drives the mod purely through
 // that file and must keep behaving identically. SimRuntime sits on top of it
 // as the LIVE state -- initialised from the file at startup, mutable
@@ -31,7 +31,7 @@
 using System;
 using System.Threading;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public enum SimMode
 {
@@ -79,7 +79,7 @@ public static class SimRuntime
     /// Everything that changes how the game feels -- IsReleaseGamePatch,
     /// WaitSpeedPatch, AnimationSpeedPatch and NonInteractiveMode.
     /// AutoSlayerCheck -- gates on THIS, not on Mode alone. Mode alone was a
-    /// bug: `auto_start=true` is a persistent setting in SimBridge.conf, so
+    /// bug: `auto_start=true` is a persistent setting in SpireCoach.conf, so
     /// every human session launched after a sweep booted straight into
     /// Autopilot, and SimAutoSlayer.Start() flipped the whole game
     /// non-interactive while it sat blocked in SimAgentGate waiting for a
@@ -138,7 +138,7 @@ public static class SimRuntime
     /// Live value behind WaitSpeedPatch (Cmd.CustomScaledWait scaling).
     /// Default 0.1f -- the value every sweep has always run with. Only
     /// consulted while Mode == Autopilot. Mutable via console
-    /// (`simbridge waitmult`); deliberately NOT on the settings page so a
+    /// (`spirecoach waitmult`); deliberately NOT on the settings page so a
     /// persisted UI value can never silently retune the sweep lane.
     /// </summary>
     public static float WaitMultiplier
@@ -167,7 +167,7 @@ public static class SimRuntime
 
     /// <summary>
     /// Raise Changed for live state that lives outside SimRuntime (e.g. a
-    /// hotkey flipped a HUD toggle on SimBridgeModConfig) so the HUD and an
+    /// hotkey flipped a HUD toggle on SpireCoachModConfig) so the HUD and an
     /// open settings page refresh.
     /// </summary>
     public static void NotifyChanged() => RaiseChanged();
@@ -180,7 +180,7 @@ public static class SimRuntime
         }
         catch (Exception ex)
         {
-            Godot.GD.PrintErr($"[SimBridge] SimRuntime.Changed handler threw: {ex}");
+            Godot.GD.PrintErr($"[SpireCoach] SimRuntime.Changed handler threw: {ex}");
         }
     }
 }

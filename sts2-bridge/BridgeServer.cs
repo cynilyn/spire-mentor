@@ -1,4 +1,4 @@
-// BridgeServer.cs -- loopback TCP transport between SimBridge and its agent client.
+// BridgeServer.cs -- loopback TCP transport between SpireCoach and its agent client.
 // Originally ported from zhiyue/sts2-rl-agent (STS2BridgeMod); rewritten clean-room.
 
 using System;
@@ -11,7 +11,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public class BridgeServer
 {

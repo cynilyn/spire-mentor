@@ -41,10 +41,19 @@ GAME_DIR = Path(
         r"C:/Program Files (x86)/Steam/steamapps/common/Slay the Spire 2",
     )
 )
-MOD_DIR = GAME_DIR / "mods" / "SimBridge"
-CONF = MOD_DIR / "SimBridge.conf"
+MOD_DIR = GAME_DIR / "mods" / "SpireCoach"
+CONF = MOD_DIR / "SpireCoach.conf"
 APPDATA = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
 GODOT_LOG = APPDATA / "SlayTheSpire2" / "logs" / "godot.log"
+# The mod's log prefix; "[SimBridge]" is its pre-0.3.0 name, still printed by
+# an older build that has not been redeployed.
+MOD_LOG_PREFIXES = ("[SpireCoach]", "[SimBridge]")
+
+
+def _is_mod_line(line: str) -> bool:
+    return any(prefix in line for prefix in MOD_LOG_PREFIXES)
+
+
 def detect_progress_save() -> Path:
     """The profile the GAME is actually playing, not the one we hard-coded.
 
@@ -446,11 +455,11 @@ def write_conf(character: str, ascension: int, resume: bool, time_scale: float) 
 #: The advisor's own stdout, where the p_win / q values live. Cumulative and
 #: OUTSIDE the repo, so a run's scores are otherwise interleaved with every
 #: other run's and lost the moment anything truncates it. Moved from the mod
-#: dir to %LOCALAPPDATA%\SimBridge with GH #380 (the mod dir is Program Files
+#: dir to %LOCALAPPDATA%\SpireCoach with GH #380 (the mod dir is Program Files
 #: on a default install; SimAdvisorProcess.AppDataDir is the C# twin).
 ADVISOR_LOG = (
     Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    / "SimBridge"
+    / "SpireCoach"
     / "advisor_stdout.log"
 )
 #: Where the mod rotates the above once it passes 10 MB
@@ -598,7 +607,7 @@ def archive_log(dest: Path) -> None:
     ) as out:
         out.write(f"# EXTRACT of a {size / 1e9:.2f} GB godot.log (flood-filtered)\n")
         for line in src:
-            if "[SimBridge]" in line or line.startswith("[INFO]"):
+            if _is_mod_line(line) or line.startswith("[INFO]"):
                 out.write(line)
             elif "ERROR" in line and errors < 400:
                 errors += 1
@@ -645,7 +654,7 @@ def read_log() -> str:
 
     Never `read_text()`: a wedged renderer turns this file into gigabytes of
     one repeated error, and every signal this driver looks for lives on a
-    `[SimBridge]` or `[INFO]` line. Raw `ERROR:` lines are kept only up to a
+    `[SpireCoach]` or `[INFO]` line. Raw `ERROR:` lines are kept only up to a
     cap -- enough to name the flood, not enough to hold it in memory.
     """
     kept: list[str] = []
@@ -653,7 +662,7 @@ def read_log() -> str:
     try:
         with GODOT_LOG.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if "[SimBridge]" in line or line.startswith("[INFO]"):
+                if _is_mod_line(line) or line.startswith("[INFO]"):
                     kept.append(line)
                 elif line.startswith("ERROR") and errors < 2000:
                     errors += 1

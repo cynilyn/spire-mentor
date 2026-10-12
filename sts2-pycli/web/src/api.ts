@@ -1214,7 +1214,7 @@ export const api = {
     apiFetch(`/api/runs/stat?path=${encodeURIComponent(path)}`).then(
       json<{ size: number; mtime: number }>,
     ),
-  // Live-GAME bridge (the SimBridge mod, via the advisor's control plane):
+  // Live-GAME bridge (the SpireCoach mod, via the advisor's control plane):
   // status probe, branch tree, rewind, companion search tree. Through the
   // server's same-origin proxy — or, in the browser build with a control
   // plane URL configured (src/bridge.ts, GH #709), straight to it: the

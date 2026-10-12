@@ -60,7 +60,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo     = "C:\Users\thomas\projects\sts2-sim"
 $gameDir  = "C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"
-$modDir   = "$gameDir\mods\SimBridge"
+$modDir   = "$gameDir\mods\SpireCoach"
 $capDir   = "$env:USERPROFILE\Videos\Captures"
 $godotLog = "$env:APPDATA\SlayTheSpire2\logs\godot.log"
 $outLog   = "$repo\logs\record_winning_run.log"
@@ -193,7 +193,7 @@ function Stop-Capture($file) {
 # ---- config: one game process, many runs -------------------------------
 $seedJson = if ($Seed) { "`"$Seed`"" } else { "null" }
 Say "=== record_winning_run: $Character A$Ascension seed=$(if($Seed){$Seed}else{'random'}) max $MaxAttempts ==="
-Copy-Item "$modDir\SimBridge.conf" "$modDir\SimBridge.conf.bak-recorder" -Force
+Copy-Item "$modDir\SpireCoach.conf" "$modDir\SpireCoach.conf.bak-recorder" -Force
 @"
 {
   "port": 9002,
@@ -215,7 +215,7 @@ Copy-Item "$modDir\SimBridge.conf" "$modDir\SimBridge.conf.bak-recorder" -Force
   "think_fps": 10,
   "run_timeout_minutes": 360
 }
-"@ | Set-Content "$modDir\SimBridge.conf" -Encoding UTF8
+"@ | Set-Content "$modDir\SpireCoach.conf" -Encoding UTF8
 
 Get-Process -Name SlayTheSpire2 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 3

@@ -1,4 +1,4 @@
-// MainFile.cs -- SimBridge mod entry point, Harmony patches and the shared logger.
+// MainFile.cs -- SpireCoach mod entry point, Harmony patches and the shared logger.
 // Originally ported from zhiyue/sts2-rl-agent (STS2BridgeMod); rewritten clean-room.
 
 using System;
@@ -16,14 +16,14 @@ using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Vfx.Utilities;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 [ModInitializer(nameof(Initialize))]
 public static class MainFile
 {
-    public const string ModId = "SimBridge";
-    // Keep in sync with SimBridge.json "version" (package.ps1 reads that one).
-    public const string ModVersion = "0.2.1";
+    public const string ModId = "SpireCoach";
+    // Keep in sync with SpireCoach.json "version" (package.ps1 reads that one).
+    public const string ModVersion = "0.3.0";
 
     private static Harmony? _patcher;
     private static SimAutoSlayer? _autoSlayer;
@@ -32,12 +32,43 @@ public static class MainFile
     private const string MainMenuNodePath = "/root/Game/RootSceneContainer/MainMenu";
 
     /// <summary>
+    /// Before 0.3.0 this mod was "SimBridge" in mods/SimBridge/. An update
+    /// that leaves that folder behind loads BOTH copies, and the second one
+    /// to start cannot bind the TCP port -- say so loudly.
+    /// </summary>
+    private static void WarnIfLegacyInstallPresent()
+    {
+        try
+        {
+            string? modDir = System.IO.Path.GetDirectoryName(typeof(MainFile).Assembly.Location);
+            string? modsDir = modDir != null ? System.IO.Path.GetDirectoryName(modDir) : null;
+            if (modsDir == null)
+            {
+                return;
+            }
+            string legacyDir = System.IO.Path.Combine(modsDir, SimConfig.LegacyModId);
+            if (System.IO.Directory.Exists(legacyDir))
+            {
+                GD.PrintErr(
+                    $"[SpireCoach] The old SimBridge mod is still installed at {legacyDir}. " +
+                    "It is the same mod under its previous name -- delete that folder, " +
+                    "or the two copies fight over the same port.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"Legacy-install check failed (non-fatal): {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Mod entry point, called by the game's mod loader on the main thread.
     /// Each phase is isolated so one failing component never blocks the rest.
     /// </summary>
     public static void Initialize()
     {
         Logger.Log($"=== {ModId} v{ModVersion} initializing ===");
+        WarnIfLegacyInstallPresent();
 
         SimConfig config = SimConfig.Instance;
         SimRuntime.InitializeFrom(config);
@@ -94,7 +125,7 @@ public static class MainFile
 
         try
         {
-            SimBridgeModConfig.Register();
+            SpireCoachModConfig.Register();
         }
         catch (Exception ex)
         {
@@ -131,9 +162,9 @@ public static class MainFile
     /// <summary>
     /// Stop the autopilot session so a human can take the controls, and
     /// report whether there was one to stop. Called by every "leave Autopilot"
-    /// entry point (F8, `simbridge mode`, the settings page).
+    /// entry point (F8, `spirecoach mode`, the settings page).
     ///
-    /// Autopilot is armed by SimBridge.conf's persistent `auto_start=true`,
+    /// Autopilot is armed by SpireCoach.conf's persistent `auto_start=true`,
     /// which the sweep lane needs -- so refusing to leave it (the old
     /// behavior) meant any human session started after a sweep was stuck with
     /// the AI's game modifiers and no way out.
@@ -149,12 +180,12 @@ public static class MainFile
         try
         {
             slayer.Stop();
-            Logger.Log("[SimBridge] Autopilot stopped by user; game handed back to the player.");
+            Logger.Log("[SpireCoach] Autopilot stopped by user; game handed back to the player.");
             return true;
         }
         catch (Exception ex)
         {
-            Logger.Log($"[SimBridge] Autopilot stop failed: {ex.Message}");
+            Logger.Log($"[SpireCoach] Autopilot stop failed: {ex.Message}");
             return false;
         }
     }
@@ -234,7 +265,7 @@ public static class MainFile
         {
             _damagePreviewThrowLogged = true;
             Logger.Log(
-                "[SimBridge] BaseLib AdjustBaseUnenchanted threw " +
+                "[SpireCoach] BaseLib AdjustBaseUnenchanted threw " +
                 $"({__exception.GetType().Name}); suppressed so the card pile add can " +
                 "finish. Card damage PREVIEWS may be wrong from here; game state is " +
                 "unaffected. Further occurrences are silent.");
@@ -374,7 +405,7 @@ public static class PunchOffIdleLoopPatch
         {
             return true; // run original
         }
-        Logger.Log("[SimBridge] PunchOff: skipping the idle punch loop (waits do not yield).");
+        Logger.Log("[SpireCoach] PunchOff: skipping the idle punch loop (waits do not yield).");
         __result = System.Threading.Tasks.Task.CompletedTask;
         return false;
     }
@@ -395,7 +426,7 @@ public static class PunchOffIdleLoopPatch
         }
         catch (Exception ex)
         {
-            Logger.Log($"[SimBridge] PunchOff gate unreadable, skipping the loop: {ex.Message}");
+            Logger.Log($"[SpireCoach] PunchOff gate unreadable, skipping the loop: {ex.Message}");
             return true;
         }
     }
@@ -524,7 +555,7 @@ public static class HandCardSnapPatch
 /// <c>NHitStop.HitStopTask</c> (v0.107.1) drives <c>Engine.TimeScale</c> to
 /// 0.1, ramps it back, and finishes with a hardcoded <c>SetTimeScale(1f)</c>
 /// -- an ABSOLUTE write that knows nothing about the player's slider, the
-/// F9/F10 hotkeys or <c>time_scale</c> in SimBridge.conf. One hit-stop
+/// F9/F10 hotkeys or <c>time_scale</c> in SpireCoach.conf. One hit-stop
 /// therefore reset the whole game to 1.0x for the rest of the session:
 /// reported 2026-08-08 as "4.0x in act 1 was 1.0x in act 2", which is just
 /// where the first hit-stop monster showed up (CeremonialBeast, MechaKnight
@@ -909,11 +940,11 @@ public static class CardSelectContextNoPrefsPatch
     }
 }
 
-/// <summary>SimBridge's logger: every line goes to the Godot log with the
-/// "[SimBridge] " prefix that log-scraping tools filter on.</summary>
+/// <summary>SpireCoach's logger: every line goes to the Godot log with the
+/// "[SpireCoach] " prefix that log-scraping tools filter on.</summary>
 internal static class Logger
 {
-    private const string Prefix = "[SimBridge] ";
+    private const string Prefix = "[SpireCoach] ";
 
     public static void Log(string message)
     {

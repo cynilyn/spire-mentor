@@ -59,7 +59,7 @@ using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal sealed class SimAdvisor
 {
@@ -67,7 +67,7 @@ internal sealed class SimAdvisor
 
     /// <summary>
     /// True when nobody is watching this advisor session: the unattended
-    /// harness flag (`advisor_autoplay` in SimBridge.conf — default false,
+    /// harness flag (`advisor_autoplay` in SpireCoach.conf — default false,
     /// never persisted by the settings page, only ever written by the climb /
     /// F7 drivers). Human sessions keep the human pacing below; unattended
     /// ones take the fast values. Config-keyed (not autoplay-armed-keyed) on
@@ -351,7 +351,7 @@ internal sealed class SimAdvisor
             }
             var timer = new Godot.Timer
             {
-                Name = "SimBridgeAdvisorPoll",
+                Name = "SpireCoachAdvisorPoll",
                 // The poll is the only wake-up for screens the event hooks
                 // never announce (map, shop, rewards) — on those its period is
                 // pure per-decision latency. Half it for unattended runs;

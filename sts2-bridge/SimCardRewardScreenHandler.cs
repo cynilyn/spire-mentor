@@ -19,7 +19,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public class SimCardRewardScreenHandler : IScreenHandler, IHandler
 {

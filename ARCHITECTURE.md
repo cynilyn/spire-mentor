@@ -60,7 +60,7 @@ non-standalone today (decision D4 in the open-source plan).
 
 ### sts2-bridge — the live-game mod
 
-C# mod ("SimBridge") loaded into the running game, exposing state and
+C# mod ("Spire Coach") loaded into the running game, exposing state and
 commands over TCP (`PROTOCOL.md` is the contract). Compiles with zero sibling
 files; couples to sts2-pycli only at dev-deploy/packaging time.
 

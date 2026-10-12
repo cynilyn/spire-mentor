@@ -13,15 +13,15 @@ using System.Threading.Tasks;
 using Godot;
 using MegaCrit.Sts2.Core.Helpers;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimWorkbenchLink
 {
-    /// <summary>The page to open; configurable (SimBridgeModConfig.WorkbenchUrl).</summary>
+    /// <summary>The page to open; configurable (SpireCoachModConfig.WorkbenchUrl).</summary>
     public static string Url =>
-        string.IsNullOrWhiteSpace(SimBridgeModConfig.WorkbenchUrl)
+        string.IsNullOrWhiteSpace(SpireCoachModConfig.WorkbenchUrl)
             ? "http://127.0.0.1:8077/?follow=1"
-            : SimBridgeModConfig.WorkbenchUrl.Trim();
+            : SpireCoachModConfig.WorkbenchUrl.Trim();
 
     /// <summary>
     /// Open the workbench in the default browser. Probes the server first
@@ -55,7 +55,7 @@ internal static class SimWorkbenchLink
         {
             string dir = System.IO.Path.Combine(
                 System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
-                "SimBridge");
+                "SpireCoach");
             System.IO.Directory.CreateDirectory(dir);
             string shortcut = System.IO.Path.Combine(dir, "workbench.url");
             System.IO.File.WriteAllText(shortcut,

@@ -7,9 +7,9 @@
 the tools to watch, question and argue with that AI — in a browser tab or
 inside the real game.**
 
-![The SimBridge mod advising a live combat: ranked moves, MCTS visit shares and an estimated win chance drawn over the real game](docs/site/img/mod-hud-combat.webp)
+![The Spire Coach mod advising a live combat: ranked moves, MCTS visit shares and an estimated win chance drawn over the real game](docs/site/img/mod-hud-combat.webp)
 
-<sub>The SimBridge mod inside the real game: 1,000 MCTS simulations rank
+<sub>The Spire Coach mod inside the real game: 1,000 MCTS simulations rank
 every legal move, show the principal line and estimate the win chance —
 recomputed on every decision.</sub>
 
@@ -40,7 +40,7 @@ recomputed on every decision.</sub>
   hint, see its search tree, watch the PPO champion play a whole run, then
   review where the run was won and lost. A static site that runs offline —
   no server.
-- **The SimBridge mod for the real game.** Turns the same AI into an in-game
+- **The Spire Coach mod for the real game.** Turns the same AI into an in-game
   coach (ranked moves, card scores, route advice, win chance), an autopilot
   that plays whole runs, and a bit-exact rewind button.
 - **Bring-your-own-game tooling.** One command, `just import-game`,
@@ -94,7 +94,7 @@ Web Worker; saves live in IndexedDB, and it installs as an offline PWA.
   sandbox for seed-paired strategy studies, and *state import* — paste a
   position copied from the live game and analyse it here.
 
-## SimBridge — the AI inside the real game
+## Spire Coach — the AI inside the real game
 
 ![Route advice from the run policy on the real game's map](docs/site/img/mod-hud-map.webp)
 
@@ -124,7 +124,7 @@ Build, install and protocol: [`sts2-bridge/README.md`](sts2-bridge/README.md),
 |---|---|---|
 | [`sts2-rs/`](sts2-rs/) | Rust | The engine, MCTS, run-AI with ONNX policy inference, CLI, PyO3 bindings, and the workbench's engine layer (WASM). Builds and tests with nothing else present. |
 | [`sts2-pycli/`](sts2-pycli/) | Python + C# + TS | The integration hub: the headless C# harness around the game assembly (your copy) that serves as the parity oracle, the parity suite, PPO training, the workbench web app, the real-game advisor, and an MCP server so an LLM can play. |
-| [`sts2-bridge/`](sts2-bridge/) | C# | The SimBridge mod. |
+| [`sts2-bridge/`](sts2-bridge/) | C# | The Spire Coach mod. |
 | [`sts2-wiki/`](sts2-wiki/) | Python / Astro | Extraction tooling: decompiles your game copy, extracts data, art and sound, and can generate a static wiki. |
 | `scripts/import_game.py` | Python | `just import-game` — produces every game-derived input from your install. |
 
@@ -224,7 +224,7 @@ to the private development repo it is synced from.
 
 - `sts2-pycli` began as a fork of [wuhao21/sts2-cli](https://github.com/wuhao21/sts2-cli)
   by Hao Wu (MIT).
-- SimBridge started as a port of zhiyue's STS2BridgeMod from
+- Spire Coach started as a port of zhiyue's STS2BridgeMod from
   [zhiyue/sts2-rl-agent](https://github.com/zhiyue/sts2-rl-agent).
 - The mod's settings page uses Alchyr's
   [BaseLib](https://github.com/Alchyr/BaseLib-StS2).

@@ -22,7 +22,7 @@ using System.Text.Json;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimProtocolHelpers
 {

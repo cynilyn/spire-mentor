@@ -1,9 +1,9 @@
 {
-  "id": "SimBridge",
-  "name": "SimBridge",
+  "id": "SpireCoach",
+  "name": "Spire Coach",
   "author": "sts2-sim",
   "description": "AI coach: rates your options while you play (card scores, ranked moves, win chance, map route), and can play whole runs by itself. Off until you enable it — press F1 in game for the keys.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "has_pck": false,
   "has_dll": true,
   "dependencies": ["BaseLib"],

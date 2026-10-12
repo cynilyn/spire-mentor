@@ -20,7 +20,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public class SimCardBundleScreenHandler : IScreenHandler, IHandler
 {

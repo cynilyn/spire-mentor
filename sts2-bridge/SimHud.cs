@@ -1,6 +1,6 @@
 // SimHud.cs -- in-game HUD v2 (replaces SimOverlay.cs).
 //
-// Renders, entirely in code (no .pck -- see SimBridge.csproj header):
+// Renders, entirely in code (no .pck -- see SpireCoach.csproj header):
 //   (a) a persistent status chip: mode, advisor connection state, last
 //       action / "thinking" indicator;
 //   (b) an advice panel: win-chance bar, ranked action list (label, p_win,
@@ -55,7 +55,7 @@ using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 // ---------------------------------------------------------------------------
 // Typed advice model
@@ -459,7 +459,7 @@ internal sealed class SimHud
         RenderMapMarkers(advice);
     }
 
-    private bool HudVisible => SimBridgeModConfig.ShowHud && SimRuntime.Mode != SimMode.Off;
+    private bool HudVisible => SpireCoachModConfig.ShowHud && SimRuntime.Mode != SimMode.Off;
 
     private void RefreshStatusAndVisibility(string? note = null)
     {
@@ -480,8 +480,8 @@ internal sealed class SimHud
 
         bool hasRanked = advice.Options.Exists(o => o.PWin != null || o.Q != null || o.VisitShare != null);
         bool hasEval = advice.BestQ != null || advice.PWin != null;
-        bool wantPanel = (SimBridgeModConfig.ShowWinBar && hasEval) ||
-                         (SimBridgeModConfig.ShowRankedList && hasRanked) ||
+        bool wantPanel = (SpireCoachModConfig.ShowWinBar && hasEval) ||
+                         (SpireCoachModConfig.ShowRankedList && hasRanked) ||
                          advice.Pv.Count > 0;
         if (!wantPanel || _adviceRows == null || !GodotObject.IsInstanceValid(_adviceRows))
         {
@@ -494,12 +494,12 @@ internal sealed class SimHud
 
         _advicePanel!.Visible = true;
 
-        if (SimBridgeModConfig.ShowWinBar && hasEval)
+        if (SpireCoachModConfig.ShowWinBar && hasEval)
         {
             _adviceRows.AddChildSafely(BuildEvalBar(advice.BestQ, advice.PWin, advice.LowConfidence));
         }
 
-        if (SimBridgeModConfig.ShowRankedList && hasRanked)
+        if (SpireCoachModConfig.ShowRankedList && hasRanked)
         {
             // Best first, then by visit share / p_win.
             List<SimAdviceOption> ranked = advice.Options.FindAll(o => o.PWin != null || o.Q != null || o.VisitShare != null);
@@ -704,7 +704,7 @@ internal sealed class SimHud
     {
         ClearCardLabels();
 
-        if (!SimBridgeModConfig.ShowCardLabels || !HudVisible)
+        if (!SpireCoachModConfig.ShowCardLabels || !HudVisible)
         {
             return;
         }
@@ -794,7 +794,7 @@ internal sealed class SimHud
         const float labelHeight = 22f;
         var label = new Label
         {
-            Name = $"SimBridgeCardLabel_{index}",
+            Name = $"SpireCoachCardLabel_{index}",
             Text = text,
             Size = new Vector2(labelWidth, labelHeight),
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -1003,7 +1003,7 @@ internal sealed class SimHud
     {
         ClearMapMarkers();
 
-        if (!SimBridgeModConfig.ShowMapMarkers || !HudVisible)
+        if (!SpireCoachModConfig.ShowMapMarkers || !HudVisible)
         {
             return;
         }
@@ -1101,7 +1101,7 @@ internal sealed class SimHud
 
         var line = new Line2D
         {
-            Name = "SimBridgeRoute",
+            Name = "SpireCoachRoute",
             Width = 4f,
             DefaultColor = new Color(1f, 0.85f, 0.3f, 0.55f),
             ZIndex = -1,
@@ -1117,7 +1117,7 @@ internal sealed class SimHud
         const float markerHeight = 22f;
         var label = new Label
         {
-            Name = "SimBridgeMapMarker",
+            Name = "SpireCoachMapMarker",
             Text = text,
             Size = new Vector2(markerWidth, markerHeight),
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -1276,14 +1276,14 @@ internal sealed class SimHud
 
             var layer = new CanvasLayer
             {
-                Name = "SimBridgeHudLayer",
+                Name = "SpireCoachHudLayer",
                 Layer = 99,
             };
 
             // Advice panel (below the toolbar strip -- see RepositionPanels).
             var panel = new PanelContainer
             {
-                Name = "SimBridgeAdvicePanel",
+                Name = "SpireCoachAdvicePanel",
                 Position = new Vector2(PanelLeft, ChipFallbackTop + ChipToPanelGap),
                 CustomMinimumSize = new Vector2(430f, 0f),
                 MouseFilter = Control.MouseFilterEnum.Ignore,
@@ -1304,7 +1304,7 @@ internal sealed class SimHud
             // override available (see the file header).
             var ticker = new Godot.Timer
             {
-                Name = "SimBridgeHudTicker",
+                Name = "SpireCoachHudTicker",
                 WaitTime = 0.05,
                 Autostart = true,
                 OneShot = false,

@@ -4,7 +4,7 @@
 // in progress (ModConfigPatch: "supporting in-run config will likely need
 // work"), and re-enabling it would change BaseLib behavior for every mod.
 // So the mod carries its own small panel instead, built from the SAME
-// backing store (SimBridgeModConfig) and the same BaseLib NConfig* controls
+// backing store (SpireCoachModConfig) and the same BaseLib NConfig* controls
 // (they pull their visuals from the game's own pck, bind the static
 // property, and refresh themselves on ConfigReloaded) -- the main-menu page,
 // hotkeys, console and this panel can never disagree.
@@ -25,7 +25,7 @@ using Godot;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal sealed class SimSettingsPanel
 {
@@ -79,13 +79,13 @@ internal sealed class SimSettingsPanel
 
             var layer = new CanvasLayer
             {
-                Name = "SimBridgeSettingsLayer",
+                Name = "SpireCoachSettingsLayer",
                 Layer = 102,
             };
 
             var panel = new PanelContainer
             {
-                Name = "SimBridgeSettingsPanel",
+                Name = "SpireCoachSettingsPanel",
                 Position = new Vector2(16f, 68f),
                 CustomMinimumSize = new Vector2(520f, 0f),
                 MouseFilter = Control.MouseFilterEnum.Stop,
@@ -101,13 +101,13 @@ internal sealed class SimSettingsPanel
 
             var title = new HBoxContainer();
             title.AddThemeConstantOverride("separation", 8);
-            Label titleLabel = SimUiKit.SmallLabel("SimBridge settings", Colors.White, 16);
+            Label titleLabel = SimUiKit.SmallLabel("Spire Coach settings", Colors.White, 16);
             titleLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
             title.AddChild(titleLabel);
             title.AddChild(SimUiKit.MakeButton("✕", "Close", Toggle));
             rows.AddChild(title);
 
-            if (!SimBridgeModConfig.BuildLiveRowsInto(rows))
+            if (!SpireCoachModConfig.BuildLiveRowsInto(rows))
             {
                 // The NConfig* controls lean on the game's scene paths; if
                 // that ever breaks, say where the working page is instead of
@@ -122,7 +122,7 @@ internal sealed class SimSettingsPanel
             layer.AddChild(panel);
             tree.Root.AddChildSafely(layer);
 
-            SimBridgeModConfig.EnsureLivePersistHook();
+            SpireCoachModConfig.EnsureLivePersistHook();
 
             _layer = layer;
             _panel = panel;

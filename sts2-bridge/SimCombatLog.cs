@@ -29,7 +29,7 @@ using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Helpers;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimCombatLog
 {

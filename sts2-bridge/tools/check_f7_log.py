@@ -18,7 +18,7 @@ Exit code 0 when nothing failed (inconclusive checks do not fail the run),
 How to produce a log to check -- see ``SimConfig.AdvisorAutoplay``:
 
 1. Deploy the mod (``dotnet build`` in sts2-bridge does it).
-2. Write a SimBridge.conf next to SimBridge.dll with ``auto_start: true``,
+2. Write a SpireCoach.conf next to SpireCoach.dll with ``auto_start: true``,
    ``advisor_autoplay: true``, ``client_run_config: false``, ``num_runs: 1``
    and (to reach the deep screens with a deliberately weak advisor)
    ``debug_player_hp: 999``.

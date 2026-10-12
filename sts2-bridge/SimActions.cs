@@ -8,7 +8,7 @@
 using System;
 using Godot;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimActions
 {
@@ -51,12 +51,12 @@ internal static class SimActions
         SimRestore.RequestRestore(target.Id);
     }
 
-    public static void ToggleHud() => SetHud(!SimBridgeModConfig.ShowHud);
+    public static void ToggleHud() => SetHud(!SpireCoachModConfig.ShowHud);
 
     public static void SetHud(bool on)
     {
-        SimBridgeModConfig.ShowHud = on;
-        GD.Print($"[SimBridge] HUD {(on ? "shown" : "hidden")}");
+        SpireCoachModConfig.ShowHud = on;
+        GD.Print($"[SpireCoach] HUD {(on ? "shown" : "hidden")}");
         SimRuntime.NotifyChanged();
     }
 
@@ -81,12 +81,12 @@ internal static class SimActions
             // flips (see MainFile.StopAutopilot).
             MainFile.StopAutopilot();
             SimRuntime.Mode = SimMode.Advisor;
-            GD.Print("[SimBridge] Autopilot stopped -> Advisor (you have the controls).");
+            GD.Print("[SpireCoach] Autopilot stopped -> Advisor (you have the controls).");
             SimActionLog.Note("Autopilot stopped; you have the controls (Advisor mode).");
             return;
         }
         SimRuntime.Mode = SimRuntime.Mode == SimMode.Advisor ? SimMode.Off : SimMode.Advisor;
-        GD.Print($"[SimBridge] Mode -> {SimRuntime.Mode}");
+        GD.Print($"[SpireCoach] Mode -> {SimRuntime.Mode}");
     }
 
     /// <summary>
@@ -102,7 +102,7 @@ internal static class SimActions
             string how = SimRuntime.Mode == SimMode.Autopilot
                 ? "the AI is already playing (Autopilot) -- press F8 to take over"
                 : "press F8 to turn Advisor mode on";
-            GD.Print($"[SimBridge] {what} needs Advisor mode: {how}.");
+            GD.Print($"[SpireCoach] {what} needs Advisor mode: {how}.");
             SimActionLog.Note($"{what} needs Advisor mode: {how}.");
             return;
         }

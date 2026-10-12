@@ -1,25 +1,25 @@
-// SimBridgeModConfig.cs -- BaseLib settings page for SimBridge.
+// SpireCoachModConfig.cs -- BaseLib settings page for SpireCoach.
 //
 // Reachable from the main menu via BaseLib's "Mod Configuration" entry
 // (BaseLib deliberately disables that entry while a run is in progress --
 // ModConfigPatch.NSettingsScreen_OnSubmenuShown_Patch -- so mid-run control
-// goes through SimHotkeys / the `simbridge` console command instead).
+// goes through SimHotkeys / the `spirecoach` console command instead).
 //
 // Two kinds of options live here:
 //
 //   * [ConfigIgnore] LIVE PROXIES (AdvisorMode, GameSpeed) -- read/write the
 //     runtime state directly and are never written to the BaseLib config
-//     file. This is deliberate: SimBridge.conf is the boot authority for the
+//     file. This is deliberate: SpireCoach.conf is the boot authority for the
 //     sweep lane, and a persisted "advisor" or "0.5x speed" from a human
 //     session must never leak into the next headless sweep.
 //   * Persisted preferences (HUD toggles, advisor-launch settings) -- normal
-//     BaseLib persistence to user://mod_configs/SimBridge.cfg; they have no
+//     BaseLib persistence to user://mod_configs/SpireCoach.cfg; they have no
 //     effect on autopilot behavior.
 //
 // UI rows are hand-built in SetupConfigUI (instead of SimpleModConfig's
 // auto-generation) because label/section text otherwise falls back to raw
 // property names: BaseLib's loc lookup needs a settings_ui table shipped in
-// a .pck, and SimBridge deliberately has no .pck (see SimBridge.csproj).
+// a .pck, and SpireCoach deliberately has no .pck (see SpireCoach.csproj).
 
 using System;
 using System.Reflection;
@@ -29,11 +29,11 @@ using BaseLib.Extensions;
 using Godot;
 using MegaCrit.Sts2.addons.mega_text;
 
-namespace SimBridge;
+namespace SpireCoach;
 
-public sealed class SimBridgeModConfig : SimpleModConfig
+public sealed class SpireCoachModConfig : SimpleModConfig
 {
-    private static SimBridgeModConfig? _instance;
+    private static SpireCoachModConfig? _instance;
 
     // ------------------------------------------------------------------
     // Live proxies (never persisted).
@@ -126,12 +126,13 @@ public sealed class SimBridgeModConfig : SimpleModConfig
     /// </summary>
     public static void Register()
     {
-        _instance = new SimBridgeModConfig();
+        MigrateLegacySettingsFile();
+        _instance = new SpireCoachModConfig();
         ModConfigRegistry.Register(MainFile.ModId, _instance);
 
         SimRuntime.Changed += () =>
         {
-            SimBridgeModConfig? cfg = _instance;
+            SpireCoachModConfig? cfg = _instance;
             if (cfg == null)
             {
                 return;
@@ -141,9 +142,34 @@ public sealed class SimBridgeModConfig : SimpleModConfig
         };
     }
 
+    /// <summary>
+    /// BaseLib names the settings file after the root namespace, which was
+    /// SimBridge before 0.3.0: copy user://mod_configs/SimBridge.cfg to
+    /// SpireCoach.cfg once (before BaseLib loads it) so the persisted
+    /// preferences survive the rename.
+    /// </summary>
+    private static void MigrateLegacySettingsFile()
+    {
+        try
+        {
+            string dir = System.IO.Path.Combine(OS.GetUserDataDir(), "mod_configs");
+            string legacy = System.IO.Path.Combine(dir, SimConfig.LegacyModId + ".cfg");
+            string current = System.IO.Path.Combine(dir, MainFile.ModId + ".cfg");
+            if (System.IO.File.Exists(legacy) && !System.IO.File.Exists(current))
+            {
+                System.IO.File.Copy(legacy, current);
+                Logger.Log($"Carried over the old SimBridge settings: {legacy} -> {current}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"Settings carry-over from SimBridge failed (non-fatal): {ex.Message}");
+        }
+    }
+
     public override void SetupConfigUI(Control optionContainer)
     {
-        optionContainer.AddChild(CreateSectionHeader("SimBridge AI", alignToTop: true));
+        optionContainer.AddChild(CreateSectionHeader("Spire Coach AI", alignToTop: true));
         // The page opens on a mod that, by design, is doing nothing yet. Say
         // what turning it on gets you before offering the switch.
         AddNote(optionContainer,
@@ -193,7 +219,7 @@ public sealed class SimBridgeModConfig : SimpleModConfig
     /// </summary>
     internal static bool BuildLiveRowsInto(Control container)
     {
-        SimBridgeModConfig? cfg = _instance;
+        SpireCoachModConfig? cfg = _instance;
         if (cfg == null)
         {
             return false;
@@ -216,7 +242,7 @@ public sealed class SimBridgeModConfig : SimpleModConfig
         }
         catch (Exception ex)
         {
-            Logger.Log($"[SimBridgeModConfig] BuildLiveRowsInto failed: {ex.Message}");
+            Logger.Log($"[SpireCoachModConfig] BuildLiveRowsInto failed: {ex.Message}");
             return false;
         }
     }
@@ -224,7 +250,7 @@ public sealed class SimBridgeModConfig : SimpleModConfig
     private void AddLiveRow(Control container, string labelText, string propertyName,
         Func<PropertyInfo, Control> controlCreator)
     {
-        PropertyInfo property = typeof(SimBridgeModConfig).GetProperty(propertyName)
+        PropertyInfo property = typeof(SpireCoachModConfig).GetProperty(propertyName)
             ?? throw new InvalidOperationException($"No such config property: {propertyName}");
         Control control = controlCreator(property);
         var row = new HBoxContainer();
@@ -247,7 +273,7 @@ public sealed class SimBridgeModConfig : SimpleModConfig
     /// </summary>
     internal static void EnsureLivePersistHook()
     {
-        SimBridgeModConfig? cfg = _instance;
+        SpireCoachModConfig? cfg = _instance;
         if (cfg == null || _livePersistHooked)
         {
             return;
@@ -258,7 +284,7 @@ public sealed class SimBridgeModConfig : SimpleModConfig
 
     /// <summary>
     /// A row of explanatory text with no control attached -- the page has to
-    /// carry its own documentation, since SimBridge ships no .pck and so has
+    /// carry its own documentation, since SpireCoach ships no .pck and so has
     /// no loc table for tooltips.
     /// </summary>
     private void AddNote(Control container, string text)
@@ -280,7 +306,7 @@ public sealed class SimBridgeModConfig : SimpleModConfig
     private void AddRow(Control container, string labelText, string propertyName,
         Func<PropertyInfo, Control> controlCreator)
     {
-        PropertyInfo property = typeof(SimBridgeModConfig).GetProperty(propertyName)
+        PropertyInfo property = typeof(SpireCoachModConfig).GetProperty(propertyName)
             ?? throw new InvalidOperationException($"No such config property: {propertyName}");
         Control control = controlCreator(property);
         Control label = CreateRawLabelControl(labelText, 28);

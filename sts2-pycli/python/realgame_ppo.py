@@ -1,4 +1,4 @@
-"""PPO-driven play driver for the real-game "SimBridge" mod (real-game bridge
+"""PPO-driven play driver for the real-game "SpireCoach" mod (real-game bridge
 phase 3).
 
 **Design correction discovered during exploration (read this first).** The
@@ -686,7 +686,7 @@ def _resolve_event_name(options: list[dict[str, Any]], display_name: str) -> str
 
     ``ppo.vocab.events()`` is keyed on ``EventId::python_name()`` (PascalCase,
     canonicalized to UPPER_SNAKE by ``Registry.index``). The wire gives us
-    either the C# loc entry (SCREAMING_SNAKE — SimBridge's ``event_id``, and
+    either the C# loc entry (SCREAMING_SNAKE — SpireCoach's ``event_id``, and
     the first segment of every option ``text_key``) or the English display
     name ("Tablet of Truth" — the headless dialect's ``event_id``). The
     display name canonicalizes with SPACES, never matching the registry, so
@@ -947,7 +947,7 @@ def _build_shop(state: dict[str, Any]) -> PpoDecision | None:
     # A full potion belt makes buy_potion a guaranteed no-op in the real game
     # (PotionCmd.TryToProcure -> TooFull, no gold spent): the shop re-presents
     # unchanged and the deterministic policy would pick the same potion forever
-    # (until SimBridge's 50-attempt cap force-leaves the shop). The bridge now
+    # (until SpireCoach's 50-attempt cap force-leaves the shop). The bridge now
     # withholds potion slots too; this filter covers older mod builds.
     belt = run_state.get("potions") or []
     belt_full = bool(belt) and not any(p.get("empty") for p in belt)
@@ -1624,7 +1624,7 @@ def apply_session_context(state: dict[str, Any], session: dict[str, Any] | None)
     elif session is not None:
         m = state.get("map") or {}
         if m.get("nodes"):
-            # New-dialect bridge (2026-08-02 run-level audit): SimBridge
+            # New-dialect bridge (2026-08-02 run-level audit): SpireCoach
             # attaches the act graph to every run-level message's envelope,
             # not just map_select -- the live twin of headless_eval's
             # get_map() seeding (headless_eval.py:1510-1519). The wire's own

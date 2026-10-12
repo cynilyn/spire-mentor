@@ -482,7 +482,7 @@ class TestBuilderStructure:
     def test_shop_buy_potion_dropped_when_belt_full(self) -> None:
         # Buying with a full belt is a guaranteed no-op in the real game
         # (PotionCmd.TryToProcure -> TooFull, no gold spent), so a deterministic
-        # policy would re-pick the same potion until SimBridge's 50-attempt cap
+        # policy would re-pick the same potion until SpireCoach's 50-attempt cap
         # force-leaves the shop. The option must not reach the net at all.
         potion_opt = {
             "index": 4,
@@ -925,7 +925,7 @@ def _wire_map(current: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class TestEnvelopeMapPassthrough:
-    """2026-08-02 run-level dialect audit: SimBridge attaches the act map to
+    """2026-08-02 run-level dialect audit: SpireCoach attaches the act map to
     EVERY run-level message's envelope (deploy-pending mod build), not just
     ``map_select`` -- the live twin of headless_eval's ``get_map()`` seeding
     (headless_eval.py:1510-1519). Before that, every off-map live decision
@@ -1072,7 +1072,7 @@ class TestCardIdVocabTranslation:
 
     def test_card_reward_options_carry_their_upgrade_flag(self) -> None:
         """The real game pre-upgrades reward cards too, over both wire
-        spellings. Dropping the flag would put a SimBridge-served champion on
+        spellings. Dropping the flag would put a SpireCoach-served champion on
         a different observation from the one it trained on the moment the
         `reward_upgrade` feature graduates (GH #545)."""
         state = {
@@ -2012,7 +2012,7 @@ class TestEventNameVocabResolution:
     72% of DLL event decisions fed the OOV slot and the net was event-blind
     (it walked Tablet of Truth's Decipher escalation to max_hp=1 in 4/60
     v34wr seeds, all defeats). The authoritative id is the first segment of
-    any option `text_key`; SimBridge's SCREAMING_SNAKE `event_id` resolves
+    any option `text_key`; SpireCoach's SCREAMING_SNAKE `event_id` resolves
     the same way.
     """
 

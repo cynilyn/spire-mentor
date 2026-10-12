@@ -3,7 +3,7 @@
 // Mirrors the game's own debug shortcut NGame.DebugModifyTimescale
 // (NGame.cs:1296-1302): round to one decimal, clamp to [0.1, 4.0], show the
 // same fullscreen "TimeScale:x" VFX so the user gets feedback. Used by the
-// settings slider, the speed hotkeys and the `simbridge speed` console
+// settings slider, the speed hotkeys and the `spirecoach speed` console
 // command. Distinct from the Autopilot-only WaitSpeedPatch/
 // AnimationSpeedPatch multipliers: TimeScale slows/speeds the WHOLE game
 // uniformly and applies in any mode, which is exactly what "watch the AI at
@@ -29,7 +29,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Vfx;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public static class SimSpeed
 {
@@ -92,7 +92,7 @@ public static class SimSpeed
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SimBridge] SimSpeed.Apply failed: {ex.Message}");
+            GD.PrintErr($"[SpireCoach] SimSpeed.Apply failed: {ex.Message}");
         }
     }
 }

@@ -17,7 +17,7 @@ import { menuItem } from "../e2e/topbarMenu";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/** A real SimBridge fight capture (the combat-lane golden's first case). */
+/** A real SpireCoach fight capture (the combat-lane golden's first case). */
 function combatPaste(): string {
   const golden = fileURLToPath(
     new URL("../../../sts2-rs/crates/sts2-workbench/tests/golden/state_import_combat.json", import.meta.url),

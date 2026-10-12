@@ -4,7 +4,7 @@
 // donor fell back to *random* play after a 30s agent timeout or when no
 // client was connected -- this consumes game RNG and silently perturbs
 // determinism/parity. Required deviation #3 in the bridge plan explicitly
-// forbids that for SimBridge: every handler that used to do
+// forbids that for SpireCoach: every handler that used to do
 // `random.NextItem(options)` on a timeout/disconnect now instead calls
 // through this gate, which blocks (waiting for a client to connect, then for
 // a correlated response) until the agent actually answers. It never invents
@@ -18,7 +18,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimAgentGate
 {

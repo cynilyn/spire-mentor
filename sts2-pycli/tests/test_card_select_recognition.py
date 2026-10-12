@@ -4,7 +4,7 @@ The recognition of mid-combat ``card_select`` screens the engine never opened
 (generative offers, KnowledgeDemon's curse pick, Gambling Chip's turn-1
 mulligan) is SHARED between the two world drivers —
 ``headless_eval.pick_card_select_mirrored`` (DLL world, rung 3.5) and
-``realgame_mcts.pick_card_select_mirrored`` (live SimBridge world) — so it
+``realgame_mcts.pick_card_select_mirrored`` (live SpireCoach world) — so it
 cannot fork and drift again. Tier one tests the helper on dialect-neutral
 dicts; tier two drives the LIVE path end-to-end on a real bridge fixture with
 a recording fake mirror, asserting the Gambling-Chip screen is recognized and
@@ -443,7 +443,7 @@ class TestSkipArityFromWorld:
 
 
 class TestLivePathGamblingChip:
-    """The live SimBridge driver recognizes the mulligan and arms the resume."""
+    """The live SpireCoach driver recognizes the mulligan and arms the resume."""
 
     def _card_select_state(self) -> dict[str, Any]:
         combat = copy.deepcopy(_load_fixture("single_enemy_ironclad.json")["state"])

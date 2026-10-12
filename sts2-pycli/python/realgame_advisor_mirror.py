@@ -18,7 +18,7 @@ them:
 2. **Hidden per-turn counters** (GH #370). ``card_plays_started_this_turn``,
    ``shivs_played_this_turn``, ``generated_cards_this_combat``,
    ``stars_gained_this_turn``, ``vigor_latch_card``: none is emitted by
-   SimBridge, so a rebuilt board reads them as 0 forever. Some are legality
+   SpireCoach, so a rebuilt board reads them as 0 forever. Some are legality
    gates (``RingingPower.ShouldPlay`` / ``SlothPower.ShouldPlay``), so a stuck
    value changes which actions the search believes exist.
    ``transplant_hidden`` carries them; only a carried mirror has them to carry.

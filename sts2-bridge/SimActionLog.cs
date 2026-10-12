@@ -29,7 +29,7 @@ using System.Collections.Generic;
 using System.Text;
 using Godot;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal sealed class SimActionLogEntry
 {
@@ -231,7 +231,7 @@ internal sealed class SimLogPanel
     {
         _layer = new CanvasLayer
         {
-            Name = "SimBridgeLogLayer",
+            Name = "SpireCoachLogLayer",
             Layer = 100, // above SimHud's layer 99
         };
 
@@ -250,7 +250,7 @@ internal sealed class SimLogPanel
 
         var panel = new PanelContainer
         {
-            Name = "SimBridgeLogPanel",
+            Name = "SpireCoachLogPanel",
             Position = position,
             Size = _expandedSize,
             // The panel is something you READ while you play. Stopping mouse

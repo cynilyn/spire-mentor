@@ -1,4 +1,4 @@
-// SimConsoleCommands.cs -- `simbridge` dev-console command.
+// SimConsoleCommands.cs -- `spirecoach` dev-console command.
 //
 // The game's DevConsole auto-registers AbstractConsoleCmd subtypes from mod
 // assemblies (DevConsole.cs:33, ReflectionHelper.GetSubtypesInMods). The
@@ -16,15 +16,15 @@ using MegaCrit.Sts2.Core.DevConsole;
 using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
 using MegaCrit.Sts2.Core.Entities.Players;
 
-namespace SimBridge;
+namespace SpireCoach;
 
-public class SimBridgeConsoleCmd : AbstractConsoleCmd
+public class SpireCoachConsoleCmd : AbstractConsoleCmd
 {
-    public override string CmdName => "simbridge";
+    public override string CmdName => "spirecoach";
 
     public override string Args => "[mode off|advisor] [speed <0.1-4.0>] [hud on|off] [log] [waitmult <f>] [animmult <f>]";
 
-    public override string Description => "SimBridge control: show status, switch mode, set game speed / HUD / autopilot multipliers.";
+    public override string Description => "Spire Coach control: show status, switch mode, set game speed / HUD / autopilot multipliers.";
 
     public override bool IsNetworked => false;
 
@@ -35,7 +35,7 @@ public class SimBridgeConsoleCmd : AbstractConsoleCmd
         if (args.Length == 0)
         {
             return new CmdResult(success: true,
-                $"mode={SimRuntime.Mode} speed={SimSpeed.Current:0.0}x hud={(SimBridgeModConfig.ShowHud ? "on" : "off")} " +
+                $"mode={SimRuntime.Mode} speed={SimSpeed.Current:0.0}x hud={(SpireCoachModConfig.ShowHud ? "on" : "off")} " +
                 $"waitmult={SimRuntime.WaitMultiplier:0.###} animmult={SimRuntime.AnimMultiplier:0.###}");
         }
 
@@ -48,14 +48,14 @@ public class SimBridgeConsoleCmd : AbstractConsoleCmd
             case "speed":
                 if (!TryParseFloat(value, out float speed))
                 {
-                    return new CmdResult(success: false, "usage: simbridge speed <0.1-4.0>");
+                    return new CmdResult(success: false, "usage: spirecoach speed <0.1-4.0>");
                 }
                 SimSpeed.Apply(speed);
                 return new CmdResult(success: true, $"speed -> {SimSpeed.Current:0.0}x");
             case "hud":
                 if (value is not ("on" or "off"))
                 {
-                    return new CmdResult(success: false, "usage: simbridge hud on|off");
+                    return new CmdResult(success: false, "usage: spirecoach hud on|off");
                 }
                 SimActions.SetHud(value == "on");
                 return new CmdResult(success: true, $"hud -> {value}");
@@ -65,14 +65,14 @@ public class SimBridgeConsoleCmd : AbstractConsoleCmd
             case "waitmult":
                 if (!TryParseFloat(value, out float wait) || wait <= 0f)
                 {
-                    return new CmdResult(success: false, "usage: simbridge waitmult <positive float>");
+                    return new CmdResult(success: false, "usage: spirecoach waitmult <positive float>");
                 }
                 SimRuntime.WaitMultiplier = wait;
                 return new CmdResult(success: true, $"waitmult -> {wait:0.###} (applies while Autopilot)");
             case "animmult":
                 if (!TryParseFloat(value, out float anim) || anim <= 0f)
                 {
-                    return new CmdResult(success: false, "usage: simbridge animmult <positive float>");
+                    return new CmdResult(success: false, "usage: spirecoach animmult <positive float>");
                 }
                 SimRuntime.AnimMultiplier = anim;
                 return new CmdResult(success: true, $"animmult -> {anim:0.###} (applies while Autopilot)");
@@ -108,7 +108,7 @@ public class SimBridgeConsoleCmd : AbstractConsoleCmd
     private static CmdResult SetMode(string? value)
     {
         // Leaving Autopilot stops the slayer rather than being refused --
-        // `auto_start=true` persists in SimBridge.conf between a sweep and a
+        // `auto_start=true` persists in SpireCoach.conf between a sweep and a
         // human session, and the old refusal left the player stuck with the
         // AI's game modifiers.
         string? target = value?.ToLowerInvariant();
@@ -127,9 +127,9 @@ public class SimBridgeConsoleCmd : AbstractConsoleCmd
                 return new CmdResult(success: true, $"mode -> Advisor{note}");
             case "autopilot":
                 return new CmdResult(success: false,
-                    "Autopilot cannot be entered at runtime (needs auto_start=true in SimBridge.conf at launch).");
+                    "Autopilot cannot be entered at runtime (needs auto_start=true in SpireCoach.conf at launch).");
             default:
-                return new CmdResult(success: false, "usage: simbridge mode off|advisor");
+                return new CmdResult(success: false, "usage: spirecoach mode off|advisor");
         }
     }
 

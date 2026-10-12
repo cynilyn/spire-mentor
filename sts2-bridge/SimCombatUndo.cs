@@ -63,7 +63,7 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.TestSupport;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimCombatUndo
 {

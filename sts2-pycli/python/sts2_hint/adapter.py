@@ -214,7 +214,7 @@ def _flags_for_card(card: dict[str, Any]) -> list[str]:
     """Extract CardSpec flags from a hand-card dict.
 
     Two producer dialects reach here. The C# headless exposes the keyword set
-    as a ``keywords`` list; the SimBridge mod exposes it as individual bools
+    as a ``keywords`` list; the SpireCoach mod exposes it as individual bools
     (``retain``, ``sly``, ``ethereal``, ...) and ships no ``keywords`` key at
     all. Both are read for the keyword SET, but only the headless list is
     mapped onto keyword flags — see the emission note below.
@@ -254,7 +254,7 @@ def _flags_for_card(card: dict[str, Any]) -> list[str]:
         if flag is not None:
             add(flag)
 
-    # SimBridge dialect: one bool per keyword instead of a `keywords` list.
+    # SpireCoach dialect: one bool per keyword instead of a `keywords` list.
     #
     # Only `sly` is EMITTED from these. The mirror diffs the flag tuple, so a
     # flag the world names and `state_to_dict` does not is a per-decision
@@ -326,7 +326,7 @@ def _relic_id_from_wire(raw: dict[str, Any]) -> str | None:
     """A registry-valid relic id straight off the wire's ``id`` field, if any.
 
     Both producers already publish the canonical ``RelicModel.Id.Entry``
-    (Sts2Headless ``RunSimulator.cs:5047``; SimBridge
+    (Sts2Headless ``RunSimulator.cs:5047``; SpireCoach
     ``SimStateExtractor.SerializeRelic``), and it is strictly more reliable than
     the rendered title:
 
@@ -616,7 +616,7 @@ def _resolve_card_id(c_id: str, path: str) -> tuple[str, str]:
 
 
 def registry_card_id(c_id: str, path: str = "$") -> str:
-    """The canonical ``sts2_rs`` registry id for a Sts2Headless / SimBridge
+    """The canonical ``sts2_rs`` registry id for a Sts2Headless / SpireCoach
     card id, dropping the character-class prefix :func:`_resolve_card_id`
     also returns.
 
@@ -808,7 +808,7 @@ def _translate_card(raw: dict[str, Any], path: str, *, hand: bool = False) -> di
     # Per-card affliction (Bound from the Queen's ChainsOfBinding, Tainted
     # from Infested Prism, ...). Two input dialects reach here: the C#
     # headless emits a bilingual localized *title* ("Bound / ..."), the
-    # SimBridge mod emits the bare C# class name ("Bound"). English titles
+    # SpireCoach mod emits the bare C# class name ("Bound"). English titles
     # equal the class names (localization_eng/afflictions.json), so one
     # title-keyed map normalizes both onto the wire vocabulary sts2_rs
     # pins. Disambiguation caveat: on STATUS/CURSE cards the same field is
@@ -842,7 +842,7 @@ def _translate_card(raw: dict[str, Any], path: str, *, hand: bool = False) -> di
         spec["type"] = card_type
 
     # MadScience's rider (Curious / Improvement / Expertise). No producer emits
-    # this yet — the SimBridge mod still has to put its public `TinkerTimeRider`
+    # this yet — the SpireCoach mod still has to put its public `TinkerTimeRider`
     # `[SavedProperty]` on the bridge Card object (the remaining half of
     # GH #353) — but forwarding it now means that lands as a mod-only change,
     # with `TinkerTimeRider::from_wire_name` already accepting the enum names.
@@ -858,7 +858,7 @@ def _normalize_affliction_name(name: str) -> str:
     (the C# class name, e.g. ``"Tainted"``).
 
     Three dialects reach the adapter:
-      * SimBridge mod — the bare class name ``"Tainted"`` (pass through).
+      * SpireCoach mod — the bare class name ``"Tainted"`` (pass through).
       * C# headless with a localized entry — the English title, which
         equals the class name (pass through).
       * C# headless WITHOUT a localized entry — an unresolved loc key

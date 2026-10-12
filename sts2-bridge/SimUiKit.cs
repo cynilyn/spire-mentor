@@ -1,6 +1,6 @@
 // SimUiKit.cs -- shared building blocks for the mod's hand-built UI.
 //
-// SimBridge ships no .pck (see SimBridge.csproj), so there are no scenes,
+// SpireCoach ships no .pck (see SpireCoach.csproj), so there are no scenes,
 // no theme resources and no loc table: every control is composed in code
 // and styled with StyleBoxFlat + AddTheme*Override. This file keeps the
 // look consistent between the HUD, the toolbar and the settings panel.
@@ -20,7 +20,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimUiKit
 {

@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    Differential black-box harness for SimBridge's BridgeServer.
-    Deliberately has NO compile-time reference to SimBridge.dll, sts2.dll or
-    GodotSharp: SimBridge.dll is loaded at runtime from a path given on the
+    Differential black-box harness for SpireCoach's BridgeServer.
+    Deliberately has NO compile-time reference to SpireCoach.dll, sts2.dll or
+    GodotSharp: SpireCoach.dll is loaded at runtime from a path given on the
     command line and driven purely through reflection, so the same harness
     binary works against any build (current or rewritten server).
     Only Harmony (real 0Harmony 2.4.2, same file the mod builds against) is

@@ -864,7 +864,7 @@ def _enrich(
             # display name (the three Decimillipede segments → distinct rigs).
             # Normalized HERE, once, because the branches below compare it to
             # literal PascalCase kinds ("TestSubject", "SpinyToad", …) and
-            # SimBridge spells it SCREAMING_SNAKE — every one of those checks
+            # SpireCoach spells it SCREAMING_SNAKE — every one of those checks
             # silently missed on a live run. See `assets.normalize_kind`.
             ekind = normalize_kind(enemy.get("kind"))
             enemy["image"] = _asset_url(assets.monster(enemy.get("name", "")))
@@ -1455,7 +1455,7 @@ def create_app(
 
     # ------------------------------------------------------------------
     # Live-game bridge proxies (rewind lane). The advisor process owns the
-    # one TCP socket to the SimBridge mod and exposes a localhost control
+    # one TCP socket to the SpireCoach mod and exposes a localhost control
     # plane (realgame_control.py, default 127.0.0.1:8079); these thin
     # proxies keep the SPA same-origin. Not session-scoped: there is one
     # live game per machine.

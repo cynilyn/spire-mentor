@@ -75,7 +75,7 @@ static class T
     public static string Classify(TimeSpan t) => t.TotalMilliseconds < 1000 ? "returned" : "blocked_over_1s";
 }
 
-/// Log sink for SimBridge's Logger.Log (kept OUT of the transcript: log text
+/// Log sink for SpireCoach's Logger.Log (kept OUT of the transcript: log text
 /// is not wire behaviour and a rewrite may legitimately change it).
 static class LogSink
 {
@@ -91,7 +91,7 @@ static class LogSink
     }
 }
 
-/// Reflective facade over SimBridge.BridgeServer.Instance. Only the members the
+/// Reflective facade over SpireCoach.BridgeServer.Instance. Only the members the
 /// rest of the mod uses are touched (see README "API surface").
 static class B
 {
@@ -103,7 +103,7 @@ static class B
 
     public static void Init(Assembly asm)
     {
-        Type t = asm.GetType("SimBridge.BridgeServer", throwOnError: true)!;
+        Type t = asm.GetType("SpireCoach.BridgeServer", throwOnError: true)!;
         const BindingFlags S = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
         const BindingFlags I = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         _inst = t.GetField("Instance", S)?.GetValue(null) ?? t.GetProperty("Instance", S)!.GetValue(null)!;
@@ -478,9 +478,9 @@ static class Hooks
             h.Patch(m, prefix: new HarmonyMethod(typeof(Hooks).GetMethod(prefix, BindingFlags.Static | BindingFlags.NonPublic)));
             notes.Add($"patched {type}.{method} -> {prefix}");
         }
-        Pre("SimBridge.Logger", "Log", nameof(LogPrefix));
-        Pre("SimBridge.SimCombatUndo", "RequestUndoTurn", nameof(UndoPrefix));
-        Pre("SimBridge.SimRestore", "RequestRestore", nameof(RestorePrefix));
+        Pre("SpireCoach.Logger", "Log", nameof(LogPrefix));
+        Pre("SpireCoach.SimCombatUndo", "RequestUndoTurn", nameof(UndoPrefix));
+        Pre("SpireCoach.SimRestore", "RequestRestore", nameof(RestorePrefix));
     }
 
     static bool LogPrefix(string message) { LogSink.Write(message); return false; }
@@ -534,8 +534,8 @@ static class Hooks
     {
         try
         {
-            Type st = asm.GetType("SimBridge.SimSnapshots", true)!;
-            Type mt = asm.GetType("SimBridge.SimSnapshotMeta", true)!;
+            Type st = asm.GetType("SpireCoach.SimSnapshots", true)!;
+            Type mt = asm.GetType("SpireCoach.SimSnapshotMeta", true)!;
             const BindingFlags S = BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
             var metas = (System.Collections.IList)st.GetField("Metas", S)!.GetValue(null)!;
             object Mk(string id, int seq, int floor, int act, bool post, bool tape, int reloads)

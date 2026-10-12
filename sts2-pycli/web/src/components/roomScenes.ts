@@ -174,7 +174,7 @@ export function artSlugs(enemy: Enemy): string[] {
  *
  *  `NCombatRoom.GenerateBackgroundRngForCurrentPoint` is
  *  `new Rng(runState.Rng.Seed + row + col * 747)`, so these three numbers fix a
- *  fight's room exactly — and both producers already have them: SimBridge sends
+ *  fight's room exactly — and both producers already have them: SpireCoach sends
  *  `rng.run_seed` and `map.current`, and the engine knows its own seed and node. */
 export interface BgRoll {
   /** `RunState.Rng.Seed` — the run's master seed as a uint, NOT the string seed. */

@@ -53,7 +53,7 @@
   decision time, as deployed.</p>
   <figure class="video">
     <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/DcZs8ZGSDyo" title="Slay the Spire 2: AI beats Ironclad Ascension 9" loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
-    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the SimBridge mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
+    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the Spire Coach mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
   </figure>
 
 </section>
@@ -143,7 +143,7 @@
     <thead><tr><th>Where</th><th class="num">Simulations</th><th>Threads</th></tr></thead>
     <tbody>
       <tr><td>Simulator runs and every promotion gate</td><td class="num">1,000 · 4,000 at bosses</td><td>1 per search; parallel across seeds</td></tr>
-      <tr><td>SimBridge advisor in the real game</td><td class="num">8,000</td><td>up to 8, root-parallel</td></tr>
+      <tr><td>Spire Coach advisor in the real game</td><td class="num">8,000</td><td>up to 8, root-parallel</td></tr>
       <tr><td>Workbench hint in the browser</td><td class="num">2,000</td><td>1, in a Web Worker</td></tr>
       <tr><td>RL training rollouts</td><td class="num">250 · 1,000 at bosses</td><td>1 per search</td></tr>
     </tbody>
@@ -316,7 +316,7 @@
     <tbody>
       <tr><td>Simulator and gates</td><td>native Rust</td><td>ONNX via <em>tract</em>, pure Rust, CPU, batch 1</td></tr>
       <tr><td>Browser workbench</td><td>the same Rust crate compiled to WebAssembly, in a Web Worker</td><td>the same <em>tract</em> runtime inside the WebAssembly module; the ~8.5 MB model is fetched once and cached for offline use</td></tr>
-      <tr><td>SimBridge mod</td><td colspan="2">The mod itself only reads the game and draws the HUD. It starts a separate advisor process that bundles the Rust engine and the champion models, mirrors the live state into the engine and answers over a local socket.</td></tr>
+      <tr><td>Spire Coach mod</td><td colspan="2">The mod itself only reads the game and draws the HUD. It starts a separate advisor process that bundles the Rust engine and the champion models, mirrors the live state into the engine and answers over a local socket.</td></tr>
     </tbody>
   </table>
   </div>

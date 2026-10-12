@@ -1,4 +1,4 @@
-"""Advisor backend for SimBridge advisor mode (PROTOCOL.md section 5, v3).
+"""Advisor backend for SpireCoach advisor mode (PROTOCOL.md section 5, v3).
 
 The mod is the server; this client connects to it (same transport as every
 other ``realgame_*`` driver) and answers ``advice_request`` messages with a
@@ -1178,7 +1178,7 @@ def serve(args: argparse.Namespace) -> None:
         client = RealGameBridgeClient(host=args.host, port=args.port, timeout=args.idle_timeout)
         try:
             client.connect()
-            logger.info("connected to SimBridge at %s:%s", args.host, args.port)
+            logger.info("connected to SpireCoach at %s:%s", args.host, args.port)
             log.write("meta", {"event": "connected", "sims": args.sims, **HONEST_SEARCH})
             control.set_client(client)
             _serve_connected(client, cfg, args, log, wlog, policies, tree, control, mirror, session)

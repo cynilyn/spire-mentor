@@ -39,7 +39,7 @@ using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimRestore
 {

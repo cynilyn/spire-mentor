@@ -52,7 +52,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimVfxCap
 {
@@ -138,7 +138,7 @@ internal static class SimVfxCap
             }
             var timer = new Godot.Timer
             {
-                Name = "SimBridgeVfxCap",
+                Name = "SpireCoachVfxCap",
                 WaitTime = PollSeconds,
                 Autostart = true,
                 OneShot = false,
@@ -307,7 +307,7 @@ internal static class SimVfxCap
 }
 
 /// <summary>
-/// "Reduce combat effects" (SimBridgeModConfig.ReduceEffects): skip effects
+/// "Reduce combat effects" (SpireCoachModConfig.ReduceEffects): skip effects
 /// that are pure decoration. Measured on a live A8 run (2026-10-12, census
 /// above): of 6201 effects added to the combat VFX containers, card trails
 /// were 1288 and the four buff/debuff flashes 702 -- a third of the clutter.
@@ -368,7 +368,7 @@ internal static class SimReduceEffects
     /// </summary>
     public static bool SkipCreate<T>(ref T? __result) where T : class
     {
-        if (!SimBridgeModConfig.ReduceEffects)
+        if (!SpireCoachModConfig.ReduceEffects)
         {
             return true;
         }

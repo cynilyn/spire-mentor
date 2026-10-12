@@ -18,7 +18,7 @@
 using System;
 using System.Threading;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimShutdown
 {
@@ -30,7 +30,7 @@ internal static class SimShutdown
         {
             return;
         }
-        Logger.Log($"[SimBridge] Shutting down ({reason}).");
+        Logger.Log($"[SpireCoach] Shutting down ({reason}).");
 
         // Advisor first: it is the process that outlives the game and keeps
         // Steam reporting the game as running.
@@ -47,7 +47,7 @@ internal static class SimShutdown
         }
         catch (Exception ex)
         {
-            Logger.Log($"[SimBridge] Shutdown step failed (ignored): {ex.Message}");
+            Logger.Log($"[SpireCoach] Shutdown step failed (ignored): {ex.Message}");
         }
     }
 }

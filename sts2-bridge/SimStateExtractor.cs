@@ -49,7 +49,7 @@ using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public static class SimStateExtractor
 {

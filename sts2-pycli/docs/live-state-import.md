@@ -7,9 +7,9 @@ distributions instead of anecdotes.
 
 ## The loop
 
-1. **In the game** — press **Copy state** on the SimBridge strip, or
+1. **In the game** — press **Copy state** on the Spire Coach strip, or
    `Ctrl+Shift+C`. The position goes to the clipboard and to
-   `%LOCALAPPDATA%\SimBridge\state-<ts>.json`.
+   `%LOCALAPPDATA%\SpireCoach\state-<ts>.json`.
 2. **In the workbench** — **📋 Import state**, paste, and pick a lane. The
    dialog names the run and reports what the import will and will not
    reproduce *before* it replaces the run you have open.
@@ -46,7 +46,7 @@ Exact, and asserted by tests:
   upgraded.
 - **The combat board** — `state_from_dict` round-trip, the same path the live
   advisor uses every few seconds.
-- **RNG cursors** — every stream SimBridge publishes is fast-forwarded to its
+- **RNG cursors** — every stream Spire Coach publishes is fast-forwarded to its
   recorded count, so the next card reward, shop stock, event roll and monster
   intent are the ones your run was about to get. Without this an import shares
   only its seed and every downstream roll belongs to a different run; the

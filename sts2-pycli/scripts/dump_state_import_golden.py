@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record the state-import COMBAT-LANE golden for the Rust port (GH #708).
 
-The desktop workbench turns a SimBridge fight paste into an engine wire dict
+The desktop workbench turns a SpireCoach fight paste into an engine wire dict
 through ``realgame_adapter.to_headless_combat_play`` + ``sts2_hint.adapter.translate``
 (``workbench.state_import.parse_pasted_state``). The browser port
 (``sts2-rs/crates/sts2-workbench/src/combat_import.rs``) re-implements that

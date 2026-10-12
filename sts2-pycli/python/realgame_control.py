@@ -1,6 +1,6 @@
 """Localhost control plane inside the live-game advisor (rewind lane).
 
-The advisor owns the single TCP connection to the SimBridge mod, so anything
+The advisor owns the single TCP connection to the SpireCoach mod, so anything
 else that wants to talk to the live game — the workbench's ``/api/bridge/*``
 proxies — goes through this tiny HTTP server (``127.0.0.1:<control-port>``,
 default 8079; 8078 belongs to the standalone SimLab). One command at a time:

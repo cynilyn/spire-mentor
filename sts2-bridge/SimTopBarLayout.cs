@@ -14,7 +14,7 @@ using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Relics;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimTopBarLayout
 {

@@ -1,7 +1,7 @@
-# SimBridge wire protocol (v3 / advisor mode; v2 = phase 1b)
+# Spire Coach wire protocol (v3 / advisor mode; v2 = phase 1b)
 
 Newline-delimited JSON over a single-client TCP socket on `127.0.0.1:<port>`
-(default `9002`, see `SimBridge.conf`). One JSON object per line.
+(default `9002`, see `SpireCoach.conf`). One JSON object per line.
 
 - **Game -> Agent**: state messages (`combat_action`, `map_select`, ...).
   Every state message that expects a reply carries a `request_id`
@@ -54,7 +54,7 @@ message-specific ones:
 | `seed` | string | `RunState.Rng.StringSeed`, `""` if no active run. |
 | `act` | int | 1-based act number (`CurrentActIndex + 1`), `1` if no active run. |
 | `floor` | int | `RunState.TotalFloor` (floor across the whole run), `0` if no active run. |
-| `mod_version` | string | SimBridge mod version (e.g. `"0.1.0"`). |
+| `mod_version` | string | Spire Coach mod version (e.g. `"0.1.0"`). |
 | `run_state` | object | See below. Always present, degrades to defaults/empty collections if no run/player is active. |
 | `state_id` | int | **New, phase 1b.** Monotonically increasing id, assigned fresh every time this envelope is built (`SimStateExtractor.ApplyEnvelope`/`SimProtocolHelpers.NextStateId`). See section 4's "stale-state guard" for how inbound actions may reference it. |
 | `request_id` | string | Present on every message that expects a reply (everything except `game_over`/`run_complete`/`error`/`pong`); injected by the transport layer, not by the handler. |
@@ -363,7 +363,7 @@ Fire-and-forget, no `request_id`.
 
 ### `run_config` -- new, phase 1b
 
-Only ever sent when `SimBridge.conf`'s `client_run_config` is `true`, once
+Only ever sent when `SpireCoach.conf`'s `client_run_config` is `true`, once
 per run (at character-select time, in place of the old auto-selected
 character/ascension/seed flow), and the mod **blocks indefinitely** for the
 matching `start_run` action (section 4) -- see README "Client-driven run
@@ -373,7 +373,7 @@ start".
 |---|---|---|
 | `characters` | array | `{id, name}` per available (unlocked) character button on the live character-select screen -- `id` is the exact `CharacterModel.Id.Entry` to echo back in `start_run` (e.g. `"IRONCLAD"`, `"SILENT"`, `"DEFECT"`, `"NECROBINDER"`, `"REGENT"`). |
 | `max_ascension` | int | `10` (v0.107.1 decomp-verified: `AscensionManager.maxAscensionAllowed`). |
-| `defaults` | object | `{character, ascension, seed}` straight from `SimBridge.conf` -- purely informational, the client is not required to use them. |
+| `defaults` | object | `{character, ascension, seed}` straight from `SpireCoach.conf` -- purely informational, the client is not required to use them. |
 
 Note: `run_state`/`seed`/`act`/`floor` in the common envelope all degrade to
 their no-active-run defaults on this message (`""`/`1`/`0`/empty
@@ -495,7 +495,7 @@ response with no `action` check (unchanged in phase 1b; still gets the
 **Any inbound action** (every verb below, not just combat's `play`) may
 carry an additional top-level `"annotations"` object. It has **zero effect
 on how the action itself is executed** -- it is purely a hint for
-SimBridge's optional in-game HUD (`SimHud.cs`), gated by the
+Spire Coach's optional in-game HUD (`SimHud.cs`), gated by the
 `overlay` config flag (default `true`, see README "Config reference").
 In addition to the two legacy fields below, `annotations` may carry any of
 the rich `advice`-object fields from section 5 (`p_win`, `options`, `pv`,
@@ -556,11 +556,11 @@ accepted when `client_run_config` is enabled and no run is active yet:
 |---|---|---|
 | `character` | string | Must match one of `run_config.characters[].id` (case-insensitive exact match preferred, falls back to substring match); otherwise `error:"invalid_character"`. |
 | `ascension` | int | `0`-`max_ascension` (10); otherwise `error:"invalid_ascension"`. |
-| `seed` | int \| null | If an integer, applied via `NGame.Instance.DebugSeedOverride` (formatted as an invariant-culture decimal string) before the character-select confirm click -- the same verified v0.107.1 mechanism the mod already used for `SimBridge.conf`'s `seed`. If `null`/omitted, a fresh random seed is generated exactly as the old config-driven flow did. The resolved seed is always echoed back in the envelope's `seed` field once the run actually starts (`run_state`/every subsequent message). |
+| `seed` | int \| null | If an integer, applied via `NGame.Instance.DebugSeedOverride` (formatted as an invariant-culture decimal string) before the character-select confirm click -- the same verified v0.107.1 mechanism the mod already used for `SpireCoach.conf`'s `seed`. If `null`/omitted, a fresh random seed is generated exactly as the old config-driven flow did. The resolved seed is always echoed back in the envelope's `seed` field once the run actually starts (`run_state`/every subsequent message). |
 
 Rejected `start_run` actions get a structured `error` and a fresh
 `run_config` re-send; the mod blocks indefinitely for a valid one
-(never-guess policy -- it will not fall back to `SimBridge.conf`'s
+(never-guess policy -- it will not fall back to `SpireCoach.conf`'s
 character/ascension/seed once `client_run_config` is on).
 
 ---
@@ -884,7 +884,7 @@ serializes its own calls, so one-at-a-time is enforced client-side.
 - `SetUpSavedSingleplayer` bumps `NumReloads` and re-saves
   `current_run.save` with the restored state -- deliberate ("the run
   continues from here"), via the game's own cloud-safe save path.
-- Snapshots persist under `%LOCALAPPDATA%\SimBridge\snapshots\<start_time>\`
+- Snapshots persist under `%LOCALAPPDATA%\SpireCoach\snapshots\<start_time>\`
   (never cloud-synced, immune to `CleanupStaleCurrentRunSaves`), so a
   same-run rewind still works after a game restart.
 - Mid-combat boards cannot be restored (the game never saves combat
@@ -917,7 +917,7 @@ serializes its own calls, so one-at-a-time is enforced client-side.
 
 `SimStateCopy.Copy()` (toolbar **Copy state**, `Ctrl+Shift+C`) puts the
 current position on the clipboard and writes the same bytes to
-`%LOCALAPPDATA%\SimBridge\state-<ts>.json`. Nothing is sent to a client:
+`%LOCALAPPDATA%\SpireCoach\state-<ts>.json`. Nothing is sent to a client:
 this is a hand-carried payload for the workbench's **Import state**
 (`sts2-pycli`: `workbench/state_import.py` -> `POST /api/live/import-state`).
 

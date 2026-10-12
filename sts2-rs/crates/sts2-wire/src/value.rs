@@ -7,7 +7,7 @@
 //! it needs and nothing else; two implementations supply them:
 //!
 //! * `&serde_json::Value` — here. The interpreter-free path: a captured
-//!   SimBridge/adapter dict off disk or off a socket.
+//!   SpireCoach/adapter dict off disk or off a socket.
 //! * `Bound<'_, PyAny>` — in `sts2-py`. The historical path, unchanged for
 //!   every existing caller.
 //!

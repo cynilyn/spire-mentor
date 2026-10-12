@@ -26,7 +26,7 @@ using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 /// <summary>
 /// Room handler for Monster / Elite / Boss rooms. Every combat decision is
@@ -582,7 +582,7 @@ public class SimCombatHandler : IRoomHandler, IHandler
     /// point, and whatever the history collection does or does not record --
     /// and it is a bet with no upside, because the flag itself is reachable.
     /// Read the authority; do not model it. (Same lesson as every other
-    /// SimBridge-synthesized wire field.)
+    /// SpireCoach-synthesized wire field.)
     ///
     /// The history scan survives as the fallback for a build whose internals
     /// moved, so a renamed field degrades to the old behavior instead of

@@ -81,7 +81,7 @@ See `../docs/parity-suite.md` for the full map of this area before touching it.
   `run_files.py` reads `.run`/`.run.gz`; `run_stepper.py`, `shadow_replay.py`,
   `shadow_sweep_summary.py` replay recorded logs against a shadow engine.
 
-## Real game (SimBridge)
+## Real game (SpireCoach)
 
 - **Bridge clients** — transport: `realgame_bridge.py` (stdlib-only TCP client
   for `../../sts2-bridge/PROTOCOL.md`); `sts2_realgame.py` adapts the live

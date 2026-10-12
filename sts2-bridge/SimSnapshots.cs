@@ -10,7 +10,7 @@
 // postfix RunSaveManager.SaveRun(SerializableRun, bool) and keep the very
 // object the game just persisted.
 //
-// Storage: %LOCALAPPDATA%\SimBridge\snapshots\<start_time>\<seq>_f<floor>.run.json
+// Storage: %LOCALAPPDATA%\SpireCoach\snapshots\<start_time>\<seq>_f<floor>.run.json
 // plus an index.json sidecar. Deliberately OUTSIDE the game's save tree:
 // Steam cloud sync never touches it, and SaveManager.CleanupStaleCurrentRunSaves
 // (which deletes current_run.save once a history/{start_time}.run exists)
@@ -30,7 +30,7 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Managers;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal sealed class SimSnapshotMeta
 {
@@ -63,7 +63,7 @@ internal static class SimSnapshots
     public static string SnapshotsRoot =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SimBridge", "snapshots");
+            "SpireCoach", "snapshots");
 
     /// <summary>Applied from MainFile.Initialize (unconditional -- capture is
     /// passive and costs one JSON serialize per game save).</summary>

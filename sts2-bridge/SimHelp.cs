@@ -1,6 +1,6 @@
 // SimHelp.cs -- the mod's only self-explanation: an F1 panel and a boot hint.
 //
-// Everything SimBridge does is behind a function key or a settings page that
+// Everything SpireCoach does is behind a function key or a settings page that
 // BaseLib hides while a run is in progress, and the HUD is invisible in mode
 // Off -- so a player who installs the zip sees a game that looks completely
 // unmodded and has no way to find out otherwise (reported 2026-08-08 by the
@@ -28,7 +28,7 @@ using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimHelp
 {
@@ -113,11 +113,11 @@ internal static class SimHelp
             label.Text = armed
                 // Never let the AI take a run without saying so. This is the
                 // stale-config safety net: installs made before 0.2.1 have
-                // auto_start=true sitting in %LOCALAPPDATA%\SimBridge.
-                ? "[color=#ff9d5c][b]SimBridge: AUTOPILOT IS ARMED[/b] — the AI will play by itself as soon as " +
+                // auto_start=true sitting in %LOCALAPPDATA%\SpireCoach.
+                ? "[color=#ff9d5c][b]Spire Coach: AUTOPILOT IS ARMED[/b] — the AI will play by itself as soon as " +
                   "the advisor connects. Press [b]F8[/b] to take the controls back, or set " +
-                  "[i]auto_start[/i] to false in SimBridge.conf. [b]F1[/b] for help.[/color]"
-                : $"[color=#9aa3b8]SimBridge {MainFile.ModVersion} loaded — click the [b]SimBridge[/b] " +
+                  "[i]auto_start[/i] to false in SpireCoach.conf. [b]F1[/b] for help.[/color]"
+                : $"[color=#9aa3b8]Spire Coach {MainFile.ModVersion} loaded — click the [b]Spire Coach[/b] " +
                   "strip in the top-left to turn the AI coach on, or press [b]F1[/b] for help.[/color]";
             Reposition();
             _hint.Visible = true;
@@ -145,7 +145,7 @@ internal static class SimHelp
         };
 
         var sb = new StringBuilder(1200);
-        sb.Append("[b]SimBridge ").Append(MainFile.ModVersion).Append("[/b] — AI coach for Slay the Spire 2\n\n");
+        sb.Append("[b]Spire Coach ").Append(MainFile.ModVersion).Append("[/b] — AI coach for Slay the Spire 2\n\n");
         sb.Append("Mode: ").Append(mode).Append("\n\n");
 
         sb.Append("[b]Keys[/b]\n");
@@ -161,7 +161,7 @@ internal static class SimHelp
         Row(sb, "F1", "this panel");
 
         sb.Append("\n[b]Toolbar[/b]\n");
-        sb.Append("[color=#c8ccd4]The [b]SimBridge[/b] strip in the top-left does everything the keys do, ")
+        sb.Append("[color=#c8ccd4]The [b]Spire Coach[/b] strip in the top-left does everything the keys do, ")
           .Append("with the mouse — click the pill to expand or collapse it. The live controls ")
           .Append("(coach, AI once / auto, speed) are flat; the rest sit in three menus: ")
           .Append("[b]Rewind ▾[/b] (turn / room / one room back), [b]Panels ▾[/b] (log, HUD, help, ")
@@ -183,12 +183,12 @@ internal static class SimHelp
           .Append("Each of those can be switched off on the settings page.[/color]\n");
 
         sb.Append("\n[b]Settings[/b]\n");
-        sb.Append("[color=#c8ccd4]Main menu → Options → Mod Configuration → SimBridge, ")
+        sb.Append("[color=#c8ccd4]Main menu → Options → Mod Configuration → SpireCoach, ")
           .Append("or the toolbar's [b]Panels ▾ → Settings[/b] — that one works mid-run too.[/color]\n");
 
         sb.Append("\n[b]Files[/b]\n");
-        sb.Append("[color=#c8ccd4]Config:  %LOCALAPPDATA%\\SimBridge\\SimBridge.conf\n")
-          .Append("Logs:    %LOCALAPPDATA%\\SimBridge\\advisor_stdout.log[/color]\n");
+        sb.Append("[color=#c8ccd4]Config:  %LOCALAPPDATA%\\SpireCoach\\SpireCoach.conf\n")
+          .Append("Logs:    %LOCALAPPDATA%\\SpireCoach\\advisor_stdout.log[/color]\n");
 
         sb.Append("\n[color=#5b6070]F1 closes this.[/color]");
         return sb.ToString();
@@ -233,13 +233,13 @@ internal static class SimHelp
             return false;
         }
 
-        var layer = new CanvasLayer { Name = "SimBridgeHelpLayer", Layer = LayerIndex };
+        var layer = new CanvasLayer { Name = "SpireCoachHelpLayer", Layer = LayerIndex };
         Vector2 viewport = tree.Root.GetVisibleRect().Size;
 
         // --- help panel, centred-ish and read-only -----------------------
         var panel = new PanelContainer
         {
-            Name = "SimBridgeHelpPanel",
+            Name = "SpireCoachHelpPanel",
             // Placeholder; Reposition() sets the real spot every time it opens.
             Position = new Vector2(viewport.X * 0.5f - PanelWidth * 0.5f, viewport.Y * 0.12f),
             CustomMinimumSize = new Vector2(PanelWidth, 0f),
@@ -264,7 +264,7 @@ internal static class SimHelp
         // --- boot hint, bottom-left and self-dismissing ------------------
         var hint = new PanelContainer
         {
-            Name = "SimBridgeHelpHint",
+            Name = "SpireCoachHelpHint",
             Position = new Vector2(24f, viewport.Y - 72f),
             CustomMinimumSize = new Vector2(560f, 0f),
             MouseFilter = Control.MouseFilterEnum.Ignore,

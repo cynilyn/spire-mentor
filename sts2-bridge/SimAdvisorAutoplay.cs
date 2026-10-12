@@ -1,5 +1,5 @@
 // SimAdvisorAutoplay.cs -- hands-free coached run (`advisor_autoplay` in
-// SimBridge.conf).
+// SpireCoach.conf).
 //
 // Why this exists: the advisor lane is reachable ONLY through the keyboard
 // (F8 to enter advisor mode, F7 to arm autoplay), so nothing about it could
@@ -34,7 +34,7 @@ using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimAdvisorAutoplay
 {
@@ -62,7 +62,7 @@ internal static class SimAdvisorAutoplay
             }
             var timer = new Godot.Timer
             {
-                Name = "SimBridgeAdvisorAutoplayArm",
+                Name = "SpireCoachAdvisorAutoplayArm",
                 WaitTime = PollSeconds,
                 Autostart = true,
                 OneShot = false,

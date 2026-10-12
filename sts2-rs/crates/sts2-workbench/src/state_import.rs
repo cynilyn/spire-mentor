@@ -1,7 +1,7 @@
 //! Parse a state pasted out of the live game into a position the browser
 //! workbench can rebuild — the port of `python/workbench/state_import.py`.
 //!
-//! The SimBridge mod stamps every outbound message with the whole run: the
+//! The SpireCoach mod stamps every outbound message with the whole run: the
 //! string seed, the act and floor, the full `run_state` (deck / relics /
 //! potions / gold / HP / ascension / character), the act map graph including
 //! its visited coords and the current node, and `rng` — the run's RNG cursor
@@ -647,7 +647,7 @@ pub fn parse_pasted_state(text: &str) -> Result<ImportedState, StateImportError>
         return Err(e);
     }
     err(
-        "No game state in that paste. Expected a SimBridge wire message \
+        "No game state in that paste. Expected a SpireCoach wire message \
          (advice_request / combat_action / a screen), an advisor log line, or \
          a whole advisor log.",
     )

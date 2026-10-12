@@ -1,4 +1,4 @@
-"""Random-play driver for the real-game "SimBridge" mod (real-game bridge phase 0).
+"""Random-play driver for the real-game "SpireCoach" mod (real-game bridge phase 0).
 
 Connects to the bridge mod (:mod:`realgame_bridge`), plays a full run using a
 random-but-legal policy for every decision type in ``PROTOCOL.md``, logs every

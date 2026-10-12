@@ -9,7 +9,7 @@ Two tiers, mirroring ``test_realgame_adapter.py``:
   ``Sts2Headless`` decision schema (``src/Sts2Headless/RunSimulator.cs``).
   No network involved.
 * **Session round-trips** -- a :class:`FakeServer` (same idiom as
-  ``test_realgame_bridge.py``) plays the SimBridge side of the protocol on
+  ``test_realgame_bridge.py``) plays the SpireCoach side of the protocol on
   a background thread while a real :class:`~sts2_realgame.RealGame`
   instance drives the session in the foreground, proving the full
   decision-out / action-in loop (including the auto-resolved screens:

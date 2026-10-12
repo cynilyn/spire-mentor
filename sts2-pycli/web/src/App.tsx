@@ -138,7 +138,7 @@ function AppBody() {
   // log, when no advisor was running — looked exactly like one tailing the
   // real game (2026-08-22). Only the advisor's own answer earns "live".
   const [followIsLive, setFollowIsLive] = useState(false);
-  // Live-GAME bridge (SimBridge mod via the advisor's control plane).
+  // Live-GAME bridge (SpireCoach mod via the advisor's control plane).
   const [bridgeConnected, setBridgeConnected] = useState(false);
   // Browser build (GH #709): the control plane URL the page calls directly
   // (src/bridge.ts) and the "Live game…" dialog that sets it.

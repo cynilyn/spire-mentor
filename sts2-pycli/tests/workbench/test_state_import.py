@@ -1,6 +1,6 @@
 """Tests for parsing a state copied out of the live game.
 
-The fixtures under ``tests/fixtures/realgame_adapter/`` are real SimBridge
+The fixtures under ``tests/fixtures/realgame_adapter/`` are real SpireCoach
 captures, so these exercise the shapes the mod actually emits rather than a
 shape invented here. They predate the 2026-08-02 dialect audit, which is
 useful in itself: they carry no ``map`` and no ``rng``, so they pin the
@@ -22,7 +22,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "realgame_adapter"
 
 
 def _wire(name: str = "single_enemy_ironclad") -> dict:
-    """One real SimBridge ``combat_action`` message."""
+    """One real SpireCoach ``combat_action`` message."""
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))["state"]
 
 

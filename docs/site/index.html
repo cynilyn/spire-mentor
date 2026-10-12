@@ -34,7 +34,7 @@
     <li><a href="#parity">Parity with the game</a></li>
     <li><a href="#ai">The AI</a></li>
     <li><a href="#workbench">Browser workbench</a></li>
-    <li><a href="#mod">SimBridge mod</a></li>
+    <li><a href="#mod">Spire Coach mod</a></li>
     <li><a href="#start">Getting started</a></li>
     <li><a href="#repo">Repository map</a></li>
     <li><a href="#provenance">Game content &amp; legal</a></li>
@@ -51,8 +51,8 @@
   AI on top. Two front ends show
   that AI thinking: a browser workbench and a mod for the real game.</p>
   <figure class="shot wide">
-    <img src="img/mod-hud-combat.webp" width="1600" height="900" alt="The real game with the SimBridge advisor panel: Taunt on Haunted Ship ranked first at +0.85 with 87% of 1,000 simulations, estimated win 92%">
-    <figcaption>The SimBridge mod in the real game: 1,000 MCTS simulations rank
+    <img src="img/mod-hud-combat.webp" width="1600" height="900" alt="The real game with the Spire Coach advisor panel: Taunt on Haunted Ship ranked first at +0.85 with 87% of 1,000 simulations, estimated win 92%">
+    <figcaption>The Spire Coach mod in the real game: 1,000 MCTS simulations rank
     every legal move, show the principal line and estimate the chance to win
     the fight.</figcaption>
   </figure>
@@ -72,7 +72,7 @@
     <article><h3>Parity harness</h3><p>Runs the game's own assembly headless and checks the engine against it after every single action.</p></article>
     <article><h3>Run AI</h3><p>Chance-node MCTS for fights; a PPO-trained transformer per character for every other decision.</p></article>
     <article><h3>Workbench</h3><p>The engine in WebAssembly with the game's look: play, rewind, branch, ask the AI, review.</p></article>
-    <article><h3>SimBridge</h3><p>A mod that puts the AI inside the real game as a coach, an autopilot and a rewind button.</p></article>
+    <article><h3>Spire Coach</h3><p>A mod that puts the AI inside the real game as a coach, an autopilot and a rewind button.</p></article>
     <article><h3>Extraction &amp; wiki</h3><p><code>just import-game</code> decompiles your copy and extracts data, art and sound; a generator builds a static wiki.</p></article>
   </div>
 </section>
@@ -235,7 +235,7 @@
   to the nets in <code>sts2-pycli/data/ppo/</code>.</p>
 
   <h3>In the real game</h3>
-  <p>Driven through the SimBridge mod against the actual
+  <p>Driven through the Spire Coach mod against the actual
   <code>SlayTheSpire2.exe</code>, random seeds, no cheats, 40 runs each at
   <strong>Ascension 8</strong>, with 8,000 simulations per combat decision.
   These runs used the champions deployed in August 2026; the current ones,
@@ -354,7 +354,7 @@
 </section>
 
 <section id="mod">
-  <h2>SimBridge: the AI inside the real game</h2>
+  <h2>Spire Coach: the AI inside the real game</h2>
   <p>A C# mod for Slay the Spire 2 that connects the running game to the AI
   stack over a local TCP socket. Installed but idle, it leaves the game
   vanilla. The advisor backend is launched by the mod and ships as a
@@ -367,7 +367,7 @@
   </figure>
   <figure class="video">
     <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/DcZs8ZGSDyo" title="Slay the Spire 2: AI beats Ironclad Ascension 9" loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
-    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the SimBridge mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
+    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the Spire Coach mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
   </figure>
   <!-- More mod screenshots go here: <figure class="shot"> blocks with img/mod-*.webp (toolbar, rewind, card reward, autopilot). -->
 
@@ -402,7 +402,7 @@
   <p>Windows, the game at v0.107.1, the .NET 9 SDK and
   <a href="https://github.com/Alchyr/BaseLib-StS2">BaseLib</a> in the game's
   <code>mods/</code> folder. Then <code>cd sts2-bridge &amp;&amp; dotnet build</code>
-  builds the mod and installs it into <code>mods/SimBridge/</code>. Configuration,
+  builds the mod and installs it into <code>mods/SpireCoach/</code>. Configuration,
   the console commands and the wire protocol are in
   <a href="https://github.com/tfriedel/sts2-sim/blob/main/sts2-bridge/README.md">sts2-bridge/README.md</a>
   and <a href="https://github.com/tfriedel/sts2-sim/blob/main/sts2-bridge/PROTOCOL.md">PROTOCOL.md</a>.</p>
@@ -448,7 +448,7 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
     <tbody>
       <tr><td><code>sts2-rs/</code></td><td>Rust: engine, content, MCTS, run-AI, CLI, PyO3 bindings, workbench engine (WASM)</td></tr>
       <tr><td><code>sts2-pycli/</code></td><td>Python, C# and TypeScript: the headless C# oracle, parity suite, PPO training, the workbench web app, the real-game advisor, an MCP server so an LLM can play</td></tr>
-      <tr><td><code>sts2-bridge/</code></td><td>C#: the SimBridge mod</td></tr>
+      <tr><td><code>sts2-bridge/</code></td><td>C#: the Spire Coach mod</td></tr>
       <tr><td><code>sts2-wiki/</code></td><td>Python / Astro: decompile, extract, generate a static wiki</td></tr>
       <tr><td><code>scripts/import_game.py</code></td><td><code>just import-game</code>: every game-derived input from your install</td></tr>
       <tr><td><code>docs/</code></td><td>Reference docs, ADRs, this site (<code>docs/site/</code>)</td></tr>
@@ -471,7 +471,7 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
   The screenshots on this page show the game's art.</p>
   <p>The original work is MIT-licensed. <code>sts2-pycli</code> began as a
   fork of <a href="https://github.com/wuhao21/sts2-cli">wuhao21/sts2-cli</a>;
-  SimBridge started as a port of zhiyue's STS2BridgeMod from
+  Spire Coach started as a port of zhiyue's STS2BridgeMod from
   <a href="https://github.com/zhiyue/sts2-rl-agent">zhiyue/sts2-rl-agent</a>.
   See <a href="https://github.com/tfriedel/sts2-sim/blob/main/NOTICE">NOTICE</a> and
   <a href="https://github.com/tfriedel/sts2-sim/blob/main/PROVENANCE.md">PROVENANCE.md</a>.</p>

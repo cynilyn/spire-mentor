@@ -1,9 +1,9 @@
-# Assemble the distributable SimBridge mod zip (GH #380).
+# Assemble the distributable SpireCoach mod zip (GH #380).
 #
-# Output: SimBridge-v<version>-win64.zip whose root contains mods/, so the
+# Output: SpireCoach-v<version>-win64.zip whose root contains mods/, so the
 # install instruction is exactly "extract into the Slay the Spire 2 folder".
 #
-#   mods/SimBridge/   SimBridge.dll, SimBridge.json, SimBridge.conf.template,
+#   mods/SpireCoach/   SpireCoach.dll, SpireCoach.json, SpireCoach.conf.template,
 #                     SimAdvisor/            (the packaged torch-free advisor)
 #   mods/BaseLib/     BaseLib.dll, BaseLib.pck, BaseLib.json,
 #                     LICENSE-BaseLib.txt    (MIT notice; only staged when the
@@ -12,7 +12,7 @@
 #   README.txt
 #
 # BaseLib is staged from the LOCAL GAME INSTALL: that is the exact v3.4.1
-# binary this SimBridge.dll was compiled against (the csproj references the
+# binary this SpireCoach.dll was compiled against (the csproj references the
 # deployed copy). BaseLib is MIT-licensed, so redistribution needs its
 # license text in the zip. That text is NOT vendored in this repo (the
 # authoritative copyright line lives upstream); it is picked up from an
@@ -24,7 +24,7 @@
 # The SimAdvisor exe is taken prebuilt from sts2-pycli/dist/SimAdvisor by
 # default; pass -BuildAdvisor to rebuild it first (slow-ish).
 #
-# NOTE (licensing): SimBridge is MIT (sts2-bridge/LICENSE); the zip also
+# NOTE (licensing): SpireCoach is MIT (sts2-bridge/LICENSE); the zip also
 # bundles BaseLib (MIT, its notice below) and the advisor exe.
 param(
     # Rebuild the advisor exe before packaging instead of reusing the
@@ -36,7 +36,7 @@ $bridge = $PSScriptRoot
 $repo = Split-Path -Parent $bridge
 $pycli = Join-Path $repo "sts2-pycli"
 
-# --- locate the game (same precedence as SimBridge.csproj) -------------------
+# --- locate the game (same precedence as SpireCoach.csproj) -------------------
 $gameDir = $env:STS2_GAME_DIR
 if (-not $gameDir) {
     $steam = (Get-ItemProperty -Path "HKCU:\Software\Valve\Steam" -ErrorAction SilentlyContinue).SteamPath
@@ -62,9 +62,9 @@ if (-not $haveBaseLibLicense) {
 }
 
 # --- build both halves -------------------------------------------------------
-dotnet build $bridge -c Release -p:SimBridgeSkipDeploy=true
+dotnet build $bridge -c Release -p:SpireCoachSkipDeploy=true
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed" }
-$dll = Join-Path $bridge "bin/Release/net9.0/SimBridge.dll"
+$dll = Join-Path $bridge "bin/Release/net9.0/SpireCoach.dll"
 if (-not (Test-Path $dll)) { throw "missing $dll" }
 
 $advisorDist = Join-Path $pycli "dist/SimAdvisor"
@@ -78,15 +78,15 @@ if (-not (Test-Path (Join-Path $advisorDist "SimAdvisor.exe"))) {
 }
 
 # --- stage -------------------------------------------------------------------
-$version = (Get-Content (Join-Path $bridge "SimBridge.json") | ConvertFrom-Json).version
+$version = (Get-Content (Join-Path $bridge "SpireCoach.json") | ConvertFrom-Json).version
 $staging = Join-Path $bridge "staging"
 if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
-$simDir = New-Item -ItemType Directory -Path (Join-Path $staging "mods/SimBridge") -Force
+$simDir = New-Item -ItemType Directory -Path (Join-Path $staging "mods/SpireCoach") -Force
 $libDir = New-Item -ItemType Directory -Path (Join-Path $staging "mods/BaseLib") -Force
 
 Copy-Item $dll $simDir
-Copy-Item (Join-Path $bridge "SimBridge.json") $simDir
-Copy-Item (Join-Path $bridge "SimBridge.conf.template") $simDir
+Copy-Item (Join-Path $bridge "SpireCoach.json") $simDir
+Copy-Item (Join-Path $bridge "SpireCoach.conf.template") $simDir
 Copy-Item -Recurse $advisorDist (Join-Path $simDir "SimAdvisor")
 Copy-Item (Join-Path $baseLibDir "BaseLib.dll") $libDir
 Copy-Item (Join-Path $baseLibDir "BaseLib.pck") $libDir
@@ -97,7 +97,7 @@ if ($haveBaseLibLicense) {
 Copy-Item (Join-Path $bridge "packaging/README-dist.txt") (Join-Path $staging "README.txt")
 
 # --- zip ---------------------------------------------------------------------
-$zip = Join-Path $bridge "SimBridge-v$version-win64.zip"
+$zip = Join-Path $bridge "SpireCoach-v$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zip
 $sizeMB = [math]::Round((Get-Item $zip).Length / 1MB)

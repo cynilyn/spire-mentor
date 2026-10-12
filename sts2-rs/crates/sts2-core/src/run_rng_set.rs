@@ -409,7 +409,7 @@ impl RunRngSet {
     /// combat wire's `$.rng.counters` (`sts2-wire`'s `state_from_dict`)
     /// and the run-level live-state import
     /// (`PyRunManager::debug_set_rng_counters`). Names are the snake_case
-    /// forms SimBridge emits (`SimStateExtractor.RngState`) and
+    /// forms SpireCoach emits (`SimStateExtractor.RngState`) and
     /// `state_to_dict` re-emits, so producer and consumer line up
     /// field-for-field. Two copies of this match are exactly how a
     /// silently half-restored RNG lineage happens, so there is one.
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn stream_mut_names_every_stream_a_producer_can_carry() {
         let mut set = RunRngSet::new(7);
-        // The names SimBridge emits (`SimStateExtractor.RngState`) plus the
+        // The names SpireCoach emits (`SimStateExtractor.RngState`) plus the
         // two the engine's own `state_to_dict` adds. Every one must resolve,
         // or a restore silently drops that stream's lineage.
         for name in [

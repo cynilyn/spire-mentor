@@ -594,7 +594,7 @@ impl PyRunManager {
 
     /// Restore this run's RNG cursors from a live-game snapshot.
     ///
-    /// `counters` is the `{stream: read_count}` block SimBridge stamps onto
+    /// `counters` is the `{stream: read_count}` block SpireCoach stamps onto
     /// every outbound message (`SimStateExtractor.RngState`), keyed by the
     /// same snake_case stream names this crate uses. Each named stream is
     /// fast-forwarded to its recorded count, which is what makes an imported

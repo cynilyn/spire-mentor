@@ -33,7 +33,7 @@ using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 /// <summary>
 /// Scene-tree locations and small UI predicates shared by the room handlers

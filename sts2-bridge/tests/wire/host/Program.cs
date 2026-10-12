@@ -1,6 +1,6 @@
 // Program.cs -- host + scenario script for the BridgeServer differential test.
 //
-// Usage: BridgeHarness --simbridge <SimBridge.dll> --out <dir>
+// Usage: BridgeHarness --spirecoach <SpireCoach.dll> --out <dir>
 //                      --godot-stub <GodotSharp.dll(stub)> --sts2 <sts2.dll>
 //                      --lib <dir with 0Harmony/MonoMod/Sentry/...> [--baselib <BaseLib.dll>]
 //
@@ -28,7 +28,7 @@ static class Program
         var av = argv.Where(x => x != "--no-platform-shim").ToArray();
         for (int i = 0; i + 1 < av.Length; i += 2) a[av[i].TrimStart('-')] = av[i + 1];
         string Need(string k) => a.TryGetValue(k, out var v) ? Path.GetFullPath(v) : throw new ArgumentException($"missing --{k}");
-        string dll = Need("simbridge"), outDir = Need("out"), stub = Need("godot-stub"), sts2 = Need("sts2"), lib = Need("lib");
+        string dll = Need("spirecoach"), outDir = Need("out"), stub = Need("godot-stub"), sts2 = Need("sts2"), lib = Need("lib");
         string? baselib = a.TryGetValue("baselib", out var bl) ? Path.GetFullPath(bl) : null;
         Directory.CreateDirectory(outDir);
 
@@ -80,7 +80,7 @@ static class Program
             var godot = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(x => x.GetName().Name == "GodotSharp");
             File.WriteAllText(Path.Combine(outDir, "meta.json"), JsonSerializer.Serialize(new
             {
-                simbridge = dll,
+                spirecoach = dll,
                 resolved = Resolved,
                 godotsharp_loaded_from = godot?.Location,
                 hooks = notes,

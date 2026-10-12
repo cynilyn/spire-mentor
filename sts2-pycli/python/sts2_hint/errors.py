@@ -50,7 +50,7 @@ import runtime_paths
 
 _LOG_NAME = "sts2_hint"
 # Frozen advisor exe: never write inside the install dir (Program Files on a
-# default Steam install) -- logs go to %LOCALAPPDATA%\SimBridge instead.
+# default Steam install) -- logs go to %LOCALAPPDATA%\SpireCoach instead.
 _LOG_DIR = (
     runtime_paths.app_data_dir() / "logs" / "sts2_hint"
     if runtime_paths.is_frozen()

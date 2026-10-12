@@ -38,21 +38,21 @@ using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public static class SimHotkeys
 {
-    private const string ActionHelp = "simbridge_help";
-    private const string ActionToggleHud = "simbridge_toggle_hud";
-    private const string ActionToggleLog = "simbridge_toggle_log";
-    private const string ActionAiOnce = "simbridge_ai_once";
-    private const string ActionAiAuto = "simbridge_ai_auto";
-    private const string ActionToggleAdvisor = "simbridge_toggle_advisor";
-    private const string ActionSpeedDown = "simbridge_speed_down";
-    private const string ActionSpeedUp = "simbridge_speed_up";
-    private const string ActionUndoTurn = "simbridge_undo_turn";
-    private const string ActionRestartRoom = "simbridge_restart_room";
-    private const string ActionCopyState = "simbridge_copy_state";
+    private const string ActionHelp = "spirecoach_help";
+    private const string ActionToggleHud = "spirecoach_toggle_hud";
+    private const string ActionToggleLog = "spirecoach_toggle_log";
+    private const string ActionAiOnce = "spirecoach_ai_once";
+    private const string ActionAiAuto = "spirecoach_ai_auto";
+    private const string ActionToggleAdvisor = "spirecoach_toggle_advisor";
+    private const string ActionSpeedDown = "spirecoach_speed_down";
+    private const string ActionSpeedUp = "spirecoach_speed_up";
+    private const string ActionUndoTurn = "spirecoach_undo_turn";
+    private const string ActionRestartRoom = "spirecoach_restart_room";
+    private const string ActionCopyState = "spirecoach_copy_state";
 
     private static bool _installed;
 
@@ -111,11 +111,11 @@ public static class SimHotkeys
             manager.PushHotkeyPressedBinding(ActionCopyState, SimActions.CopyState);
 
             _installed = true;
-            GD.Print("[SimBridge] Hotkeys installed: F1=help, F4=HUD, F3=log, F6=AI once, F7=AI auto, F8=advisor mode, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state");
+            GD.Print("[SpireCoach] Hotkeys installed: F1=help, F4=HUD, F3=log, F6=AI once, F7=AI auto, F8=advisor mode, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state");
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SimBridge] Hotkey install failed: {ex.Message}");
+            GD.PrintErr($"[SpireCoach] Hotkey install failed: {ex.Message}");
         }
     }
 

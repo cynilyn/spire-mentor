@@ -1,4 +1,4 @@
-//! A live-game fight (the SimBridge `combat_action` board) → the engine wire
+//! A live-game fight (the SpireCoach `combat_action` board) → the engine wire
 //! dict `sts2_wire::state_from_json` rebuilds a `CombatState` from. GH #708.
 //!
 //! The port of the desktop workbench's two-stage translation, composed into
@@ -829,7 +829,7 @@ fn pile_cards<'a>(board: &'a Value, key: &str) -> &'a [Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// The engine wire dict for a SimBridge `combat_action` board, plus the
+/// The engine wire dict for a SpireCoach `combat_action` board, plus the
 /// warnings for everything dropped on the way.
 ///
 /// `character` is the display name (`"Ironclad"`) and `ascension` the run's

@@ -1,9 +1,9 @@
-SimBridge — AI coach for Slay the Spire 2
-================================================
+Spire Coach — AI coach for Slay the Spire 2
+===========================================
 
 WHAT THIS IS
 ------------
-SimBridge connects a Slay the Spire 2 game to an AI backend ("SimAdvisor")
+Spire Coach connects a Slay the Spire 2 game to an AI backend ("SimAdvisor")
 that recommends plays: an MCTS search for combat and a trained run policy
 for map routes, card rewards, shops, events and rest sites. It can advise
 you while you play, or play whole runs itself.
@@ -27,25 +27,34 @@ INSTALL
 2. Extract the zip into the Slay the Spire 2 install folder, e.g.:
      C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2
    You should end up with:
-     <game>\mods\SimBridge\...
+     <game>\mods\SpireCoach\...
      <game>\mods\BaseLib\...
    (If you already have BaseLib installed, keep your copy — versions
    should match, this zip ships v3.4.1.)
 3. Start the game. Mods load automatically.
 
-UPGRADING FROM 0.2.0
---------------------
-0.2.0 shipped a config that armed AUTOPILOT: the AI started playing a run
-by itself as soon as you launched the game. Your existing config file is
-not overwritten by this update, so delete it once and let the new default
-be written:
-     %LOCALAPPDATA%\SimBridge\SimBridge.conf
-(You can also just set "auto_start" to false in it. If autopilot is armed,
-the mod now says so on screen at launch and F8 takes the controls back.)
+UPGRADING FROM SIMBRIDGE (0.2.x)
+--------------------------------
+Spire Coach was called "SimBridge" before 0.3.0. After extracting this zip:
+  - Delete the old  <game>\mods\SimBridge\  folder. Otherwise the game
+    loads both copies and the second one cannot start (the mod warns about
+    this in the log).
+  - Your settings move automatically: on first launch the mod copies
+    %LOCALAPPDATA%\SimBridge\SimBridge.conf to
+    %LOCALAPPDATA%\SpireCoach\SpireCoach.conf if the new file does not
+    exist yet, and the in-game settings page's saved preferences
+    (mod_configs\SimBridge.cfg -> SpireCoach.cfg) the same way. The old
+    folder (snapshots, logs) is left in place; delete it whenever you like.
+  - 0.2.0 shipped a config that armed AUTOPILOT: the AI started playing a
+    run by itself as soon as you launched the game. If you never changed
+    that, the carried-over file still has it -- set "auto_start" to false
+    in the new file, or delete it to get the safe default. (If autopilot is
+    armed, the mod says so on screen at launch and F8 takes the controls
+    back.)
 
 TURNING IT ON / OFF
 -------------------
-The game's own Mods screen (main menu) lists SimBridge with a tickbox —
+The game's own Mods screen (main menu) lists Spire Coach with a tickbox —
 untick it and restart to disable the mod entirely; that screen also has a
 master switch for all mods. Steam has nothing to do with it: this is not a
 Workshop item.
@@ -67,7 +76,7 @@ likes. Each can be switched off on the settings page.
 
 THE SETTINGS PAGE
 -----------------
-Main menu -> Options -> Mod Configuration -> SimBridge: mode switch, game
+Main menu -> Options -> Mod Configuration -> SpireCoach: mode switch, game
 speed, HUD toggles, advisor launch settings. BaseLib deliberately disables
 mod configuration while a run is in progress — mid-run, use the keys.
 
@@ -85,26 +94,26 @@ FIRST LAUNCH / WINDOWS WARNINGS
 
 WHERE YOUR FILES LIVE
 ---------------------
-Config:  %LOCALAPPDATA%\SimBridge\SimBridge.conf
+Config:  %LOCALAPPDATA%\SpireCoach\SpireCoach.conf
          (created on first launch from the template; edit it to change
          port, autopilot, character, ascension, timeouts, ...)
-         If a SimBridge.conf also sits in <game>\mods\SimBridge\ (left by
+         If a SpireCoach.conf also sits in <game>\mods\SpireCoach\ (left by
          an older install), THAT one is used and your edits above do
          nothing — delete it. The mod says which file it loaded in
          %APPDATA%\SlayTheSpire2\logs\godot.log.
-Logs:    %LOCALAPPDATA%\SimBridge\advisor_stdout.log
-         %LOCALAPPDATA%\SimBridge\logs\realgame_advisor\*.jsonl
+Logs:    %LOCALAPPDATA%\SpireCoach\advisor_stdout.log
+         %LOCALAPPDATA%\SpireCoach\logs\realgame_advisor\*.jsonl
 Settings you change on the in-game mod settings page persist in
-%APPDATA%\SlayTheSpire2\mod_configs\SimBridge.cfg.
+%APPDATA%\SlayTheSpire2\mod_configs\SpireCoach.cfg.
 
 LICENSING / DO NOT REDISTRIBUTE
 -------------------------------
 - BaseLib (mods\BaseLib) is by Alchyr, MIT-licensed — see
   mods\BaseLib\LICENSE-BaseLib.txt. https://github.com/Alchyr/BaseLib-StS2
-  (Packager note: the license text is not vendored in the SimBridge repo.
+  (Packager note: the license text is not vendored in the SpireCoach repo.
   If LICENSE-BaseLib.txt is missing from this zip, it was built without a
   local BaseLib-StS2 clone; source the MIT notice from the upstream repo
   and rebuild before passing the zip on.)
-- SimBridge is MIT-licensed (sts2-bridge/LICENSE in the source
+- SpireCoach is MIT-licensed (sts2-bridge/LICENSE in the source
   repository, github.com/tfriedel/sts2-sim). It started as a port of
   zhiyue's "STS2BridgeMod" (github.com/zhiyue/sts2-rl-agent).

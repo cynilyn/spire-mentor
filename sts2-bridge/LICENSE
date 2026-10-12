@@ -22,7 +22,7 @@ SOFTWARE.
 
 ---
 
-SimBridge started as a port of STS2BridgeMod by zhiyue
+SpireCoach started as a port of STS2BridgeMod by zhiyue
 (https://github.com/zhiyue/sts2-rl-agent). Every part derived from it has
 since been rewritten clean-room from a behavioural specification; no code from
 it remains, and the exporter's donor-overlap gate checks that on every export.

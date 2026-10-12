@@ -1,6 +1,6 @@
 """Offline tests for :mod:`realgame_adapter`.
 
-Fixtures under ``tests/fixtures/realgame_adapter/`` are real v2 SimBridge
+Fixtures under ``tests/fixtures/realgame_adapter/`` are real v2 SpireCoach
 ``combat_action`` captures copied verbatim from
 ``logs/realgame/20260711T000030Z.jsonl`` (see each fixture's
 ``_provenance`` field) -- not hand-crafted -- so these tests exercise the

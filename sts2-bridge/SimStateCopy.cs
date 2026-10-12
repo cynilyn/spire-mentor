@@ -11,7 +11,7 @@
 // dialect means the client has one parser, and a state copied by hand is
 // byte-for-byte a state the advisor could have sent.
 //
-// Every copy is ALSO written to `%LOCALAPPDATA%\SimBridge\state-<ts>.json`.
+// Every copy is ALSO written to `%LOCALAPPDATA%\SpireCoach\state-<ts>.json`.
 // Clipboards are lossy (one slot, cleared by the next copy, and a big payload
 // does not always survive), and a paper trail costs nothing.
 
@@ -25,7 +25,7 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Runs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimStateCopy
 {
@@ -121,7 +121,7 @@ internal static class SimStateCopy
             // is ambiguous — the same reason SimWorkbenchLink qualifies it.
             string dir = System.IO.Path.Combine(
                 System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
-                "SimBridge");
+                "SpireCoach");
             System.IO.Directory.CreateDirectory(dir);
             string path = System.IO.Path.Combine(
                 dir, $"state-{DateTime.Now:yyyyMMdd-HHmmss}.json");

@@ -1,9 +1,9 @@
-// SimAutoSlayer.cs -- SimBridge's autopilot run driver.
+// SimAutoSlayer.cs -- SpireCoach's autopilot run driver.
 // Originally ported from zhiyue/sts2-rl-agent (STS2BridgeMod); rewritten clean-room.
 //
 // Plays configured runs end to end on top of the game's AutoSlay framework
 // interfaces (IRoomHandler / IScreenHandler, WaitHelper, UiHelper, Watchdog),
-// but with SimBridge's own handlers, so every gameplay decision is made by
+// but with SpireCoach's own handlers, so every gameplay decision is made by
 // the connected bridge agent. This file owns:
 //   - the multi-run loop, per-run timeout, failure recovery and the
 //     "exactly one run_complete per run" guarantee;
@@ -52,7 +52,7 @@ using MegaCrit.Sts2.Core.Settings;
 using MegaCrit.Sts2.Core.Timeline;
 using MegaCrit.Sts2.Core.Timeline.Epochs;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 public class SimAutoSlayer
 {
@@ -1258,7 +1258,7 @@ public class SimAutoSlayer
     }
 
 
-    private const string KeepAliveActivity = "SimBridge stall-guard keepalive";
+    private const string KeepAliveActivity = "SpireCoach stall-guard keepalive";
 
     private CancellationTokenSource? _keepAliveCts;
 

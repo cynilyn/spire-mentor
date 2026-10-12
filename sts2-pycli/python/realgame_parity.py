@@ -7,7 +7,7 @@ enumerated (this becomes the parity backlog)."
 This module drives the SAME deterministic policy (:func:`choose_action`) to
 completion on both backends -- the headless C# process (:class:`sts2_client.Game`,
 spawned in-process/subprocess exactly like ``tests/conftest.py``) and the live
-game (:class:`sts2_realgame.RealGame`, over the SimBridge TCP protocol) -- for
+game (:class:`sts2_realgame.RealGame`, over the SpireCoach TCP protocol) -- for
 the same integer seed/character/ascension, records every decision JSON from
 both into two canonicalized JSONL trails, and diffs them decision-by-decision.
 Divergence is DATA, not failure: the CLI exits 0 even when the trails differ
@@ -605,8 +605,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, required=True, help="Integer run seed (both backends).")
     parser.add_argument("--character", default="Ironclad", help="Character id/display name.")
     parser.add_argument("--ascension", type=int, default=0, help="Ascension level (0-10).")
-    parser.add_argument("--host", default=DEFAULT_HOST, help="SimBridge mod TCP host.")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="SimBridge mod TCP port.")
+    parser.add_argument("--host", default=DEFAULT_HOST, help="SpireCoach mod TCP host.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="SpireCoach mod TCP port.")
     parser.add_argument(
         "--max-decisions",
         type=int,

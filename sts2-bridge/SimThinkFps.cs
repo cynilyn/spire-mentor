@@ -26,7 +26,7 @@
 using System;
 using Godot;
 
-namespace SimBridge;
+namespace SpireCoach;
 
 internal static class SimThinkFps
 {
@@ -38,7 +38,7 @@ internal static class SimThinkFps
     private static int _savedMaxFps;
 
     /// <summary>Cap the frame rate until the matching <see cref="End"/>.
-    /// No-op when `think_fps` is 0 in SimBridge.conf.</summary>
+    /// No-op when `think_fps` is 0 in SpireCoach.conf.</summary>
     public static void Begin()
     {
         int cap = SimConfig.Instance.ThinkFps;

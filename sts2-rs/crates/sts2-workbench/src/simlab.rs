@@ -1023,7 +1023,7 @@ fn normalized_wire(wire: &Value) -> Value {
 
 /// Turn whatever was pasted into a position. Accepted, in order: a
 /// `simlab-position/1` document, an engine wire dict, and anything
-/// [`crate::state_import::parse_pasted_state`] reads (SimBridge Copy-state, an
+/// [`crate::state_import::parse_pasted_state`] reads (SpireCoach Copy-state, an
 /// advisor log line, a whole log). Returns `(position, notes, source)`.
 pub fn position_from_paste(text: &str) -> PResult<(Value, Vec<String>, String)> {
     let stripped = text.trim();
@@ -1045,7 +1045,7 @@ pub fn position_from_paste(text: &str) -> PResult<(Value, Vec<String>, String)> 
     }
 
     // Neither a position doc nor an engine wire dict. The other shape a person
-    // is likely to paste is a SimBridge Copy-state (an advisor `advice_request`
+    // is likely to paste is a SpireCoach Copy-state (an advisor `advice_request`
     // / log line): the parser turns its fight into the engine's wire through
     // `crate::combat_import` (GH #708), and that wire becomes the board.
     let imported =
@@ -1060,7 +1060,7 @@ pub fn position_from_paste(text: &str) -> PResult<(Value, Vec<String>, String)> 
                 .filter(|w| w.contains("dropped") || w.contains("left out"))
                 .cloned(),
         );
-        return Ok((pos, notes, "SimBridge Copy-state".to_string()));
+        return Ok((pos, notes, "SpireCoach Copy-state".to_string()));
     }
     if imported.had_combat {
         let why = imported
