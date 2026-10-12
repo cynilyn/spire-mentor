@@ -1258,7 +1258,7 @@ def test_a_single_turn_sly_is_distinguished_from_the_keyword():
     assert adapter._flags_for_card({"keywords": ["Sly"], "sly_this_turn": True}) == ["sly"]
 
 
-def test_the_spirecoach_dialect_reaches_the_same_flags():
+def test_the_spirementor_dialect_reaches_the_same_flags():
     """The mod ships one bool per keyword and no `keywords` list at all, so a
     list-only reader saw an empty keyword set and mistook every intrinsic
     Retain for a this-turn grant."""

@@ -1,6 +1,6 @@
 # Building on Windows
 
-How to compile and test **sts2-sim** on native Windows (no WSL). The Rust
+How to compile and test **spire-mentor** on native Windows (no WSL). The Rust
 combat engine (`sts2-rs/`) builds and tests cleanly this way. The full Python
 + C# + workbench stack (`sts2-pycli/`) is smoother under WSL2 — see
 [Caveats](#caveats).

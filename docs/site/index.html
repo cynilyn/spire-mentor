@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sts2-sim documentation</title>
+<title>spire-mentor documentation</title>
 <meta name="description" content="A bit-exact Rust re-implementation of Slay the Spire 2, an MCTS + PPO AI that plays it, a browser workbench and an in-game mod.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 9v14l12 7 12-7V9z' fill='%23d9a441'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -14,12 +14,12 @@
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="index.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>sts2-sim</span></a>
+  <a class="brand" href="index.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>spire-mentor</span></a>
   <nav class="toplinks" aria-label="Site">
     <a href="index.html" aria-current="page">Docs</a>
     <a href="ai.html"><span class="l">How the AI plays</span><span class="s">AI</span></a>
     <a href="training.html"><span class="l">How it's trained</span><span class="s">Training</span></a>
-    <a class="gh" href="https://github.com/tfriedel/sts2-sim"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
+    <a class="gh" href="https://github.com/tfriedel/spire-mentor"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
   </nav>
   <button class="iconbtn theme" type="button" aria-label="Switch colour theme" title="Switch colour theme"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></svg></button>
   <button class="menu" type="button" aria-controls="toc" aria-expanded="false">Contents</button>
@@ -34,7 +34,7 @@
     <li><a href="#parity">Parity with the game</a></li>
     <li><a href="#ai">The AI</a></li>
     <li><a href="#workbench">Browser workbench</a></li>
-    <li><a href="#mod">Spire Coach mod</a></li>
+    <li><a href="#mod">Spire Mentor mod</a></li>
     <li><a href="#start">Getting started</a></li>
     <li><a href="#repo">Repository map</a></li>
     <li><a href="#provenance">Game content &amp; legal</a></li>
@@ -45,14 +45,14 @@
 
 <section class="hero">
   <h1>A fast, bit-exact Slay the Spire 2 engine in Rust, and an AI that plays it</h1>
-  <p class="lede">sts2-sim reimplements <em>Slay the Spire 2</em> from scratch,
+  <p class="lede">spire-mentor reimplements <em>Slay the Spire 2</em> from scratch,
   checks itself against the game's own code after every action, and runs
   fast enough to search thousands of futures per decision, with a run-level
   AI on top. Two front ends show
   that AI thinking: a browser workbench and a mod for the real game.</p>
   <figure class="shot wide">
-    <img src="img/mod-hud-combat.webp" width="1600" height="900" alt="The real game with the Spire Coach advisor panel: Taunt on Haunted Ship ranked first at +0.85 with 87% of 1,000 simulations, estimated win 92%">
-    <figcaption>The Spire Coach mod in the real game: 1,000 MCTS simulations rank
+    <img src="img/mod-hud-combat.webp" width="1600" height="900" alt="The real game with the Spire Mentor advisor panel: Taunt on Haunted Ship ranked first at +0.85 with 87% of 1,000 simulations, estimated win 92%">
+    <figcaption>The Spire Mentor mod in the real game: 1,000 MCTS simulations rank
     every legal move, show the principal line and estimate the chance to win
     the fight.</figcaption>
   </figure>
@@ -72,7 +72,7 @@
     <article><h3>Parity harness</h3><p>Runs the game's own assembly headless and checks the engine against it after every single action.</p></article>
     <article><h3>Run AI</h3><p>Chance-node MCTS for fights; a PPO-trained transformer per character for every other decision.</p></article>
     <article><h3>Workbench</h3><p>The engine in WebAssembly with the game's look: play, rewind, branch, ask the AI, review.</p></article>
-    <article><h3>Spire Coach</h3><p>A mod that puts the AI inside the real game as a coach, an autopilot and a rewind button.</p></article>
+    <article><h3>Spire Mentor</h3><p>A mod that puts the AI inside the real game as a coach, an autopilot and a rewind button.</p></article>
     <article><h3>Extraction &amp; wiki</h3><p><code>just import-game</code> decompiles your copy and extracts data, art and sound; a generator builds a static wiki.</p></article>
   </div>
 </section>
@@ -168,7 +168,7 @@
     scenarios, 8,454 requests, zero divergences between the WASM workbench
     and the Python one.</li>
   </ul>
-  <p>Details: <a href="https://github.com/tfriedel/sts2-sim/blob/main/sts2-pycli/docs/parity-suite.md">parity-suite.md</a>.</p>
+  <p>Details: <a href="https://github.com/tfriedel/spire-mentor/blob/main/sts2-pycli/docs/parity-suite.md">parity-suite.md</a>.</p>
 </section>
 
 <section id="ai">
@@ -235,7 +235,7 @@
   to the nets in <code>sts2-pycli/data/ppo/</code>.</p>
 
   <h3>In the real game</h3>
-  <p>Driven through the Spire Coach mod against the actual
+  <p>Driven through the Spire Mentor mod against the actual
   <code>SlayTheSpire2.exe</code>, random seeds, no cheats, 40 runs each at
   <strong>Ascension 8</strong>, with 8,000 simulations per combat decision.
   These runs used the champions deployed in August 2026; the current ones,
@@ -350,11 +350,11 @@
   <code>sts2-pycli/web/dist</code> and serves it on <code>http://127.0.0.1:4173</code>.
   With real art the build contains the game's images and sound, extracted
   from your copy for your own use, so please run it locally and don't host it
-  publicly. Architecture: <a href="https://github.com/tfriedel/sts2-sim/blob/main/docs/browser-workbench.md">browser-workbench.md</a>.</p>
+  publicly. Architecture: <a href="https://github.com/tfriedel/spire-mentor/blob/main/docs/browser-workbench.md">browser-workbench.md</a>.</p>
 </section>
 
 <section id="mod">
-  <h2>Spire Coach: the AI inside the real game</h2>
+  <h2>Spire Mentor: the AI inside the real game</h2>
   <p>A C# mod for Slay the Spire 2 that connects the running game to the AI
   stack over a local TCP socket. Installed but idle, it leaves the game
   vanilla. The advisor backend is launched by the mod and ships as a
@@ -367,7 +367,7 @@
   </figure>
   <figure class="video">
     <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/DcZs8ZGSDyo" title="Slay the Spire 2: AI beats Ironclad Ascension 9" loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
-    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the Spire Coach mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
+    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the Spire Mentor mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
   </figure>
   <!-- More mod screenshots go here: <figure class="shot"> blocks with img/mod-*.webp (toolbar, rewind, card reward, autopilot). -->
 
@@ -401,11 +401,11 @@
   <h3>Install</h3>
   <p>Windows, the game at v0.107.1, the .NET 9 SDK and
   <a href="https://github.com/Alchyr/BaseLib-StS2">BaseLib</a> in the game's
-  <code>mods/</code> folder. Then <code>cd sts2-bridge &amp;&amp; dotnet build</code>
-  builds the mod and installs it into <code>mods/SpireCoach/</code>. Configuration,
+  <code>mods/</code> folder. Then <code>cd spire-mentor-mod &amp;&amp; dotnet build</code>
+  builds the mod and installs it into <code>mods/SpireMentor/</code>. Configuration,
   the console commands and the wire protocol are in
-  <a href="https://github.com/tfriedel/sts2-sim/blob/main/sts2-bridge/README.md">sts2-bridge/README.md</a>
-  and <a href="https://github.com/tfriedel/sts2-sim/blob/main/sts2-bridge/PROTOCOL.md">PROTOCOL.md</a>.</p>
+  <a href="https://github.com/tfriedel/spire-mentor/blob/main/spire-mentor-mod/README.md">spire-mentor-mod/README.md</a>
+  and <a href="https://github.com/tfriedel/spire-mentor/blob/main/spire-mentor-mod/PROTOCOL.md">PROTOCOL.md</a>.</p>
 </section>
 
 <section id="start">
@@ -435,9 +435,9 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
   </div>
   <p>Use <code>cargo nextest</code>, never bare <code>cargo test</code>: tests
   rely on per-process isolation. Full prerequisites:
-  <a href="https://github.com/tfriedel/sts2-sim/blob/main/docs/bring-your-own-game.md">bring-your-own-game.md</a>;
+  <a href="https://github.com/tfriedel/spire-mentor/blob/main/docs/bring-your-own-game.md">bring-your-own-game.md</a>;
   Windows: the engine tier runs from PowerShell, the rest under WSL2
-  (<a href="https://github.com/tfriedel/sts2-sim/blob/main/BUILDING-WINDOWS.md">BUILDING-WINDOWS.md</a>).</p>
+  (<a href="https://github.com/tfriedel/spire-mentor/blob/main/BUILDING-WINDOWS.md">BUILDING-WINDOWS.md</a>).</p>
 </section>
 
 <section id="repo">
@@ -448,17 +448,17 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
     <tbody>
       <tr><td><code>sts2-rs/</code></td><td>Rust: engine, content, MCTS, run-AI, CLI, PyO3 bindings, workbench engine (WASM)</td></tr>
       <tr><td><code>sts2-pycli/</code></td><td>Python, C# and TypeScript: the headless C# oracle, parity suite, PPO training, the workbench web app, the real-game advisor, an MCP server so an LLM can play</td></tr>
-      <tr><td><code>sts2-bridge/</code></td><td>C#: the Spire Coach mod</td></tr>
+      <tr><td><code>spire-mentor-mod/</code></td><td>C#: the Spire Mentor mod</td></tr>
       <tr><td><code>sts2-wiki/</code></td><td>Python / Astro: decompile, extract, generate a static wiki</td></tr>
       <tr><td><code>scripts/import_game.py</code></td><td><code>just import-game</code>: every game-derived input from your install</td></tr>
       <tr><td><code>docs/</code></td><td>Reference docs, ADRs, this site (<code>docs/site/</code>)</td></tr>
     </tbody>
   </table>
   </div>
-  <p>Start with <a href="https://github.com/tfriedel/sts2-sim/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>,
-  then <a href="https://github.com/tfriedel/sts2-sim/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.
+  <p>Start with <a href="https://github.com/tfriedel/spire-mentor/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>,
+  then <a href="https://github.com/tfriedel/spire-mentor/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.
   Training a run policy? Read the
-  <a href="https://github.com/tfriedel/sts2-sim/blob/main/docs/ppo-champion-training-playbook.md">champion training playbook</a> first.</p>
+  <a href="https://github.com/tfriedel/spire-mentor/blob/main/docs/ppo-champion-training-playbook.md">champion training playbook</a> first.</p>
 </section>
 
 <section id="provenance">
@@ -471,16 +471,16 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
   The screenshots on this page show the game's art.</p>
   <p>The original work is MIT-licensed. <code>sts2-pycli</code> began as a
   fork of <a href="https://github.com/wuhao21/sts2-cli">wuhao21/sts2-cli</a>;
-  Spire Coach started as a port of zhiyue's STS2BridgeMod from
+  Spire Mentor started as a port of zhiyue's STS2BridgeMod from
   <a href="https://github.com/zhiyue/sts2-rl-agent">zhiyue/sts2-rl-agent</a>.
-  See <a href="https://github.com/tfriedel/sts2-sim/blob/main/NOTICE">NOTICE</a> and
-  <a href="https://github.com/tfriedel/sts2-sim/blob/main/PROVENANCE.md">PROVENANCE.md</a>.</p>
+  See <a href="https://github.com/tfriedel/spire-mentor/blob/main/NOTICE">NOTICE</a> and
+  <a href="https://github.com/tfriedel/spire-mentor/blob/main/PROVENANCE.md">PROVENANCE.md</a>.</p>
 </section>
 
 </main>
 </div>
 
-<footer class="foot"><span>sts2-sim · MIT licence</span><span>Not affiliated with Mega Crit</span><a href="https://github.com/tfriedel/sts2-sim">Source on GitHub</a></footer>
+<footer class="foot"><span>spire-mentor · MIT licence</span><span>Not affiliated with Mega Crit</span><a href="https://github.com/tfriedel/spire-mentor">Source on GitHub</a></footer>
 
 <script src="site.js?v=3"></script>
 </body>

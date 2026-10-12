@@ -9,7 +9,7 @@
 # waiting for the tail.
 set -uo pipefail
 
-PYCLI="/c/Users/thomas/projects/sts2-sim/sts2-pycli"
+PYCLI="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$PYCLI/.venv/Scripts/python.exe"
 cd "$PYCLI" || exit 1
 

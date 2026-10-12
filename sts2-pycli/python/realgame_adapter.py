@@ -1,7 +1,7 @@
 """Bridge ``combat_action`` (v2) -> Sts2Headless ``combat_play`` decision JSON.
 
-Real-game bridge phase 2: the live game (via the SpireCoach mod) speaks the
-wire protocol documented in ``sts2-bridge/PROTOCOL.md``; the MCTS
+Real-game bridge phase 2: the live game (via the SpireMentor mod) speaks the
+wire protocol documented in ``spire-mentor-mod/PROTOCOL.md``; the MCTS
 recommender (:mod:`sts2_hint.recommender`) only understands the
 Sts2Headless ``combat_play`` decision shape consumed by
 :func:`sts2_hint.adapter.translate` (which in turn feeds
@@ -680,7 +680,7 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
 
 #: Epochs the LIVE save appears not to have revealed yet (GH #367).
 #:
-#: **FALLBACK ONLY as of GH #374.** SpireCoach now puts the save's real
+#: **FALLBACK ONLY as of GH #374.** SpireMentor now puts the save's real
 #: ``UnlockState.ToSerializable().UnlockedEpochs`` on the envelope, and
 #: :func:`install_unlock_state_from_wire` supersedes this constant on the first
 #: message that carries it — logging a warning when the two disagree, which is
@@ -772,7 +772,7 @@ _WIRE_UNLOCKS_INSTALLED: list[str] | None = None
 def locked_epochs_from_wire(run_state: dict) -> list[str] | None:
     """Invert the wire's REVEALED epoch list into the locked set. GH #374.
 
-    SpireCoach emits ``run_state.unlocked_epochs`` =
+    SpireMentor emits ``run_state.unlocked_epochs`` =
     ``UnlockState.ToSerializable().UnlockedEpochs`` — what the live save has
     revealed. The engine wants the complement, over the epochs *it* models;
     C# knows many more (Relic1-5, Silent1/3/4/6, Underdocks, Darv, …), so the

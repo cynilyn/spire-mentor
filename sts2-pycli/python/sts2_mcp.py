@@ -180,7 +180,7 @@ def _ensure_game() -> Game | Any:
 
     Defaults to the headless C# process (byte-identical to prior behavior).
     Set ``STS2_BACKEND=real`` to instead attach to a live Slay the Spire 2
-    process via the SpireCoach mod (real-game bridge phase 2, see
+    process via the SpireMentor mod (real-game bridge phase 2, see
     ``python/sts2_realgame.py``) -- every MCP tool below works unchanged
     because :class:`~sts2_realgame.RealGame` implements the same decision
     schema and action verbs as :class:`~sts2_client.Game`. Configure the

@@ -2,7 +2,7 @@
 
 This monorepo mixes original work with content derived from the commercial
 game **Slay the Spire 2** ((c) Mega Crit). This file is the single statement
-of which is which. The public repository (`github.com/tfriedel/sts2-sim`) is
+of which is which. The public repository (`github.com/tfriedel/spire-mentor`) is
 a snapshot export that contains only the original work; the export boundary
 is enforced mechanically by `release/export_unit.py` and its manifest
 `release/units/unit-mono.toml` — this document is the rationale behind them.
@@ -72,7 +72,7 @@ exporter strips those blocks (leaving one placeholder line) and fails on a
 (`MegaCrit.Sts2.Core.…`) are references, not content, and remain; their count
 is ratcheted by `release/content-marker-baseline.json`.
 
-**`sts2-bridge/` (D5, resolved 2026-10-11 — see the plan).** It started as a port of
+**`spire-mentor-mod/` (D5, resolved 2026-10-11 — see the plan).** It started as a port of
 zhiyue's STS2BridgeMod; the run driver and four room/screen handlers, which
 had mirrored the game's own AutoSlay framework, were rewritten clean-room
 from a behavioural spec. The exporter's decompiled-overlap gate fails any
@@ -82,7 +82,7 @@ the game's assemblies at build time (Harmony); none of them ships.
 Every region derived from zhiyue/sts2-rl-agent (which has no license) was
 rewritten clean-room as well; the exporter also compares every exported `.cs`
 file against the pinned donor source (`just fetch-donors`), and
-`sts2-bridge/LICENSE` is plain MIT with a credit line.
+`spire-mentor-mod/LICENSE` is plain MIT with a credit line.
 
 ## 2. Excluded for other reasons
 

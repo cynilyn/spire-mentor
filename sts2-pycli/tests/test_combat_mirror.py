@@ -841,7 +841,7 @@ def test_a_salvaged_choice_keeps_the_options_the_wire_spells_differently(tmp_pat
     """The reseed salvage must relocate against the ENGINE, not the wire.
 
     A produced wire and a parked option are two dialects for one card:
-    Sts2Headless / SpireCoach send ``curse:Decay``, the engine's derivation
+    Sts2Headless / SpireMentor send ``curse:Decay``, the engine's derivation
     says ``DECAY``. ``_relocate_parked`` matched the two as raw strings, so
     every prefixed card failed to relocate and was dropped from the carried
     option list -- silently, because a dropped option is indistinguishable

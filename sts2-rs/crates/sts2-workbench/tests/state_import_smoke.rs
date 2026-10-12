@@ -126,7 +126,7 @@ fn a_bad_paste_is_422_and_costs_nothing() {
     );
 }
 
-/// A real SpireCoach fight capture (the first case of the combat-lane golden,
+/// A real SpireMentor fight capture (the first case of the combat-lane golden,
 /// `sts2-pycli/tests/fixtures/realgame_adapter/*.json` as pasted).
 fn combat_paste() -> Option<String> {
     // Game-derived golden (rendered card text), not published — runtime read.

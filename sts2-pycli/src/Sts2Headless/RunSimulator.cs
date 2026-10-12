@@ -3024,7 +3024,7 @@ public class RunSimulator
                 // patch (PatchCardSelectContext) just before the game called
                 // the selector: prompt_key is the CardSelectorPrefs prompt loc
                 // key ("TO_UPGRADE"/"TO_DISCARD"/...), source the CardSelectCmd
-                // entry-point name — same fields the SpireCoach mod emits, so
+                // entry-point name — same fields the SpireMentor mod emits, so
                 // pick_card_select_semantic can quality-rank picks the MCTS
                 // replay can't answer. Null when no patch fired.
                 ["prompt_key"] = _cardSelector.PendingPromptKey,
@@ -3878,7 +3878,7 @@ public class RunSimulator
                     // it from ENEMY powers only (the historical shape) left
                     // Thievery's stolen-Gold tally — and every other
                     // enemy-side var — structurally undisclosed to the
-                    // mirror, while the SpireCoach twin (SerializePower)
+                    // mirror, while the SpireMentor twin (SerializePower)
                     // already emitted vars for all creatures.
                     ["vars"] = PowerVars(pw),
                 }).ToList();
@@ -4016,7 +4016,7 @@ public class RunSimulator
 
         // Per-turn play state the mid-turn ShouldPlay gates need (Ringing /
         // Normality / Sloth buckets + ChainsOfBinding's once-per-turn Bound
-        // gate). Same fields the SpireCoach mod emits; without them a
+        // gate). Same fields the SpireMentor mod emits; without them a
         // dict-reconstructed search state believes zero cards were played
         // this turn and re-offers plays the engine vetoes.
         var playerSummary = PlayerSummary(player);
@@ -5092,7 +5092,7 @@ public class RunSimulator
     /// Rust engine's canonical order (Attack=0, Skill=1, Power=2, Curse=3,
     /// Status=4 — sts2-core cards.rs CardType::index). Mirrors the scan
     /// RingingPower.ShouldPlay does over CombatManager history; identical
-    /// to the SpireCoach mod's serializer so both wire dialects agree.
+    /// to the SpireMentor mod's serializer so both wire dialects agree.
     /// </summary>
     private static int[] CountCardsPlayedThisTurn(CombatState? combatState, Creature? playerCreature)
     {
@@ -5364,7 +5364,7 @@ public class RunSimulator
         // entry point + CardSelectorPrefs prompt loc key opened the next card
         // selection (the ICardSelector signature drops both), so card_select
         // decisions carry their semantics ("TO_UPGRADE" vs "TO_DISCARD" ...).
-        // Mirrors the SpireCoach mod's CardSelectContextPatch — without it every
+        // Mirrors the SpireMentor mod's CardSelectContextPatch — without it every
         // mid-combat selection the MCTS replay can't answer falls to the
         // random-legal picker instead of the prompt-keyed quality heuristic.
         PatchCardSelectContext();
@@ -5957,7 +5957,7 @@ public class RunSimulator
             {
                 // Harmony binds the `prefs` prefix arg by NAME — v0.107.1
                 // verified every prefs-taking CardSelectCmd method declares it
-                // as `prefs` (same audit as the SpireCoach mod's patch).
+                // as `prefs` (same audit as the SpireMentor mod's patch).
                 if (!m.GetParameters().Any(p => p.ParameterType == prefsType))
                     continue;
                 try
@@ -7125,7 +7125,7 @@ public class RunSimulator
     /// cleared by HeadlessCardSelector at the top of GetSelectedCards. Game
     /// logic is single-threaded per selection and nested CardSelectCmd calls
     /// share one prompt, so last-write-wins is correct (same reasoning as the
-    /// SpireCoach mod's SimCardSelectContext).
+    /// SpireMentor mod's SimCardSelectContext).
     /// </summary>
     internal static class HeadlessCardSelectContext
     {

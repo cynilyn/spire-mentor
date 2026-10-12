@@ -854,7 +854,7 @@ impl Workbench {
     }
 
     /// `POST /api/simlab/position/import`: a pasted position / engine wire /
-    /// SpireCoach Copy-state → position.
+    /// SpireMentor Copy-state → position.
     fn simlab_import(body: &Value) -> Result<Value, ApiError> {
         let text = body.get("text").and_then(Value::as_str).unwrap_or("");
         let (position, notes, source) =

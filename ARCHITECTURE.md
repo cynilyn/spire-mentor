@@ -51,16 +51,16 @@ The most entangled node, by design. Concerns:
 - **PPO training** — trains run-policy champions against the Rust engine via
   the `sts2_rs` PyO3 module; promotion flows through `champions.toml` (below).
 - **Workbench** — web app (Python-backed server, or browser-only via the wasm build; the private repo also carries a Docker deploy image).
-- **Bridge client / advisor** — talks to sts2-bridge's TCP protocol; the
+- **Bridge client / advisor** — talks to spire-mentor-mod's TCP protocol; the
   advisor ships as a frozen exe (`packaging/SimAdvisor.spec`).
 
 Hard build edge: `pyproject.toml` declares an **editable path dependency** on
 `../sts2-rs/crates/sts2-py` — the one edge that makes sts2-pycli
 non-standalone today (decision D4 in the open-source plan).
 
-### sts2-bridge — the live-game mod
+### spire-mentor-mod — the live-game mod
 
-C# mod ("Spire Coach") loaded into the running game, exposing state and
+C# mod ("Spire Mentor") loaded into the running game, exposing state and
 commands over TCP (`PROTOCOL.md` is the contract). Compiles with zero sibling
 files; couples to sts2-pycli only at dev-deploy/packaging time.
 
@@ -79,7 +79,7 @@ graph TD
     WIKI["sts2-wiki<br/>decomp oracle + data + art"]
     RS["sts2-rs<br/>Rust engine (standalone)"]
     PY["sts2-pycli<br/>oracle / parity / training / workbench"]
-    BR["sts2-bridge<br/>live-game mod"]
+    BR["spire-mentor-mod<br/>live-game mod"]
     DOCKER["root Dockerfile<br/>workbench image"]
     CHAMP["sts2-pycli/data/ppo/champions.toml<br/>(single source of truth)"]
 

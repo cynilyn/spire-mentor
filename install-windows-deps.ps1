@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Bootstrap the sts2-sim build toolchain on Windows.
+    Bootstrap the spire-mentor build toolchain on Windows.
 
 .DESCRIPTION
     Idempotent installer for the tools needed to compile this monorepo on

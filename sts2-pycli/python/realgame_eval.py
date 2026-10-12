@@ -1,4 +1,4 @@
-"""Eval harness for the real-game "SpireCoach" mod (real-game bridge phase 3).
+"""Eval harness for the real-game "SpireMentor" mod (real-game bridge phase 3).
 
 Runs N sessions per requested ``--policy`` against the live bridge, one
 bridge TCP connection per run (``play_one_session`` exits on
@@ -561,7 +561,7 @@ def build_report(
 def _world_err_cell(agg: dict[str, Any]) -> str:
     """The ``world err (runs/throws)`` cell for one aggregate row.
 
-    ``n/a`` when the arm carries no instrumentation at all — the SpireCoach arm
+    ``n/a`` when the arm carries no instrumentation at all — the SpireMentor arm
     talks to the live game over TCP and never sees the C# process's stderr, so
     rendering it as ``0/0`` would claim a clean world on the strength of a
     counter that was never wired up.

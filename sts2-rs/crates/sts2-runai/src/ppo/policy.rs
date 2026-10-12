@@ -879,7 +879,7 @@ impl PpoPolicy {
     /// Score a decision built from the **bridge wire** rather than a live
     /// `RunManager` — [`super::wire::build_decision`]'s output.
     ///
-    /// The advisor lane has no `RunManager` (SpireCoach sends the wire schema
+    /// The advisor lane has no `RunManager` (SpireMentor sends the wire schema
     /// and nothing else), so [`Self::evaluate_with_actions`] cannot serve it.
     /// Everything else is shared: same `featurize`, same tract inference, and
     /// — since the group decode was re-keyed off [`ActionDesc`] — the same A8

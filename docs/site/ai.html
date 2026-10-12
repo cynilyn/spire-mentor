@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>How the AI plays</title>
-<meta name="description" content="How the sts2-sim AI decides: chance-node MCTS with honest hidden information for every combat action, and a per-character PPO transformer for every other decision.">
+<meta name="description" content="How the spire-mentor AI decides: chance-node MCTS with honest hidden information for every combat action, and a per-character PPO transformer for every other decision.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 9v14l12 7 12-7V9z' fill='%23d9a441'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,12 +14,12 @@
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="index.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>sts2-sim</span></a>
+  <a class="brand" href="index.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>spire-mentor</span></a>
   <nav class="toplinks" aria-label="Site">
     <a href="index.html">Docs</a>
     <a href="ai.html" aria-current="page"><span class="l">How the AI plays</span><span class="s">AI</span></a>
     <a href="training.html"><span class="l">How it's trained</span><span class="s">Training</span></a>
-    <a class="gh" href="https://github.com/tfriedel/sts2-sim"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
+    <a class="gh" href="https://github.com/tfriedel/spire-mentor"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
   </nav>
   <button class="iconbtn theme" type="button" aria-label="Switch colour theme" title="Switch colour theme"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></svg></button>
   <button class="menu" type="button" aria-controls="toc" aria-expanded="false">Contents</button>
@@ -53,7 +53,7 @@
   decision time, as deployed.</p>
   <figure class="video">
     <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/DcZs8ZGSDyo" title="Slay the Spire 2: AI beats Ironclad Ascension 9" loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
-    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the Spire Coach mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
+    <figcaption>The AI beating Ironclad at Ascension 9 in the real game, through the Spire Mentor mod. The advisor panel at the top left shows the search's ranking of each move.</figcaption>
   </figure>
 
 </section>
@@ -143,7 +143,7 @@
     <thead><tr><th>Where</th><th class="num">Simulations</th><th>Threads</th></tr></thead>
     <tbody>
       <tr><td>Simulator runs and every promotion gate</td><td class="num">1,000 · 4,000 at bosses</td><td>1 per search; parallel across seeds</td></tr>
-      <tr><td>Spire Coach advisor in the real game</td><td class="num">8,000</td><td>up to 8, root-parallel</td></tr>
+      <tr><td>Spire Mentor advisor in the real game</td><td class="num">8,000</td><td>up to 8, root-parallel</td></tr>
       <tr><td>Workbench hint in the browser</td><td class="num">2,000</td><td>1, in a Web Worker</td></tr>
       <tr><td>RL training rollouts</td><td class="num">250 · 1,000 at bosses</td><td>1 per search</td></tr>
     </tbody>
@@ -316,7 +316,7 @@
     <tbody>
       <tr><td>Simulator and gates</td><td>native Rust</td><td>ONNX via <em>tract</em>, pure Rust, CPU, batch 1</td></tr>
       <tr><td>Browser workbench</td><td>the same Rust crate compiled to WebAssembly, in a Web Worker</td><td>the same <em>tract</em> runtime inside the WebAssembly module; the ~8.5 MB model is fetched once and cached for offline use</td></tr>
-      <tr><td>Spire Coach mod</td><td colspan="2">The mod itself only reads the game and draws the HUD. It starts a separate advisor process that bundles the Rust engine and the champion models, mirrors the live state into the engine and answers over a local socket.</td></tr>
+      <tr><td>Spire Mentor mod</td><td colspan="2">The mod itself only reads the game and draws the HUD. It starts a separate advisor process that bundles the Rust engine and the champion models, mirrors the live state into the engine and answers over a local socket.</td></tr>
     </tbody>
   </table>
   </div>
@@ -330,7 +330,7 @@
 </main>
 </div>
 
-<footer class="foot"><span>sts2-sim · MIT licence</span><span>Not affiliated with Mega Crit</span><a href="https://github.com/tfriedel/sts2-sim">Source on GitHub</a></footer>
+<footer class="foot"><span>spire-mentor · MIT licence</span><span>Not affiliated with Mega Crit</span><a href="https://github.com/tfriedel/spire-mentor">Source on GitHub</a></footer>
 <script src="site.js?v=3"></script>
 </body>
 </html>

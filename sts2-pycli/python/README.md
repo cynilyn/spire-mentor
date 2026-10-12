@@ -81,10 +81,10 @@ See `../docs/parity-suite.md` for the full map of this area before touching it.
   `run_files.py` reads `.run`/`.run.gz`; `run_stepper.py`, `shadow_replay.py`,
   `shadow_sweep_summary.py` replay recorded logs against a shadow engine.
 
-## Real game (SpireCoach)
+## Real game (SpireMentor)
 
 - **Bridge clients** — transport: `realgame_bridge.py` (stdlib-only TCP client
-  for `../../sts2-bridge/PROTOCOL.md`); `sts2_realgame.py` adapts the live
+  for `../../spire-mentor-mod/PROTOCOL.md`); `sts2_realgame.py` adapts the live
   game to the headless decision-point schema. Drivers: `realgame_random.py`,
   `realgame_mcts.py`, `realgame_ppo.py`, `realgame_hand_select.py`,
   `realgame_parity.py`, `realgame_adapter.py`; eval: `realgame_eval.py`.

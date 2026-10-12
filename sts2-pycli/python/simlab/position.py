@@ -703,7 +703,7 @@ def position_from_paste(text: str) -> tuple[dict[str, Any], list[str], str]:
 
     Accepted, in this order: a ``simlab-position/1`` document, an engine wire
     dict, and anything :func:`workbench.state_import.parse_pasted_state`
-    reads — the SpireCoach **Copy state** payload, an advisor log line or a
+    reads — the SpireMentor **Copy state** payload, an advisor log line or a
     whole log (newest fight wins).
 
     Returns:

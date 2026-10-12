@@ -1,4 +1,4 @@
-"""MCTS-driven play driver for the real-game "SpireCoach" mod (real-game bridge phase 2).
+"""MCTS-driven play driver for the real-game "SpireMentor" mod (real-game bridge phase 2).
 
 Same session loop as :mod:`realgame_random` (reuses
 :class:`realgame_bridge.RealGameBridgeClient`, JSONL logging via

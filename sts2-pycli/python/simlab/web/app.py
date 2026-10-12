@@ -156,7 +156,7 @@ def build_api_router(mgr: JobManager) -> APIRouter:
 
     @router.post("/api/simlab/position/import")
     def position_import(body: dict) -> dict:
-        """A pasted position / engine wire / SpireCoach Copy-state → position."""
+        """A pasted position / engine wire / SpireMentor Copy-state → position."""
         from simlab.position import position_from_paste
 
         pos, notes, source = _position_or_422(position_from_paste, str(body.get("text") or ""))

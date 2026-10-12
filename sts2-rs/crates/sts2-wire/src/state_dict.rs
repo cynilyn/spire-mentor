@@ -4,7 +4,7 @@
 //! `sts2-py` when the parse layer was generalised over [`WireValue`].
 //!
 //! This module implements the *fail-loud* schema parse for the JSON dict the
-//! hint adapter (`sts2_hint/adapter.py`) and the SpireCoach advisor lane feed
+//! hint adapter (`sts2_hint/adapter.py`) and the SpireMentor advisor lane feed
 //! in, plus the translation of the resulting [`ParsedState`] into a fully
 //! initialised `CombatState`. Per the integration plan
 //! (`docs/plans/2026-05-14-integrate-sts2-rs-mcts-hint-system-into-projects-sts2-sts2-c.md`,
@@ -2422,7 +2422,7 @@ fn wire_move_state_alias(kind: MonsterKind, wire_id: &str) -> Option<&'static st
 
 /// Invert one wire attack-intent amount from UI-EFFECTIVE back to BASE.
 ///
-/// The wire dialects (SpireCoach and Sts2Headless) carry the number the
+/// The wire dialects (SpireMentor and Sts2Headless) carry the number the
 /// game SHOWS the player — C#'s intent display already folds in the
 /// attacker's Strength/Weak/Shrink and the target's Vulnerable. The
 /// engine's `Creature.intent` semantics are BASE amounts:

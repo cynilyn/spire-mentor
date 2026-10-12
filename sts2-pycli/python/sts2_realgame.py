@@ -3,7 +3,7 @@ headless ``Sts2Headless`` decision-point schema.
 
 Real-game bridge phase 2 (see
 ``../docs/plans/2026-07-10-real-game-bridge.md``). :class:`RealGame` speaks
-the SpireCoach wire protocol (``sts2-bridge/PROTOCOL.md``) via
+the SpireMentor wire protocol (``spire-mentor-mod/PROTOCOL.md``) via
 :class:`realgame_bridge.RealGameBridgeClient` and translates every message
 into *exactly* the dict shape ``src/Sts2Headless/RunSimulator.cs`` emits for
 each ``decision`` (``game_over``, ``bundle_select``, ``card_reward``,
@@ -52,7 +52,7 @@ Action translation (headless verb -> bridge verb) is the mirror image: the
 driver keeps calling the same ``sts2_client.Game``-shaped methods
 (``play_card``, ``choose_option``, ``select_cards``, ...); each one is
 translated to the matching bridge action (``play``/``potion``/``choose``/
-..., see ``sts2-bridge/PROTOCOL.md`` section 4) and sent. ``shop`` and
+..., see ``spire-mentor-mod/PROTOCOL.md`` section 4) and sent. ``shop`` and
 ``map_select`` need extra bookkeeping because their headless action
 addressing (``buy_card(card_index)`` into a *filtered* per-kind list;
 ``select_map_node(col, row)``) does not match the bridge's own flat
@@ -178,8 +178,8 @@ class RealGame:
         """Configure a RealGame session (does not connect yet).
 
         Args:
-            host: SpireCoach mod TCP host.
-            port: SpireCoach mod TCP port.
+            host: SpireMentor mod TCP host.
+            port: SpireMentor mod TCP port.
             character: Default character for :meth:`start` when not
                 overridden per-call, e.g. ``"Ironclad"``.
             seed: Default run seed for :meth:`start`. Only an int (or a
@@ -225,7 +225,7 @@ class RealGame:
     # ── Connection lifecycle ────────────────────────────────────────────────
 
     def connect(self) -> None:
-        """Open the TCP connection to the SpireCoach mod. Idempotent."""
+        """Open the TCP connection to the SpireMentor mod. Idempotent."""
         if not self._connected:
             self.client.connect()
             self._connected = True
@@ -261,7 +261,7 @@ class RealGame:
         ``run_config`` -> ``start_run`` handshake (PROTOCOL.md section 3/4)
         with the given (or constructor-default) character/seed/ascension.
         If it is disabled, the run has already auto-started from the mod's
-        own ``SpireCoach.conf`` defaults by the time we connect -- any
+        own ``SpireMentor.conf`` defaults by the time we connect -- any
         requested character/seed/ascension is logged and ignored (the mod
         offers no way to override it after the fact).
 
@@ -306,7 +306,7 @@ class RealGame:
         else:
             logger.warning(
                 "RealGame.start(): mod's client_run_config is off; the run already "
-                "auto-started from SpireCoach.conf defaults -- ignoring requested "
+                "auto-started from SpireMentor.conf defaults -- ignoring requested "
                 "character=%r seed=%r ascension=%r",
                 character,
                 seed,

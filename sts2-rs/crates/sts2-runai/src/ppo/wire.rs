@@ -10,7 +10,7 @@
 //!
 //! [`super::policy::build_obs`] builds the observation from a live
 //! `RunManager` — the engine's own run state. The advisor lane has no such
-//! object: SpireCoach sends the wire schema in `sts2-bridge/PROTOCOL.md` and
+//! object: SpireMentor sends the wire schema in `spire-mentor-mod/PROTOCOL.md` and
 //! nothing else. That is the one piece of the PPO path with no Rust
 //! counterpart, so the advisor has had to build the observation in Python,
 //! dragging `numpy` + `onnxruntime` (~54 MB of the shipped bundle) along with
@@ -415,10 +415,10 @@ fn base_obs(state: &Value) -> PpoObs {
         // and the encoder reads them as the empty slice.
         upgrade_select_deck_indices: None,
         shop: None,
-        // The bridge has no potion-swap screen: SpireCoach filters an
+        // The bridge has no potion-swap screen: SpireMentor filters an
         // unclaimable `PotionReward` out of the reward buttons instead of
         // offering the discard-to-claim choice
-        // (`sts2-bridge/SimScreenAdvice.cs:1755`), so no wire message ever
+        // (`spire-mentor-mod/SimScreenAdvice.cs:1755`), so no wire message ever
         // carries this. Left unset like the deck-mutation selects above.
         pending_potion_swap: None,
         event_name: None,
@@ -1341,7 +1341,7 @@ mod tests {
     }
 
     /// The real game pre-upgrades reward cards too, and it says so over both
-    /// wire spellings. Dropping the flag here would put a SpireCoach-served
+    /// wire spellings. Dropping the flag here would put a SpireMentor-served
     /// champion on a different observation from the one it trained on the
     /// moment `reward_upgrade` graduates (GH #545).
     #[test]

@@ -1,5 +1,5 @@
 //! State-import combat-lane parity (GH #708): the engine wire dict the port
-//! builds for a SpireCoach fight paste, against the desktop chain's answer
+//! builds for a SpireMentor fight paste, against the desktop chain's answer
 //! (`realgame_adapter.to_headless_combat_play` + `sts2_hint.adapter.translate`)
 //! for every real capture under `sts2-pycli/tests/fixtures/realgame_adapter/`.
 //!

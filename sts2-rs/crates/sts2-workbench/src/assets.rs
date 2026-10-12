@@ -126,7 +126,7 @@ fn lookup_pair<'a>(
 
 /// The wire's monster kind as the `MonsterKind` the tables above are keyed
 /// by. The engine emits PascalCase (`"DecimillipedeSegmentFront"`);
-/// SpireCoach emits the game's SCREAMING_SNAKE id
+/// SpireMentor emits the game's SCREAMING_SNAKE id
 /// (`"DECIMILLIPEDE_SEGMENT_FRONT"`). A kind carrying any lowercase letter
 /// is already a `MonsterKind` and is returned untouched; None for an
 /// empty/absent kind.

@@ -622,7 +622,7 @@ function JsonBox({
         </span>
       </div>
       <div className="sl-muted sl-note">
-        Paste a position here, or the state the game copied (SpireCoach <b>Copy state</b> / Ctrl+Shift+C) — then <b>apply</b>.
+        Paste a position here, or the state the game copied (SpireMentor <b>Copy state</b> / Ctrl+Shift+C) — then <b>apply</b>.
       </div>
       <textarea
         className="mono sl-json"

@@ -396,7 +396,7 @@ flood costs a day of lost reports, never money.
 ## State import
 
 Press **📋 Import state** and paste a run position copied out of the live game
-(Spire Coach's **Copy state** / `Ctrl+Shift+C`, or an advisor log — the newest
+(Spire Mentor's **Copy state** / `Ctrl+Shift+C`, or an advisor log — the newest
 position in a pasted log wins). The dialog previews which run it is and what
 the import will and will not reproduce *before* it replaces the run you have
 open, then rebuilds it in the wasm engine.
@@ -481,7 +481,7 @@ even its rows match. One deliberate deviation: an unknown strategy is a 422 at
 submit, where the desktop runner would have produced a row of errors.
 
 Importing a paste accepts a `simlab-position/1` document, an engine wire
-dict, or a live-game Spire Coach fight paste (translated through the same
+dict, or a live-game Spire Mentor fight paste (translated through the same
 `combat_import.rs` adapter the state-import combat lane uses; a fight the
 engine cannot rebuild is refused with the reason).
 
@@ -506,7 +506,7 @@ change is routing its `/api/*` calls through the worker transport
 
 The live-game views — the **Game tree** of the real run (click a save point
 to rewind the actual game), **Live search** over the live board, and **rewind
-to the viewed floor** — talk to the advisor's control plane (the Spire Coach
+to the viewed floor** — talk to the advisor's control plane (the Spire Mentor
 mod's rewind lane: `GET /status`, `/tree`, `/snapshots`, `POST /restore`,
 `/search_tree` on `127.0.0.1:8079`, `sts2-pycli/python/realgame_control.py`).
 The Python workbench reached it through a same-origin proxy (`/api/bridge/*`);
@@ -540,7 +540,7 @@ two opt-ins, both off by default.
 
 1. **On the advisor** (the machine running the game): allow this page's
    origin. In the mod's settings, **Browser workbench origin** =
-   `https://your-workbench.example.com` (`SpireCoachModConfig.BrowserWorkbenchOrigin`
+   `https://your-workbench.example.com` (`SpireMentorModConfig.BrowserWorkbenchOrigin`
    → the advisor's `--control-allow-origin`), or pass the flag yourself.
    The control plane then answers that origin — and no other — with
    `Access-Control-Allow-Origin` (echoed, never `*`), the methods / headers
@@ -577,7 +577,7 @@ configured, `api.bridge.*` never goes through it.
 | M4 | **Shipped** (see "Replay viewer"): run logs on quit, the replay viewer and its reviews / searches / play-from-here, the MCTS Runs page, deck analysis. |
 | M5 | **Shipped**: bug reports, state import (both lanes since GH #708), the SimLab sandbox and — since GH #707 — the SimLab distribution sweeps (see those sections). |
 | M6 | wasm threads (COOP/COEP: the `/*` block in `sts2-pycli/web/public/_headers`; `crossorigin` on art elements only for a remote art origin). |
-| M7 | Android TWA; native `sts2-coach` binary over `Workbench::call` for the Spire Coach lane. Then retire the Python workbench modules and `deploy/`. (The live-game views already reach the advisor directly — see "Live-game bridge".) |
+| M7 | Android TWA; native `sts2-coach` binary over `Workbench::call` for the Spire Mentor lane. Then retire the Python workbench modules and `deploy/`. (The live-game views already reach the advisor directly — see "Live-game bridge".) |
 
 Known M1 limits: single restore attempt on load; `size_jitter` / `hue_jitter`
 are the only floats in the wire; the `csharp` backend dialect and

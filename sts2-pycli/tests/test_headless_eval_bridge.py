@@ -155,7 +155,7 @@ def test_map_select_with_no_choices_proceeds_instead_of_crashing() -> None:
 
 # ── live-bridge shape: the parallel reroute inside realgame_ppo ─────────────
 #
-# Live SpireCoach presents the act-start Ancient as a plain `event` message
+# Live SpireMentor presents the act-start Ancient as a plain `event` message
 # (options carry raw `event_id` + `relic_id`); headless_eval never sees those
 # states, so realgame_ppo._build_event must do its own detection.
 
@@ -242,7 +242,7 @@ def test_live_ancient_proceed_page_stays_event() -> None:
 def test_envelope_dll_dialect_prefers_total_floor() -> None:
     """Real-DLL shape: context dict, act 1-based, floor act-LOCAL, total_floor
     run-wide (RunContext emits it since 2026-07-16). The bridge envelope must
-    carry TotalFloor semantics (live SpireCoach parity)."""
+    carry TotalFloor semantics (live SpireMentor parity)."""
     state = {
         "context": {"act": 2, "floor": 5, "total_floor": 22},
         "player": {},

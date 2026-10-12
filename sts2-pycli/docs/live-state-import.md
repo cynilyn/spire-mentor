@@ -7,9 +7,9 @@ distributions instead of anecdotes.
 
 ## The loop
 
-1. **In the game** — press **Copy state** on the Spire Coach strip, or
+1. **In the game** — press **Copy state** on the Spire Mentor strip, or
    `Ctrl+Shift+C`. The position goes to the clipboard and to
-   `%LOCALAPPDATA%\SpireCoach\state-<ts>.json`.
+   `%LOCALAPPDATA%\SpireMentor\state-<ts>.json`.
 2. **In the workbench** — **📋 Import state**, paste, and pick a lane. The
    dialog names the run and reports what the import will and will not
    reproduce *before* it replaces the run you have open.
@@ -46,7 +46,7 @@ Exact, and asserted by tests:
   upgraded.
 - **The combat board** — `state_from_dict` round-trip, the same path the live
   advisor uses every few seconds.
-- **RNG cursors** — every stream Spire Coach publishes is fast-forwarded to its
+- **RNG cursors** — every stream Spire Mentor publishes is fast-forwarded to its
   recorded count, so the next card reward, shop stock, event roll and monster
   intent are the ones your run was about to get. Without this an import shares
   only its seed and every downstream roll belongs to a different run; the
@@ -126,7 +126,7 @@ no deck, no map), so there is nothing to rebuild.
 
 | Piece | File |
 |---|---|
-| Clipboard producer | `sts2-bridge/SimStateCopy.cs` (`PROTOCOL.md` §8) |
+| Clipboard producer | `spire-mentor-mod/SimStateCopy.cs` (`PROTOCOL.md` §8) |
 | Paste parser | `python/workbench/state_import.py` |
 | Combat lane | `python/workbench/backends/imported_combat.py` |
 | Run lane | `RustGame.start_imported` in `python/workbench/backends/rust_game.py` |

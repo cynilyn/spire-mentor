@@ -5,7 +5,7 @@
 This is a **snapshot export** of a private development monorepo. Development
 happens there; every so often its tree is exported — with all game-derived
 content left out and verbatim decompiled code stripped from comments — and
-mirrored here as one `sync: sts2-sim-private@<sha>` commit. So:
+mirrored here as one `sync: spire-mentor-private@<sha>` commit. So:
 
 - The history here is a series of snapshots, not the development history.
 - Pull requests are welcome. A merged PR is re-applied to the private repo

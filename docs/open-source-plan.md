@@ -1,7 +1,7 @@
 # Open-source plan — decisions and the export flow
 
-The public repository is **`github.com/tfriedel/sts2-sim`**; this private
-monorepo is `tfriedel/sts2-sim-private`. The public repo is a
+The public repository is **`github.com/tfriedel/spire-mentor`**; this private
+monorepo is `tfriedel/spire-mentor-private`. The public repo is a
 **fresh-history snapshot** of this tree with every game-derived file left
 out, produced by `release/export_unit.py` from the single manifest
 `release/units/unit-mono.toml`, and refreshed by squashed sync commits.
@@ -25,10 +25,10 @@ were deleted (recoverable with
 |---|---|---|
 | D0 | Game text | **Ships.** Localization and the extracted data JSON are part of the public repo (owner decision 2026-09-13) — the engine, AI and workbench must work without the game. Art, audio, assemblies and decompiled code do not ship. |
 | D1 | Decompiled C# quoted in original code/docs | **Strip at export.** Quotes sit in code fences tagged `csharp` by convention; the exporter replaces each block with a placeholder line and fails on a `text`-tagged fence that still looks like C#. Path citations and namespace names stay as references, ratcheted. The engine still re-expresses the game's rules; contacting Mega Crit for a non-objection is a separate, open question. |
-| D2 | History export strategy | **Fresh-history snapshot + squashed syncs.** The private history is irrecoverably mixed (deleted game paths under two prefix sets, ~4 GB of `.beads/issues.jsonl` with pasted C#); it is never filtered or published. Each sync = export → mirror onto the public checkout → one `sync: sts2-sim-private@<sha>` commit. |
+| D2 | History export strategy | **Fresh-history snapshot + squashed syncs.** The private history is irrecoverably mixed (deleted game paths under two prefix sets, ~4 GB of `.beads/issues.jsonl` with pasted C#); it is never filtered or published. Each sync = export → mirror onto the public checkout → one `sync: spire-mentor-private@<sha>` commit. |
 | D3 | Champions manifest ownership | **Moot** — one public monorepo keeps `champions.toml` where it is; the exporter reads it to select exactly the deployed `.onnx` files (sha256-verified). |
 | D4 | Publishing a `sts2_rs` wheel | **Moot** — the public repo is the whole monorepo; `uv sync` builds the wheel from the sibling path dep. |
-| D5 | sts2-bridge donor license | **Resolved 2026-10-11 — ships.** Game side: the files that mirrored the game's AutoSlay framework (`SimAutoSlayer.cs` and four handlers) were rewritten clean-room from a behavioural spec, and the exporter's decompiled-overlap gate (`[gates] decomp_*` in the manifest) fails any exported `.cs` file that reproduces decompiled code. Donor side: zhiyue/sts2-rl-agent has no LICENSE file (its README only says the project is "for research and educational purposes"), so every donor-derived region was also rewritten clean-room (round 2, 2026-10-11); the same gate compares every exported `.cs` file against the pinned donor source (`donor_dirs`, fetched by `just fetch-donors`). `sts2-bridge/LICENSE` is plain MIT with a credit line. Was: excluded until a donor grant or a clean-room rewrite existed. |
+| D5 | spire-mentor-mod donor license | **Resolved 2026-10-11 — ships.** Game side: the files that mirrored the game's AutoSlay framework (`SimAutoSlayer.cs` and four handlers) were rewritten clean-room from a behavioural spec, and the exporter's decompiled-overlap gate (`[gates] decomp_*` in the manifest) fails any exported `.cs` file that reproduces decompiled code. Donor side: zhiyue/sts2-rl-agent has no LICENSE file (its README only says the project is "for research and educational purposes"), so every donor-derived region was also rewritten clean-room (round 2, 2026-10-11); the same gate compares every exported `.cs` file against the pinned donor source (`donor_dirs`, fetched by `just fetch-donors`). `spire-mentor-mod/LICENSE` is plain MIT with a credit line. Was: excluded until a donor grant or a clean-room rewrite existed. |
 | D6 | Scraped run corpus and derived nets | **Excluded** (corpus, codex fixtures, `value_human_a0*`, `*ranker*`, synergy catalogs). PPO champions (own-sim) ship as plain blobs; `.pt` checkpoints and retired nets do not. |
 | D7 | Workbench Docker image | **Private** (`Dockerfile` excluded); the browser build is what the public repo produces. |
 | D8 | CI | **Public repo only.** `release/public-overlay/.github/workflows/ci.yml` (and `pages.yml`, which publishes `docs/site/` to GitHub Pages) is added at export; the private repo keeps its no-Actions policy (ADR-0002). |
@@ -57,9 +57,9 @@ From the private checkout, on a green `main`:
 
 ```sh
 just check-public                    # the gate (also part of the local gates)
-just sync-public ../sts2-sim-public  # export -> mirror onto the public clone
-cd ../sts2-sim-public && git status  # review
-git add -A && git commit -m "sync: sts2-sim-private@<sha>" && git push
+just sync-public ../spire-mentor-public  # export -> mirror onto the public clone
+cd ../spire-mentor-public && git status  # review
+git add -A && git commit -m "sync: spire-mentor-private@<sha>" && git push
 ```
 
 Outside contributions land in the public repo as normal PRs, are re-applied
@@ -70,7 +70,7 @@ a forgotten port: any path changed on the public side since the newest sync
 commit must come out of the export byte-identical to public HEAD, or the sync
 refuses (listing the paths and public commits); it also refuses a dirty public
 worktree or one with no sync commit. `--allow-revert` overrides with a warning.
-Commit syncs with the exact `sync: sts2-sim-private@<sha>` subject — the guard
+Commit syncs with the exact `sync: spire-mentor-private@<sha>` subject — the guard
 keys on it.
 
 ## Recorded non-actions

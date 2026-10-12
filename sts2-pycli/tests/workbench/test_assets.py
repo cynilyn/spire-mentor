@@ -331,7 +331,7 @@ def test_room_icon_boss_by_id(tmp_path: Path):
 
 def test_monster_kind_accepts_both_producers_spellings(tmp_path: Path):
     # THE TWO WIRES SPELL THE KIND DIFFERENTLY. The engine emits the PascalCase
-    # MonsterKind (`state_dict.rs`: species.python_name()); SpireCoach emits the
+    # MonsterKind (`state_dict.rs`: species.python_name()); SpireMentor emits the
     # game's own `Creature.Monster.Id.Entry`, which is SCREAMING_SNAKE (verified
     # against the raw v2 captures in logs/realgame/). Keying only on PascalCase
     # silently no-op'd the whole kind-addressed path for every replayed live

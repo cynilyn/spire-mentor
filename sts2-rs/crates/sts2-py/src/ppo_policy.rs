@@ -239,7 +239,7 @@ mod tests {
         assert!(merge_obs(json!({}), json!("nope")).is_err());
     }
 
-    /// The SpireCoach dialect omits structural keys the training producer
+    /// The SpireMentor dialect omits structural keys the training producer
     /// always writes. This is the deserialize half of the contract that
     /// `ppo::obs`'s module note describes; without it every live map
     /// decision raises instead of scoring.

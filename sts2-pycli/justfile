@@ -438,7 +438,7 @@ simlab-sweep-golden-dump *args:
     PYTHONPATH=python .venv/bin/python scripts/dump_simlab_sweep_golden.py {{args}}
 
 # Record the state-import combat-lane golden (GH #708): the Python adapter
-# chain's engine wire dict for every real SpireCoach capture under
+# chain's engine wire dict for every real SpireMentor capture under
 # tests/fixtures/realgame_adapter/, replayed by the Rust port's
 # `state_import_combat_parity` test. Re-dump after a change to
 # realgame_adapter.py, sts2_hint/{adapter,canonical_maps}.py or

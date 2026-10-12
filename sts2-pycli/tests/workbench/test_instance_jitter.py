@@ -95,7 +95,7 @@ class TestScale:
 
 class TestWireSpelling:
     def test_the_bridge_s_screaming_snake_kind_groups_too(self) -> None:
-        # SpireCoach spells the kind SCREAMING_SNAKE; grouping must see those two
+        # SpireMentor spells the kind SCREAMING_SNAKE; grouping must see those two
         # as the same monster or a live run gets no jitter at all.
         enemies = [_enemy("EXOSKELETON", 28), _enemy("Exoskeleton", 24)]
         _apply_instance_jitter(enemies, RANGES)

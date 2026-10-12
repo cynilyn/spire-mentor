@@ -37,7 +37,7 @@ WEB = PYCLI / "web"
 DEFAULT_SITE = os.environ.get("STS2_WORKBENCH_SITE", "https://your-workbench.example.com")
 DEFAULT_OUT = PYCLI / "logs" / "bugreports"
 KEY_PREFIX = "bugreports/"
-USER_AGENT = "sts2-bug-reports/1 (https://github.com/tfriedel/sts2-sim)"
+USER_AGENT = "sts2-bug-reports/1 (https://github.com/tfriedel/spire-mentor)"
 BINDING = "BUGREPORTS"
 
 

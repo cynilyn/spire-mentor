@@ -2,7 +2,7 @@
 
 Ported from the offline smoke harness (fake-mod round trip incl. fork and
 409 non-seekable) that validated the lane before it shipped 2026-08-21. A
-FakeClient stands in for the SpireCoach mod: it answers the rewind verbs the
+FakeClient stands in for the SpireMentor mod: it answers the rewind verbs the
 way the mod would, from another thread, exercising the waiter/round-trip
 machinery for real over HTTP on an ephemeral port.
 """

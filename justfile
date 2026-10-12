@@ -1,4 +1,4 @@
-# sts2-sim umbrella tasks. Most work runs inside the subprojects
+# spire-mentor umbrella tasks. Most work runs inside the subprojects
 # (`just --list` in sts2-rs/, sts2-pycli/, sts2-wiki/).
 #
 # Windows: the recipes in THIS file run under PowerShell (each body is one

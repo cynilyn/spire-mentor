@@ -1,5 +1,5 @@
 {
-  "_provenance": "SYNTHETIC -- hand-built strictly per sts2-bridge/PROTOCOL.md section 3 (boss_relic: \"Same shape as treasure, action:pick_relic\"), using the real run_state/relic-object shape from tests/fixtures/sts2_realgame/treasure.json. No live boss_relic capture exists in logs/realgame/ (content-RNG never spawned one in the ~3.5k-decision phase-1 corpus, see the plan doc phase-1 residual note) -- this fixture and the translation it exercises are therefore UNVERIFIED against the live game.",
+  "_provenance": "SYNTHETIC -- hand-built strictly per spire-mentor-mod/PROTOCOL.md section 3 (boss_relic: \"Same shape as treasure, action:pick_relic\"), using the real run_state/relic-object shape from tests/fixtures/sts2_realgame/treasure.json. No live boss_relic capture exists in logs/realgame/ (content-RNG never spawned one in the ~3.5k-decision phase-1 corpus, see the plan doc phase-1 residual note) -- this fixture and the translation it exercises are therefore UNVERIFIED against the live game.",
   "state": {
     "type": "boss_relic",
     "options": [

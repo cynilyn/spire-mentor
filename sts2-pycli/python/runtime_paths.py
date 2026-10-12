@@ -6,7 +6,7 @@ path that are ``__file__``-relative in a dev checkout:
 - read-only data (``localization_eng/``, ``data/ppo/``) lands under the
   bundle's ``_internal`` dir (``sys._MEIPASS``);
 - writes (logs, config) must leave the install dir entirely -- the mod
-  ships under ``<game>/mods/SpireCoach/``, which is ``Program Files`` on a
+  ships under ``<game>/mods/SpireMentor/``, which is ``Program Files`` on a
   default Steam install and not user-writable.
 
 Every function returns the historical dev path unless ``sys.frozen`` is
@@ -46,7 +46,7 @@ def app_data_dir() -> Path:
     """Writable per-user dir for the packaged advisor's logs/config.
 
     Shared with the C# side, which writes ``advisor_stdout.log`` and
-    ``SpireCoach.conf`` under the same ``%LOCALAPPDATA%\\SpireCoach``.
+    ``SpireMentor.conf`` under the same ``%LOCALAPPDATA%\\SpireMentor``.
     """
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "SpireCoach"
+    return Path(base) / "SpireMentor"

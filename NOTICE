@@ -1,7 +1,7 @@
-sts2-sim — public snapshot
+spire-mentor — public snapshot
 ==========================
 
-This repository is a snapshot export of a private monorepo (sts2-sim-private).
+This repository is a snapshot export of a private monorepo (spire-mentor-private).
 The original work in it — the code, the documentation, the trained networks —
 is licensed under the MIT licenses in LICENSE, sts2-rs/LICENSE,
 sts2-pycli/LICENSE and sts2-wiki/LICENSE. Those grants cover the original

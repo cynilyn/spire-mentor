@@ -197,11 +197,11 @@ fn a_broken_position_build_is_422() {
     assert_eq!(err.status, 422);
 }
 
-/// GH #708: a SpireCoach fight paste becomes a sandbox board (the combat
+/// GH #708: a SpireMentor fight paste becomes a sandbox board (the combat
 /// adapter runs in the wasm), and a fight the engine cannot rebuild is a 422
 /// that says why.
 #[test]
-fn a_spirecoach_fight_paste_becomes_a_board() {
+fn a_spirementor_fight_paste_becomes_a_board() {
     // Game-derived golden (rendered card text), not published — runtime read.
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -221,7 +221,7 @@ fn a_spirecoach_fight_paste_becomes_a_board() {
         "/api/simlab/position/import",
         json!({"text": paste}),
     );
-    assert_eq!(r["source"], json!("SpireCoach Copy-state"));
+    assert_eq!(r["source"], json!("SpireMentor Copy-state"));
     let hand = r["position"]["piles"]["hand"].as_array().expect("hand");
     assert_eq!(
         hand.len(),

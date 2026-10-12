@@ -7,7 +7,7 @@ enumerated (this becomes the parity backlog)."
 This module drives the SAME deterministic policy (:func:`choose_action`) to
 completion on both backends -- the headless C# process (:class:`sts2_client.Game`,
 spawned in-process/subprocess exactly like ``tests/conftest.py``) and the live
-game (:class:`sts2_realgame.RealGame`, over the SpireCoach TCP protocol) -- for
+game (:class:`sts2_realgame.RealGame`, over the SpireMentor TCP protocol) -- for
 the same integer seed/character/ascension, records every decision JSON from
 both into two canonicalized JSONL trails, and diffs them decision-by-decision.
 Divergence is DATA, not failure: the CLI exits 0 even when the trails differ
@@ -25,7 +25,7 @@ STRING:
   ``RunState`` with that string.
 * The live game, via the bridge, sets ``NGame.Instance.DebugSeedOverride`` to
   the integer seed formatted as an invariant-culture decimal string
-  (``sts2-bridge/PROTOCOL.md`` section 4) -- and ``StartRunLobby.cs:619``
+  (``spire-mentor-mod/PROTOCOL.md`` section 4) -- and ``StartRunLobby.cs:619``
   (v0.107.1 decomp) reads ``DebugSeedOverride`` *directly*, bypassing
   ``CanonicalizeSeed`` entirely (that call only fires on the "no override"
   branch). For a purely-numeric seed like ``"12345"`` this is moot --
@@ -605,8 +605,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, required=True, help="Integer run seed (both backends).")
     parser.add_argument("--character", default="Ironclad", help="Character id/display name.")
     parser.add_argument("--ascension", type=int, default=0, help="Ascension level (0-10).")
-    parser.add_argument("--host", default=DEFAULT_HOST, help="SpireCoach mod TCP host.")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="SpireCoach mod TCP port.")
+    parser.add_argument("--host", default=DEFAULT_HOST, help="SpireMentor mod TCP host.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="SpireMentor mod TCP port.")
     parser.add_argument(
         "--max-decisions",
         type=int,

@@ -1,15 +1,15 @@
-# sts2-sim
+# spire-mentor
 
-[![CI](https://github.com/tfriedel/sts2-sim/actions/workflows/ci.yml/badge.svg)](https://github.com/tfriedel/sts2-sim/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-tfriedel.github.io%2Fsts2--sim-blue)](https://tfriedel.github.io/sts2-sim/)
+[![CI](https://github.com/tfriedel/spire-mentor/actions/workflows/ci.yml/badge.svg)](https://github.com/tfriedel/spire-mentor/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-tfriedel.github.io%2Fspire--mentor-blue)](https://tfriedel.github.io/spire-mentor/)
 
 **A bit-exact re-implementation of Slay the Spire 2, an AI that plays it, and
 the tools to watch, question and argue with that AI — in a browser tab or
 inside the real game.**
 
-![The Spire Coach mod advising a live combat: ranked moves, MCTS visit shares and an estimated win chance drawn over the real game](docs/site/img/mod-hud-combat.webp)
+![The Spire Mentor mod advising a live combat: ranked moves, MCTS visit shares and an estimated win chance drawn over the real game](docs/site/img/mod-hud-combat.webp)
 
-<sub>The Spire Coach mod inside the real game: 1,000 MCTS simulations rank
+<sub>The Spire Mentor mod inside the real game: 1,000 MCTS simulations rank
 every legal move, show the principal line and estimate the win chance —
 recomputed on every decision.</sub>
 
@@ -33,14 +33,14 @@ recomputed on every decision.</sub>
   Ironclad champion wins **71%** of runs pooled over Ascension 0–10 (**90%**
   at A0). In the **real game**, playing unassisted at **Ascension 8**, the
   August 2026 versions won 13 of 40 Ironclad runs and 11 of 40 Silent runs.
-  Explained in depth: [how the AI plays](https://tfriedel.github.io/sts2-sim/ai.html)
-  and [how it's trained](https://tfriedel.github.io/sts2-sim/training.html).
+  Explained in depth: [how the AI plays](https://tfriedel.github.io/spire-mentor/ai.html)
+  and [how it's trained](https://tfriedel.github.io/spire-mentor/training.html).
 - **A browser workbench.** The engine compiled to WebAssembly, with the
   game's look: play a seed, rewind any decision, branch, ask the AI for a
   hint, see its search tree, watch the PPO champion play a whole run, then
   review where the run was won and lost. A static site that runs offline —
   no server.
-- **The Spire Coach mod for the real game.** Turns the same AI into an in-game
+- **The Spire Mentor mod for the real game.** Turns the same AI into an in-game
   coach (ranked moves, card scores, route advice, win chance), an autopilot
   that plays whole runs, and a bit-exact rewind button.
 - **Bring-your-own-game tooling.** One command, `just import-game`,
@@ -70,7 +70,7 @@ A0–A10):
 | Necrobinder | 50.0% | 40.5% | 23.0% | 5.0% | 3.5% | **33.1%** | +6.8 pp, p = 6e-10, all 11 levels up |
 
 200 runs per cell; every level is in the
-[docs](https://tfriedel.github.io/sts2-sim/#ai).
+[docs](https://tfriedel.github.io/spire-mentor/#ai).
 
 **In the real game** (the mod's advisor driving `SlayTheSpire2.exe`, 40 runs
 each, random seeds, no cheats, 8,000 sims per combat decision, August 2026
@@ -94,11 +94,11 @@ Web Worker; saves live in IndexedDB, and it installs as an offline PWA.
   sandbox for seed-paired strategy studies, and *state import* — paste a
   position copied from the live game and analyse it here.
 
-## Spire Coach — the AI inside the real game
+## Spire Mentor — the AI inside the real game
 
 ![Route advice from the run policy on the real game's map](docs/site/img/mod-hud-map.webp)
 
-A C# mod for Slay the Spire 2 ([`sts2-bridge/`](sts2-bridge/)) that connects
+A C# mod for Slay the Spire 2 ([`spire-mentor-mod/`](spire-mentor-mod/)) that connects
 the running game to the AI stack over a local socket. An idle mod leaves the
 game vanilla.
 
@@ -115,8 +115,8 @@ game vanilla.
 - A toolbar, an in-game help panel (`F1`), an action log, speed controls and
   a settings page.
 
-Build, install and protocol: [`sts2-bridge/README.md`](sts2-bridge/README.md),
-[`sts2-bridge/PROTOCOL.md`](sts2-bridge/PROTOCOL.md).
+Build, install and protocol: [`spire-mentor-mod/README.md`](spire-mentor-mod/README.md),
+[`spire-mentor-mod/PROTOCOL.md`](spire-mentor-mod/PROTOCOL.md).
 
 ## How it fits together
 
@@ -124,12 +124,12 @@ Build, install and protocol: [`sts2-bridge/README.md`](sts2-bridge/README.md),
 |---|---|---|
 | [`sts2-rs/`](sts2-rs/) | Rust | The engine, MCTS, run-AI with ONNX policy inference, CLI, PyO3 bindings, and the workbench's engine layer (WASM). Builds and tests with nothing else present. |
 | [`sts2-pycli/`](sts2-pycli/) | Python + C# + TS | The integration hub: the headless C# harness around the game assembly (your copy) that serves as the parity oracle, the parity suite, PPO training, the workbench web app, the real-game advisor, and an MCP server so an LLM can play. |
-| [`sts2-bridge/`](sts2-bridge/) | C# | The Spire Coach mod. |
+| [`spire-mentor-mod/`](spire-mentor-mod/) | C# | The Spire Mentor mod. |
 | [`sts2-wiki/`](sts2-wiki/) | Python / Astro | Extraction tooling: decompiles your game copy, extracts data, art and sound, and can generate a static wiki. |
 | `scripts/import_game.py` | Python | `just import-game` — produces every game-derived input from your install. |
 
 Architecture: [ARCHITECTURE.md](ARCHITECTURE.md). Full documentation with
-screenshots: **[tfriedel.github.io/sts2-sim](https://tfriedel.github.io/sts2-sim/)**
+screenshots: **[tfriedel.github.io/spire-mentor](https://tfriedel.github.io/spire-mentor/)**
 (source in [`docs/site/`](docs/site/)).
 
 ## What's in the box, and what isn't
@@ -189,8 +189,8 @@ text; every image is a neutral placeholder tile and there is no sound until
 
 **The mod.** Windows, the game at v0.107.1, the .NET 9 SDK and
 [BaseLib](https://github.com/Alchyr/BaseLib-StS2):
-`cd sts2-bridge && dotnet build` builds it and installs it into the game's
-`mods/` folder; details in [`sts2-bridge/README.md`](sts2-bridge/README.md).
+`cd spire-mentor-mod && dotnet build` builds it and installs it into the game's
+`mods/` folder; details in [`spire-mentor-mod/README.md`](spire-mentor-mod/README.md).
 
 ## Windows
 
@@ -224,13 +224,13 @@ to the private development repo it is synced from.
 
 - `sts2-pycli` began as a fork of [wuhao21/sts2-cli](https://github.com/wuhao21/sts2-cli)
   by Hao Wu (MIT).
-- Spire Coach started as a port of zhiyue's STS2BridgeMod from
+- Spire Mentor started as a port of zhiyue's STS2BridgeMod from
   [zhiyue/sts2-rl-agent](https://github.com/zhiyue/sts2-rl-agent).
 - The mod's settings page uses Alchyr's
   [BaseLib](https://github.com/Alchyr/BaseLib-StS2).
 
 ## License
 
-MIT — [LICENSE](LICENSE); `sts2-rs/`, `sts2-pycli/`, `sts2-bridge/` and
+MIT — [LICENSE](LICENSE); `sts2-rs/`, `sts2-pycli/`, `spire-mentor-mod/` and
 `sts2-wiki/` carry their own MIT files. The grant covers the original work
 only; nothing from the game is licensed or included.

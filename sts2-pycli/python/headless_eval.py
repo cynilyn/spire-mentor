@@ -1,7 +1,7 @@
 """Eval harness for the C# HEADLESS runner with the live AI stack (rung 3.5).
 
 The missing rung between rung 3 (Rust engine as both world and search
-model, PPO meta: 50% honest win rate) and the live game via SpireCoach
+model, PPO meta: 50% honest win rate) and the live game via SpireMentor
 (0/12): here the **real game DLL** is the world (real content, real
 mechanics via ``Sts2Headless``) while the Rust engine is only the MCTS
 search model — exactly like live, but with no bridge, no UI timing, no
@@ -11,7 +11,7 @@ layer specifically.
 
 Reuses the live decision stack verbatim wherever the dialects allow:
 
-* Non-combat: each headless decision is converted to the SpireCoach
+* Non-combat: each headless decision is converted to the SpireMentor
   message shape and answered by :func:`realgame_ppo.
   pick_noncombat_action_ppo` — the same builders, net, session map
   cache, and fallbacks the live sweeps use. The bridge-dialect answer
@@ -390,7 +390,7 @@ def _run_state(state: dict[str, Any], character: str) -> dict[str, Any]:
 
 def _envelope(state: dict[str, Any], msg_type: str, character: str) -> dict[str, Any]:
     """Common bridge envelope: ``floor`` is the RUN-WIDE TotalFloor and ``act``
-    is 1-based, matching live SpireCoach (PROTOCOL.md, SimStateExtractor.cs) --
+    is 1-based, matching live SpireMentor (PROTOCOL.md, SimStateExtractor.cs) --
     these feed the net's ``total_floor``/``act_index`` state features, which
     ran as 0/0 on every engine-world harness decision before this resolution
     (2026-07-16 featurizer audit: the single largest surviving obs drift).
@@ -501,7 +501,7 @@ def to_bridge_rest_site(state: dict[str, Any], character: str) -> dict[str, Any]
 #: choice (Hive: Orobas/Pael/Tezcatara, decomp Acts/Hive.cs:26-28; Glory:
 #: Nonupeipe/Tanx/Vakuu, Acts/Glory.cs:25-27). The Rust engine hoists this
 #: offer to ``Phase::BossRelic`` and the PPO net was TRAINED on the
-#: ``boss_relic`` surface (scores relics by identity); live SpireCoach emits a
+#: ``boss_relic`` surface (scores relics by identity); live SpireMentor emits a
 #: real ``boss_relic`` message too. The headless DLL instead rides it on the
 #: Ancient's generic ``event_choice`` (RunSimulator.cs:3483-3495), and the
 #: EVENT surface never learned identity (event vocab 100% OOV at training) —
@@ -901,7 +901,7 @@ def pick_card_select_mirrored(
     )
     # Kind derivation + unparked-screen recognition (generative screens,
     # KnowledgeDemon's curse pick, Gambling Chip's turn-1 mulligan) is SHARED
-    # with the live SpireCoach driver (`realgame_mcts.pick_card_select_mirrored`)
+    # with the live SpireMentor driver (`realgame_mcts.pick_card_select_mirrored`)
     # — see `combat_mirror.recognize_card_select` for the full rationale.
     # `turn_start_blocked_on` names the relic OR power whose turn-start hook
     # the world is blocked inside, when the screen is recognized. Consumed
@@ -1728,7 +1728,7 @@ def play_one_headless_session(
         shadow_stats=shadow_stats,
         mirror_stats={**mirror.stats.as_dict(), "tainted": mirror.tainted},
         # Recorded even at zero. `None` is reserved for "this arm has no world-error
-        # instrumentation at all" (the SpireCoach/TCP arm), so that a clean sweep and
+        # instrumentation at all" (the SpireMentor/TCP arm), so that a clean sweep and
         # an uncounted one stay distinguishable in the report — see
         # `realgame_eval._world_err_cell`.
         world_errors=world_errors,

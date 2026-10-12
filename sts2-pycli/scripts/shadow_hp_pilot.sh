@@ -3,7 +3,7 @@
 # the same seeds on the CURRENT wheel, into two trace dirs, so diag_hp_flow.py
 # can test whether lossless combat state cuts the per-act combat bleed.
 set -u
-cd /c/Users/thomas/projects/sts2-sim/sts2-pycli || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 PY=.venv/Scripts/python.exe
 BASE=1000
 N=12            # seeds 1000..1011

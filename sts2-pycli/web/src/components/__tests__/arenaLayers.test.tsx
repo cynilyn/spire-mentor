@@ -152,7 +152,7 @@ describe("picking the room", () => {
 
   it("takes either producer's spelling of the act name", () => {
     // THE TWO WIRES SPELL IT DIFFERENTLY and neither is wrong: the engine sends
-    // the display name (`rust_game._act_name` -> "Underdocks") while SpireCoach
+    // the display name (`rust_game._act_name` -> "Underdocks") while SpireMentor
     // sends the act model's own `Id.Entry` ("UNDERDOCKS"). Every consumer of
     // `act_name` lowercases before keying, and this pins that — a case-sensitive
     // lookup here would silently paint the act-1 fallback for every live run,

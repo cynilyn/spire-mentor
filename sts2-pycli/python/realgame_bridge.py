@@ -1,4 +1,4 @@
-"""TCP client for the real-game "SpireCoach" mod (real-game bridge phase 0).
+"""TCP client for the real-game "SpireMentor" mod (real-game bridge phase 0).
 
 Speaks the newline-delimited UTF-8 JSON protocol documented in
 ``sts2-rl-agent/docs/PROTOCOL.md``: the mod (running inside the live Slay the
@@ -59,7 +59,7 @@ DEFAULT_PORT = 9002
 
 
 class RealGameBridgeClient:
-    """TCP client for the SpireCoach mod's blocking request/response protocol.
+    """TCP client for the SpireMentor mod's blocking request/response protocol.
 
     Usage::
 
@@ -299,7 +299,7 @@ class RealGameBridgeClient:
             ascension: ``0``-``max_ascension`` (10 as of v0.107.1).
             seed: Explicit run seed, or ``None`` to let the mod generate a
                 fresh random one (same semantics as the old
-                ``SpireCoach.conf``-driven flow).
+                ``SpireMentor.conf``-driven flow).
 
         Raises:
             ConnectionError: If not connected, or the socket write fails.

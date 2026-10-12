@@ -23,7 +23,7 @@ sts2-vocab = { workspace = true }
 sts2-mcts = { workspace = true }
 smallvec = { workspace = true }
 # The non-Python wire source: `impl WireValue for &serde_json::Value` is
-# what lets a Rust caller ingest a captured SpireCoach/adapter dict with
+# what lets a Rust caller ingest a captured SpireMentor/adapter dict with
 # no interpreter in the process.
 serde_json = { workspace = true }
 # `emit` builds its `Value`s through `serde_json::to_value`, whose bound is

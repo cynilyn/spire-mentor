@@ -5,7 +5,7 @@ Plan: ``2026-07-24 persistent combat mirror`` (Phase 1).
 Why this exists
 ===============
 
-When the C# headless DLL (rung 3.5) or the live game (SpireCoach) is the
+When the C# headless DLL (rung 3.5) or the live game (SpireMentor) is the
 *world*, the Rust engine has no state of its own: historically every combat
 decision rebuilt a throwaway ``CombatState`` from the decision message,
 searched it, and threw it away. That works for ``combat_play``, whose message
@@ -2331,7 +2331,7 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
 #: Generative screens roll their own content, so their options exist in NO
 #: pile and can never be located — but the engine's generative kinds need no
 #: locators at all. The world names the effect (``source_model``,
-#: RunSimulator.cs / SpireCoach MainFile.cs CardSelectCmd context patch); trust
+#: RunSimulator.cs / SpireMentor MainFile.cs CardSelectCmd context patch); trust
 #: it first, and fall back to the shape (no option locatable anywhere) when
 #: the patch didn't fire.
 #:
@@ -2517,7 +2517,7 @@ def recognize_card_select(
 
     Shared by BOTH world drivers — ``headless_eval.pick_card_select_mirrored``
     (DLL world) and ``realgame_mcts.pick_card_select_mirrored`` (live
-    SpireCoach world) — so the recognition logic cannot fork and drift again.
+    SpireMentor world) — so the recognition logic cannot fork and drift again.
     It operates on dialect-neutral inputs: a headless-dialect ``board`` (the
     DLL's own ``combat_play`` dict, or ``realgame_adapter.
     to_headless_combat_play``'s translation of the bridge snapshot), the

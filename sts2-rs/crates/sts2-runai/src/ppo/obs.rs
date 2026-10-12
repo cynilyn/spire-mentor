@@ -17,7 +17,7 @@
 //!
 //! There are now TWO producers of this shape. `env.py::observe()` builds
 //! it from a `RunManager` and fills every key; `realgame_ppo._build_*`
-//! builds it from a SpireCoach message, where several keys have no
+//! builds it from a SpireMentor message, where several keys have no
 //! equivalent on the wire and are simply omitted (`idx`, `on_sale`,
 //! `is_colorless`, `removal_used`, `visited`, `current`, `option_id`).
 //! Those fields carry `#[serde(default)]` so the bridge dialect
@@ -77,7 +77,7 @@ pub struct MapNodeObs {
     #[serde(rename = "type")]
     pub room_type: String,
     pub children: Vec<Coord>,
-    /// `default` because the SpireCoach dialect omits it — see the
+    /// `default` because the SpireMentor dialect omits it — see the
     /// module note on structural fields.
     #[serde(default)]
     pub visited: bool,
@@ -96,7 +96,7 @@ pub struct MapNodeObs {
 pub struct BossNodeObs {
     pub col: i64,
     pub row: i64,
-    /// `default`: the SpireCoach dialect sends the boss as a bare
+    /// `default`: the SpireMentor dialect sends the boss as a bare
     /// `{col, row}`, and nothing reads this — both map featurizers
     /// OVERWRITE it with the literal `"boss"` when they build the node
     /// table (`mapfeat.rs::nodes_from_full_map`, `mapfeat.py:141`), so
@@ -122,7 +122,7 @@ pub struct FullMapObs {
     /// this key only carries the `id` that rows cannot express, so both
     /// map featurizers keep reading the node from `rows`.
     ///
-    /// `default` because the SpireCoach dialect omits it, as with the
+    /// `default` because the SpireMentor dialect omits it, as with the
     /// structural fields above. It reuses [`BossNodeObs`] because the
     /// PyO3 getter emits the same `col`/`row`/`type` (+ optional `id`)
     /// shape there; it never sets `kind`, and `skip_serializing_if`
@@ -130,7 +130,7 @@ pub struct FullMapObs {
     /// comparison against Python holds.
     #[serde(default)]
     pub second_boss: Option<BossNodeObs>,
-    /// `default` (i.e. `None`) when absent, which is the SpireCoach shape
+    /// `default` (i.e. `None`) when absent, which is the SpireMentor shape
     /// before the player has moved. Unlike the fields above this one IS
     /// read — it is the player's position — but absent and explicit
     /// `null` mean the same thing to both featurizers
@@ -146,7 +146,7 @@ pub struct FullMapObs {
 /// the slot has no card (sold out / unfilled).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShopCardObs {
-    /// `default`: structural, and absent in the SpireCoach dialect — the
+    /// `default`: structural, and absent in the SpireMentor dialect — the
     /// encoder indexes shop rows by the ACTION's `idx`, never this one.
     #[serde(default)]
     pub idx: i64,

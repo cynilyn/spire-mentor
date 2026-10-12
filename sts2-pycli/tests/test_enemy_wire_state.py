@@ -15,7 +15,7 @@ carry is exactly what a reconstruction cannot re-derive:
   ``KnowledgeDemon._curseOfKnowledgeCounter`` (KnowledgeDemon.cs:66), which
   indexes the Disintegration 6/7/8 damage table.
 
-The SpireCoach mod emits the same fields from
+The SpireMentor mod emits the same fields from
 ``SimStateExtractor.SerializeCreature`` / ``SerializePower``; these tests
 pin the headless twin so the two producers cannot drift apart silently.
 """
