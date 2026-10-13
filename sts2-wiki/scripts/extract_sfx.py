@@ -8,8 +8,10 @@ excluding it is an allowlist of the four SFX-side banks rather than a content
 judgement.
 
 Rendering (`render_events`) decodes each named event in the extracted banks
-to its own WAV via the real FMOD Studio engine — FMOD Studio API 2.03.14,
-Linux (`FMOD_SDK_ROOT`, not committed). `Master.bank`'s two `event:/music/`
+to its own WAV via the real FMOD Studio engine: on Linux the FMOD Studio API
+2.03.14 SDK (`FMOD_SDK_ROOT`, not committed); on Windows, without the SDK,
+the `fmod.dll`/`fmodstudio.dll` the game installs (`FMOD_LIB_DIR`, defaulting
+to the pck's directory). `Master.bank`'s two `event:/music/`
 entries are excluded by `is_music` as a second layer on top of the bank
 allowlist, since Master.bank itself is required (it carries the mixer); see
 `is_music` for the one further path it denylists by exact match.
@@ -21,12 +23,21 @@ import ctypes
 import os
 import re
 import struct
+import time
 from pathlib import Path
 from typing import NamedTuple
 
 FMOD_OK = 0
 FMOD_STUDIO_LOAD_BANK_NORMAL = 0
 FMOD_STUDIO_INIT_NORMAL = 0
+# Studio normally processes commands and loads sample data on threads of its
+# own, so how far into an NRT render an event's audio arrives depends on
+# wall-clock scheduling: renders of one event came out with different leading
+# delays, lengths, and once silence. Driving both from `Update()` (plus the
+# explicit sample preload in `_render_one`) makes a render a pure function of
+# the banks, the FMOD build and `RANDOM_SEED`.
+FMOD_STUDIO_INIT_SYNCHRONOUS_UPDATE = 0x00000004
+FMOD_STUDIO_INIT_LOAD_FROM_UPDATE = 0x00000010
 FMOD_INIT_NORMAL = 0
 # `FMOD_INIT_STREAM_FROM_UPDATE` (fmod_common.h, 0x1): "No stream thread is
 # created internally. Streams are driven from System::update."
@@ -187,16 +198,76 @@ def _sdk_root() -> Path:
     return Path(root)
 
 
+# The Windows game install ships the FMOD runtime it was built against
+# (`fmod.dll` + `fmodstudio.dll`, 2.03.06 in v0.107.1) next to
+# SlayTheSpire2.exe. On Windows that is the whole dependency: no SDK download.
+GAME_FMOD_DLLS = ("fmod.dll", "fmodstudio.dll")
+
+
+def _lib_dir() -> Path | None:
+    """`FMOD_LIB_DIR`: a directory holding the game's own FMOD DLLs (Windows).
+
+    Consulted only when `FMOD_SDK_ROOT` is unset, so the SDK path that Linux
+    and WSL use is unchanged. The DLLs are Windows binaries; they cannot be
+    loaded on Linux even when Steam installed the game there through Proton.
+    """
+    if os.environ.get("FMOD_SDK_ROOT") or os.name != "nt":
+        return None
+    d = os.environ.get("FMOD_LIB_DIR")
+    return Path(d) if d else None
+
+
+def fmod_available() -> bool:
+    """Whether `render_events` has an FMOD runtime to load."""
+    if os.environ.get("FMOD_SDK_ROOT"):
+        return True
+    d = _lib_dir()
+    return d is not None and all((d / n).is_file() for n in GAME_FMOD_DLLS)
+
+
 def _fmod_libs() -> tuple[ctypes.CDLL, ctypes.CDLL]:
-    """Load the core and studio shared objects from the unpacked SDK.
+    """Load the core and studio libraries: the SDK's, or the game's DLLs.
 
     Core first, deliberately: libfmodstudio.so links against libfmod.so, so the
     core library must already be resident when the studio one loads.
     """
+    d = _lib_dir()
+    if d is not None:
+        core_dll, studio_dll = (d / n for n in GAME_FMOD_DLLS)
+        return ctypes.CDLL(str(core_dll)), ctypes.CDLL(str(studio_dll))
     root = _sdk_root()
     core = ctypes.CDLL(str(root / "api/core/lib/x86_64/libfmod.so"))
     studio = ctypes.CDLL(str(root / "api/studio/lib/x86_64/libfmodstudio.so"))
     return core, studio
+
+
+def _dll_version(dll: Path) -> tuple[int, int, int]:
+    """(major, minor, patch) from a DLL's VS_FIXEDFILEINFO (Windows only).
+
+    FMOD stamps its release into the low three parts of the four-part file
+    version: `fmod.dll` 0.2.3.6 (shown as "2.3.6") is the 2.03.06 runtime.
+    """
+    ver = ctypes.WinDLL("version")  # type: ignore[attr-defined]
+    size = ver.GetFileVersionInfoSizeW(str(dll), None)
+    if not size:
+        raise SystemExit(f"{dll} carries no version resource")
+    buf = ctypes.create_string_buffer(size)
+    if not ver.GetFileVersionInfoW(str(dll), 0, size, buf):
+        raise SystemExit(f"could not read the version resource of {dll}")
+    info = ctypes.c_void_p()
+    length = ctypes.c_uint()
+    if not ver.VerQueryValueW(buf, "\\", ctypes.byref(info), ctypes.byref(length)):
+        raise SystemExit(f"could not read the fixed file info of {dll}")
+    # VS_FIXEDFILEINFO: signature, struct version, then FileVersionMS/LS.
+    fields = ctypes.cast(info, ctypes.POINTER(ctypes.c_uint32 * 4)).contents
+    ms, ls = fields[2], fields[3]
+    return ms & 0xFFFF, ls >> 16, ls & 0xFFFF
+
+
+def fmod_header_version(major: int, minor: int, patch: int) -> int:
+    """FMOD's `FMOD_VERSION` encoding: 2.03.06 -> 0x00020306 (the decimal
+    digits of each part, read as hex)."""
+    return int(f"{major}{minor:02d}{patch:02d}", 16)
 
 
 def _check(result: int) -> None:
@@ -204,12 +275,66 @@ def _check(result: int) -> None:
         raise RuntimeError(f"FMOD error {result}")
 
 
+# Seed for FMOD's random number generators. Nearly every event randomises
+# (which round-robin take of each layer, pitch, volume): unseeded, two renders
+# of the same event are different audio, so every import shipped a different
+# sound set. Seeded, each event renders the same take every time on a given
+# FMOD build. Any nonzero value; 0 is FMOD's "seed from the clock" default.
+RANDOM_SEED = 0x53545332  # "STS2"
+
+
+class FmodAdvancedSettings(ctypes.Structure):
+    """`FMOD_ADVANCEDSETTINGS` (fmod_common.h) up to `maxConvolutionThreads`.
+
+    FMOD versions the struct by `cbSize` and accepts every earlier size, so a
+    prefix ending at a field both 2.03.06 (the game's DLLs) and 2.03.14 (the
+    SDK) know is valid on both. 96 bytes on 64-bit, `randomSeed` at offset 88.
+    """
+
+    _fields_ = [
+        ("cbSize", ctypes.c_int),
+        ("maxMPEGCodecs", ctypes.c_int),
+        ("maxADPCMCodecs", ctypes.c_int),
+        ("maxXMACodecs", ctypes.c_int),
+        ("maxVorbisCodecs", ctypes.c_int),
+        ("maxAT9Codecs", ctypes.c_int),
+        ("maxFADPCMCodecs", ctypes.c_int),
+        ("maxOpusCodecs", ctypes.c_int),
+        ("ASIONumChannels", ctypes.c_int),
+        ("ASIOChannelList", ctypes.c_void_p),
+        ("ASIOSpeakerList", ctypes.c_void_p),
+        ("vol0virtualvol", ctypes.c_float),
+        ("defaultDecodeBufferSize", ctypes.c_uint),
+        ("profilePort", ctypes.c_ushort),
+        ("geometryMaxFadeTime", ctypes.c_uint),
+        ("distanceFilterCenterFreq", ctypes.c_float),
+        ("reverb3Dinstance", ctypes.c_int),
+        ("DSPBufferPoolSize", ctypes.c_int),
+        ("resamplerMethod", ctypes.c_int),
+        ("randomSeed", ctypes.c_uint),
+        ("maxConvolutionThreads", ctypes.c_int),
+    ]
+
+
+def _seed(core: ctypes.CDLL, core_system: ctypes.c_void_p) -> None:
+    """Fix *core_system*'s random seed. Must run before Initialize."""
+    settings = FmodAdvancedSettings(cbSize=ctypes.sizeof(FmodAdvancedSettings))
+    _check(core.FMOD_System_GetAdvancedSettings(core_system, ctypes.byref(settings)))
+    settings.randomSeed = RANDOM_SEED
+    _check(core.FMOD_System_SetAdvancedSettings(core_system, ctypes.byref(settings)))
+
+
 def _header_version() -> int:
     """FMOD refuses to init if the header version mismatches the .so.
 
     Read it out of the SDK's own header rather than hard-coding a constant that
     silently rots when the SDK is updated. For 2.03.14 this reads 0x00020314.
+    The game's DLLs come without headers, so there it is the DLL's own file
+    version instead.
     """
+    d = _lib_dir()
+    if d is not None:
+        return fmod_header_version(*_dll_version(d / GAME_FMOD_DLLS[0]))
     header = _sdk_root() / "api/core/inc/fmod_common.h"
     m = re.search(r"#define FMOD_VERSION\s+(0x[0-9A-Fa-f]+)", header.read_text())
     if not m:
@@ -356,6 +481,22 @@ def _list_event_paths(core: ctypes.CDLL, studio: ctypes.CDLL, bank_dir: Path) ->
 # went wrong.
 CAP_SECONDS = 10.0
 
+# Wall-clock time a streaming event gets, started but paused, to open its
+# streams before the render runs. FMOD opens streams on a thread of its own
+# whatever the init flags, and the NRT mixer otherwise races ahead of it: the
+# streamed audio then lands a different distance into the render each time,
+# and in an event that mixes streamed and preloaded layers the layers drift
+# apart. FMOD reports no "streams ready" state to wait on (the instance says
+# PLAYING at once), so this is a generous fixed wait; opening takes a few ms.
+# Only `IsStream` events pay it (~135 of 566).
+STREAM_PREROLL_SECONDS = 0.2
+# The same race recurs mid-event when a streamed instrument starts later in
+# the timeline (`map_draw` once rendered as pure silence, `neow_welcome` and
+# Cubex's charge attack came out different): a streaming event is therefore
+# rendered at most this many times faster than real time, so its stream
+# reads keep up. ~1 s for a 10 s capped event.
+STREAM_PACE = 10
+
 
 def _apply_render_params(studio: ctypes.CDLL, inst: ctypes.c_void_p, event_path: str) -> None:
     """Set every `RENDER_PARAMS` entry on *inst*, skipping ones it doesn't have.
@@ -400,11 +541,12 @@ def _render_one(
         core_system = ctypes.c_void_p()
         _check(studio.FMOD_Studio_System_GetCoreSystem(system, ctypes.byref(core_system)))
         _check(core.FMOD_System_SetOutput(core_system, FMOD_OUTPUTTYPE_WAVWRITER_NRT))
+        _seed(core, core_system)
         _check(
             studio.FMOD_Studio_System_Initialize(
                 system,
                 64,
-                FMOD_STUDIO_INIT_NORMAL,
+                FMOD_STUDIO_INIT_SYNCHRONOUS_UPDATE | FMOD_STUDIO_INIT_LOAD_FROM_UPDATE,
                 FMOD_INIT_STREAM_FROM_UPDATE,
                 ctypes.c_char_p(str(dest).encode()),
             )
@@ -448,16 +590,34 @@ def _render_one(
 
         desc = ctypes.c_void_p()
         _check(studio.FMOD_Studio_System_GetEvent(system, event_path.encode(), ctypes.byref(desc)))
+        # Every take the event could pick is resident before it starts, so the
+        # render never waits on a load mid-playback.
+        _check(studio.FMOD_Studio_EventDescription_LoadSampleData(desc))
+        _check(studio.FMOD_Studio_System_FlushSampleLoading(system))
         inst = ctypes.c_void_p()
         _check(studio.FMOD_Studio_EventDescription_CreateInstance(desc, ctypes.byref(inst)))
         try:
             _apply_render_params(studio, inst, event_path)
-            _check(studio.FMOD_Studio_EventInstance_Start(inst))
+            is_stream = ctypes.c_int()
+            _check(studio.FMOD_Studio_EventDescription_IsStream(desc, ctypes.byref(is_stream)))
+            if is_stream.value:
+                # The paused updates write silence, which encode_sfx trims.
+                _check(studio.FMOD_Studio_EventInstance_SetPaused(inst, 1))
+                _check(studio.FMOD_Studio_EventInstance_Start(inst))
+                for _ in range(10):
+                    _check(studio.FMOD_Studio_System_Update(system))
+                    time.sleep(STREAM_PREROLL_SECONDS / 10)
+                _check(studio.FMOD_Studio_EventInstance_SetPaused(inst, 0))
+            else:
+                _check(studio.FMOD_Studio_EventInstance_Start(inst))
 
             state = ctypes.c_int(-1)
             capped = True
+            pace = seconds_per_update / STREAM_PACE if is_stream.value else 0.0
             for _ in range(cap_updates):
                 _check(studio.FMOD_Studio_System_Update(system))
+                if pace:
+                    time.sleep(pace)
                 _check(studio.FMOD_Studio_EventInstance_GetPlaybackState(inst, ctypes.byref(state)))
                 if state.value == FMOD_STUDIO_PLAYBACK_STOPPED:
                     capped = False
@@ -594,9 +754,22 @@ def main() -> None:
         "--render",
         action="store_true",
         help="also decode the extracted banks to named WAVs under out/audio/ "
-        "(requires FMOD_SDK_ROOT)",
+        "(requires FMOD_SDK_ROOT, or on Windows the game's FMOD DLLs: FMOD_LIB_DIR, "
+        "default the pck's directory)",
     )
     args = ap.parse_args()
+    if (
+        os.name == "nt"
+        and not os.environ.get("FMOD_SDK_ROOT")
+        and not os.environ.get("FMOD_LIB_DIR")
+    ):
+        os.environ["FMOD_LIB_DIR"] = str(args.pck.resolve().parent)
+    if args.render and not fmod_available():
+        raise SystemExit(
+            "--render needs an FMOD runtime: set FMOD_SDK_ROOT to the unpacked FMOD Studio "
+            "API (Linux), or on Windows FMOD_LIB_DIR to the game install (it ships fmod.dll "
+            "+ fmodstudio.dll)"
+        )
     try:
         written = extract_banks(args.pck, args.out)
     except ValueError as e:
