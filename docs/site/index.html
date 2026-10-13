@@ -56,22 +56,16 @@
     the best card with its win chance, and the machine-reasoning panel ranks
     every legal move.</figcaption>
   </figure>
-  <dl class="stats">
-    <div><dt>Combat divergences vs the game's C#</dt><dd>0</dd></div>
-    <div><dt>Faster than the game's logic, headless</dt><dd>~7,000×</dd></div>
-    <div><dt>Ironclad run win rate, A0 (simulator)</dt><dd>90%</dd></div>
-    <div><dt>Ironclad real-game wins at Ascension 8, unassisted</dt><dd>13 / 40</dd></div>
-  </dl>
 </section>
 
 <section id="overview">
   <h2>Overview</h2>
   <p>Six pieces, each usable on its own:</p>
   <div class="cards">
-    <article><h3>Engine</h3><p>Rust, deterministic, the whole game: five characters, ~580 cards, ~300 relics, three acts. Builds and tests with nothing else installed.</p></article>
-    <article><h3>Parity harness</h3><p>Runs the game's own assembly headless and checks the engine against it after every single action.</p></article>
-    <article><h3>Run AI</h3><p>Chance-node MCTS for fights; a PPO-trained transformer per character for every other decision.</p></article>
-    <article><h3>Workbench</h3><p>The engine in WebAssembly with the game's look: play, rewind, branch, ask the AI, review.</p></article>
+    <article><h3>Engine</h3><p>Rust, deterministic, the whole game: five characters, ~580 cards, ~300 relics, three acts. Built for speed (~7,000× the game's own logic) with no shortcuts on accuracy, and usable from Python.</p></article>
+    <article><h3>Parity harness</h3><p>Runs the game's own assembly headless and checks the engine against it after every single action, plus a fuzzer that hunts for divergences.</p></article>
+    <article><h3>Run AI</h3><p>Chance-node MCTS for fights (it never sees the draw order); a PPO-trained transformer per character for every other decision. Ironclad wins 90% at A0 and 39% at A9; Defect 22% at A10.</p></article>
+    <article><h3>Workbench</h3><p>The game in your browser, on any platform: rewind and branch, an AI coach, autobattle, post-run blunder review, the MCTS tree, state import from the real game, and SimLab.</p></article>
     <article><h3>Spire Mentor</h3><p>A mod that puts the AI inside the real game as a coach, an autopilot and a rewind button.</p></article>
     <article><h3>Extraction &amp; wiki</h3><p><code>just import-game</code> decompiles your copy and extracts data, art and sound; a generator builds a static wiki.</p></article>
   </div>
@@ -341,13 +335,21 @@
     <li><strong>Rewind and branch</strong> any decision; the run tree keeps every
     fork, with named saves.</li>
     <li><strong>Ask the AI</strong>: combat hint, the full MCTS search tree,
-    rankings for card rewards, shops, events and rest sites, "play best".</li>
-    <li><strong>Review</strong> a finished run: regret per decision and
-    win-probability-added over the whole run.</li>
+    rankings for card rewards, shops, events and rest sites, "play best". The
+    live coach flags a weak move the moment you make it.</li>
+    <li><strong>Autobattle</strong>: play Slay the Spire 2 as an autobattler.
+    You make the run-level decisions (paths, cards, shops, events) and the
+    AI fights every combat; each stop shows what changed since the last one.</li>
+    <li><strong>Review</strong> a finished run to find its biggest blunders:
+    regret per decision and win-probability-added over the whole run.</li>
+    <li><strong>SimLab</strong>: a "what if" lab for a single fight. Set up
+    any combat (character, deck, HP, relics, potions, enemies, ascension) and
+    see the legal moves and what the search thinks of each. Replay the fight
+    many times to see the spread of outcomes, so you can test a card, a relic
+    or a line of play without reaching that spot in a real run.</li>
     <li><strong>Lab tools</strong>: replay viewer, MCTS-runs browser, deck
-    analysis, SimLab (a sandbox for building positions and running
-    seed-paired strategy studies), and state import: paste a position
-    copied from the live game and analyse it in the browser.</li>
+    analysis, and state import: paste a position copied from the live game
+    and analyse it in the browser.</li>
   </ul>
   <p>Run it: <code>just workbench-local</code> builds the site into
   <code>sts2-pycli/web/dist</code> and serves it on <code>http://127.0.0.1:4173</code>.

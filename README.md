@@ -7,11 +7,11 @@
 the tools to watch, question and argue with that AI — in a browser tab or
 inside the real game.**
 
-![The Spire Mentor mod advising a live combat: ranked moves, MCTS visit shares and an estimated win chance drawn over the real game](docs/site/img/mod-hud-combat.webp)
+![The browser workbench in the act-3 boss fight: the best card carries a 95% win badge and the machine-reasoning panel ranks every legal move](docs/site/img/wb-combat.webp)
 
-<sub>The Spire Mentor mod inside the real game: 1,000 MCTS simulations rank
-every legal move, show the principal line and estimate the win chance —
-recomputed on every decision.</sub>
+<sub>The browser workbench in the act-3 boss fight: the search marks the best
+card with its win chance, and the machine-reasoning panel ranks every legal
+move.</sub>
 
 ## What's here
 
@@ -22,27 +22,45 @@ recomputed on every decision.</sub>
   rewards and the same shuffles as the real game.
 - **Proven against the real game code, not eyeballed.** A headless harness
   runs the game's own C# assembly in lockstep with the Rust engine and
-  compares the full state after every action. All five characters reached
-  **zero combat divergences**, and whole-run parity is clean across all five.
+  compares the full state after every action, and a fuzzer hunts for the
+  cases nobody thought to test. All five characters reached **zero combat
+  divergences**, and whole-run parity is clean across all five.
 - **Fast.** ~1.4M state transitions/s and ~100k random-play combats/s on one
   core — about **7,000× faster than driving the game's own logic headless**.
-  A 1,000-simulation MCTS search takes ~25 ms.
+  A 1,000-simulation MCTS search takes ~25 ms. Speed never trades away
+  accuracy: the parity harness above holds at full speed.
+- **Usable from Python.** PyO3 bindings (`sts2_rs`) drive combats, MCTS
+  searches and whole runs from Python, and the PPO training stack is built
+  on them.
 - **An AI that wins.** Chance-node MCTS for every fight, plus a PPO-trained
   transformer per character for every other decision: paths, card picks,
-  shops, events, rest sites, removals and upgrades. In the simulator the
-  Defect and Ironclad champions win **76%** and **75%** of runs averaged
-  over Ascension 0–10 (**93%** and **90%** at A0). In the **real game**,
-  playing unassisted at **Ascension 8**, the August 2026 versions won 13 of 40 Ironclad runs and 11 of 40 Silent runs.
+  shops, events, rest sites, removals and upgrades. The search is
+  non-clairvoyant: draws and enemy rolls are chance nodes, so it never sees
+  the draw order. In the simulator Ironclad wins **90%** of runs at A0,
+  **39%** at A9 and **11%** at A10, and Defect wins **22%** at A10 (every
+  character and level is in the table below). In the **real game**, playing
+  unassisted at **Ascension 8**, the August 2026 versions won 13 of 40
+  Ironclad runs and 11 of 40 Silent runs.
   Explained in depth: [how the AI plays](https://tfriedel.github.io/spire-mentor/ai.html)
   and [how it's trained](https://tfriedel.github.io/spire-mentor/training.html).
-- **A browser workbench.** The engine compiled to WebAssembly, with the
-  game's look: play a seed, rewind any decision, branch, ask the AI for a
-  hint, see its search tree, watch the PPO champion play a whole run, then
-  review where the run was won and lost. A static site that runs offline —
-  no server.
-- **The Spire Mentor mod for the real game.** Turns the same AI into an in-game
-  coach (ranked moves, card scores, route advice, win chance), an autopilot
-  that plays whole runs, and a bit-exact rewind button.
+- **A browser workbench.** The game, with its graphics and sound, compiled
+  to WebAssembly: it runs in any browser on any platform, offline, with no
+  server. Rewind to any step and branch off to play a situation several
+  ways; let the AI coach you; play it as an autobattler where you make the
+  run decisions and the AI fights; review a finished run for its biggest
+  blunders; copy a position from the real game in to analyse it; explore
+  the MCTS search tree. The art and sound come from your own copy of the
+  game (`just import-game`).
+- **SimLab.** The workbench's "what if" lab for a single fight: set up any
+  combat (character, deck, HP, relics, potions, enemies, ascension) and see
+  the legal moves and what the search thinks of each. Replay the fight many
+  times to see the spread of outcomes, and test a card, a relic or a line of
+  play without reaching that spot in a real run.
+- **The Spire Mentor mod for the real game.** Brings many of the workbench's
+  features into the game itself: an in-game coach (ranked moves, card
+  scores, route advice, win chance), an autopilot that plays whole runs, a
+  bit-exact rewind button, and a link that opens the current game state in
+  the workbench.
 - **Bring-your-own-game tooling.** One command, `just import-game`,
   decompiles your copy of the game and extracts its art, audio and data; the
   same pipeline can generate a full static wiki.
@@ -78,7 +96,7 @@ champions): Ironclad A8 **32.5%**, Silent A8 **27.5%**.
 
 ## The browser workbench
 
-![The workbench mid-combat, with the AI's ranked moves](docs/site/img/wb-combat.webp)
+![The live regret coach flagging a move as it is made](docs/site/img/wb-regret-coach.webp)
 
 A React front end over the Rust engine compiled to WebAssembly, running in a
 Web Worker; saves live in IndexedDB, and it installs as an offline PWA.
@@ -88,11 +106,19 @@ Web Worker; saves live in IndexedDB, and it installs as an offline PWA.
 - **Rewind and branch** any decision; the run tree keeps every fork.
 - **Ask the AI** for a combat hint, open the MCTS search tree, rank the
   choices on a card reward, shop or event, or let it play the best line.
+- **Coach**: the live regret coach flags a weak move the moment you make it.
+- **Autobattle**: you make the run-level decisions (paths, cards, shops,
+  events) and the AI fights every combat; each stop shows what changed
+  since the last one.
 - **Watch the PPO champion** play a run to the end; take over at any point.
-- **Review** a finished run: regret per decision and a win-probability chart.
-- **Lab tools**: replay viewer, MCTS-runs browser, deck analysis, a SimLab
-  sandbox for seed-paired strategy studies, and *state import* — paste a
-  position copied from the live game and analyse it here.
+- **Review** a finished run for its biggest blunders: regret per decision
+  and a win-probability chart.
+- **SimLab**: build any single fight and see what the search thinks of
+  every move, or replay it many times for the spread of outcomes and
+  seed-paired strategy studies.
+- **Lab tools**: replay viewer, MCTS-runs browser, deck analysis, and
+  *state import* — paste a position copied from the live game and analyse
+  it here.
 
 ## Spire Mentor — the AI inside the real game
 
