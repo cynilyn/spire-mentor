@@ -147,6 +147,49 @@ def test_submitted_sweep_is_listable_before_its_runner_writes_anything() -> None
                     t.join(30)
 
 
+def test_submitted_sweep_has_a_status_before_its_worker_starts(tmp_path, monkeypatch) -> None:
+    """`GET /api/sweeps/{id}` must answer "running", not 404, the instant
+    `submit` returns.
+
+    progress.json used to be written only from inside the worker thread, so a
+    client that POSTed and polled before the thread was scheduled got a 404
+    (`test_results_unknown_baseline_422` failed on CI with ``KeyError:
+    'status'``). The worker thread is held back entirely here — constructed but
+    not started until the asserts are done — so only a submit-time write can
+    make this pass, independent of the scheduler.
+    """
+    from simlab.web import jobs
+
+    held: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    class HeldThread(real_thread):
+        def start(self) -> None:
+            held.append(self)
+
+    monkeypatch.setattr(jobs.threading, "Thread", HeldThread)
+    mgr = JobManager(results_root=tmp_path, runner=lambda sweep, **kw: kw["out_dir"])
+    spec = SweepSpec.from_json(
+        {
+            "encounters": ["MAWLER_NORMAL"],
+            "ascensions": [0],
+            "strategies": ["random"],
+            "n_seeds": 3,
+            "name": "polled",
+        }
+    )
+    sweep_id = mgr.submit(spec)
+    try:
+        assert held, "the worker thread must not have started"
+        st = mgr.status(sweep_id)
+        assert st["status"] == "running"
+        assert (st["done"], st["total"]) == (0, 3)
+    finally:
+        for t in held:
+            real_thread.start(t)
+            t.join(30)
+
+
 def test_submit_bad_spec_returns_422(tmp_path) -> None:
     app = create_app(results_root=tmp_path)
     client = TestClient(app)

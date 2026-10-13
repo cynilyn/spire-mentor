@@ -184,6 +184,17 @@ class JobManager:
                 },
             )
 
+        # Counted off the materialised cells, not the axes: a start-state sweep
+        # has empty encounter/deck axes, and the product read 0 until the first
+        # chunk reported.
+        total = len(sweep.cells()) * sweep.n_seeds
+        # The first progress.json is written HERE, for the same reason as the
+        # spec: written only by the worker thread, `status()` answered
+        # "unknown" (a 404 from the API) to a client that POSTed and then
+        # polled before the thread was scheduled — the flake that failed
+        # `test_results_unknown_baseline_422` on CI.
+        _progress(0, total)
+
         cancel = CancelToken()
         with self._lock:
             self._cancels[sweep_id] = cancel
@@ -203,10 +214,6 @@ class JobManager:
 
         def _run() -> None:
             try:
-                # Counted off the materialised cells, not the axes: a
-                # start-state sweep has empty encounter/deck axes, and the
-                # product read 0 until the first chunk reported.
-                total = len(sweep.cells()) * sweep.n_seeds
                 started[0] = time.perf_counter()
                 _progress(0, total)
                 if watchdog is not None:
