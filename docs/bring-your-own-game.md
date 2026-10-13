@@ -53,10 +53,14 @@ source the extractors and the mechanics work read plus real art
     2.03.14 is what the maintainers use). Unpack it anywhere and export
     `FMOD_SDK_ROOT=<that dir>`. The Windows DLLs cannot be used here, even
     when Steam installed the game through Proton.
-  - `FMOD_SDK_ROOT`, when set, wins on every platform.
-  - Without ffmpeg or an FMOD runtime, a plain `just import-game` skips the
-    sound and says so at the end; art and data still import. An explicit
-    `--tier sound` (or `all`) fails on a missing ffmpeg instead.
+  - `FMOD_SDK_ROOT`, when set, wins on every platform — if it holds that
+    platform's libraries (`api/core/lib/x64/fmod.dll` on Windows,
+    `api/core/lib/x86_64/libfmod.so` on Linux); otherwise the game's DLLs
+    are used. On Windows, `FMOD_LIB_DIR` points at DLLs somewhere other than
+    next to the pck.
+  - Without ffmpeg or an FMOD runtime, `just import-game` stops before
+    importing anything and says what to install. Install it and re-run, or
+    use `--tier workbench` to import everything but the sound.
 - **Windows:** everything here runs natively from PowerShell —
   `.\install-windows-deps.ps1` installs the tools above
   ([BUILDING-WINDOWS.md](../BUILDING-WINDOWS.md)).
@@ -64,7 +68,7 @@ source the extractors and the mechanics work read plus real art
 ## Run it
 
 ```sh
-just import-game                       # finds the game through Steam; every tier it can
+just import-game                       # finds the game through Steam; every tier
 just import-game --tier oracle         # just the C# oracle
 just import-game --tier workbench      # everything but sound
 just import-game --status              # what exists, what is missing, art coverage
@@ -127,7 +131,13 @@ the current rig.
 
 Most sound events pick a random take of each layer each time they play. The
 render seeds FMOD and loads synchronously, so two imports with the same FMOD
-build give byte-identical audio. Against the maintainers' audio they differ:
+build give byte-identical audio. The ~130 streaming events are the exception
+FMOD cannot fully pin down: their streams open on a thread of FMOD's own, so
+the render gives each open a fixed budget and renders every event twice,
+keeping it only when both renders agree. An event whose renders never agree
+(seen only under heavy load or with very slow disks) is logged as `UNSTABLE`
+in `logs/import-game.log`. To redo the sound on a quieter machine, delete
+`sts2-wiki/site/public/audio/` and re-run `just import-game`. Against the maintainers' audio they differ:
 the same sounds with the same lengths and loudness, but different takes,
 because those files were rendered before the seed existed. The Windows DLLs
 (2.03.06) and the Linux SDK (2.03.14) are different FMOD builds and may pick

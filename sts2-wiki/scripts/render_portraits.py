@@ -11,9 +11,12 @@ rigs ``scripts/extract_rig.py --all`` wrote, with ``tools/spine-renderer``
 Then every monster the workbench files under an older name (the
 ``_MONSTER_ALIASES`` table in ``sts2-pycli/python/workbench/assets.py``:
 ``torch_head_amalgam`` -> ``amalgam``, ``globe_head`` -> ``orb_head``,
-``ovicopter`` -> ``egg_layer``, ...) also gets its portrait under that name.
+``ovicopter`` -> ``egg_layer``, ...) also gets its portrait under that name,
+and a creature split over several rigs gets one from its first part
+(``PART_PORTRAITS``).
 
-Idempotent: existing PNGs are kept (``--force`` re-renders).
+Idempotent: existing PNGs are kept (``--force`` re-renders, and rewrites
+the copies).
 
 Usage:
     uv run python -m scripts.render_portraits [IMAGES_ROOT] [--force]
@@ -34,6 +37,11 @@ ASSETS_PY = WIKI.parent / "sts2-pycli" / "python" / "workbench" / "assets.py"
 
 # (rig folder, output folder, edge px)
 JOBS = [("monster_rigs", "monsters", 512), ("character_rigs", "character_sprites", 640)]
+
+# Creatures drawn as several rigs, one per targetable part, whose whole-creature
+# portrait the workbench asks for by the creature's own slug: the head stands
+# in for it.
+PART_PORTRAITS = {"decimillipede_segment_front": "decimillipede"}
 
 
 def _tool(name: str) -> str:
@@ -79,12 +87,19 @@ def monster_aliases() -> dict[str, str]:
     raise SystemExit(f"_MONSTER_ALIASES not found in {ASSETS_PY}")
 
 
-def write_aliases(monsters: Path, aliases: dict[str, str]) -> int:
-    """Copy `<slug>.png` to `<alias>.png` where the alias has no image yet."""
+def write_aliases(
+    monsters: Path, aliases: dict[str, str], rigs: set[str], force: bool = False
+) -> int:
+    """Copy `<slug>.png` to `<alias>.png` where the alias has no image yet.
+
+    With *force* the copies are rewritten too (their source was just
+    re-rendered), except over an alias that is a rig of its own (*rigs*):
+    that image is its own render, never a copy.
+    """
     written = 0
     for slug, alias in sorted(aliases.items()):
         src, dst = monsters / f"{slug}.png", monsters / f"{alias}.png"
-        if src.is_file() and not dst.exists():
+        if src.is_file() and (not dst.exists() or (force and alias not in rigs)):
             shutil.copyfile(src, dst)
             written += 1
     return written
@@ -119,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
             str(size),
         ]
         subprocess.run(cmd + (["--force"] if args.force else []), cwd=RENDERER, check=True)
-    n = write_aliases(images / "monsters", monster_aliases())
+    rig_names = {d.name for d in (images / "monster_rigs").iterdir() if d.is_dir()}
+    n = write_aliases(
+        images / "monsters", {**monster_aliases(), **PART_PORTRAITS}, rig_names, args.force
+    )
     print(f"portrait aliases written: {n}")
     return 0
 

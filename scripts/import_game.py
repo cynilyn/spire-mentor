@@ -30,12 +30,12 @@ Tiers (each includes the ones before it):
                text and art; `just workbench-local` next
     sound      + the sound effects: rendered through FMOD — on Windows the
                game's own fmod.dll, elsewhere the FMOD Studio API
-               (FMOD_SDK_ROOT); skipped with a note when neither is there
-    all        = sound
+               (FMOD_SDK_ROOT)
+    all        = sound (the default)
 
-Without --tier the import runs everything it can: the sound tier is skipped
-with a note when ffmpeg is not installed. Asking for --tier sound or --tier
-all explicitly makes a missing ffmpeg an error instead.
+A missing tool (ffmpeg included) or FMOD runtime stops the import before any
+step runs and says how to install it. Use --tier workbench to import
+everything but the sound without them.
 
 Every step is idempotent (re-running skips what exists) and logged to
 logs/import-game.log. Read docs/bring-your-own-game.md first.
@@ -74,9 +74,10 @@ GAME_DLLS = [
     "MonoMod.Backports.dll", "MonoMod.ILHelpers.dll", "0Harmony.dll", "System.IO.Hashing.dll",
 ]
 
-# The FMOD runtime the Windows game installs beside SlayTheSpire2.exe
-# (sts2-wiki/scripts/extract_sfx.py loads it through FMOD_LIB_DIR).
-FMOD_DLLS = ("fmod.dll", "fmodstudio.dll")
+# The sound renderer owns the FMOD runtime rules (which DLLs, which
+# environment variable wins); the import asks it rather than restating them.
+sys.path.insert(0, str(WIKI / "scripts"))
+import extract_sfx  # noqa: E402
 
 # ilspycmd 10+ needs a newer runtime than the .NET 9 SDK the rest of the repo
 # pins; 9.1 is the last release that installs and runs on .NET 9.
@@ -290,7 +291,7 @@ def stage(data_dir: Path, pck: Path, release_info: Path, version: str, copy: boo
     log(f"staged {build.relative_to(ROOT)}/: SlayTheSpire2.pck ({how_pck}), data/ ({how_data}) -> {data_dir}")
     # The Windows build ships its FMOD runtime next to the pck; staged beside
     # the staged pck it is what the sound tier renders with (no SDK needed).
-    for dll in FMOD_DLLS:
+    for dll in extract_sfx.GAME_FMOD_DLLS:
         if (pck.parent / dll).is_file():
             link_or_copy(pck.parent / dll, build / dll, copy)
     if how_pck == "copy":
@@ -305,17 +306,48 @@ def stage(data_dir: Path, pck: Path, release_info: Path, version: str, copy: boo
 
 
 def fmod_env(build: Path) -> dict[str, str]:
-    """The FMOD runtime for the sound step, or {} when there is none.
+    """Environment for the sound step: the game's DLLs that `stage` put beside
+    the staged pck, unless the user already pointed FMOD_LIB_DIR elsewhere.
+    (FMOD_SDK_ROOT and FMOD_LIB_DIR reach the step through the inherited
+    environment; `extract_sfx.find_fmod_runtime` decides which one wins.)"""
+    return {} if os.environ.get("FMOD_LIB_DIR") else {"FMOD_LIB_DIR": str(build)}
 
-    FMOD_SDK_ROOT (the FMOD Studio API, the Linux/WSL route) wins when set and
-    is passed through untouched. Otherwise, on Windows, the game's own
-    fmod.dll + fmodstudio.dll that `stage` put beside the pck.
+
+PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")
+
+
+def png_size(path: Path) -> tuple[int, int] | None:
+    """(width, height) from a PNG's IHDR, or None if it is not a PNG."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != PNG_MAGIC:
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def rig_page_matches_atlas(rig_dir: Path) -> bool:
+    """Whether a rig's first texture page has the size its .atlas states.
+
+    False for a missing rig. An atlas without page sizes (older format)
+    cannot be checked and counts as matching.
     """
-    if os.environ.get("FMOD_SDK_ROOT"):
-        return {"FMOD_SDK_ROOT": os.environ["FMOD_SDK_ROOT"]}
-    if os.name == "nt" and all((build / d).is_file() for d in FMOD_DLLS):
-        return {"FMOD_LIB_DIR": str(build)}
-    return {}
+    atlas = rig_dir / f"{rig_dir.name}.atlas"
+    if not atlas.is_file():
+        return False
+    lines = [ln.strip() for ln in atlas.read_text(encoding="utf-8", errors="replace").splitlines()]
+    page = next((i for i, ln in enumerate(lines) if ln.endswith(".png")), None)
+    if page is None:
+        return False
+    for ln in lines[page + 1:]:
+        if ":" not in ln:
+            return True  # a region name: the page states no size
+        if ln.startswith("size:"):
+            want = tuple(int(v) for v in ln[5:].replace(" ", "").split(","))
+            return png_size(rig_dir / lines[page]) == want
+    return True
 
 
 def build_steps(build: Path, version: str) -> list[Step]:
@@ -389,6 +421,15 @@ def build_steps(build: Path, version: str) -> list[Step]:
         uv_python(["-m", "scripts.extract_card_template", pck, "site/public/images"], WIKI, wiki_env)
 
     def rigs():
+        # `--all` skips rigs that exist, so a rig an older extractor got wrong
+        # is removed first, with the portrait rendered from it.
+        for rig_dir in sorted(images.glob("*_rigs/*")):
+            if rig_dir.is_dir() and not rig_page_matches_atlas(rig_dir):
+                log(f"re-extracting {rig_dir.relative_to(images)}: its page is not the size its atlas states")
+                shutil.rmtree(rig_dir)
+                for portrait in (images / "monsters" / f"{rig_dir.name}.png",
+                                 images / "character_sprites" / f"{rig_dir.name}.png"):
+                    portrait.unlink(missing_ok=True)
         uv_python(["-m", "scripts.extract_rig", pck, "--all", "site/public/images"], WIKI, wiki_env)
 
     def art_tables():
@@ -403,9 +444,10 @@ def build_steps(build: Path, version: str) -> list[Step]:
             shutil.copyfile(RS / "crates/sts2-workbench/data/game/creature_scales.json", images / "creature_scales.json")
         log("copied vfx_bindings.json and creature_scales.json into the art tree")
 
+    sfx_map_json = "../sts2-pycli/web/public/sfx_map.json"
+
     def sfx_map():
-        uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", "../sts2-pycli/web/public/sfx_map.json"],
-                  WIKI, wiki_env)
+        uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", sfx_map_json], WIKI, wiki_env)
 
     def card_text_and_db():
         py_env = {"PYTHONPATH": str(PYCLI / "python")}
@@ -425,8 +467,10 @@ def build_steps(build: Path, version: str) -> list[Step]:
         uv_python(["-m", "scripts.encode_sfx", f"extracted/{version}/audio", "site/public/audio"], WIKI, wiki_env)
         # The map's `audioRev` is a hash of the audio tree it is served with
         # (the URLs' cache-buster). The committed map carries the maintainers'
-        # hash; re-derive it for the audio just encoded. Only that line moves.
-        sfx_map()
+        # hash; re-derive it for the audio just encoded. Only that line moves:
+        # a full rebuild would also drop every event this render missed.
+        uv_python(["-m", "scripts.build_sfx_map", f"decompiled/{version}", sfx_map_json, "--rev-only"],
+                  WIKI, wiki_env)
 
     return [
         Step("game DLLs -> sts2-pycli/lib/ (IL-patched) + C# oracle build", "oracle", has_lib, oracle_lib, ("dotnet",)),
@@ -441,18 +485,26 @@ def build_steps(build: Path, version: str) -> list[Step]:
              and (wiki_data / "power_flash_sites.json").is_file(), wiki_extract, ("uv",)),
         Step("atlas art + VFX -> sts2-wiki/site/public/images/", "workbench",
              lambda: (images / "vfx" / "manifest.json").is_file() and any(images.glob("card_atlas/*"))
-             and any(images.glob("epoch_atlas/*")), atlas_art, ("uv",)),
+             and any(images.glob("epoch_atlas/*"))
+             # extract_images' ownerless sprites: an older import lacks them.
+             and (images / "relic_atlas/yummy_cookie.png").is_file(), atlas_art, ("uv",)),
         Step("rooms, scenes, map, HUD + card frames -> sts2-wiki/site/public/images/", "workbench",
              lambda: (images / "rooms").is_dir() and (images / "ui/top_panel").is_dir()
              and (images / "boss_icons").is_dir() and (images / "card_template").is_dir()
              and (images / "ancients/neow.png").is_file() and (images / "monsters/hourglass_placeholder.png").is_file(),
              scene_art, ("uv",)),
         Step("creature + room rigs -> sts2-wiki/site/public/images/*_rigs/", "workbench",
-             lambda: all(any((images / d).glob("*/*.skel")) for d in ("monster_rigs", "character_rigs", "room_rigs")),
+             lambda: all(any((images / d).glob("*/*.skel")) for d in ("monster_rigs", "character_rigs", "room_rigs"))
+             # An older extract_rig decoded this page from the same-named event
+             # illustration; `rigs` re-extracts it when it did.
+             and rig_page_matches_atlas(images / "monster_rigs/battleworn_dummy"),
              rigs, ("uv",)),
         Step("creature portraits + character sprites (rendered from the rigs) -> sts2-wiki/site/public/images/",
              "workbench",
-             lambda: (images / "character_sprites/ironclad.png").is_file() and (images / "monsters/amalgam.png").is_file(),
+             lambda: all((images / rel).is_file() for rel in (
+                 "character_sprites/ironclad.png", "monsters/amalgam.png",
+                 # the two `rigs` and newer render_portraits runs can add
+                 "monsters/battleworn_dummy.png", "monsters/decimillipede.png")),
              portraits, ("uv", "node", "npm")),
         Step("vfx_bindings.json + creature_scales.json -> the art tree", "workbench",
              lambda: (images / "vfx/vfx_bindings.json").is_file() and (images / "creature_scales.json").is_file(),
@@ -530,14 +582,13 @@ def art_coverage() -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[1], formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     parser.add_argument("game_dir", nargs="?", help="Steam install folder / .app / data_sts2_* folder")
-    parser.add_argument("--tier", choices=TIERS + ["all"],
-                        help="default: everything, skipping sound if ffmpeg is missing")
+    parser.add_argument("--tier", choices=TIERS + ["all"], default="all")
     parser.add_argument("--status", action="store_true", help="report which artifacts exist and exit")
     parser.add_argument("--copy", action="store_true", help="copy the pck and DLLs into sts2_binaries/ instead of symlinking")
     parser.add_argument("--allow-version-mismatch", action="store_true",
                         help=f"proceed even if the install is not {PINNED_VERSION} (the engine is pinned; expect drift)")
     args = parser.parse_args(argv)
-    tier = "sound" if args.tier in (None, "all") else args.tier
+    tier = "sound" if args.tier == "all" else args.tier
     for stream in (sys.stdout, sys.stderr):
         # Arrows and dashes in the log lines; a cp1252 console would print mojibake.
         stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
@@ -564,21 +615,14 @@ def main(argv: list[str] | None = None) -> int:
 
     wanted = TIERS[: TIERS.index(tier) + 1]
     steps = [s for s in build_steps(build, version) if s.tier in wanted]
-    sound_skipped = ""
-    if tier == "sound" and not fmod_env(build):
-        sound_skipped = "no FMOD runtime"
-        log("no FMOD runtime — skipping the sound tier. On Windows the game's own fmod.dll is used (it was not "
-            "found next to the pck); elsewhere set FMOD_SDK_ROOT to the unpacked FMOD Studio API (a free, "
-            "registration-gated download from fmod.com). The workbench is silent without it.")
-    elif (tier == "sound" and args.tier is None and not which("ffmpeg")
-          and any(s.tier == "sound" and not s.done() for s in steps)):
-        # The default run takes everything it can; only an explicit
-        # --tier sound / all makes ffmpeg a hard requirement (preflight).
-        sound_skipped = "ffmpeg not installed"
-        log(f"ffmpeg not found — skipping the sound tier (art and data are unaffected). Install it ({ffmpeg_hint()}) "
-            "and re-run `just import-game`; the workbench is silent until then.")
-    if sound_skipped:
-        steps = [s for s in steps if s.tier != "sound"]
+    if (tier == "sound" and extract_sfx.find_fmod_runtime(build) is None
+            and any(s.tier == "sound" and not s.done() for s in steps)):
+        raise SystemExit(
+            "no FMOD runtime for the sound tier. On Windows the game's own fmod.dll + fmodstudio.dll are used, "
+            "but they were not found next to the pck (or in FMOD_LIB_DIR); elsewhere set FMOD_SDK_ROOT to the "
+            "unpacked FMOD Studio API (a free, registration-gated download from fmod.com). Or pass --tier "
+            "workbench to import everything but the sound."
+        )
     preflight([s for s in steps if not s.done()])
 
     for step in steps:
@@ -593,9 +637,6 @@ def main(argv: list[str] | None = None) -> int:
     if tier in ("workbench", "sound"):
         for line in art_coverage():
             log(line)
-    if sound_skipped:
-        log(f"sound skipped: {sound_skipped} (the audio counts above are missing for that reason)")
-    if tier in ("workbench", "sound"):
         print("\nnext: the browser workbench -  just workbench-local   (http://127.0.0.1:4173)\n"
               "      the Python workbench  -  just workbench-server  (http://127.0.0.1:8077)\n"
               "      the full test suites  -  see docs/bring-your-own-game.md")

@@ -1579,7 +1579,18 @@ def main() -> None:
         default=Path("site/public/audio"),
         help="rendered audio tree, used to drop events with no backing file",
     )
+    ap.add_argument(
+        "--rev-only",
+        action="store_true",
+        help="only re-derive OUT's audioRev from the audio tree; keep every other entry",
+    )
     args = ap.parse_args()
+    if args.rev_only:
+        doc = json.loads(args.out.read_text(encoding="utf-8"))
+        doc["audioRev"] = audio_fingerprint(args.audio_root)
+        args.out.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
+        print(f"audioRev={doc['audioRev']}")
+        return
     doc, report = build_map_with_report(args.decomp, args.decomp.name, audio_root=args.audio_root)
     args.out.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
     print(

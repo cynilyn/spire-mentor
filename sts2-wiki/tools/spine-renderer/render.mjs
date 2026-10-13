@@ -71,19 +71,14 @@ class NodeTexture extends Texture {
   dispose() {}
 }
 
-// Rigs whose look is a NAMED skin the game sets in code. Mirrors
-// web/src/monsterSkins.ts (keyed there by monster slug, here by rig folder) and
-// MonsterModel's phobia toggle, whose off state is "normal".
+// Rigs whose look is a NAMED skin the game sets in code, keyed by rig folder.
+// Mirrors web/src/monsterSkins.ts and MonsterModel's phobia toggle, whose off
+// state is "normal". monsterSkins.ts also skins the variants that SHARE a rig
+// (bowlbug_egg/nectar/rock/silk on bowlbug, battle_friend_v1..v3 on
+// battleworn_dummy, calcified/damp_cultist on cultists); they get no portrait
+// of their own here — each rig renders once, as the base creature the
+// workbench aliases every variant to.
 const RIG_SKINS = {
-  bowlbug_egg: "cocoon",
-  bowlbug_nectar: "goop",
-  bowlbug_rock: "rock",
-  bowlbug_silk: "web",
-  battle_friend_v1: "v1",
-  battle_friend_v2: "v2",
-  battle_friend_v3: "v3",
-  calcified_cultist: "coral",
-  damp_cultist: "slug",
   byrdpip: "version1",
   paels_legion: "eyes",
   phantasmal_gardener: "tall",

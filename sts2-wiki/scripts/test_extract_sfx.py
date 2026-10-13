@@ -1,6 +1,7 @@
 import ctypes
 import struct
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -252,7 +253,9 @@ class TestRenderFaultIsolation(unittest.TestCase):
 
         self.events = ["event:/sfx/a", "event:/sfx/boom", "event:/sfx/c"]
         patches = [
-            mock.patch.object(extract_sfx, "_fmod_libs", return_value=(mock.Mock(), mock.Mock())),
+            mock.patch.object(
+                extract_sfx, "_fmod_libs", return_value=(mock.Mock(), mock.Mock(), 0x00020306)
+            ),
             mock.patch.object(
                 extract_sfx,
                 "_list_event_paths",
@@ -272,10 +275,10 @@ class TestRenderFaultIsolation(unittest.TestCase):
 
     def render_with(self, render_one):
         with mock.patch.object(extract_sfx, "_render_one", side_effect=render_one):
-            return render_events(Path("/nonexistent-banks"), self.out)
+            return render_events(Path("/nonexistent-banks"), self.out, mock.Mock())
 
     def test_one_failing_event_does_not_abort_the_batch(self):
-        def render_one(core, studio, bank_dir, event_path, dest):
+        def render_one(core, studio, version, bank_dir, event_path, dest):
             if "boom" in event_path:
                 raise RuntimeError("FMOD error 13")
             dest.write_bytes(b"RIFF")
@@ -290,7 +293,7 @@ class TestRenderFaultIsolation(unittest.TestCase):
     def test_a_failure_after_a_success_keeps_the_earlier_work(self):
         # Guards the "lost every event not yet rendered" failure mode: the
         # event that succeeded BEFORE the failure must survive it.
-        def render_one(core, studio, bank_dir, event_path, dest):
+        def render_one(core, studio, version, bank_dir, event_path, dest):
             if event_path != "event:/sfx/a":
                 raise RuntimeError("boom")
             dest.write_bytes(b"RIFF")
@@ -301,7 +304,7 @@ class TestRenderFaultIsolation(unittest.TestCase):
         self.assertEqual(list(written), ["event:/sfx/a"])
 
     def test_a_run_where_everything_fails_raises(self):
-        def render_one(core, studio, bank_dir, event_path, dest):
+        def render_one(core, studio, version, bank_dir, event_path, dest):
             raise RuntimeError("boom")
 
         with self.assertRaises(RuntimeError) as ctx:
@@ -313,6 +316,67 @@ class TestRenderFaultIsolation(unittest.TestCase):
         with mock.patch.object(extract_sfx, "_list_event_paths", return_value=census(reported=99)):
             with self.assertRaises(RuntimeError):
                 self.render_with(lambda *a: False)
+
+    def test_an_event_whose_renders_never_agree_is_kept_but_reported(self):
+        takes = iter(range(100))
+
+        def render_one(core, studio, version, bank_dir, event_path, dest):
+            dest.write_bytes(b"RIFF%d" % next(takes))
+            return False
+
+        written = self.render_with(render_one)
+
+        # Every event still ships (the last render), and no scratch file stays.
+        self.assertEqual(len(written), 3)
+        self.assertEqual(
+            sorted(p.name for p in self.out.rglob("*.wav")), ["a.wav", "boom.wav", "c.wav"]
+        )
+
+
+class TestRenderStable(unittest.TestCase):
+    """A streaming event can render differently when FMOD's stream thread
+    falls behind; `_render_stable` re-renders until two consecutive renders
+    agree, so a flaky render is caught rather than shipped."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dest = Path(self._tmp.name) / "e.wav"
+
+    def stable_with(self, takes: list[bytes]):
+        it = iter(takes)
+        calls = []
+
+        def render_one(core, studio, version, bank_dir, event_path, dest):
+            calls.append(dest)
+            dest.write_bytes(next(it))
+            return False
+
+        with mock.patch.object(extract_sfx, "_render_one", side_effect=render_one):
+            result = extract_sfx._render_stable(
+                mock.Mock(), mock.Mock(), 0, Path("b"), "event:/e", self.dest
+            )
+        return result, len(calls)
+
+    def test_two_agreeing_renders_are_stable(self):
+        (capped, stable), n = self.stable_with([b"x", b"x"])
+        self.assertTrue(stable)
+        self.assertEqual(n, 2)
+        self.assertEqual(self.dest.read_bytes(), b"x")
+
+    def test_a_late_render_is_replaced_by_the_two_that_agree(self):
+        (_, stable), n = self.stable_with([b"late", b"x", b"x"])
+        self.assertTrue(stable)
+        self.assertEqual(n, 3)
+        self.assertEqual(self.dest.read_bytes(), b"x")
+
+    def test_never_agreeing_is_unstable_and_keeps_the_last(self):
+        takes = [b"%d" % i for i in range(extract_sfx.RENDER_ATTEMPTS)]
+        (_, stable), n = self.stable_with(takes)
+        self.assertFalse(stable)
+        self.assertEqual(n, extract_sfx.RENDER_ATTEMPTS)
+        self.assertEqual(self.dest.read_bytes(), takes[-1])
+        self.assertEqual([p.name for p in self.dest.parent.iterdir()], ["e.wav"])
 
 
 class TestApplyRenderParams(unittest.TestCase):
@@ -455,45 +519,84 @@ class TestExtractDebugAudio(unittest.TestCase):
 
 
 class TestFmodRuntime(unittest.TestCase):
-    """Which FMOD runtime `render_events` loads.
+    """Which FMOD runtime `render_events` loads (`find_fmod_runtime`).
 
-    FMOD_SDK_ROOT (the Linux SDK route) must keep winning: the game's DLLs are
-    a Windows-only fallback, never a replacement.
+    FMOD_SDK_ROOT keeps winning when it holds this platform's libraries: the
+    game's DLLs are a Windows-only fallback, never a replacement.
     """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+
+    def files(self, *rels: str) -> Path:
+        for rel in rels:
+            (self.tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.tmp / rel).write_bytes(b"MZ")
+        return self.tmp
+
+    def find(self, env: dict[str, str], os_name: str, default: Path | None = None):
+        # The module's own view of `os`: patching the real `os.name` would
+        # also turn every Path built during the call into the wrong flavour.
+        fake_os = types.SimpleNamespace(name=os_name, environ=env)
+        with mock.patch.object(extract_sfx, "os", fake_os):
+            return extract_sfx.find_fmod_runtime(default)
 
     def test_header_version_encodes_each_part_as_decimal_digits(self):
         self.assertEqual(extract_sfx.fmod_header_version(2, 3, 14), 0x00020314)
         self.assertEqual(extract_sfx.fmod_header_version(2, 3, 6), 0x00020306)
 
+    def test_linux_sdk(self):
+        sdk = self.files("api/core/lib/x86_64/libfmod.so", "api/studio/lib/x86_64/libfmodstudio.so")
+        rt = self.find({"FMOD_SDK_ROOT": str(sdk)}, "posix")
+        self.assertIsNotNone(rt)
+        self.assertEqual(rt.core, sdk / "api/core/lib/x86_64/libfmod.so")
+        self.assertEqual(rt.header, sdk / "api/core/inc/fmod_common.h")
+
+    def test_windows_sdk_uses_its_x64_dlls(self):
+        sdk = self.files("api/core/lib/x64/fmod.dll", "api/studio/lib/x64/fmodstudio.dll")
+        rt = self.find({"FMOD_SDK_ROOT": str(sdk)}, "nt")
+        self.assertIsNotNone(rt)
+        self.assertEqual(rt.studio, sdk / "api/studio/lib/x64/fmodstudio.dll")
+
     def test_sdk_root_wins_over_the_game_dlls(self):
-        env = {"FMOD_SDK_ROOT": "/opt/fmod", "FMOD_LIB_DIR": "C:/game"}
-        with (
-            mock.patch.dict("os.environ", env, clear=True),
-            mock.patch.object(extract_sfx.os, "name", "nt"),
-        ):
-            self.assertIsNone(extract_sfx._lib_dir())
-            self.assertTrue(extract_sfx.fmod_available())
+        root = self.files(
+            "sdk/api/core/lib/x64/fmod.dll",
+            "sdk/api/studio/lib/x64/fmodstudio.dll",
+            "game/fmod.dll",
+            "game/fmodstudio.dll",
+        )
+        env = {"FMOD_SDK_ROOT": str(root / "sdk"), "FMOD_LIB_DIR": str(root / "game")}
+        self.assertEqual(self.find(env, "nt").core, root / "sdk/api/core/lib/x64/fmod.dll")
+
+    def test_an_sdk_without_this_platforms_libraries_falls_back_to_the_game_dlls(self):
+        # A Linux SDK (or a half-unpacked one) on Windows must not crash the
+        # render when the game's DLLs are right there.
+        root = self.files(
+            "sdk/api/core/lib/x86_64/libfmod.so", "game/fmod.dll", "game/fmodstudio.dll"
+        )
+        rt = self.find({"FMOD_SDK_ROOT": str(root / "sdk")}, "nt", default=root / "game")
+        self.assertEqual(
+            rt, extract_sfx.FmodRuntime(root / "game/fmod.dll", root / "game/fmodstudio.dll", None)
+        )
+
+    def test_fmod_lib_dir_wins_over_the_default(self):
+        root = self.files(
+            "elsewhere/fmod.dll", "elsewhere/fmodstudio.dll", "pck/fmod.dll", "pck/fmodstudio.dll"
+        )
+        rt = self.find({"FMOD_LIB_DIR": str(root / "elsewhere")}, "nt", default=root / "pck")
+        self.assertEqual(rt.core, root / "elsewhere/fmod.dll")
 
     def test_game_dlls_are_never_used_off_windows(self):
-        with (
-            mock.patch.dict("os.environ", {"FMOD_LIB_DIR": "/game"}, clear=True),
-            mock.patch.object(extract_sfx.os, "name", "posix"),
-        ):
-            self.assertIsNone(extract_sfx._lib_dir())
-            self.assertFalse(extract_sfx.fmod_available())
+        root = self.files("fmod.dll", "fmodstudio.dll")
+        self.assertIsNone(self.find({"FMOD_LIB_DIR": str(root)}, "posix", default=root))
 
     def test_windows_lib_dir_needs_both_dlls(self):
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "fmod.dll").write_bytes(b"MZ")
-            env = {"FMOD_LIB_DIR": d}
-            with (
-                mock.patch.dict("os.environ", env, clear=True),
-                mock.patch.object(extract_sfx.os, "name", "nt"),
-            ):
-                self.assertEqual(extract_sfx._lib_dir(), Path(d))
-                self.assertFalse(extract_sfx.fmod_available())
-                (Path(d) / "fmodstudio.dll").write_bytes(b"MZ")
-                self.assertTrue(extract_sfx.fmod_available())
+        root = self.files("fmod.dll")
+        self.assertIsNone(self.find({}, "nt", default=root))
+        self.files("fmodstudio.dll")
+        self.assertIsNotNone(self.find({}, "nt", default=root))
 
 
 class TestDeterministicRender(unittest.TestCase):
