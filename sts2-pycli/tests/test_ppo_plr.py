@@ -336,6 +336,7 @@ def test_stats_report_replay_concentration_not_just_ascension():
 # ── workers plumbing ─────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="fork context unavailable on Windows")
 def test_play_batch_routes_per_seed_sample_seeds_to_play_one(monkeypatch):
     """`sample_seeds` must reach each worker's `play_one` as `sample_seed`.
 

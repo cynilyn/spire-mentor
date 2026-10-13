@@ -49,8 +49,13 @@ cargo test --workspace --doc
 cargo check --target wasm32-unknown-unknown -p sts2-workbench-wasm   # the browser build
 
 cd ../sts2-pycli
+uv run ruff check . && uv run ruff format --check .
 uv run pytest tests               # oracle tests skip without the game
-cd web && npm test
+just check-champions
+cd web && npm test && npx tsc -b && npx eslint . && npx vite build
+
+cd ../../sts2-wiki                # the extraction / import tooling
+just check-format check-types test   # tests needing the game skip without it
 ```
 
 CI runs the game-free subset of exactly these on every push and pull

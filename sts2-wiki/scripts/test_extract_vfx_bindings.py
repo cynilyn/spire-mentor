@@ -19,6 +19,7 @@ from scripts.extract_vfx_bindings import _SITE_PUBLISH_PATH, build_table
 _STS2_WIKI = Path(__file__).resolve().parents[1]
 _DECOMPILED = _STS2_WIKI / "decompiled" / "v0.107.1"
 _TABLE_PATH = _STS2_WIKI / "data" / "v0.107.1" / "vfx_bindings.json"
+_IMAGES = _SITE_PUBLISH_PATH.parents[1]  # site/public/images: `just import-game`
 
 
 @unittest.skipUnless(_DECOMPILED.is_dir(), f"decomp dir not present ({_DECOMPILED})")
@@ -90,6 +91,7 @@ class PublishedCopyGateTest(unittest.TestCase):
     several commits before a review caught it.
     """
 
+    @unittest.skipUnless(_IMAGES.is_dir(), f"art tree not present ({_IMAGES})")
     def test_the_published_copy_matches_the_data_copy(self) -> None:
         self.assertTrue(
             _SITE_PUBLISH_PATH.is_file(),

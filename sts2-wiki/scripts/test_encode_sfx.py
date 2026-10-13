@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +21,13 @@ from scripts.encode_sfx import (
     trim_window,
     verify_peaks,
     window_peak_args,
+)
+
+# The integration classes below run the real ffmpeg/ffprobe. Without them they
+# skip with this reason instead of erroring with a bare FileNotFoundError deep
+# in subprocess; `import-game` refuses to encode without ffmpeg anyway.
+needs_ffmpeg = unittest.skipUnless(
+    shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe not on PATH"
 )
 
 # A real `astats` stderr excerpt (mono, `metadata=0`) — one Overall section,
@@ -304,6 +312,7 @@ def _synth_webm(dest: Path, volume_db: float) -> None:
     )
 
 
+@needs_ffmpeg
 class TestVerifyPeaks(unittest.TestCase):
     """Integration coverage: real ffmpeg-encoded files, not mocked output.
 
@@ -366,6 +375,7 @@ def _write_short_wav(dest: Path, duration: float = 0.4) -> None:
     )
 
 
+@needs_ffmpeg
 class TestEncodeTree(unittest.TestCase):
     def test_produces_one_playable_webm_per_input(self):
         with (

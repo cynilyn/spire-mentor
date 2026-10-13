@@ -25,6 +25,16 @@ from scripts.build_sfx_map import (
     tmp_sfx_path,
 )
 
+_AUDIO_ROOT = _REPO_DECOMP_ROOT.parents[1] / "site" / "public" / "audio"
+# Tests that read the game's decompilation or rendered audio skip without them
+# (`just import-game` produces both; the public repository ships neither).
+needs_decomp = unittest.skipUnless(
+    _REPO_DECOMP_ROOT.is_dir(), f"decomp dir not present ({_REPO_DECOMP_ROOT})"
+)
+needs_audio = unittest.skipUnless(
+    _AUDIO_ROOT.is_dir(), f"rendered audio not present ({_AUDIO_ROOT})"
+)
+
 SOURCE = """
         MoveState moveState = new MoveState("MAGISTRATE_SCRUTINY", MagistrateScrutinyMove, new SingleAttackIntent(ScrutinyDamage));
         MoveState moveState2 = new MoveState("PECK_ASSAULT", PeckAssaultMove, new MultiAttackIntent(PeckAssaultDamage, 6));
@@ -45,6 +55,7 @@ SOURCE = """
 
 
 class TestParseMoveStates(unittest.TestCase):
+    @needs_decomp
     def test_reads_name_method_and_intent(self):
         moves = parse_move_states(SOURCE)
         self.assertEqual(moves[0]["name"], "MAGISTRATE_SCRUTINY")
@@ -52,6 +63,7 @@ class TestParseMoveStates(unittest.TestCase):
         self.assertEqual(moves[0]["intent"], "Attack")
         self.assertEqual(moves[0]["hits"], 1)
 
+    @needs_decomp
     def test_multi_attack_records_its_hit_count(self):
         moves = parse_move_states(SOURCE)
         self.assertEqual(moves[1]["intent"], "Attack")
@@ -446,6 +458,7 @@ class TestBuildMapKeepsDeathOnlyMonster(unittest.TestCase):
 
 
 class TestBuildMonsterEntry(unittest.TestCase):
+    @needs_decomp
     def test_joins_moves_to_their_sfx_and_picks_a_default_attack(self):
         entry = build_monster_entry(SOURCE)
         self.assertEqual(
@@ -823,6 +836,7 @@ class TestMapPopulationCoversEveryProducibleMonsterTitle(unittest.TestCase):
                 self.assertEqual(doc["monsters"][alias_title], doc["monsters"][primary_title])
 
 
+@needs_decomp
 class TestIntentKindDerivedFromDecomp(unittest.TestCase):
     # Fix round 2: the reviewer's own hand-written _INTENT_KIND table shipped
     # DeathBlowIntent as "Attack" and had no entry at all for StatusIntent
@@ -1280,6 +1294,7 @@ class TestResolveIntArg(unittest.TestCase):
         self.assertIsNone(_resolve_int_arg("SomeMethodGroupNotAnInt", self.MEMBER_SOURCE))
 
 
+@needs_decomp
 class TestDecompReconciliation(unittest.TestCase):
     # Nothing previously checked raw decomp scope against what lands in the
     # map -- the same class of gap that let the null-event and empty-relics
@@ -1487,6 +1502,8 @@ class TestCardPlayerAnim(unittest.TestCase):
         self.assertIsNone(card_player_anim(src, FALLBACKS))
 
 
+@needs_audio
+@needs_decomp
 class TestLoadCharacterSfx(unittest.TestCase):
     def test_derives_all_five_playable_characters(self):
         chars = load_character_sfx(
@@ -1512,6 +1529,7 @@ class TestLoadCharacterSfx(unittest.TestCase):
         self.assertIn("Deprived", load_character_sfx(DECOMP_ROOT, None))
 
 
+@needs_decomp
 class TestLoadCharacterAnimFallbacks(unittest.TestCase):
     def test_reads_both_halves_from_the_real_decomp(self):
         fb = load_character_anim_fallbacks(DECOMP_ROOT)
@@ -1591,6 +1609,7 @@ class TestAudioFingerprint(unittest.TestCase):
             self.assertNotEqual(audio_fingerprint(a), audio_fingerprint(b))
 
 
+@needs_audio
 class TestGeneratedArtifactCarriesAudioRev(unittest.TestCase):
     ARTIFACT = (
         Path(__file__).resolve().parents[2] / "sts2-pycli" / "web" / "public" / "sfx_map.json"
@@ -1732,6 +1751,7 @@ class TestLoadOrbSfx(unittest.TestCase):
             root = self._tree(Path(tmp), {"LightningOrb.cs": "PlayEvokeSfx();\n"})
             self.assertEqual(sorted(load_orb_sfx(root)), ["Lightning"])
 
+    @needs_decomp
     def test_the_real_decomp_matches_the_hand_reading(self):
         out = load_orb_sfx(_REPO_DECOMP_ROOT)
         self.assertEqual(sorted(out), ["Dark", "Frost", "Glass", "Lightning", "Plasma"])
@@ -1753,6 +1773,7 @@ class TestLoadTreasureSfx(unittest.TestCase):
             )
             self.assertEqual(load_treasure_sfx(root), {"2": "event:/sfx/ui/treasure/treasure_act2"})
 
+    @needs_decomp
     def test_the_two_act_one_variants_agree_rather_than_conflict(self):
         # Overgrowth and Underdocks are both act 1 and both point at
         # `treasure_act1`, so the duplicate key is expected, not a clash.

@@ -28,7 +28,7 @@ All notable changes to **sts2-rs** are documented here. Format follows [Keep a C
 
 ## [0.1.0] — 2026-05-12
 
-First tagged release. Phase-0 through Phase-8 of the [v2.1 porting plan](docs/plans/2026-05-06-rust-porting-plan-v2.1-refined.md) complete; single-threaded engine + MCTS ship-ready, with the Ironclad-vs-Cultist vertical slice as the canonical perf workload.
+First tagged release. Phase-0 through Phase-8 of the v2.1 porting plan complete; single-threaded engine + MCTS ship-ready, with the Ironclad-vs-Cultist vertical slice as the canonical perf workload.
 
 ### Added
 
@@ -44,7 +44,7 @@ First tagged release. Phase-0 through Phase-8 of the [v2.1 porting plan](docs/pl
   - Two criterion benches: `mcts_smoke` (searches/sec) and `transitions_per_sec`. `bench.yml` (then at `.github/workflows/`, now archived at `docs/ci-templates/bench.yml`) ran them on every push.
   - PyO3 surface complete: `legal_actions`, `state_hash`, `pending_choice`, `terminal_value`, plus a `PyMcts` wrapper around the Rust MCTS.
   - `state_hash` module (`crates/sts2-core/src/hashing.rs`) — stable serialized hash for transposition / parity / RL replay.
-  - Profile-driven optimization pass: `scripts/flamegraph.fish` runbook, `mimalloc` feature flag on `sts2-core` (default off; behind a `--features mimalloc` gate for allocator experiments), full perf rationale in `docs/perf-notes-2026-05-12.md`.
+  - Profile-driven optimization pass: `scripts/flamegraph.fish` runbook, `mimalloc` feature flag on `sts2-core` (default off; behind a `--features mimalloc` gate for allocator experiments), full perf rationale in the maintainers' perf notes.
 
 ### Performance
 
@@ -52,7 +52,7 @@ Measured on a typical developer workstation (Linux 6.8, glibc, single-threaded).
 
 - **2.67 M state transitions/sec** — `transitions_per_sec/endturn_full_combat`. Comfortably above the v2.1 plan's ≥1 M transitions/sec gate.
 - **~190 k combats/sec** (derived; ~14 transitions per random-play combat).
-- **161 searches/sec** for MCTS at 1000 simulations/move on Ironclad-vs-Cultist — `mcts_smoke/ironclad_vs_cultist_1000sims`. This is the algorithmic ceiling for single-threaded UCT on this workload; see [`docs/perf-notes-2026-05-12.md`](docs/perf-notes-2026-05-12.md) §Target re-statement for the arithmetic.
+- **161 searches/sec** for MCTS at 1000 simulations/move on Ironclad-vs-Cultist — `mcts_smoke/ironclad_vs_cultist_1000sims`. This is the algorithmic ceiling for single-threaded UCT on this workload.
 
 ### Known limitations (deferred to post-v0.1.0)
 

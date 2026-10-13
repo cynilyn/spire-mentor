@@ -181,6 +181,10 @@ def main(argv: list[str] | None = None) -> int:
 
     stale = []
     for path, build, comment, normalise in _TARGETS:
+        if path == _DOCKERFILE and not path.exists():
+            # The public export ships no Dockerfile (the image is private).
+            print(f"skipped {path.relative_to(_REPO)}: not in this checkout")
+            continue
         want = _splice(path, build(), comment)
         if normalise is not None:
             want = normalise(want)

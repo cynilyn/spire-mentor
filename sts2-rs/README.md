@@ -156,30 +156,36 @@ with `cargo bench -p sts2-bench` on as quiet a host as possible.
 
 A later MCTS single-thread speedup branch landed a 1.76× (plain release) /
 2.05× (PGO, `scripts/pgo_build.sh`) speedup on the realistic-deck search
-workload — see `docs/perf/2026-07-05-mcts-single-thread-speedup.md`; the bands
-above predate it. The **Performance anchor** section in
-[`CLAUDE.md`](CLAUDE.md) carries the authoritative anchor history and drift
-attribution, and `docs/perf/2026-05-14-perf-bisect.md` the bisect narrative.
-A `mimalloc` cargo feature on `sts2-core` exists for allocator experiments
-(default off).
+workload; the bands above predate it and need re-baselining. A `mimalloc`
+cargo feature on `sts2-core` exists for allocator experiments (default off).
 
 ## Testing & parity
 
-Beyond the quickstart gates, see [`CLAUDE.md`](CLAUDE.md) for the full
-validation-gate list (clippy, fmt, the fuzz-workspace `cargo check`, the
-`release-checked` profile) and `tests/parity/README.md` for the parity fixture
-store: frozen Python-sim-era fixtures plus the live C#-oracle-era artifacts
-(the oracle harness itself is driven from `../sts2-pycli`).
+The full validation-gate list, beyond the quickstart:
+
+```sh
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+cargo nextest run --workspace          # never bare `cargo test`: shared-process false failures
+cargo test --workspace --doc           # the one `cargo test`: nextest cannot run doctests
+cargo check --target wasm32-unknown-unknown -p sts2-workbench-wasm   # the browser build
+cargo check --manifest-path fuzz/Cargo.toml   # after changing CombatState / Relic shapes
+```
+
+`--profile release-checked` keeps release optimisation but turns overflow
+checks and debug assertions on, for sweeps that should panic on silent
+arithmetic bugs. [`tests/parity/README.md`](tests/parity/README.md) describes
+the parity fixture store: frozen Python-sim-era fixtures plus the live
+C#-oracle-era artifacts (the oracle harness itself is driven from
+`../sts2-pycli`).
 
 ## CI
 
-**No CI runs for this project.** The monorepo root deliberately has no
-`.github/workflows/` (local gates are the only gate — see the root
-`CLAUDE.md`), and this directory sits at subproject depth where GitHub Actions
-would not read workflows anyway. The workflow files that a standalone export
-*could* activate are preserved, inert, in
-[`docs/ci-templates/`](docs/ci-templates/) with a README explaining how they
-would be restored deliberately.
+This directory has no workflows of its own. In the public repository, the
+root `.github/workflows/ci.yml` runs the game-free gates above on every push
+and pull request. The private development repository runs the same gates
+locally only.
 
 ## Status
 

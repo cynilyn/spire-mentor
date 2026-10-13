@@ -23,11 +23,9 @@ epochs, characters, ascensions) with Astro.
 > public remote. Only the generator code itself (scripts, tools, site
 > templates) is original work covered by [`LICENSE`](LICENSE) (MIT). See
 > [`../PROVENANCE.md`](../PROVENANCE.md) for the full inventory. For the same
-> reason the GitHub Pages deploy workflow does **not** live in an active
-> `.github/workflows/` — it is parked at
-> [`docs/ci-templates/deploy.yml`](docs/ci-templates/deploy.yml), which would
-> auto-publish game content if ever restored in a public repository (see the
-> README next to it).
+> reason this wiki site has no deploy workflow: publishing it would publish
+> game content. (The repository's documentation site under `docs/site/` is a
+> separate site.)
 
 ## Prerequisites
 
@@ -38,8 +36,9 @@ epochs, characters, ascensions) with Astro.
   (Python 3.12+), Node.js/npm (for the Astro site), and the .NET tool
   [`ilspycmd`](https://github.com/icsharpcode/ILSpy) for decompilation
   (`dotnet tool install -g ilspycmd --version 9.1.0.7988` — 10+ does not
-  install on the .NET 9 SDK; see `CLAUDE.md` for the `DOTNET_ROOT` gotcha on
-  macOS).
+  install on the .NET 9 SDK). On macOS with Homebrew, `ilspycmd` needs
+  `DOTNET_ROOT` set to dotnet's `libexec` directory, not `bin` (e.g.
+  `/opt/homebrew/Cellar/dotnet/<version>/libexec`).
 - The LLM-based extractors (`just llm-extract-*`) additionally use the Claude
   Agent SDK, i.e. a working Claude Code setup.
 

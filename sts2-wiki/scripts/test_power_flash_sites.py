@@ -15,6 +15,7 @@ from scripts.power_flash_sites import collect, merge, power_id
 REPO = Path(__file__).resolve().parents[1]
 DECOMP = REPO / "decompiled" / "v0.107.1"
 TABLE = REPO / "data" / "v0.107.1" / "power_flash_sites.json"
+needs_decomp = unittest.skipUnless(DECOMP.is_dir(), f"decomp dir not present ({DECOMP})")
 
 
 class PowerIdTest(unittest.TestCase):
@@ -23,6 +24,7 @@ class PowerIdTest(unittest.TestCase):
         self.assertEqual(power_id("SlitheringStranglerPower"), "SLITHERING_STRANGLER")
         self.assertEqual(power_id("PaleBlueDotPower"), "PALE_BLUE_DOT")
 
+    @needs_decomp
     def test_every_power_id_is_a_real_power_kind(self):
         # The Rust gate joins on `PowerKind::python_name()`. If the CamelCase
         # conversion ever stops reproducing it, the join silently drops sites
@@ -37,6 +39,7 @@ class PowerIdTest(unittest.TestCase):
 
 
 class CollectTest(unittest.TestCase):
+    @needs_decomp
     def test_finds_every_flash_site_in_the_real_decomp(self):
         sites = collect(DECOMP)
         # Measured 2026-08-29: 90 calls across 89 classes (one class flashes
@@ -45,11 +48,13 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(len(sites), 90)
         self.assertEqual(len({s["cs_class"] for s in sites}), 89)
 
+    @needs_decomp
     def test_thorns_is_found_at_its_real_line(self):
         thorns = [s for s in collect(DECOMP) if s["cs_class"] == "ThornsPower"]
         self.assertEqual([s["cs_line"] for s in thorns], [21])
         self.assertEqual(thorns[0]["power"], "THORNS")
 
+    @needs_decomp
     def test_relic_and_ui_flashes_are_not_collected(self):
         # `RelicModel.Flash` flashes a RELIC, `NHandCardHolder.Flash` a card in
         # hand; neither reaches `NPowerFlashVfx`. Scoping to the powers
@@ -135,6 +140,7 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(merge(fresh, existing)[0]["ported"])
 
 
+@needs_decomp
 class CommittedTableTest(unittest.TestCase):
     def test_the_committed_table_matches_a_fresh_extraction(self):
         # Same contract `test_extract_vfx_bindings` enforces: the committed
