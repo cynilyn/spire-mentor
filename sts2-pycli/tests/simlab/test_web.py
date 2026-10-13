@@ -128,6 +128,7 @@ def test_submitted_sweep_is_listable_before_its_runner_writes_anything() -> None
                 "name": "immediate",
             }
         )
+        sweep_id = None
         try:
             sweep_id = mgr.submit(spec)
             # The runner is parked inside its first line (or has not started at
@@ -138,6 +139,12 @@ def test_submitted_sweep_is_listable_before_its_runner_writes_anything() -> None
         finally:
             released.set()
             entered.wait(5)
+            # The worker still rewrites progress.json after the runner returns.
+            # Join it before the temp dir goes: deleting files it holds open
+            # fails on Windows (WinError 32/145) and races it on Linux.
+            for t in threading.enumerate():
+                if sweep_id is not None and t.name == f"sweep-{sweep_id}":
+                    t.join(30)
 
 
 def test_submit_bad_spec_returns_422(tmp_path) -> None:

@@ -132,6 +132,32 @@ def pytest_runtest_call(item):
         pytest.skip(ORACLE_SKIP_REASON)
 
 
+@pytest.fixture(autouse=True)
+def _reset_engine_unlock_state():
+    """Undo any epoch lock a test installed into the engine. GH #755.
+
+    ``sts2_rs.set_locked_epochs`` mutates PROCESS-GLOBAL engine state: every
+    card pool built afterwards in the process is pruned. The live drivers'
+    ``main()`` installs the live census on purpose (``realgame_mcts`` /
+    ``realgame_random`` → ``install_live_unlock_state``), so a test that runs one
+    leaked the lock into whatever ran next in its xdist worker — e.g. the
+    Scroll Boxes golden then rolled DEATHBRINGER instead of DEATH_MARCH. The
+    adapter's once-per-process wire latch is reset with it.
+
+    Reads ``sys.modules`` instead of importing, so tests that never load the
+    engine pay nothing.
+    """
+    yield
+    import sys
+
+    rs = sys.modules.get("sts2_rs")
+    if rs is not None and hasattr(rs, "locked_cards") and rs.locked_cards():
+        rs.set_locked_epochs([])
+    adapter = sys.modules.get("realgame_adapter")
+    if adapter is not None:
+        adapter._WIRE_UNLOCKS_INSTALLED = None
+
+
 @pytest.fixture
 def game():
     """Each test gets an independent game process."""
