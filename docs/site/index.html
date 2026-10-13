@@ -51,10 +51,10 @@
   AI on top. Two front ends show
   that AI thinking: a browser workbench and a mod for the real game.</p>
   <figure class="shot wide">
-    <img src="img/mod-hud-combat.webp" width="1600" height="900" alt="The real game with the Spire Mentor advisor panel: Taunt on Haunted Ship ranked first at +0.85 with 87% of 1,000 simulations, estimated win 92%">
-    <figcaption>The Spire Mentor mod in the real game: 1,000 MCTS simulations rank
-    every legal move, show the principal line and estimate the chance to win
-    the fight.</figcaption>
+    <img src="img/wb-combat.webp" width="1440" height="900" alt="The browser workbench in the act-3 boss fight (Ironclad vs the Queen, floor 45): the best card, Dominate+, carries a 95% win badge, and the machine-reasoning panel ranks every legal move by value and visits.">
+    <figcaption>The browser workbench in the act-3 boss fight: the search marks
+    the best card with its win chance, and the machine-reasoning panel ranks
+    every legal move.</figcaption>
   </figure>
   <dl class="stats">
     <div><dt>Combat divergences vs the game's C#</dt><dd>0</dd></div>
@@ -363,6 +363,11 @@
   vanilla. The advisor backend is launched by the mod and ships as a
   self-contained executable.</p>
 
+  <figure class="shot">
+    <img src="img/mod-hud-combat.webp" width="1600" height="900" loading="lazy" alt="The real game with the Spire Mentor advisor panel: Taunt on Haunted Ship ranked first at +0.85 with 87% of 1,000 simulations, estimated win 92%">
+    <figcaption>Combat advice in the real game: MCTS ranks every legal move,
+    shows the principal line and estimates the chance to win the fight.</figcaption>
+  </figure>
   <figure class="shot">
     <img src="img/mod-hud-map.webp" width="1283" height="711" alt="The real game's map with the advisor panel recommending the right-hand unknown room at 73% over a monster room at 27%">
     <figcaption>Route advice on the map: the run policy prefers the unknown
