@@ -30,9 +30,9 @@ recomputed on every decision.</sub>
 - **An AI that wins.** Chance-node MCTS for every fight, plus a PPO-trained
   transformer per character for every other decision: paths, card picks,
   shops, events, rest sites, removals and upgrades. In the simulator the
-  Ironclad champion wins **71%** of runs pooled over Ascension 0–10 (**90%**
-  at A0). In the **real game**, playing unassisted at **Ascension 8**, the
-  August 2026 versions won 13 of 40 Ironclad runs and 11 of 40 Silent runs.
+  Defect and Ironclad champions win **76%** and **75%** of runs averaged
+  over Ascension 0–10 (**93%** and **90%** at A0). In the **real game**,
+  playing unassisted at **Ascension 8**, the August 2026 versions won 13 of 40 Ironclad runs and 11 of 40 Silent runs.
   Explained in depth: [how the AI plays](https://tfriedel.github.io/spire-mentor/ai.html)
   and [how it's trained](https://tfriedel.github.io/spire-mentor/training.html).
 - **A browser workbench.** The engine compiled to WebAssembly, with the
@@ -57,19 +57,19 @@ recomputed on every decision.</sub>
 | MCTS | 1,000 sims ≈ 25 ms native, one thread · the same in a tablet browser via WASM (≈ 2× native cost on the same machine) · up to ~49k sims/s multi-threaded |
 | Code | ~360k lines of Rust · ~116k Python · ~56k TypeScript · 7,000+ Rust tests, 3,000+ Python, 1,400+ web |
 
-**Run-AI champions** (simulator, MCTS combat at 1,000 sims, 4,000 at bosses;
-each promoted on a pre-registered gate of 2,200 paired runs, 200 seeds ×
-A0–A10):
+**Run-AI champions** (simulator, MCTS combat at 8,000 sims per decision as
+in the real-game advisor, Act 1 rolled, one fresh seed panel for all five,
+measured October 2026; 200 runs per cell at A0–A8, 500 at A9–A10):
 
-| Character | A0 | A4 | A8 | A9 | A10 | Pooled A0–A10 | Gain over previous champion |
+| Character | A0 | A4 | A8 | A9 | A10 | Mean A0–A10 | Promotion gate (vs previous champion) |
 |---|---|---|---|---|---|---|---|
-| Ironclad | 90.5% | 84.5% | 66.0% | 34.0% | 7.5% | **71.0%** | +5.2 pp, p = 1e-6 |
-| Defect | 81.5% | 76.5% | 53.0% | 21.5% | 11.5% | **63.6%** | +5.5 pp, p = 2e-6 |
-| Silent | 71.5% | 68.0% | 40.5% | 18.0% | 6.0% | **52.5%** | +5.6 pp, p = 7e-7, all 11 levels up |
-| Regent | 70.0% | 62.5% | 42.5% | 18.0% | 5.5% | **50.6%** | +4.6 pp, p = 1e-4 |
-| Necrobinder | 50.0% | 40.5% | 23.0% | 5.0% | 3.5% | **33.1%** | +6.8 pp, p = 6e-10, all 11 levels up |
+| Defect | 93.0% | 90.5% | 70.0% | 39.2% | 22.0% | **76.1%** | +5.5 pp, p = 2e-6 |
+| Ironclad | 89.5% | 86.5% | 70.0% | 39.0% | 11.0% | **74.9%** | +5.2 pp, p = 1e-6 |
+| Silent | 78.5% | 67.5% | 55.5% | 20.0% | 9.0% | **59.9%** | +5.6 pp, p = 7e-7, all 11 levels up |
+| Regent | 67.5% | 66.0% | 43.5% | 15.6% | 6.2% | **53.8%** | +4.6 pp, p = 1e-4 |
+| Necrobinder | 66.5% | 62.5% | 44.5% | 13.8% | 5.6% | **51.7%** | +6.8 pp, p = 6e-10, all 11 levels up |
 
-200 runs per cell; every level is in the
+Every level is in the
 [docs](https://tfriedel.github.io/spire-mentor/#ai).
 
 **In the real game** (the mod's advisor driving `SlayTheSpire2.exe`, 40 runs

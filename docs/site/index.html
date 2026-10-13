@@ -176,8 +176,9 @@
   <div class="two">
     <div>
       <h3>Fights: chance-node MCTS</h3>
-      <p>Every combat decision is an MCTS search over the engine: 1,000
-      simulations per decision in normal fights, 4,000 at bosses. Draws and
+      <p>Every combat decision is an MCTS search over the engine: 8,000
+      simulations per decision in the real game and the published win rates,
+      1,000 (4,000 at bosses) in training gates. Draws and
       monster rolls are chance nodes, not clairvoyance; leaves are scored by a
       216-feature evaluation.</p>
     </div>
@@ -195,14 +196,14 @@
 
   <div class="table-wrap">
   <table>
-    <caption>Run-AI champions: simulator win rate, Ascension 0–10 pooled</caption>
-    <thead><tr><th>Character</th><th class="num">Win rate</th><th>Promotion gate</th></tr></thead>
+    <caption>Run-AI champions: simulator win rate, mean over Ascension 0–10</caption>
+    <thead><tr><th>Character</th><th class="num">Win rate</th><th>Promotion gate (vs previous champion)</th></tr></thead>
     <tbody>
-      <tr><td>Ironclad</td><td class="num">71.0%</td><td>+5.2 pp over the previous champion, p = 1e-6</td></tr>
-      <tr><td>Defect</td><td class="num">63.6%</td><td>+5.5 pp, p = 2e-6</td></tr>
-      <tr><td>Silent</td><td class="num">52.5%</td><td>+5.6 pp, p = 7e-7, all 11 ascension levels up</td></tr>
-      <tr><td>Regent</td><td class="num">50.6%</td><td>+4.6 pp, p = 1e-4</td></tr>
-      <tr><td>Necrobinder</td><td class="num">33.1%</td><td>+6.8 pp, p = 6e-10, all 11 levels up</td></tr>
+      <tr><td>Defect</td><td class="num">76.1%</td><td>+5.5 pp, p = 2e-6</td></tr>
+      <tr><td>Ironclad</td><td class="num">74.9%</td><td>+5.2 pp, p = 1e-6</td></tr>
+      <tr><td>Silent</td><td class="num">59.9%</td><td>+5.6 pp, p = 7e-7, all 11 ascension levels up</td></tr>
+      <tr><td>Regent</td><td class="num">53.8%</td><td>+4.6 pp, p = 1e-4</td></tr>
+      <tr><td>Necrobinder</td><td class="num">51.7%</td><td>+6.8 pp, p = 6e-10, all 11 levels up</td></tr>
     </tbody>
   </table>
   </div>
@@ -210,24 +211,26 @@
   <div class="table-wrap">
   <table class="heatmap">
     <caption>Win rate (%) by ascension level, current champions, simulator</caption>
-    <thead><tr><th>Character</th><th class="num">A0</th><th class="num">A1</th><th class="num">A2</th><th class="num">A3</th><th class="num">A4</th><th class="num">A5</th><th class="num">A6</th><th class="num">A7</th><th class="num">A8</th><th class="num">A9</th><th class="num">A10</th><th class="num">Pooled</th></tr></thead>
+    <thead><tr><th>Character</th><th class="num">A0</th><th class="num">A1</th><th class="num">A2</th><th class="num">A3</th><th class="num">A4</th><th class="num">A5</th><th class="num">A6</th><th class="num">A7</th><th class="num">A8</th><th class="num">A9</th><th class="num">A10</th><th class="num">Mean</th></tr></thead>
     <tbody>
-      <tr><th scope="row">Ironclad</th><td class="num heat" style="--p:90.5">90.5</td><td class="num heat" style="--p:91.5">91.5</td><td class="num heat" style="--p:89">89</td><td class="num heat" style="--p:85">85</td><td class="num heat" style="--p:84.5">84.5</td><td class="num heat" style="--p:81">81</td><td class="num heat" style="--p:76.5">76.5</td><td class="num heat" style="--p:76">76</td><td class="num heat" style="--p:66">66</td><td class="num heat" style="--p:34">34</td><td class="num heat" style="--p:7.5">7.5</td><td class="num pooled">71.0%</td></tr>
-      <tr><th scope="row">Defect</th><td class="num heat" style="--p:81.5">81.5</td><td class="num heat" style="--p:85.5">85.5</td><td class="num heat" style="--p:81.5">81.5</td><td class="num heat" style="--p:81">81</td><td class="num heat" style="--p:76.5">76.5</td><td class="num heat" style="--p:73.5">73.5</td><td class="num heat" style="--p:71.5">71.5</td><td class="num heat" style="--p:62.5">62.5</td><td class="num heat" style="--p:53">53</td><td class="num heat" style="--p:21.5">21.5</td><td class="num heat" style="--p:11.5">11.5</td><td class="num pooled">63.6%</td></tr>
-      <tr><th scope="row">Silent</th><td class="num heat" style="--p:71.5">71.5</td><td class="num heat" style="--p:71">71</td><td class="num heat" style="--p:69.5">69.5</td><td class="num heat" style="--p:67.5">67.5</td><td class="num heat" style="--p:68">68</td><td class="num heat" style="--p:58">58</td><td class="num heat" style="--p:57">57</td><td class="num heat" style="--p:51">51</td><td class="num heat" style="--p:40.5">40.5</td><td class="num heat" style="--p:18">18</td><td class="num heat" style="--p:6">6</td><td class="num pooled">52.5%</td></tr>
-      <tr><th scope="row">Regent</th><td class="num heat" style="--p:70">70</td><td class="num heat" style="--p:76">76</td><td class="num heat" style="--p:64">64</td><td class="num heat" style="--p:57">57</td><td class="num heat" style="--p:62.5">62.5</td><td class="num heat" style="--p:57.5">57.5</td><td class="num heat" style="--p:55.5">55.5</td><td class="num heat" style="--p:48.5">48.5</td><td class="num heat" style="--p:42.5">42.5</td><td class="num heat" style="--p:18">18</td><td class="num heat" style="--p:5.5">5.5</td><td class="num pooled">50.6%</td></tr>
-      <tr><th scope="row">Necrobinder</th><td class="num heat" style="--p:50">50</td><td class="num heat" style="--p:53">53</td><td class="num heat" style="--p:44.5">44.5</td><td class="num heat" style="--p:48">48</td><td class="num heat" style="--p:40.5">40.5</td><td class="num heat" style="--p:35">35</td><td class="num heat" style="--p:30">30</td><td class="num heat" style="--p:32">32</td><td class="num heat" style="--p:23">23</td><td class="num heat" style="--p:5">5</td><td class="num heat" style="--p:3.5">3.5</td><td class="num pooled">33.1%</td></tr>
+      <tr><th scope="row">Defect</th><td class="num heat" style="--p:93">93</td><td class="num heat" style="--p:90">90</td><td class="num heat" style="--p:92">92</td><td class="num heat" style="--p:89">89</td><td class="num heat" style="--p:90.5">90.5</td><td class="num heat" style="--p:85">85</td><td class="num heat" style="--p:87.5">87.5</td><td class="num heat" style="--p:79">79</td><td class="num heat" style="--p:70">70</td><td class="num heat" style="--p:39.2">39.2</td><td class="num heat" style="--p:22">22</td><td class="num pooled">76.1%</td></tr>
+      <tr><th scope="row">Ironclad</th><td class="num heat" style="--p:89.5">89.5</td><td class="num heat" style="--p:95">95</td><td class="num heat" style="--p:92.5">92.5</td><td class="num heat" style="--p:90">90</td><td class="num heat" style="--p:86.5">86.5</td><td class="num heat" style="--p:85">85</td><td class="num heat" style="--p:86">86</td><td class="num heat" style="--p:79">79</td><td class="num heat" style="--p:70">70</td><td class="num heat" style="--p:39">39</td><td class="num heat" style="--p:11">11</td><td class="num pooled">74.9%</td></tr>
+      <tr><th scope="row">Silent</th><td class="num heat" style="--p:78.5">78.5</td><td class="num heat" style="--p:80">80</td><td class="num heat" style="--p:77">77</td><td class="num heat" style="--p:74">74</td><td class="num heat" style="--p:67.5">67.5</td><td class="num heat" style="--p:64">64</td><td class="num heat" style="--p:65.5">65.5</td><td class="num heat" style="--p:68">68</td><td class="num heat" style="--p:55.5">55.5</td><td class="num heat" style="--p:20">20</td><td class="num heat" style="--p:9">9</td><td class="num pooled">59.9%</td></tr>
+      <tr><th scope="row">Regent</th><td class="num heat" style="--p:67.5">67.5</td><td class="num heat" style="--p:77.5">77.5</td><td class="num heat" style="--p:73">73</td><td class="num heat" style="--p:72">72</td><td class="num heat" style="--p:66">66</td><td class="num heat" style="--p:59.5">59.5</td><td class="num heat" style="--p:60">60</td><td class="num heat" style="--p:51">51</td><td class="num heat" style="--p:43.5">43.5</td><td class="num heat" style="--p:15.6">15.6</td><td class="num heat" style="--p:6.2">6.2</td><td class="num pooled">53.8%</td></tr>
+      <tr><th scope="row">Necrobinder</th><td class="num heat" style="--p:66.5">66.5</td><td class="num heat" style="--p:73">73</td><td class="num heat" style="--p:73">73</td><td class="num heat" style="--p:68.5">68.5</td><td class="num heat" style="--p:62.5">62.5</td><td class="num heat" style="--p:59.5">59.5</td><td class="num heat" style="--p:52.5">52.5</td><td class="num heat" style="--p:49">49</td><td class="num heat" style="--p:44.5">44.5</td><td class="num heat" style="--p:13.8">13.8</td><td class="num heat" style="--p:5.6">5.6</td><td class="num pooled">51.7%</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="note">Each cell is 200 runs on fixed seeds, from the champion's
-  promotion gate; one cell's 95% interval is roughly ±7 pp in the middle of the
-  range. Each character's gate used its own seed panel, so compare characters
-  loosely. The cliff lines up with the game's own steps: A9 (Deadly Enemies)
-  makes every enemy hit harder, and A10 (Double Boss) adds a second boss fight
-  at the end of the run. Combat search
-  is honest (it does not see the draw pile order) at 1,000 simulations per
-  decision, 4,000 at bosses.</p>
+  <p class="note">One fresh seed panel for all five champions, measured
+  October 2026: 200 runs per cell at A0–A8 and 500 at A9–A10, the same seeds
+  for every character, Act 1 rolled between Overgrowth and Underdocks. Combat
+  search is honest (it does not see the draw pile order) at 8,000 simulations
+  per decision, boss fights included, the advisor's budget. A cell's 95%
+  interval is roughly ±6 pp in the middle of the range and ±2–4 pp at A9–A10.
+  The cliff lines up with the game's own steps: A9 (Deadly Enemies) makes
+  every enemy hit harder, and A10 (Double Boss) adds a second boss fight at
+  the end of the run. Full write-up:
+  <code>docs/experiments/2026-10-11-release-winrates.md</code>.</p>
   <p class="note">Every champion is promoted on a pre-registered gate: 200
   seeds × 11 ascension levels = 2,200 paired runs against the incumbent,
   McNemar test, seed-clustered error check, and a guard that no single level
