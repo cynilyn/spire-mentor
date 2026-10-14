@@ -106,7 +106,12 @@ def test_a_plain_wheel_is_refused_and_the_fix_is_named(monkeypatch, tmp_path):
         check_training_wheel(rs_root=tmp_path)
     msg = str(exc.value.code)
     assert "plain build" in msg
-    assert FIX in msg
+    if os.name == "nt":
+        # pgo_wheel.sh is bash-only: on Windows the refusal says so instead of
+        # naming a build that cannot run there.
+        assert "Windows" in msg
+    else:
+        assert FIX in msg
     # The host that cannot build PGO needs to be told its way out.
     assert "--allow-plain-wheel" in msg
     assert ALLOW_PLAIN_ENV in msg

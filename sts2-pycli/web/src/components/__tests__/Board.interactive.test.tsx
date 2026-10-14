@@ -158,7 +158,9 @@ describe("Board (interactive)", () => {
 
   function withScores(over: Partial<import("../../api").Score>): import("../../api").Score {
     return {
-      stable_idx: 0, action: "Strike", win_prob: 0.5, q: 0, visits: 0,
+      // A searched row has visits; a zero-visit row is a forced move the
+      // run AI did not search, and carries no win-prob to overlay (M03).
+      stable_idx: 0, action: "Strike", win_prob: 0.5, q: 0, visits: 100,
       is_best: false, q_saturated: false, low_confidence: false, target_index: null, ...over,
     };
   }
@@ -168,6 +170,12 @@ describe("Board (interactive)", () => {
     withHints(<Board step={combatStep()} onPlayCard={() => {}} onEndTurn={() => {}} scores={scores} />);
     expect(screen.getByText("62%")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /end turn/i })).toHaveTextContent("0.40");
+  });
+
+  it("shows no end-turn score for a forced, unsearched move", () => {
+    const scores = [withScores({ stable_idx: -1, win_prob: 0, visits: 0, is_best: true })];
+    withHints(<Board step={combatStep()} onPlayCard={() => {}} onEndTurn={() => {}} scores={scores} />);
+    expect(screen.getByRole("button", { name: /end turn/i })).not.toHaveTextContent("0.00");
   });
 
   it("'g' plays the recommended move and 'a' autoplays", () => {
