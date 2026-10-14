@@ -768,6 +768,101 @@ pub struct Potion {
 /// Vector-backed arena over [`Creature`]. Indexing uses [`CreatureUid`] in
 /// later phases; today it is a thin wrapper so callers can pre-bind the type.
 pub type CreatureStore = Vec<Creature>;
+
+// ---------------------------------------------------------------------------
+// Dense id lookups (J07)
+//
+// Every production arena hands out ids densely: a creature gets
+// `creatures.len() + 1` and a card `cards.len() + 1`, and neither arena drops
+// a row during a combat, so the element with id `n` sits in slot `n - 1`.
+// These helpers test that slot first and fall back to the linear scan the
+// call sites used to do whenever the slot holds another id (a fixture arena
+// that skips ids, or the creature arena after `teardown_player_creature`).
+// Ids are unique, so both branches return the element the scan returned, and
+// a site that asked `any(|x| x.id == id && pred(x))` gets the same answer from
+// `helper(id).is_some_and(pred)`. Debug builds assert the uniqueness on every
+// call; `invariants::check_combat_invariants` checks it per step.
+// ---------------------------------------------------------------------------
+
+/// The arena creature with id `id`: the dense `creatures[id - 1]` slot when it
+/// holds `id`, else the first match of a linear scan.
+#[inline]
+#[must_use]
+pub fn creature_by_id(creatures: &[Creature], id: NonZeroU32) -> Option<&Creature> {
+    debug_assert_unique_creature_id(creatures, id);
+    match creatures.get(id.get() as usize - 1) {
+        Some(c) if c.id == id => Some(c),
+        _ => creatures.iter().find(|c| c.id == id),
+    }
+}
+
+/// Mutable [`creature_by_id`].
+#[inline]
+pub fn creature_by_id_mut(creatures: &mut [Creature], id: NonZeroU32) -> Option<&mut Creature> {
+    debug_assert_unique_creature_id(creatures, id);
+    let slot = id.get() as usize - 1;
+    if creatures.get(slot).is_some_and(|c| c.id == id) {
+        return creatures.get_mut(slot);
+    }
+    creatures.iter_mut().find(|c| c.id == id)
+}
+
+/// Arena index of the creature with id `id` (see [`creature_by_id`]).
+#[inline]
+#[must_use]
+pub fn creature_pos(creatures: &[Creature], id: NonZeroU32) -> Option<usize> {
+    debug_assert_unique_creature_id(creatures, id);
+    let slot = id.get() as usize - 1;
+    if creatures.get(slot).is_some_and(|c| c.id == id) {
+        return Some(slot);
+    }
+    creatures.iter().position(|c| c.id == id)
+}
+
+/// The arena card with uid `uid`: the dense `cards[uid - 1]` slot when it
+/// holds `uid`, else the first match of a linear scan.
+#[inline]
+#[must_use]
+pub fn card_by_uid(cards: &[Card], uid: CardUid) -> Option<&Card> {
+    debug_assert_unique_card_uid(cards, uid);
+    match cards.get(uid.get() as usize - 1) {
+        Some(c) if c.uid == uid => Some(c),
+        _ => cards.iter().find(|c| c.uid == uid),
+    }
+}
+
+/// Mutable [`card_by_uid`].
+#[inline]
+pub fn card_by_uid_mut(cards: &mut [Card], uid: CardUid) -> Option<&mut Card> {
+    debug_assert_unique_card_uid(cards, uid);
+    let slot = uid.get() as usize - 1;
+    if cards.get(slot).is_some_and(|c| c.uid == uid) {
+        return cards.get_mut(slot);
+    }
+    cards.iter_mut().find(|c| c.uid == uid)
+}
+
+/// Debug guard of the dense lookups: at most one creature answers to `id`.
+/// With a duplicate, the dense slot and the first scan match could differ.
+#[inline]
+fn debug_assert_unique_creature_id(creatures: &[Creature], id: NonZeroU32) {
+    debug_assert!(
+        creatures.iter().filter(|c| c.id == id).count() <= 1,
+        "duplicate creature id {id} in the arena: a dense lookup could pick a \
+         different creature than the scan"
+    );
+}
+
+/// Debug guard of the dense lookups: at most one card answers to `uid`.
+#[inline]
+fn debug_assert_unique_card_uid(cards: &[Card], uid: CardUid) {
+    debug_assert!(
+        cards.iter().filter(|c| c.uid == uid).count() <= 1,
+        "duplicate card uid {uid:?} in the arena: a dense lookup could pick a \
+         different card than the scan"
+    );
+}
+
 // `CardStore` re-exported above via `pub use cards::{Card, CardStore};`.
 /// Arena over [`Power`] carrying an O(1) `uid -> slot` side index.
 ///
@@ -861,6 +956,60 @@ impl PowerKindSet {
         Self { words }
     }
 
+    /// `self` minus `kinds`, in const context: derives a channel's arm mask
+    /// from its mention mask (the `*_ARMS` consts in `hooks.rs`). Every
+    /// removed kind must be in `self`, so a stale exclusion list is a
+    /// compile error rather than dead text.
+    #[must_use]
+    pub const fn without(self, kinds: &[PowerKind]) -> Self {
+        let mut words = self.words;
+        let mut n = 0;
+        while n < kinds.len() {
+            let i = kinds[n] as usize;
+            let bit = 1u64 << (i % 64);
+            assert!(words[i / 64] & bit != 0, "removed kind is not in the set");
+            words[i / 64] &= !bit;
+            n += 1;
+        }
+        Self { words }
+    }
+
+    /// `self` plus every kind in `other`, in const context: builds the hook
+    /// trigger sets in `hooks.rs` from the walk gates and the lane kinds.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        let mut words = self.words;
+        let mut i = 0;
+        while i < POWER_KIND_WORDS {
+            words[i] |= other.words[i];
+            i += 1;
+        }
+        Self { words }
+    }
+
+    /// Number of discriminants the set can hold.
+    pub(crate) const CAPACITY: usize = POWER_KIND_WORDS * 64;
+
+    /// True if the kind with discriminant `i` (`kind as usize`) is in the
+    /// set, in const context, where a table is built per discriminant.
+    #[must_use]
+    pub(crate) const fn contains_index(&self, i: usize) -> bool {
+        i < Self::CAPACITY && (self.words[i / 64] >> (i % 64)) & 1 != 0
+    }
+
+    /// True if every kind in `self` is also in `other`.
+    #[must_use]
+    pub const fn is_subset_of(&self, other: &PowerKindSet) -> bool {
+        let mut i = 0;
+        while i < POWER_KIND_WORDS {
+            if self.words[i] & !other.words[i] != 0 {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
     /// True if `kind` is in the set.
     #[inline]
     #[must_use]
@@ -886,7 +1035,7 @@ impl PowerKindSet {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct PowerStore {
     powers: Vec<Power>,
     /// `slot_of_id[id.get() - 1]` stores `slot + 1`; the `0` sentinel means
@@ -908,6 +1057,26 @@ pub struct PowerStore {
     /// [`PowerKindSet`]). A derived view of `powers`, so — like `slot_of_id` —
     /// it is excluded from the `PartialEq` arena comparison.
     present_kinds: PowerKindSet,
+    /// Hook-liveness word (J06): bit `h` is set when some kind in
+    /// `present_kinds` is in the trigger set of [`crate::hooks::PowerHook`]
+    /// `h`, i.e. the OR of [`crate::hooks::power_hook_bits`] over the present
+    /// kinds. Maintained at the same three chokepoints, so a clear bit proves
+    /// no power that could make that dispatcher act exists. Derived like
+    /// `present_kinds`: excluded from `PartialEq` and from `Debug`.
+    hook_live: u64,
+}
+
+/// The derived output of the fields before `hook_live` existed, so a state's
+/// `Debug` text (which some parity harnesses hash) is unchanged by it.
+#[allow(clippy::missing_fields_in_debug)]
+impl core::fmt::Debug for PowerStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PowerStore")
+            .field("powers", &self.powers)
+            .field("slot_of_id", &self.slot_of_id)
+            .field("present_kinds", &self.present_kinds)
+            .finish()
+    }
 }
 
 impl PartialEq for PowerStore {
@@ -947,6 +1116,7 @@ impl PowerStore {
             powers: Vec::new(),
             slot_of_id: SmallVec::new(),
             present_kinds: PowerKindSet::EMPTY,
+            hook_live: 0,
         }
     }
 
@@ -958,6 +1128,7 @@ impl PowerStore {
             powers: Vec::with_capacity(cap),
             slot_of_id: SmallVec::new(),
             present_kinds: PowerKindSet::EMPTY,
+            hook_live: 0,
         }
     }
 
@@ -1003,6 +1174,7 @@ impl PowerStore {
         );
         self.slot_of_id[i] = slot + 1;
         self.present_kinds.insert(power.kind);
+        self.hook_live |= crate::hooks::power_hook_bits(power.kind);
         self.powers.push(power);
     }
 
@@ -1022,6 +1194,7 @@ impl PowerStore {
         self.powers.clear();
         self.slot_of_id.clear();
         self.present_kinds = PowerKindSet::EMPTY;
+        self.hook_live = 0;
     }
 
     /// Borrow the underlying arena as a slice (explicit form of the `Deref`).
@@ -1036,6 +1209,7 @@ impl PowerStore {
             *s = 0;
         }
         self.present_kinds = PowerKindSet::EMPTY;
+        self.hook_live = 0;
         for (slot, p) in self.powers.iter().enumerate() {
             let i = Self::id_index(p.id);
             if i >= self.slot_of_id.len() {
@@ -1043,6 +1217,7 @@ impl PowerStore {
             }
             self.slot_of_id[i] = u32::try_from(slot).expect("power arena slot fits u32") + 1;
             self.present_kinds.insert(p.kind);
+            self.hook_live |= crate::hooks::power_hook_bits(p.kind);
         }
     }
 
@@ -1053,6 +1228,14 @@ impl PowerStore {
     #[must_use]
     pub fn present_kinds(&self) -> &PowerKindSet {
         &self.present_kinds
+    }
+
+    /// The hook-liveness word (J06): see the `hook_live` field and
+    /// [`crate::hooks::PowerHook`].
+    #[inline]
+    #[must_use]
+    pub(crate) fn hook_live(&self) -> u64 {
+        self.hook_live
     }
 }
 
@@ -1082,6 +1265,7 @@ impl From<Vec<Power>> for PowerStore {
             powers,
             slot_of_id: SmallVec::new(),
             present_kinds: PowerKindSet::EMPTY,
+            hook_live: 0,
         };
         store.rebuild_index();
         store
@@ -1093,8 +1277,341 @@ impl FromIterator<Power> for PowerStore {
         Self::from(iter.into_iter().collect::<Vec<Power>>())
     }
 }
-/// Vector-backed arena over [`Relic`].
-pub type RelicStore = Vec<Relic>;
+/// Number of `u64` words backing a [`RelicKindSet`]: 320 bits over the 297
+/// [`RelicKind`] variants today. The const assert below fails the build the
+/// day a variant pushes past the capacity.
+const RELIC_KIND_WORDS: usize = 5;
+const _: () = assert!(RelicKind::ALL.len() <= RELIC_KIND_WORDS * 64);
+
+/// Plain (non-atomic) bitset over [`RelicKind`] discriminants. `RelicKind` is
+/// fieldless with no `repr`, so `kind as usize` is its 0-based declaration
+/// index and indexes the bitset directly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RelicKindSet {
+    words: [u64; RELIC_KIND_WORDS],
+}
+
+impl RelicKindSet {
+    /// The empty set.
+    pub const EMPTY: Self = Self {
+        words: [0; RELIC_KIND_WORDS],
+    };
+
+    #[inline]
+    fn insert(&mut self, kind: RelicKind) {
+        let i = kind as usize;
+        if let Some(w) = self.words.get_mut(i / 64) {
+            *w |= 1u64 << (i % 64);
+        }
+    }
+
+    /// True if `kind` is in the set.
+    #[inline]
+    #[must_use]
+    pub fn contains(&self, kind: RelicKind) -> bool {
+        let i = kind as usize;
+        match self.words.get(i / 64) {
+            Some(w) => (*w >> (i % 64)) & 1 != 0,
+            None => false,
+        }
+    }
+
+    /// The kinds of the non-melted relics in `relics` — exactly the kinds
+    /// `relic_effects::helpers::player_owns_relic` answers `true` for.
+    #[must_use]
+    pub fn owned_by(relics: &[Relic]) -> Self {
+        let mut set = Self::EMPTY;
+        for r in relics.iter().filter(|r| !r.is_melted) {
+            set.insert(r.kind);
+        }
+        set
+    }
+}
+
+/// Vector-backed arena over [`Relic`], carrying two views derived from it:
+/// the owned-kind set ([`RelicKindSet::owned_by`]) and the per-combat
+/// relic-channel plan (`relic_effects::channels::RelicPlan`, M01) that the
+/// owned / equip-order / obtain-order relic dispatchers walk instead of
+/// re-scanning the relic list on every dispatch.
+///
+/// Replaces the former `type RelicStore = Vec<Relic>`. Both views are pure
+/// functions of the relic sequence's `(kind, is_melted)` pairs (the plan also
+/// of the frozen relic channels), and those pairs are constant for the whole
+/// combat: production writes them only when a combat state is built. So every
+/// structural write goes through a method here that rebuilds them (`push`,
+/// `extend`, `set_melted`, `From<Vec<Relic>>`, …), and the read side derefs to
+/// `[Relic]`, not `Vec`. `counter` stays freely mutable through `DerefMut`
+/// (`iter_mut`, indexing). The same `&mut [Relic]` could also write `kind` /
+/// `is_melted` around the rebuild; nothing does, and debug builds recompute
+/// both views at every [`apply`] entry and assert they still match
+/// (`RelicStore::debug_assert_derived_views`).
+///
+/// [`PartialEq`] and [`Debug`](std::fmt::Debug) look at the relics only (the
+/// views are derived), so equality and the printed form are those of the old
+/// `Vec<Relic>`.
+#[derive(Clone)]
+pub struct RelicStore {
+    relics: Vec<Relic>,
+    owned: RelicKindSet,
+    plan: relic_effects::channels::RelicPlan,
+}
+
+impl PartialEq for RelicStore {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.relics == other.relics
+    }
+}
+impl Eq for RelicStore {}
+
+impl std::fmt::Debug for RelicStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.relics, f)
+    }
+}
+
+impl Default for RelicStore {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::ops::Deref for RelicStore {
+    type Target = [Relic];
+    #[inline]
+    fn deref(&self) -> &[Relic] {
+        &self.relics
+    }
+}
+impl core::ops::DerefMut for RelicStore {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [Relic] {
+        // Element mutation only (counters). No structural op is reachable
+        // through a slice; a `kind` / `is_melted` write through it is caught
+        // by the debug drift assert at `apply` entry.
+        &mut self.relics
+    }
+}
+
+impl RelicStore {
+    /// Empty store.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            relics: Vec::new(),
+            owned: RelicKindSet::EMPTY,
+            plan: relic_effects::channels::RelicPlan::EMPTY_STORE,
+        }
+    }
+
+    /// Recompute both derived views from the relic sequence.
+    fn rebuild(&mut self) {
+        self.owned = RelicKindSet::owned_by(&self.relics);
+        self.plan = relic_effects::channels::RelicPlan::build(&self.relics, &self.owned);
+    }
+
+    /// Append a relic (obtain order).
+    #[inline]
+    pub fn push(&mut self, relic: Relic) {
+        self.relics.push(relic);
+        self.rebuild();
+    }
+
+    /// Insert a relic at `index`, shifting later relics.
+    pub fn insert(&mut self, index: usize, relic: Relic) {
+        self.relics.insert(index, relic);
+        self.rebuild();
+    }
+
+    /// Remove and return the relic at `index`.
+    pub fn remove(&mut self, index: usize) -> Relic {
+        let relic = self.relics.remove(index);
+        self.rebuild();
+        relic
+    }
+
+    /// Remove and return the last relic.
+    pub fn pop(&mut self) -> Option<Relic> {
+        let relic = self.relics.pop();
+        self.rebuild();
+        relic
+    }
+
+    /// Keep only the relics matching `f`.
+    pub fn retain<F: FnMut(&Relic) -> bool>(&mut self, f: F) {
+        self.relics.retain(f);
+        self.rebuild();
+    }
+
+    /// Drop every relic.
+    pub fn clear(&mut self) {
+        self.relics.clear();
+        self.rebuild();
+    }
+
+    /// Set the ToyBox melt flag of the relic at `index` (C# `IsMelted`: a
+    /// melted relic keeps its slot but leaves every hook dispatch).
+    ///
+    /// # Panics
+    /// If `index` is out of bounds.
+    pub fn set_melted(&mut self, index: usize, melted: bool) {
+        self.relics[index].is_melted = melted;
+        self.rebuild();
+    }
+
+    /// Kinds of the non-melted relics (the `player_owns_relic` predicate as
+    /// a set).
+    #[inline]
+    #[must_use]
+    pub fn owned_kinds(&self) -> &RelicKindSet {
+        &self.owned
+    }
+
+    /// True iff a non-melted relic of `kind` is in the store: the
+    /// `relics.iter().any(|r| !r.is_melted && r.kind == kind)` ownership scan,
+    /// answered by one bit test on the stored owned-kind set (J01b). Debug
+    /// builds also run the scan and assert the two agree.
+    ///
+    /// # Panics
+    /// In debug builds, if the stored set disagrees with the scan (a `kind` /
+    /// `is_melted` write bypassed the store's methods).
+    #[inline]
+    #[must_use]
+    pub fn owns(&self, kind: RelicKind) -> bool {
+        let owned = self.owned.contains(kind);
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            owned,
+            self.relics.iter().any(|r| !r.is_melted && r.kind == kind),
+            "RelicStore owned-kind set disagrees with the relic scan for {kind:?}"
+        );
+        owned
+    }
+
+    /// The per-combat relic-channel plan.
+    #[inline]
+    pub(crate) fn plan(&self) -> &relic_effects::channels::RelicPlan {
+        &self.plan
+    }
+
+    /// Build the plan if this store was built before the relic channels were
+    /// frozen (it then has none and every planned dispatcher takes its
+    /// generic path). Called at every [`apply`] entry; a single flag test once
+    /// the plan exists.
+    #[inline]
+    pub fn ensure_plan(&mut self) {
+        if !self.plan.is_built() {
+            self.plan = relic_effects::channels::RelicPlan::build(&self.relics, &self.owned);
+        }
+    }
+
+    /// Debug drift guard: both derived views still equal a recompute from the
+    /// relic sequence. Fires if a `kind` / `is_melted` write bypassed the
+    /// store's methods through `&mut [Relic]`.
+    ///
+    /// # Panics
+    /// If either view drifted.
+    #[cfg(debug_assertions)]
+    pub fn debug_assert_derived_views(&self) {
+        let owned = RelicKindSet::owned_by(&self.relics);
+        assert_eq!(
+            self.owned, owned,
+            "RelicStore owned-kind set drifted from the relics: a `kind` / `is_melted` \
+             write went through `&mut [Relic]` instead of a RelicStore method"
+        );
+        if self.plan.is_built() {
+            assert_eq!(
+                self.plan,
+                relic_effects::channels::RelicPlan::build(&self.relics, &owned),
+                "RelicStore relic-channel plan drifted from the relics"
+            );
+        }
+    }
+
+    /// Test hook: discard the plan so every planned dispatcher takes its
+    /// generic path (until the next `apply` rebuilds it).
+    #[cfg(test)]
+    pub(crate) fn drop_plan(&mut self) {
+        self.plan = relic_effects::channels::RelicPlan::UNBUILT;
+    }
+
+    /// Borrow the relics as a slice (explicit form of the `Deref`).
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[Relic] {
+        &self.relics
+    }
+
+    /// Unwrap into the relic `Vec`.
+    #[inline]
+    #[must_use]
+    pub fn into_vec(self) -> Vec<Relic> {
+        self.relics
+    }
+}
+
+impl From<Vec<Relic>> for RelicStore {
+    #[inline]
+    fn from(relics: Vec<Relic>) -> Self {
+        let mut store = Self {
+            relics,
+            owned: RelicKindSet::EMPTY,
+            plan: relic_effects::channels::RelicPlan::EMPTY_STORE,
+        };
+        store.rebuild();
+        store
+    }
+}
+
+impl<const N: usize> From<[Relic; N]> for RelicStore {
+    #[inline]
+    fn from(relics: [Relic; N]) -> Self {
+        Self::from(Vec::from(relics))
+    }
+}
+
+impl FromIterator<Relic> for RelicStore {
+    fn from_iter<I: IntoIterator<Item = Relic>>(iter: I) -> Self {
+        Self::from(iter.into_iter().collect::<Vec<Relic>>())
+    }
+}
+
+impl Extend<Relic> for RelicStore {
+    fn extend<I: IntoIterator<Item = Relic>>(&mut self, iter: I) {
+        self.relics.extend(iter);
+        self.rebuild();
+    }
+}
+
+impl IntoIterator for RelicStore {
+    type Item = Relic;
+    type IntoIter = std::vec::IntoIter<Relic>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.relics.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a RelicStore {
+    type Item = &'a Relic;
+    type IntoIter = core::slice::Iter<'a, Relic>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.relics.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut RelicStore {
+    type Item = &'a mut Relic;
+    type IntoIter = core::slice::IterMut<'a, Relic>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.relics.iter_mut()
+    }
+}
+
 /// Vector-backed arena over [`Potion`].
 pub type PotionStore = Vec<Potion>;
 
@@ -3664,7 +4181,7 @@ impl CombatState {
         let Some(uid) = self.player.creature_uid else {
             return;
         };
-        let Some(idx) = self.creatures.iter().position(|c| c.id == uid.0) else {
+        let Some(idx) = creature_pos(&self.creatures, uid.0) else {
             return;
         };
         f(&mut self.creatures[idx]);
@@ -4500,7 +5017,7 @@ impl CombatState {
         let mut out: SmallVec<[PowerUid; 8]> = self
             .player
             .creature_uid
-            .and_then(|uid| self.creatures.iter().find(|c| c.id == uid.0))
+            .and_then(|uid| creature_by_id(&self.creatures, uid.0))
             .map(|c| c.powers.clone())
             .unwrap_or_default();
         // Fast path (perf 2026-07-04): no legacy powers to union in — the
@@ -4572,7 +5089,7 @@ impl CombatState {
         let creature_powers: &[PowerUid] = match self
             .player
             .creature_uid
-            .and_then(|uid| self.creatures.iter().find(|c| c.id == uid.0))
+            .and_then(|uid| creature_by_id(&self.creatures, uid.0))
         {
             Some(c) => c.powers.as_slice(),
             None => &[],
@@ -4620,8 +5137,8 @@ impl CombatState {
         }
         let Some(uid) = self.player_power_uids().into_iter().find(|uid| {
             self.powers
-                .iter()
-                .any(|p| p.id == uid.0 && p.kind == PowerKind::Rupture)
+                .get_by_id(uid.0)
+                .is_some_and(|p| p.kind == PowerKind::Rupture)
         }) else {
             return;
         };
@@ -4645,8 +5162,8 @@ impl CombatState {
         }
         let Some(uid) = self.player_power_uids().into_iter().find(|uid| {
             self.powers
-                .iter()
-                .any(|p| p.id == uid.0 && p.kind == PowerKind::Rupture)
+                .get_by_id(uid.0)
+                .is_some_and(|p| p.kind == PowerKind::Rupture)
         }) else {
             return 0;
         };
@@ -4837,17 +5354,23 @@ impl CombatState {
     /// `apply_damage_to_player`. Bead `sts2-rs` RP85.
     pub fn reduce_melancholy_cost_on_death(&mut self) {
         // Fast absence gate: this fires on EVERY creature death, but
-        // Melancholy is in almost no deck. One O(cards) scan beats the
-        // O(piles × cards) uid-by-uid `find` walk below, which showed up
-        // at ~1.3% of MCTS-search instructions on the 2026-07-03
-        // realistic-deck callgrind.
-        if !self
-            .cards
-            .iter()
-            .any(|c| c.card_id == crate::cards::CardId::Melancholy)
-        {
+        // Melancholy is in almost no deck. The O(piles × cards) uid-by-uid
+        // `find` walk below showed up at ~1.3% of MCTS-search instructions on
+        // the 2026-07-03 realistic-deck callgrind; the arena's presence bit
+        // (J02) answers "no Melancholy anywhere" in one test.
+        if !self.cards.holds_id(crate::cards::CardId::Melancholy) {
+            #[cfg(debug_assertions)]
+            self.shadow_skipped_card_sweep(
+                "reduce_melancholy_cost_on_death",
+                CombatState::reduce_melancholy_cost_walk,
+            );
             return;
         }
+        self.reduce_melancholy_cost_walk();
+    }
+
+    /// The ungated pile walk of [`Self::reduce_melancholy_cost_on_death`].
+    fn reduce_melancholy_cost_walk(&mut self) {
         // Collect every combat-pile uid (C# `Pile.IsCombatPile`): Draw, Hand,
         // Discard, Exhaust, Play. NOT the master Deck (out-of-combat pile).
         let combat_pile_uids: smallvec::SmallVec<[CardUid; 64]> = self
@@ -6154,7 +6677,7 @@ impl CombatState {
                     .is_some_and(|c| !c.enchantments.is_empty())
             });
             if any_enchanted {
-                let cards_snapshot: Vec<crate::cards::Card> = self.cards.clone();
+                let cards_snapshot: Vec<crate::cards::Card> = self.cards.to_vec();
                 let mut draw_buf: smallvec::SmallVec<[crate::CardUid; 32]> =
                     self.player.draw.clone();
                 crate::enchantment_hooks::dispatch_modify_shuffle_order(
@@ -6309,7 +6832,7 @@ impl CombatState {
                     // C# `CardPileCmd.Shuffle` order: StableShuffle →
                     // `Hook.ModifyShuffleOrder` → cards land in pile →
                     // `Hook.AfterShuffle` (relics + powers).
-                    let cards_snapshot: Vec<crate::cards::Card> = self.cards.clone();
+                    let cards_snapshot: Vec<crate::cards::Card> = self.cards.to_vec();
                     let mut draw_buf: smallvec::SmallVec<[crate::CardUid; 32]> =
                         self.player.draw.clone();
                     crate::enchantment_hooks::dispatch_modify_shuffle_order(
@@ -6452,7 +6975,7 @@ impl CombatState {
             &mut self.run_rng.shuffle,
         );
         if shuffled {
-            let cards_snapshot: Vec<crate::cards::Card> = self.cards.clone();
+            let cards_snapshot: Vec<crate::cards::Card> = self.cards.to_vec();
             let mut draw_buf: smallvec::SmallVec<[crate::CardUid; 32]> = self.player.draw.clone();
             crate::enchantment_hooks::dispatch_modify_shuffle_order(
                 &mut self.player,
@@ -7039,7 +7562,7 @@ impl CombatState {
         // channel. Explicit shuffle path (not an auto-reshuffle) —
         // still `is_initial_shuffle = false` per Python semantics
         // (only the combat-start shuffle skips the enchantment hook).
-        let cards_snapshot: Vec<crate::cards::Card> = self.cards.clone();
+        let cards_snapshot: Vec<crate::cards::Card> = self.cards.to_vec();
         let mut draw_buf: smallvec::SmallVec<[crate::CardUid; 32]> = self.player.draw.clone();
         crate::enchantment_hooks::dispatch_modify_shuffle_order(
             &mut self.player,
@@ -7364,7 +7887,28 @@ impl CombatState {
     /// `restore_*_costs_for_turn_start` can undo it on the owner's next
     /// turn — the shared mechanism behind the Stomp / Pinpoint dynamic
     /// discounts (C# `EnergyCost.AddThisTurn(-1)`).
+    ///
+    /// Runs on every Attack (Stomp) and every Skill (Pinpoint) play, so it
+    /// opens with the arena's presence bit for `card_id` (J02): the loop
+    /// only touches cards with that id, so when none is in the arena it is a
+    /// no-op and skipping it is bit-identical.
     fn discount_card_cost_on_play(&mut self, card_id: crate::cards::CardId, bank: cards::VarKey) {
+        if !self.cards.holds_id(card_id) {
+            #[cfg(debug_assertions)]
+            self.shadow_skipped_card_sweep("discount_card_cost_on_play", |s| {
+                s.discount_card_cost_on_play_walk(card_id, bank);
+            });
+            return;
+        }
+        self.discount_card_cost_on_play_walk(card_id, bank);
+    }
+
+    /// The ungated arena walk of [`Self::discount_card_cost_on_play`].
+    fn discount_card_cost_on_play_walk(
+        &mut self,
+        card_id: crate::cards::CardId,
+        bank: cards::VarKey,
+    ) {
         for c in &mut self.cards {
             if c.card_id == card_id && c.cost > 0 {
                 c.cost -= 1;
@@ -7372,6 +7916,34 @@ impl CombatState {
                 c.set_combat_var(bank, banked.saturating_add(1));
             }
         }
+    }
+
+    /// Debug shadow of a card sweep a J02 presence gate skipped: run the
+    /// ungated `walk` on a clone and assert it changed nothing (RNG cursors
+    /// and all, and the event log, which `CombatState` equality ignores),
+    /// i.e. that skipping it was bit-identical. Sampled like the
+    /// relic-channel shadows ([`relic_effects::channels::shadow_this_call`]).
+    ///
+    /// # Panics
+    /// If the skipped walk would have changed the state or written the log.
+    #[cfg(debug_assertions)]
+    fn shadow_skipped_card_sweep(&self, sweep: &str, walk: impl FnOnce(&mut CombatState)) {
+        if !relic_effects::channels::shadow_this_call() {
+            return;
+        }
+        let mut probe = self.clone();
+        walk(&mut probe);
+        assert!(
+            probe == *self,
+            "J02 presence gate skipped {sweep}, but its ungated walk changes the state"
+        );
+        assert!(
+            probe
+                .combat_log
+                .event_log
+                .same_contents(&self.combat_log.event_log),
+            "J02 presence gate skipped {sweep}, but its ungated walk writes the event log"
+        );
     }
 
     /// Undo the per-turn Stomp discount banked by
@@ -7399,14 +7971,24 @@ impl CombatState {
     /// leaving the old row — and its banked var — behind). So "no such card
     /// anywhere in the arena" proves every banked value is 0 and the
     /// mutable restore walk below is a no-op; skipping it is bit-identical.
+    /// The arena answers that from its presence bit for `card_id` (J02).
     fn restore_banked_costs_for_turn_start(
         &mut self,
         card_id: crate::cards::CardId,
         bank: cards::VarKey,
     ) {
-        if !self.cards.iter().any(|c| c.card_id == card_id) {
+        if !self.cards.holds_id(card_id) {
+            #[cfg(debug_assertions)]
+            self.shadow_skipped_card_sweep("restore_banked_costs_for_turn_start", |s| {
+                s.restore_banked_costs_walk(bank);
+            });
             return;
         }
+        self.restore_banked_costs_walk(bank);
+    }
+
+    /// The ungated arena walk of [`Self::restore_banked_costs_for_turn_start`].
+    fn restore_banked_costs_walk(&mut self, bank: cards::VarKey) {
         for c in &mut self.cards {
             let banked = c.combat_var(bank);
             if banked != 0 {
@@ -7451,16 +8033,29 @@ impl CombatState {
     /// delta to restore each card's pre-randomization cost and clear the
     /// slot. Bead `sts2-rs-2e9q2` follow-up.
     pub fn restore_snecko_costs_for_turn_start(&mut self) {
-        // Fast absence gate (perf 2026-07-04): the Snecko delta has no card-id
-        // key (any hand card can carry it), but it can only live inside a
-        // NON-EMPTY `combat_vars` slot. If every card's `combat_vars` is
-        // empty, every banked delta reads 0 and the walk below is a pure
-        // no-op — skip it. The scan short-circuits on the first card with any
-        // combat var, so combats that do use per-card vars pay one extra
-        // `is_empty` check at most.
-        if self.cards.iter().all(|c| c.combat_vars.is_empty()) {
+        // Fast absence gate (perf 2026-07-04, J02): the Snecko delta has no
+        // card-id key (any hand card can carry it). A card whose "may be
+        // nonzero" bit for it is clear holds a 0 delta, so when no card has
+        // the bit every banked delta reads 0 and the walk below is a pure
+        // no-op — skip it. (The old gate, "every `combat_vars` empty", stayed
+        // open for the whole combat once any card var was written, zeros
+        // included.)
+        if !self.cards.iter().any(|c| {
+            c.combat_vars
+                .maybe_nonzero(crate::cards::VarKey::SneckoCostDeltaThisTurn)
+        }) {
+            #[cfg(debug_assertions)]
+            self.shadow_skipped_card_sweep(
+                "restore_snecko_costs_for_turn_start",
+                CombatState::restore_snecko_costs_walk,
+            );
             return;
         }
+        self.restore_snecko_costs_walk();
+    }
+
+    /// The ungated arena walk of [`Self::restore_snecko_costs_for_turn_start`].
+    fn restore_snecko_costs_walk(&mut self) {
         for c in &mut self.cards {
             let banked = c.combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn);
             if banked != 0 {
@@ -7501,10 +8096,25 @@ impl CombatState {
     /// exactly once.
     pub fn restore_wire_transient_costs_for_turn_start(&mut self) {
         // Same fast absence gate as the Snecko restore: the bank has no
-        // card-id key, but it can only live in a non-empty `combat_vars`.
-        if self.cards.iter().all(|c| c.combat_vars.is_empty()) {
+        // card-id key, but a card can only hold a nonzero one if its
+        // "may be nonzero" bit for it is set.
+        if !self.cards.iter().any(|c| {
+            c.combat_vars
+                .maybe_nonzero(crate::cards::VarKey::WireTransientCostThisTurn)
+        }) {
+            #[cfg(debug_assertions)]
+            self.shadow_skipped_card_sweep(
+                "restore_wire_transient_costs_for_turn_start",
+                CombatState::restore_wire_transient_costs_walk,
+            );
             return;
         }
+        self.restore_wire_transient_costs_walk();
+    }
+
+    /// The ungated arena walk of
+    /// [`Self::restore_wire_transient_costs_for_turn_start`].
+    fn restore_wire_transient_costs_walk(&mut self) {
         for c in &mut self.cards {
             let banked = c.combat_var(crate::cards::VarKey::WireTransientCostThisTurn);
             if banked != 0 {
@@ -7524,7 +8134,7 @@ impl CombatState {
     /// `EndOfTurn | WhenPlayed`, whichever comes first, so this edge fires far
     /// more often than the rare pure-`SetUntilPlayed`.
     pub fn restore_wire_cost_expiring_on_play(&mut self, card_uid: crate::CardUid) {
-        let Some(c) = self.cards.iter_mut().find(|c| c.uid == card_uid) else {
+        let Some(c) = card_by_uid_mut(&mut self.cards, card_uid) else {
             return;
         };
         // The free riders are `WhenPlayed`-flagged in C# too: `SetToFreeThisTurn`
@@ -7894,6 +8504,13 @@ fn rebank_wire_cost_after_edge(c: &mut crate::cards::Card, other: crate::cards::
 // would silently swallow new variants.
 #[allow(clippy::needless_pass_by_value, clippy::match_same_arms)]
 pub fn apply(state: &mut CombatState, action: Action) -> StepResult {
+    // A state built before the relic channels froze carries no relic plan
+    // (its planned dispatchers take their generic path); build it now.
+    state.relics.ensure_plan();
+    #[cfg(debug_assertions)]
+    state.relics.debug_assert_derived_views();
+    #[cfg(debug_assertions)]
+    state.cards.debug_assert_gate_bits();
     match action {
         Action::PlayCard { hand_index, target } => {
             // P6 (beads sts2-rs-y97 + sts2-rs-06w): Ironclad starter deck
@@ -11866,10 +12483,7 @@ pub fn legal_actions(state: &CombatState) -> SmallVec<[Action; 16]> {
         .iter()
         .enumerate()
         .filter_map(|(i, uid)| {
-            let alive = state
-                .creatures
-                .iter()
-                .any(|c| c.id == uid.0 && c.current_hp > 0);
+            let alive = creature_by_id(&state.creatures, uid.0).is_some_and(|c| c.current_hp > 0);
             #[allow(clippy::cast_possible_truncation)]
             alive.then_some(i as u8)
         })
@@ -11957,8 +12571,8 @@ pub fn legal_actions(state: &CombatState) -> SmallVec<[Action; 16]> {
             .find_map(|puid| {
                 state
                     .powers
-                    .iter()
-                    .find(|p| p.id == puid.0 && p.kind == crate::PowerKind::Sloth)
+                    .get_by_id(puid.0)
+                    .filter(|p| p.kind == crate::PowerKind::Sloth)
                     .map(|p| p.amount)
             })
             .is_some_and(|amt| {

@@ -80,12 +80,14 @@ pub(crate) fn on_after_combat_end_joss_paper(state: &mut CombatState) -> EffectR
 }
 
 pub(crate) fn install() {
-    register_after_card_exhausted(
+    register_owned_after_card_exhausted(
         RelicId::JossPaper,
+        crate::RelicKind::JossPaper,
         on_after_card_exhausted_joss_paper as AfterCardExhaustedFn,
     );
-    register_after_turn_end(
+    register_owned_after_turn_end(
         RelicId::JossPaper,
+        crate::RelicKind::JossPaper,
         on_after_turn_end_joss_paper as AfterTurnEndFn,
     );
     register_after_combat_end(

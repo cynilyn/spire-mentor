@@ -131,9 +131,9 @@ fn build_handful(cards: &[(CardId, i32, i32, i8, TargetType)]) -> CombatState {
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
         creatures: vec![cultist],
-        cards: cards_arena,
+        cards: cards_arena.into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),

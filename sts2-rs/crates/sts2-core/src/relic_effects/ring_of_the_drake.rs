@@ -16,8 +16,9 @@ pub(crate) fn on_modify_hand_draw_ring_of_the_drake(state: &CombatState, current
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::RingOfTheDrake,
+        crate::RelicKind::RingOfTheDrake,
         on_modify_hand_draw_ring_of_the_drake as ModifyHandDrawFn,
     );
 }

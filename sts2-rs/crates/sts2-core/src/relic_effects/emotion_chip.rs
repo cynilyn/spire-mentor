@@ -68,13 +68,14 @@ pub(crate) fn on_after_side_turn_start_emotion_chip(
 /// `EmotionChip.after_combat_end` — clear the HP-loss counter so it
 /// doesn't carry across combats.
 pub(crate) fn on_after_combat_end_emotion_chip(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = state
+    let Some(r) = state
         .relics
         .iter_mut()
         .find(|r| !r.is_melted && r.kind == crate::RelicKind::EmotionChip)
-    {
-        r.counter = 0;
-    }
+    else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -87,8 +88,9 @@ pub(crate) fn install() {
         RelicId::EmotionChip,
         on_after_side_turn_start_emotion_chip as AfterSideTurnStartFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::EmotionChip,
+        crate::RelicKind::EmotionChip,
         on_after_combat_end_emotion_chip as AfterCombatEndFn,
     );
 }

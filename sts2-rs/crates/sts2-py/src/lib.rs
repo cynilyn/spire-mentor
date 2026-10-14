@@ -48,6 +48,9 @@ use sts2_wire::emit::mcts::RecommendParams;
 use sts2_wire::emit::names::card_type_python_name;
 use sts2_wire::emit::names::choice_kind_python_name;
 
+// The `#[global_allocator]` (mimalloc) and its purge setting.
+pub mod allocator;
+
 // The bundled `EmbeddingValueNet` policy prior was REMOVED on 2026-08-15.
 //
 // It was an Expert-Iteration net trained on an all-Ironclad corpus,
@@ -286,9 +289,9 @@ fn build_encounter_state(
         rng,
         run_rng,
         creatures,
-        cards: cards_arena,
+        cards: cards_arena.into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),
@@ -2502,10 +2505,11 @@ fn build_git() -> &'static str {
 /// value/policy-net data, stamped at build time. See `sts2_core::SRC_HASH`.
 pub const SRC_HASH: &str = env!("STS2_PY_SRC_HASH");
 
-/// Aggregate content hash of the whole engine: the four engine crates'
-/// compiled-in `SRC_HASH` consts plus the workspace inputs
-/// (`STS2_WORKSPACE_HASH` = Cargo.lock + rust-toolchain.toml), combined in
-/// `sts2_srchash::ENGINE_CRATES` order. Compiled INTO the `.so`, so it reflects
+/// Aggregate content hash of the whole engine: the compiled-in `SRC_HASH` const
+/// of every workspace crate linked into this extension plus the workspace
+/// inputs (`STS2_WORKSPACE_HASH` = the workspace Cargo.toml + Cargo.lock +
+/// rust-toolchain.toml), combined in `sts2_srchash::ENGINE_CRATES` order.
+/// Compiled INTO the `.so`, so it reflects
 /// exactly what each crate was last *compiled* from — a stale dependency rlib
 /// carries its old per-crate hash. The parity harness compares this to
 /// [`recompute_src_hash`] to prove the loaded engine matches its source
@@ -2517,6 +2521,10 @@ fn src_hash() -> String {
         sts2_content::SRC_HASH,
         sts2_mcts::SRC_HASH,
         SRC_HASH,
+        sts2_runai::SRC_HASH,
+        sts2_wire::SRC_HASH,
+        sts2_cli::SRC_HASH,
+        sts2_vocab::SRC_HASH,
         env!("STS2_WORKSPACE_HASH"),
     ])
 }
@@ -2528,6 +2536,74 @@ fn src_hash() -> String {
 #[pyfunction]
 fn recompute_src_hash(rs_root: &str) -> String {
     sts2_srchash::recompute_engine_hash(std::path::Path::new(rs_root))
+}
+
+/// How this extension was compiled, as stamped by `scripts/pgo_wheel.sh`.
+///
+/// The stamps are compile-time env vars read with `option_env!`, which rustc
+/// records as env dependencies, so cargo recompiles this crate when one
+/// changes. Only `pgo_wheel.sh` sets them: `STS2_WHEEL_PGO_PROFDATA_SHA256`
+/// (the sha256 of the merged `.profdata`) on its `-Cprofile-use` build,
+/// `STS2_WHEEL_PGO_INSTRUMENTED` on its `-Cprofile-generate` build, and
+/// `STS2_WHEEL_TARGET_CPU` with `--v3`. Every other build (`wheel-venv.sh`,
+/// maturin, uv, cargo) reports a plain, portable build. None of them reaches
+/// [`src_hash`], so a plain and a PGO build of one source share it and both
+/// pass the freshness gate. The PPO trainer refuses a wheel whose `pgo` is
+/// false (`sts2-pycli/python/ppo/wheel_guard.py`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildInfo {
+    /// A `-Cprofile-use` build: true only when the profdata stamp is set and
+    /// the instrumented stamp is not.
+    pub pgo: bool,
+    /// The `-Cprofile-generate` build that collects the profile.
+    pub pgo_instrumented: bool,
+    pub profdata_sha256: Option<&'static str>,
+    /// `None` = no `-Ctarget-cpu`, i.e. a portable build.
+    pub target_cpu: Option<&'static str>,
+}
+
+impl BuildInfo {
+    /// The stamps this extension was compiled with.
+    pub fn current() -> Self {
+        Self::from_stamps(
+            option_env!("STS2_WHEEL_PGO_PROFDATA_SHA256"),
+            option_env!("STS2_WHEEL_PGO_INSTRUMENTED"),
+            option_env!("STS2_WHEEL_TARGET_CPU"),
+        )
+    }
+
+    /// An empty value counts as unset, so `VAR= maturin develop` stamps
+    /// nothing.
+    fn from_stamps(
+        profdata_sha256: Option<&'static str>,
+        instrumented: Option<&'static str>,
+        target_cpu: Option<&'static str>,
+    ) -> Self {
+        let set = |v: Option<&'static str>| v.filter(|s| !s.is_empty());
+        let profdata_sha256 = set(profdata_sha256);
+        let pgo_instrumented = set(instrumented).is_some();
+        Self {
+            pgo: profdata_sha256.is_some() && !pgo_instrumented,
+            pgo_instrumented,
+            profdata_sha256,
+            target_cpu: set(target_cpu),
+        }
+    }
+}
+
+/// [`BuildInfo`] as a dict, plus [`src_hash`] and [`build_git`], so a run can
+/// record which engine build it ran on.
+#[pyfunction]
+fn build_info(py: Python<'_>) -> PyResult<PyObject> {
+    let info = BuildInfo::current();
+    let d = PyDict::new(py);
+    d.set_item("pgo", info.pgo)?;
+    d.set_item("pgo_instrumented", info.pgo_instrumented)?;
+    d.set_item("profdata_sha256", info.profdata_sha256)?;
+    d.set_item("target_cpu", info.target_cpu)?;
+    d.set_item("src_hash", src_hash())?;
+    d.set_item("build_git", build_git())?;
+    Ok(d.into())
 }
 
 /// Port of C# `StringHelper.GetDeterministicHashCode`.
@@ -3033,6 +3109,9 @@ fn mcts_search_tree<'py>(
 
 #[pymodule]
 pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // First, before anything else runs in the extension: mimalloc must never
+    // purge, or spaced advisor calls fault the search tree back in (A1b).
+    allocator::never_purge();
     // Bead `sts2-rs-7hhd`: install the card-effect dispatch registry at
     // module import time. Without this, any state built via
     // `state_from_dict` (or any other path that bypasses
@@ -3059,6 +3138,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(projection_hp_table, m)?)?;
     m.add_function(wrap_pyfunction!(src_hash, m)?)?;
     m.add_function(wrap_pyfunction!(recompute_src_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(deterministic_hash_code, m)?)?;
     m.add_function(wrap_pyfunction!(roll_acts, m)?)?;
     m.add_function(wrap_pyfunction!(rollouts, m)?)?;
@@ -3592,6 +3672,142 @@ kind = "NIBBIT"
             "expert heuristic won only {heuristic_wins}/8 trivial fights — it is \
              not playing cards, so it cannot serve as an A/B baseline"
         );
+    }
+}
+
+#[cfg(test)]
+mod src_hash_tests {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+
+    fn canonical(path: &Path) -> PathBuf {
+        path.canonicalize()
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn rs_root() -> PathBuf {
+        canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+    }
+
+    /// Every crate's build-time stamp hashes the inputs the runtime recompute
+    /// reads. If one build script hashed a different set, a fresh wheel would
+    /// be reported stale, or a stale one fresh.
+    #[test]
+    fn src_hash_equals_a_recompute_of_this_checkout() {
+        assert_eq!(src_hash(), recompute_src_hash(rs_root().to_str().unwrap()));
+    }
+
+    /// `sts2_srchash::ENGINE_CRATES` names every workspace crate this extension
+    /// links (the closure of sts2-py's normal path dependencies, minus the
+    /// hasher). A crate missing from it is invisible to `src_hash`: a `.so`
+    /// built before an edit to it passes every freshness check.
+    #[test]
+    fn engine_crates_are_what_sts2_rs_links() {
+        let out = std::process::Command::new(env!("CARGO"))
+            .args([
+                "metadata",
+                "--format-version",
+                "1",
+                "--no-deps",
+                "--offline",
+            ])
+            .arg("--manifest-path")
+            .arg(rs_root().join("Cargo.toml"))
+            .output()
+            .expect("run cargo metadata");
+        assert!(
+            out.status.success(),
+            "cargo metadata: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let meta: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        // Package dir -> (name, the dirs of its normal path dependencies).
+        let mut packages: BTreeMap<PathBuf, (String, Vec<PathBuf>)> = BTreeMap::new();
+        for pkg in meta["packages"].as_array().unwrap() {
+            let manifest = Path::new(pkg["manifest_path"].as_str().unwrap());
+            let deps = pkg["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|dep| dep["kind"].is_null())
+                .filter_map(|dep| dep["path"].as_str())
+                .map(|dir| canonical(Path::new(dir)))
+                .collect();
+            let name = pkg["name"].as_str().unwrap().to_string();
+            packages.insert(canonical(manifest.parent().unwrap()), (name, deps));
+        }
+        let mut linked = BTreeSet::new();
+        let mut todo = vec![canonical(Path::new(env!("CARGO_MANIFEST_DIR")))];
+        while let Some(dir) = todo.pop() {
+            let (name, deps) = packages.get(&dir).unwrap_or_else(|| {
+                panic!(
+                    "path dependency {} is not a workspace member",
+                    dir.display()
+                )
+            });
+            if linked.insert(name.as_str()) {
+                todo.extend(deps.iter().cloned());
+            }
+        }
+        linked.remove("sts2-srchash");
+        let listed: BTreeSet<&str> = sts2_srchash::ENGINE_CRATES.into_iter().collect();
+        assert_eq!(
+            linked, listed,
+            "update sts2_srchash::ENGINE_CRATES and src_hash()"
+        );
+    }
+}
+
+#[cfg(test)]
+mod build_info_tests {
+    use super::*;
+
+    /// The test binary is built the way `just sim-engine`, maturin and uv
+    /// build the wheel: without `pgo_wheel.sh`'s stamps. Such a build must
+    /// never claim PGO, or the trainer's guard would wave it through.
+    #[test]
+    fn a_default_build_reports_a_plain_portable_build() {
+        assert_eq!(
+            BuildInfo::current(),
+            BuildInfo {
+                pgo: false,
+                pgo_instrumented: false,
+                profdata_sha256: None,
+                target_cpu: None,
+            }
+        );
+        Python::with_gil(|py| {
+            let d = build_info(py).unwrap();
+            let d = d.downcast_bound::<PyDict>(py).unwrap();
+            let get = |k: &str| d.get_item(k).unwrap().expect(k);
+            assert!(!get("pgo").extract::<bool>().unwrap());
+            assert!(!get("pgo_instrumented").extract::<bool>().unwrap());
+            assert!(get("profdata_sha256").is_none());
+            assert!(get("target_cpu").is_none());
+            // The same value the freshness gate compares, so a run's record
+            // names the source it trained on.
+            assert_eq!(get("src_hash").extract::<String>().unwrap(), src_hash());
+        });
+    }
+
+    #[test]
+    fn only_the_profile_use_stamp_claims_pgo() {
+        let sha = Some("ab12");
+        let pgo = BuildInfo::from_stamps(sha, None, Some("x86-64-v3"));
+        assert!(pgo.pgo && !pgo.pgo_instrumented);
+        assert_eq!(pgo.profdata_sha256, sha);
+        assert_eq!(pgo.target_cpu, Some("x86-64-v3"));
+
+        // The instrumented build runs the profile workload; it must not pass
+        // for a PGO build even if a profdata stamp leaked into its env.
+        let instrumented = BuildInfo::from_stamps(sha, Some("1"), None);
+        assert!(!instrumented.pgo && instrumented.pgo_instrumented);
+
+        // `VAR= cmd` sets an empty value: that is unset, not a stamp.
+        let empty = BuildInfo::from_stamps(Some(""), Some(""), Some(""));
+        assert_eq!(empty, BuildInfo::from_stamps(None, None, None));
+        assert!(!empty.pgo);
     }
 }
 

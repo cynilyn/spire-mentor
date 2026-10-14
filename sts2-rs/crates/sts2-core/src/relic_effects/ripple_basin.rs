@@ -29,10 +29,7 @@ pub(crate) fn on_after_card_played_ripple_basin(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_attack = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_attack = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Attack);
     if !is_attack {
         return EffectResult::NotImplemented;
@@ -92,8 +89,9 @@ pub(crate) fn install() {
         RelicId::RippleBasin,
         on_before_turn_end_ripple_basin as BeforeTurnEndFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::RippleBasin,
+        crate::RelicKind::RippleBasin,
         on_after_combat_end_ripple_basin as AfterCombatEndFn,
     );
 }

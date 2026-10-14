@@ -16,8 +16,9 @@ pub(crate) fn on_after_card_exhausted_charons_ashes(
 }
 
 pub(crate) fn install() {
-    register_after_card_exhausted(
+    register_owned_after_card_exhausted(
         RelicId::CharonsAshes,
+        crate::RelicKind::CharonsAshes,
         on_after_card_exhausted_charons_ashes as AfterCardExhaustedFn,
     );
 }

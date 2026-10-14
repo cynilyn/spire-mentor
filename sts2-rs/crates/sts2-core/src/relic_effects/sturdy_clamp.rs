@@ -55,8 +55,9 @@ pub(crate) fn after_preventing_block_clear_sturdy_clamp(
 }
 
 pub(crate) fn install() {
-    register_should_clear_block(
+    register_owned_should_clear_block(
         RelicId::SturdyClamp,
+        crate::RelicKind::SturdyClamp,
         on_should_clear_block_sturdy_clamp as ShouldClearBlockFn,
     );
 }

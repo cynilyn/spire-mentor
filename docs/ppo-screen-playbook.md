@@ -140,13 +140,53 @@ compares **held-out value-head explained variance**.
 
 ```bash
 cd sts2-pycli
+just sim-engine-pgo   # after any gates; the screen refuses a plain or stale wheel
 PYTHONPATH=python .venv/bin/python -m ppo.screen \
   --name boss-id --character Ironclad \
   --init-ckpt "data/ppo/$(<the ckpt named for this character in data/ppo/champions.toml>)" \
   --arm-b-features boss \
   --device cuda --procs 46 \
-  --out /tmp/screen-boss
+  --out ~/screens/boss-id
 ```
+
+**The screen trains on the PGO wheel only**, like a campaign (champion playbook
+§0.4). It checks the imported `sts2_rs` before it launches either arm, so a
+plain or stale wheel fails in seconds rather than one arm in. Each arm's
+trainer checks again. The PGO build makes the same decisions as the plain one
+and collects ~1.28× faster. `just sim-engine-pgo` costs ~15–18 min (14.4 min
+measured on the dev host with the plain build current) and is a no-op when
+the installed wheel is already fresh. `uv run` (`just test`, …) keeps it until
+a file uv's cache-keys name (`sts2-rs/crates/sts2-py/pyproject.toml` itself,
+any crate's `.rs`, `Cargo.toml` or `src/` file, `data/runai/heuristic_v.toml`,
+the workspace `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`) changes after
+the build started, even by a ctime alone; after that, a rebuild is the only
+way back, so build it last (champion playbook §0.4 lists what replaces it).
+A pgo_wheel.sh staging or `--skip-identity` build put on `PYTHONPATH` is
+refused, even with `--allow-plain-wheel`. On a host that cannot build PGO (no llvm-tools, or
+Windows, where the bash build does not run), pass `--allow-plain-wheel`: the screen exports `STS2_ALLOW_PLAIN_WHEEL=1`, both
+arms' trainers inherit it, and `screen.json` plus each arm's `stats.jsonl`
+(`wheel_pgo`) record it. `--dry-run` launches nothing and skips the check.
+
+The screen **pins** the checked wheel once: it copies it to
+`--out/sts2_rs-pin/<sha256[:16]>/` and restarts itself with that dir first on
+`PYTHONPATH`, and both arms' trainers and both evals import that copy. So the
+two arms cannot train on different wheels, and rebuilding the venv while a
+screen runs does not reach it. Each eval row records the build its run
+loaded, and a fresh eval whose runs report anything but the pin aborts the
+screen and is moved aside (`eval-<arm>.jsonl.wheel-mismatch-<time>`), so the
+next invocation evaluates that arm again. Eval runs that ended in an error or a
+timeout are left out of the pairing (a crash is not a loss) and counted as
+`dropped_<arm>` in `report.json`. An arm reused from an earlier invocation (its `main.pt` exists)
+trained on whatever wheel that invocation had; `screen.json` lists it under
+`wheel.reused_arms` with the build its last iteration's workers reported, and
+a reused `eval-<arm>.jsonl` under `wheel.reused_evals` with the build its runs
+reported (null for a file that predates the record). The pin dir stays after
+the screen; delete it when done. `--out` must be a directory you own (a pin
+dir another user created is refused) on a mount that allows executing files,
+since the pinned `.so` loads from there; a shared `/tmp` is neither. On Windows there is
+no pin (no exec; champion playbook §0.4): the screen and each arm's trainer
+check the venv's wheel at launch, and the per-iteration and eval checks are
+what catch a build that changes under them.
 
 Both arms share `--seed-base`, so the trainer's
 `seed_base + it*games_per_iter + g` derivation and its seed-derived ascension

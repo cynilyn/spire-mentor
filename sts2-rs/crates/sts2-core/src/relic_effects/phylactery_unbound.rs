@@ -63,8 +63,9 @@ pub(crate) fn install() {
         RelicId::PhylacteryUnbound,
         on_after_side_turn_start_phylactery_unbound as AfterSideTurnStartFn,
     );
-    register_count_pets(
+    register_owned_count_pets(
         RelicId::PhylacteryUnbound,
+        crate::RelicKind::PhylacteryUnbound,
         on_count_pets_phylactery_unbound as CountPetsFn,
     );
 }

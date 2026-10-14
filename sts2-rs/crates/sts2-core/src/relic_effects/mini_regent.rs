@@ -68,16 +68,18 @@ pub(crate) fn on_after_combat_end_mini_regent(state: &mut CombatState) -> Effect
 }
 
 pub(crate) fn install() {
-    register_on_stars_spent(
+    register_owned_on_stars_spent(
         RelicId::MiniRegent,
+        crate::RelicKind::MiniRegent,
         on_on_stars_spent_mini_regent as OnStarsSpentFn,
     );
     register_before_side_turn_start(
         RelicId::MiniRegent,
         on_before_side_turn_start_mini_regent as BeforeSideTurnStartFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::MiniRegent,
+        crate::RelicKind::MiniRegent,
         on_after_combat_end_mini_regent as AfterCombatEndFn,
     );
 }

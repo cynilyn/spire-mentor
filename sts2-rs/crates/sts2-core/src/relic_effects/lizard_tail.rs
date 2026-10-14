@@ -65,8 +65,9 @@ pub(crate) fn on_should_die_late_lizard_tail(state: &mut CombatState) -> EffectR
 }
 
 pub(crate) fn install() {
-    register_should_die_late(
+    register_owned_should_die_late(
         RelicId::LizardTail,
+        crate::RelicKind::LizardTail,
         on_should_die_late_lizard_tail as ShouldDieLateFn,
     );
 }

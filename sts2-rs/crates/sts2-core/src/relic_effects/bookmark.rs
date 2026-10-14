@@ -37,7 +37,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .iter()
         .copied()
         .filter(|uid| {
-            state.cards.iter().find(|c| c.uid == *uid).is_some_and(|c| {
+            crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
                 c.cost > 0
                     && !c.is_x_cost()
                     && c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0
@@ -53,15 +53,16 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .run_rng
         .combat_card_selection
         .next_int_exclusive(0, eligible.len() as i32) as usize];
-    if let Some(card) = state.cards.iter_mut().find(|c| c.uid == chosen) {
+    if let Some(card) = crate::card_by_uid_mut(&mut state.cards, chosen) {
         card.cost = (card.cost - 1).max(0);
     }
     EffectResult::Resolved
 }
 
 pub(crate) fn install() {
-    register_after_turn_end(
+    register_owned_after_turn_end(
         RelicId::Bookmark,
+        crate::RelicKind::Bookmark,
         on_after_turn_end_bookmark as AfterTurnEndFn,
     );
 }

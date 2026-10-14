@@ -23,12 +23,19 @@ move.</sub>
 - **Proven against the real game code, not eyeballed.** A headless harness
   runs the game's own C# assembly in lockstep with the Rust engine and
   compares the full state after every action, and a fuzzer hunts for the
-  cases nobody thought to test. All five characters reached **zero combat
-  divergences**, and whole-run parity is clean across all five.
-- **Fast.** ~1.4M state transitions/s and ~100k random-play combats/s on one
-  core — about **7,000× faster than driving the game's own logic headless**.
-  A 1,000-simulation MCTS search takes ~25 ms. Speed never trades away
-  accuracy: the parity harness above holds at full speed.
+  cases nobody thought to test. In the last full sweeps Ironclad was clean
+  on all 6,104 fuzzed fights (June 2026), the other four characters on
+  99.4–99.8% (July 2026), and 1,232 of 1,250 whole runs were clean (July
+  2026). No full sweep has run since.
+- **Fast.** ~59k random-play fights/s (~1.3M engine actions/s) on one
+  core, ~31M actions/s on a 24-core server. With both kept busy that is
+  about **1,500× the shipped game's throughput per core** (run headless, on
+  the same fights) and 2,430× on the whole machine. The browser hint's
+  1,000-simulation MCTS search takes ~14 ms native, ~18 ms as WASM in
+  Chromium. Speed never trades away accuracy: the parity harness above
+  holds at full speed. All numbers, the hardware and a comparison with two
+  other STS2 simulators:
+  [benchmarks](https://tfriedel.github.io/spire-mentor/benchmarks.html).
 - **Usable from Python.** PyO3 bindings (`sts2_rs`) drive combats, MCTS
   searches and whole runs from Python, and the PPO training stack is built
   on them.
@@ -70,13 +77,26 @@ move.</sub>
 | | |
 |---|---|
 | Engine coverage | 5 characters · 580 card ids · 297 relics · 63 potions · 272 powers · 121 monsters · 69 events · 4 act models |
-| Parity vs the game's C# | zero combat divergences on every character; whole-run parity 250/250 seeds across all five; a 5,000-seed fuzz tier |
-| Throughput (one core) | ~1.4–1.5M transitions/s · ~100–110k combats/s · ~7,000× the headless game |
-| MCTS | 1,000 sims ≈ 25 ms native, one thread · the same in a tablet browser via WASM (≈ 2× native cost on the same machine) · up to ~49k sims/s multi-threaded |
+| Parity vs the game's C# | lockstep after every action, a 5,000-seed fuzz tier · last full sweeps: Ironclad 6,104/6,104 fuzzed fights clean (June 2026), the other characters 99.4–99.8% (July 2026) · whole runs 1,232/1,250 clean (July 2026) |
+| Throughput | one core: ~59k random-play fights/s · ~1.3M engine actions/s · whole machine (24 cores / 48 threads): ~1.4M fights/s · ~31M actions/s · vs the shipped game run headless, both kept busy: ~1,500× per core, ~2,430× whole machine |
+| MCTS | the browser hint's search: 1,000 sims ≈ 14 ms native, one thread · ≈ 18 ms as WASM in Chromium on the same machine · the advisor's search: 8,000 sims ≈ 275 ms on one thread, ≈ 40 ms on eight, on an Act-1 boss |
+| Training | a typical PPO iteration (Ironclad, 960 games, 46 workers, one RTX 3090) ≈ 208 s, 2.9× the previous engine · 150 iterations ≈ 9 h |
 | Code | ~360k lines of Rust · ~116k Python · ~56k TypeScript · 7,000+ Rust tests, 3,000+ Python, 1,400+ web |
 
-**Run-AI champions** (simulator, MCTS combat at 8,000 sims per decision as
-in the real-game advisor, Act 1 rolled, one fresh seed panel for all five,
+Performance: one AMD EPYC 7443P server (24 cores / 48 threads), 14 October
+2026, plain release builds (the training row uses the profile-guided build
+training runs on); one core = one pinned process with its second hardware
+thread idle. The throughput row is random play: Ironclad's starter deck and
+Burning Blood against each of the 22 Act-1 Overgrowth encounters. Earlier
+versions of this README said ~23,000× the headless game: that timed one
+cold game process per fight, mostly start-up and the harness's polling
+sleeps. Full results:
+[benchmarks page](https://tfriedel.github.io/spire-mentor/benchmarks.html);
+method and commands:
+[`sts2-rs/docs/perf/2026-10-14-benchmarks.md`](sts2-rs/docs/perf/2026-10-14-benchmarks.md).
+
+**Run-AI champions** (simulator, MCTS combat at the real-game advisor's
+budget of 8,000 sims per decision, Act 1 rolled, one fresh seed panel for all five,
 measured October 2026; 200 runs per cell at A0–A8, 500 at A9–A10):
 
 | Character | A0 | A4 | A8 | A9 | A10 | Mean A0–A10 | Promotion gate (vs previous champion) |

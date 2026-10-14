@@ -36,7 +36,7 @@ use sts2_core::powers::PowerKind;
 use sts2_core::{CombatState, CreatureUid, MonsterKind};
 
 use super::apply_power_to_player_via_legacy_surface;
-use super::dsl::{br, mv, mv_eff};
+use super::dsl::{br, mv, mv_eff, proto_ai, proto_ais, ProtoAis};
 
 /// Bead `sts2-rs-vn0m`: Fogmog ILLUSION spawns 1 [`MonsterKind::EyeWithTeeth`].
 /// Mirrors Python pin `sts2-rl-agent@01c094d:sts2_env/monsters/act1.py:159-161`
@@ -621,8 +621,16 @@ pub fn create_flyconid_ai() -> MonsterAi {
     MonsterAi::new(s, "INITIAL_RAND")
 }
 
-/// `EyeWithTeeth` — DISTRACT self-loop. Spawned by Fogmog.
+/// `EyeWithTeeth` — DISTRACT self-loop. Spawned by Fogmog, so a clone of a
+/// per-thread prototype (`proto_ai`).
 pub fn create_eye_with_teeth_ai() -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<1> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, 0, build_eye_with_teeth_ai)
+}
+
+pub(crate) fn build_eye_with_teeth_ai() -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert(
         "DISTRACT",
@@ -1220,9 +1228,18 @@ pub fn create_phrog_parasite_ai() -> MonsterAi {
 /// `Parafright` — SLAM self-loop per C# decomp `Parafright.cs`.
 /// Bead `sts2-rs-ksa5` bumped from the pre-rebaseline Python pin
 /// 01c094d minion stub (HAUNT = Attack 5 + Frail 1, HP 1). The C#
-/// spec is a single SLAM Attack 16 with HP 21, applicable to any
-/// Parafright spawn (currently only Vantom CONSUME).
+/// spec is a single SLAM Attack 16 with HP 21. It is spawned mid-combat
+/// by TheObscura's ILLUSION (the old Vantom CONSUME path was fabricated and
+/// removed, bead sts2-rs-r8x8h), so it is a clone of a per-thread
+/// prototype (`proto_ai`).
 pub fn create_parafright_ai() -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<1> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, 0, build_parafright_ai)
+}
+
+pub(crate) fn build_parafright_ai() -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert(
         "SLAM",

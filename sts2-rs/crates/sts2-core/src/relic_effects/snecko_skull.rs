@@ -46,8 +46,9 @@ pub(crate) fn on_modify_power_amount_given_snecko_skull(
 }
 
 pub(crate) fn install() {
-    register_modify_power_amount_given(
+    register_owned_modify_power_amount_given(
         RelicId::SneckoSkull,
+        crate::RelicKind::SneckoSkull,
         on_modify_power_amount_given_snecko_skull as ModifyPowerAmountGivenFn,
     );
 }

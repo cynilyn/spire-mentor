@@ -17,8 +17,9 @@ pub(crate) fn on_after_combat_victory_black_blood(state: &mut CombatState) -> Ef
 }
 
 pub(crate) fn install() {
-    register_after_combat_victory(
+    register_owned_after_combat_victory(
         RelicId::BlackBlood,
+        crate::RelicKind::BlackBlood,
         on_after_combat_victory_black_blood as AfterCombatVictoryFn,
     );
 }

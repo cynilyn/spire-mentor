@@ -1330,6 +1330,29 @@ pub struct ChanceOutcome {
     pub dedup_hash: Option<u64>,
 }
 
+/// Perf item M12: what an `EndTurn` chance node knows about the RNG-free
+/// prefix of its own re-application. Every widen draw re-applies `EndTurn`
+/// to a reseeded clone of the parent state, and the leading phases of
+/// [`sts2_core::combat_loop::end_turn_dispatch`] usually read no randomness
+/// (on the common/elite anchor corpus, everything before the next turn's
+/// draw), so they compute the same state on every draw. The first widen runs the chain
+/// phase by phase and keeps the state at the last boundary before any RNG
+/// stream moved; later widens clone that, reseed, and run only the rest.
+/// See `Mcts::realize_endturn_widen` for why that is exact.
+#[derive(Clone, Debug)]
+pub enum EndTurnPrefix {
+    /// Not probed yet (every node starts here; decision nodes stay here).
+    Unprobed,
+    /// Probed: the first phase already touched an RNG stream or ended the
+    /// chain, or the parent state is not in the play phase. Every widen
+    /// takes the plain reseed-and-reapply path.
+    Uncacheable,
+    /// The state after the first `phases` phases, all of which returned
+    /// `Advanced` without touching `state.rng` or any `RunRngSet` stream,
+    /// under the reseed of the draw that probed it.
+    Cached { phases: u8, state: Box<CombatState> },
+}
+
 #[derive(Clone, Debug)]
 pub struct MctsNode {
     pub visits: u32,
@@ -1463,6 +1486,9 @@ pub struct MctsNode {
     /// behavior there — `Clairvoyant`/`RootScramble` byte-stability is
     /// preserved.
     pub chance_is_draw_triggered: bool,
+    /// For an `EndTurn` chance node: the cached RNG-free prefix of its
+    /// re-application (perf item M12). Freed with the node.
+    pub endturn_prefix: EndTurnPrefix,
     pub is_terminal: bool,
     pub is_expanded: bool,
     /// MCTS-Solver lite (bead `sts2-rs-wr8f`, Wave-4): this subtree
@@ -1586,6 +1612,7 @@ impl MctsNode {
             chance_draws: 0,
             chance_closed: false,
             chance_is_draw_triggered: false,
+            endturn_prefix: EndTurnPrefix::Unprobed,
             is_terminal: terminal,
             is_expanded: false,
             proven_win,
@@ -1812,6 +1839,13 @@ pub struct Mcts<P: Policy = UniformPolicy> {
     /// so a caller could mutate the widening coefficients between
     /// searches — a mismatch invalidates the slab.
     dpw_cap_params: [(u32, u32); 3],
+    /// Perf item M12: the phase boundary the next `EndTurn` prefix probe
+    /// clones at — the RNG-free prefix length the previous probe measured.
+    /// A probe clones the state at every RNG-free boundary from here on, so
+    /// a guess that is too short costs extra clones and one that is too long
+    /// costs that node one uncached draw (it re-probes on the next). It
+    /// steers only how much the probe clones, never what a draw realizes.
+    endturn_prefix_guess: u8,
 }
 
 impl Mcts<UniformPolicy> {
@@ -1929,6 +1963,7 @@ impl<P: Policy> Mcts<P> {
             leaf_eval: LeafEval::default(),
             dpw_cap_cache: [Vec::new(), Vec::new(), Vec::new()],
             dpw_cap_params: [(0, 0), (0, 0), (0, 0)],
+            endturn_prefix_guess: 1,
         }
     }
 
@@ -3029,6 +3064,7 @@ impl<P: Policy> Mcts<P> {
             root.widenings_since_new = 0;
             root.chance_draws = 0;
             root.chance_closed = false;
+            root.endturn_prefix = EndTurnPrefix::Unprobed;
             root.search_hash = sts2_core::search_hash(&realized);
             root.realized = Some(Box::new(realized));
         }
@@ -3803,14 +3839,14 @@ impl<P: Policy> Mcts<P> {
                                 .as_deref()
                                 .expect("decision node has realized state")
                                 .clone();
-                            let (s, sh) = self.realize_chance_outcome(
+                            let s = self.realize_chance_outcome(
                                 pre_action,
                                 &edge,
                                 base,
                                 0,
                                 f1_draw_triggered,
                             );
-                            self.chance_alloc_decision_with_hash(Some(chance_id), s, &path, sh)
+                            self.chance_alloc_decision(Some(chance_id), s, &path)
                         } else {
                             self.chance_alloc_decision(Some(chance_id), work, &path)
                         };
@@ -4231,11 +4267,12 @@ impl<P: Policy> Mcts<P> {
     /// [`Self::chance_widen_or_sample`]'s widen branch always ran before
     /// `sts2-rs-i8bgu`; the pile shuffle is additional and opt-in per call.
     ///
-    /// Returns the realized state plus its [`sts2_core::search_hash`] —
-    /// the TT / node-identity hash, deliberately UNCHANGED by this bead
-    /// (see [`sts2_core::chance_outcome_hash`] for the separate
-    /// dedup-only hash callers compute themselves when they need
-    /// order/uid-insensitive equivalence).
+    /// Returns the realized state only. Callers hash it themselves: its
+    /// [`sts2_core::search_hash`] is the TT / node-identity hash,
+    /// deliberately UNCHANGED by this bead (see
+    /// [`sts2_core::chance_outcome_hash`] for the separate dedup-only hash
+    /// callers compute when they need order/uid-insensitive equivalence),
+    /// and the widen path skips it on an observational dedup hit.
     // `&self` is no longer read now that `reshuffle_pile` is caller-decided
     // (bead `sts2-rs-k1z14` H3 retune moved the `hidden_info` check out to
     // callers) — kept as a method rather than a free function for
@@ -4249,25 +4286,113 @@ impl<P: Policy> Mcts<P> {
         base: u64,
         n: u32,
         reshuffle_pile: bool,
-    ) -> (CombatState, u64) {
+    ) -> CombatState {
         if reshuffle_pile {
             sts2_core::blindfold::shuffle_unknown_pile_for_outcome(&mut pre_action.player, base, n);
         }
-        pre_action.run_rng.reseed_combat_streams(base, n);
-        // Search-side reseed of the legacy stream — non-parity fast seed,
-        // same rationale as reseed_combat_streams.
-        pre_action.rng = sts2_core::dotnet_rng::Rng::from_search_seed(
-            sts2_core::run_rng_set::outcome_stream_seed_u64(
-                base,
-                n,
-                sts2_core::run_rng_set::LEGACY_RNG_SALT,
-            ),
-        );
+        reseed_for_outcome(&mut pre_action, base, n);
         if let Some(action) = action_edge.resolve(&pre_action) {
             let _ = core_apply(&mut pre_action, action);
         }
-        let sh = sts2_core::search_hash(&pre_action);
-        (pre_action, sh)
+        pre_action
+    }
+
+    /// Perf item M12: realize widen draw `n` (base `base`) of the `EndTurn`
+    /// chance node `chance_id`, whose parent decision node is `parent`,
+    /// through the node's cached RNG-free prefix. Returns `None` when the
+    /// draw must take the plain [`Self::realize_chance_outcome`] path: a
+    /// hidden-info mode other than `BeliefDraw` / `Clairvoyant` (`DrawChance`
+    /// reshuffles the pile before the reseed; `RootScramble` is left alone),
+    /// a side-channel recorder armed (see below), or a node whose probe found
+    /// no usable prefix.
+    ///
+    /// **Why the cached path is exact.** The plain path computes
+    /// `chain(reseed(pre, n))`. A prefix phase was accepted only if it
+    /// returned `Advanced` and left `state.rng` and the whole `RunRngSet`
+    /// equal to their post-reseed values, so it drew no randomness; a phase
+    /// that draws none runs identically under any reseed, because the reseed
+    /// writes only the RNG fields. So `prefix(reseed(pre, n))` equals
+    /// `reseed(prefix(reseed(pre, n0)), n)` for the probing draw's `n0`, and
+    /// running the remaining phases on it is `end_turn_dispatch`'s own
+    /// tail. The one hole is a phase that derives values from an RNG's SEED
+    /// without moving any cursor (an ephemeral `Rng::new(seed)`): debug builds
+    /// rebuild every new prefix under a second reseed and assert the two
+    /// agree.
+    ///
+    /// **Diagnostics.** The thread-local `damage_trace` and the stderr traces
+    /// would see the prefix's events once per node instead of once per draw,
+    /// so the cache is bypassed (not cleared) while any of them is armed —
+    /// [`sts2_core::combat_loop::side_channel_recorders_armed`]. The
+    /// state-resident event log rides the cloned state either way, but it is
+    /// part of that check too.
+    fn realize_endturn_widen(
+        &mut self,
+        chance_id: NodeId,
+        parent: NodeId,
+        base: u64,
+        n: u32,
+    ) -> Option<CombatState> {
+        if !matches!(
+            self.config.hidden_info,
+            HiddenInfoMode::BeliefDraw | HiddenInfoMode::Clairvoyant
+        ) {
+            return None;
+        }
+        let pre = self
+            .tree
+            .node(parent)
+            .realized
+            .as_deref()
+            .expect("chance parent has realized state");
+        if sts2_core::combat_loop::side_channel_recorders_armed(pre) {
+            return None;
+        }
+        match &self.tree.node(chance_id).endturn_prefix {
+            EndTurnPrefix::Uncacheable => None,
+            EndTurnPrefix::Cached { phases, state } => {
+                let mut s = (**state).clone();
+                reseed_for_outcome(&mut s, base, n);
+                let _ =
+                    sts2_core::combat_loop::end_turn_dispatch_from(&mut s, usize::from(*phases));
+                Some(s)
+            }
+            EndTurnPrefix::Unprobed => {
+                // `apply` no-ops `EndTurn` outside the play phase; leave
+                // that (never stochastic) case on the plain path.
+                if pre.phase != sts2_core::CombatPhase::PlayerPlayPhase {
+                    self.tree.node_mut(chance_id).endturn_prefix = EndTurnPrefix::Uncacheable;
+                    return None;
+                }
+                let mut s = pre.clone();
+                reseed_for_outcome(&mut s, base, n);
+                let clone_from = usize::from(self.endturn_prefix_guess);
+                let (clean, prefix) = end_turn_probing_prefix(&mut s, clone_from);
+                if clean > 0 {
+                    // The next probe clones where this node's prefix ended.
+                    self.endturn_prefix_guess = u8::try_from(clean).unwrap_or(u8::MAX);
+                }
+                let entry = match prefix {
+                    Some(state) => {
+                        #[cfg(debug_assertions)]
+                        {
+                            let pre = self.tree.node(parent).realized.as_deref().expect("parent");
+                            debug_assert_prefix_seed_independent(pre, &state, clean, base, n);
+                        }
+                        EndTurnPrefix::Cached {
+                            phases: u8::try_from(clean).expect("phase count fits u8"),
+                            state: Box::new(state),
+                        }
+                    }
+                    // No RNG-free leading phase: nothing to cache, ever.
+                    None if clean == 0 => EndTurnPrefix::Uncacheable,
+                    // The prefix ended before the guessed boundary, so
+                    // nothing was cloned; the next draw re-probes there.
+                    None => EndTurnPrefix::Unprobed,
+                };
+                self.tree.node_mut(chance_id).endturn_prefix = entry;
+                Some(s)
+            }
+        }
     }
 
     /// Allocate (or transposition-merge) a decision node holding realized
@@ -4443,34 +4568,45 @@ impl<P: Policy> Mcts<P> {
                 .parent
                 .expect("chance node has parent");
             let base = self.tree.node(chance_id).randomness_base;
-            let action_edge = self
-                .tree
-                .node(chance_id)
-                .chance_action
-                .clone()
-                .expect("chance node has action");
-            let pre_action = self
-                .tree
-                .node(parent)
-                .realized
-                .as_deref()
-                .expect("chance parent has realized state")
-                .clone();
-            // F2 (bead `sts2-rs-09x5n`): the per-outcome pile reshuffle is
-            // `DrawChance`-only — under `BeliefDraw`, `is_draw_triggered`
-            // CAN be true (see the expansion-site classification above),
-            // but reshuffling would materialize a concrete order the
-            // deferred-draw representation deliberately never holds.
-            // `realize_chance_outcome`'s reseed-and-reapply alone is
-            // sufficient: re-applying the edge against the freshly reseeded
-            // streams makes the deferred draw sample a fresh outcome on its
-            // own, with no extra step. Byte-identical to the pre-bead
-            // behavior for every other mode: `is_draw_triggered` was already
-            // only ever `true` under `DrawChance` before this bead.
-            let reshuffle_pile =
-                is_draw_triggered && self.config.hidden_info == HiddenInfoMode::DrawChance;
-            let (s, sh) =
-                self.realize_chance_outcome(pre_action, &action_edge, base, n, reshuffle_pile);
+            // Perf item M12: an `EndTurn` draw re-runs only the part of the
+            // enemy turn after its cached RNG-free prefix, when it can.
+            let cached = if is_endturn {
+                self.realize_endturn_widen(chance_id, parent, base, n)
+            } else {
+                None
+            };
+            let s = if let Some(s) = cached {
+                s
+            } else {
+                let action_edge = self
+                    .tree
+                    .node(chance_id)
+                    .chance_action
+                    .clone()
+                    .expect("chance node has action");
+                let pre_action = self
+                    .tree
+                    .node(parent)
+                    .realized
+                    .as_deref()
+                    .expect("chance parent has realized state")
+                    .clone();
+                // F2 (bead `sts2-rs-09x5n`): the per-outcome pile reshuffle
+                // is `DrawChance`-only — under `BeliefDraw`,
+                // `is_draw_triggered` CAN be true (see the expansion-site
+                // classification above), but reshuffling would materialize
+                // a concrete order the deferred-draw representation
+                // deliberately never holds. `realize_chance_outcome`'s
+                // reseed-and-reapply alone is sufficient: re-applying the
+                // edge against the freshly reseeded streams makes the
+                // deferred draw sample a fresh outcome on its own, with no
+                // extra step. Byte-identical to the pre-bead behavior for
+                // every other mode: `is_draw_triggered` was already only
+                // ever `true` under `DrawChance` before this bead.
+                let reshuffle_pile =
+                    is_draw_triggered && self.config.hidden_info == HiddenInfoMode::DrawChance;
+                self.realize_chance_outcome(pre_action, &action_edge, base, n, reshuffle_pile)
+            };
             // Local outcome dedup: a fresh draw that lands on an already-seen
             // outcome signals closure progress and is reused rather than
             // added (keeps the visit-weighted average unbiased and bounds
@@ -4495,6 +4631,13 @@ impl<P: Policy> Mcts<P> {
             // identical hash values, hence identical dedup decisions, to the
             // pre-cache recompute-per-scan behavior.
             let mut new_dedup_hash = None;
+            // The new state's `search_hash`: the dedup key outside the
+            // observational modes, and otherwise needed only to allocate a
+            // NEW outcome (the TT key). The observational branch leaves it
+            // `None`, so a dedup hit (about half of all widen draws under
+            // deployed BeliefDraw) never hashes the state; the allocation
+            // below computes it from the same state.
+            let mut sh = None;
             let dup = if use_observational_dedup {
                 let dedup_key = sts2_core::chance_outcome_hash(&s);
                 new_dedup_hash = Some(dedup_key);
@@ -4521,12 +4664,14 @@ impl<P: Policy> Mcts<P> {
                 }
                 found
             } else {
+                let key = sts2_core::search_hash(&s);
+                sh = Some(key);
                 self.tree
                     .node(chance_id)
                     .chance_outcomes
                     .iter()
                     .map(|o| o.child)
-                    .find(|&cid| self.tree.node(cid).search_hash == sh)
+                    .find(|&cid| self.tree.node(cid).search_hash == key)
             };
             if let Some(child) = dup {
                 let w = self
@@ -4540,8 +4685,9 @@ impl<P: Policy> Mcts<P> {
                 }
                 (child, false)
             } else {
-                // Reuse the `sh` already computed above for dedup instead of
-                // hashing the large state a second time inside the allocator.
+                // Reuse the `sh` the non-observational dedup computed instead
+                // of hashing the large state a second time.
+                let sh = sh.unwrap_or_else(|| sts2_core::search_hash(&s));
                 let child = self.chance_alloc_decision_with_hash(Some(chance_id), s, path, sh);
                 self.tree
                     .node_mut(chance_id)
@@ -5018,6 +5164,91 @@ pub fn sample_rollout_leaf_state(
         depth += 1;
     }
     observer(state, depth);
+}
+
+/// Reseed `state`'s combat streams and legacy `rng` for chance outcome `n`
+/// of base `base` — the information-set reseed every chance realization
+/// runs before re-applying its edge (see [`Mcts::realize_chance_outcome`]).
+fn reseed_for_outcome(state: &mut CombatState, base: u64, n: u32) {
+    state.run_rng.reseed_combat_streams(base, n);
+    // Search-side reseed of the legacy stream — non-parity fast seed,
+    // same rationale as reseed_combat_streams.
+    state.rng = sts2_core::dotnet_rng::Rng::from_search_seed(
+        sts2_core::run_rng_set::outcome_stream_seed_u64(
+            base,
+            n,
+            sts2_core::run_rng_set::LEGACY_RNG_SALT,
+        ),
+    );
+}
+
+/// Apply `EndTurn` to `state` (in the play phase, where `apply` dispatches
+/// it) one [`sts2_core::combat_loop::end_turn_phase`] at a time, which is
+/// exactly `end_turn_dispatch`, and measure its RNG-free prefix: the number
+/// of leading phases that returned `Advanced` and left `state.rng` and every
+/// `RunRngSet` stream untouched. Also returns the state at the end of that
+/// prefix when it is at least `clone_from` phases long — cloned at each
+/// qualifying boundary as it is crossed, since whether the next phase draws
+/// randomness is only known after it ran. Perf item M12, see
+/// [`Mcts::realize_endturn_widen`].
+fn end_turn_probing_prefix(
+    state: &mut CombatState,
+    clone_from: usize,
+) -> (usize, Option<CombatState>) {
+    use sts2_core::combat_loop::{end_turn_phase, END_TURN_PHASE_COUNT};
+    let rng = state.rng.clone();
+    let run_rng = state.run_rng.clone();
+    let mut clean = 0;
+    let mut prefix = None;
+    for phase in 0..END_TURN_PHASE_COUNT {
+        let advanced = matches!(
+            end_turn_phase(state, phase),
+            sts2_core::StepResult::Advanced
+        );
+        if clean == phase && advanced && state.rng == rng && state.run_rng == run_rng {
+            clean = phase + 1;
+            if clean >= clone_from {
+                prefix = Some(state.clone());
+            }
+        }
+        if !advanced {
+            break;
+        }
+    }
+    (clean, prefix)
+}
+
+/// Debug guard for perf item M12: rebuild the `phases`-phase `EndTurn`
+/// prefix of `pre` under a second reseed and assert it equals the cached
+/// `prefix` (built under ordinal `n`) once that is reseeded the same way.
+/// Catches a phase that derives randomness from an RNG's seed without moving
+/// any cursor, which the probe's cursor check cannot see.
+#[cfg(debug_assertions)]
+fn debug_assert_prefix_seed_independent(
+    pre: &CombatState,
+    prefix: &CombatState,
+    phases: usize,
+    base: u64,
+    n: u32,
+) {
+    // Real draw ordinals count up from 0, so the high bit never collides.
+    let other = n ^ 0x8000_0000;
+    let mut rebuilt = pre.clone();
+    reseed_for_outcome(&mut rebuilt, base, other);
+    for phase in 0..phases {
+        let result = sts2_core::combat_loop::end_turn_phase(&mut rebuilt, phase);
+        assert!(
+            matches!(result, sts2_core::StepResult::Advanced),
+            "EndTurn prefix phase {phase} returned {result:?} under a second reseed"
+        );
+    }
+    let mut cached = prefix.clone();
+    reseed_for_outcome(&mut cached, base, other);
+    assert!(
+        cached == rebuilt,
+        "EndTurn prefix of {phases} phases depends on the reseed: a phase derives \
+         randomness without moving an RNG cursor"
+    );
 }
 
 /// Sum of `current_hp` (floored at 0) across every creature registered
@@ -5949,9 +6180,9 @@ mod tests {
 
                 run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
                 creatures: vec![cultist],
-                cards: Vec::new(),
+                cards: Vec::new().into(),
                 powers: Vec::new().into(),
-                relics: Vec::new(),
+                relics: Vec::new().into(),
                 potions: Vec::new(),
                 player,
                 allies: smallvec::SmallVec::new(),
@@ -6226,9 +6457,9 @@ mod tests {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0x0006_8b17_i32),
             creatures: vec![cultist],
-            cards: vec![strike_card, curse_card],
+            cards: vec![strike_card, curse_card].into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),
@@ -6579,9 +6810,9 @@ mod tests {
 
                 run_rng: sts2_core::run_rng_set::RunRngSet::new(0x00cb_2eed_i32),
                 creatures: vec![cultist],
-                cards: vec![strike_card, curse_card],
+                cards: vec![strike_card, curse_card].into(),
                 powers: Vec::new().into(),
-                relics: Vec::new(),
+                relics: Vec::new().into(),
                 potions: Vec::new(),
                 player,
                 allies: SmallVec::new(),
@@ -6769,9 +7000,9 @@ mod tests {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: vec![cultist],
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: smallvec::SmallVec::new(),
@@ -6940,9 +7171,9 @@ mod tests {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
             creatures: vec![cultist],
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: smallvec::SmallVec::new(),
@@ -9822,9 +10053,9 @@ mod tests {
             rng: sts2_core::dotnet_rng::Rng::new(1),
             run_rng: sts2_core::run_rng_set::RunRngSet::new(1),
             creatures: vec![cultist],
-            cards,
+            cards: cards.into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),
@@ -10054,19 +10285,17 @@ mod tests {
         let edge = EdgeAction::Other(Action::EndTurn);
         let m = Mcts::new(state.clone(), draw_chance_cfg(0x5EED, 0));
 
-        let (s0a, h0a) = m.realize_chance_outcome(state.clone(), &edge, 0xF00D_BEEF, 0, true);
-        let (s0b, h0b) = m.realize_chance_outcome(state.clone(), &edge, 0xF00D_BEEF, 0, true);
+        let s0a = m.realize_chance_outcome(state.clone(), &edge, 0xF00D_BEEF, 0, true);
+        let s0b = m.realize_chance_outcome(state.clone(), &edge, 0xF00D_BEEF, 0, true);
+        let h0a = sts2_core::search_hash(&s0a);
         assert_eq!(
-            h0a, h0b,
-            "same (pre_action, edge, base, n) must reproduce the same hash"
-        );
-        assert_eq!(
-            sts2_core::search_hash(&s0a),
+            h0a,
             sts2_core::search_hash(&s0b),
-            "…and the same realized state"
+            "same (pre_action, edge, base, n) must reproduce the same realized state"
         );
 
-        let (_s1, h1) = m.realize_chance_outcome(state, &edge, 0xF00D_BEEF, 1, true);
+        let h1 =
+            sts2_core::search_hash(&m.realize_chance_outcome(state, &edge, 0xF00D_BEEF, 1, true));
         assert_ne!(
             h0a, h1,
             "distinct outcome ordinals must (almost surely) realize distinct outcomes — outcome \
@@ -10119,7 +10348,7 @@ mod tests {
             ..draw_chance_cfg(0x5EED, 0)
         };
         let m_cv = Mcts::new(state.clone(), cv_cfg);
-        let (s_cv, _) = m_cv.realize_chance_outcome(state.clone(), &edge, base, n, false);
+        let s_cv = m_cv.realize_chance_outcome(state.clone(), &edge, base, n, false);
         assert_eq!(
             sts2_core::search_hash(&s_cv),
             sts2_core::search_hash(&reference),
@@ -10128,7 +10357,7 @@ mod tests {
         );
 
         let m_draw = Mcts::new(state.clone(), draw_chance_cfg(0x5EED, 0));
-        let (s_draw, _) = m_draw.realize_chance_outcome(state.clone(), &edge, base, n, true);
+        let s_draw = m_draw.realize_chance_outcome(state.clone(), &edge, base, n, true);
         assert_ne!(
             s_draw.player.draw, s_cv.player.draw,
             "DrawChance's extra pile-shuffle step must change the post-action draw pile \
@@ -10160,7 +10389,7 @@ mod tests {
         let edge = EdgeAction::Other(Action::EndTurn);
 
         let m = Mcts::new(state.clone(), draw_chance_cfg(0x5EED, 0));
-        let (s, _) = m.realize_chance_outcome(state, &edge, 0xABCD, 9, true);
+        let s = m.realize_chance_outcome(state, &edge, 0xABCD, 9, true);
         assert_eq!(s.player.pinned_bottom.as_slice(), &[bottom]);
         assert_eq!(s.player.draw.last().copied(), Some(bottom));
     }
@@ -10524,5 +10753,239 @@ mod terminal_scale_tests {
             true,
         );
         assert!(v < -1.0, "gradient losses live in [-1.45, -1.05), got {v}");
+    }
+}
+
+/// Perf item M12: the `EndTurn` RNG-free prefix cache.
+#[cfg(test)]
+mod endturn_prefix_tests {
+    use super::*;
+    use sts2_content::monster_dispatch::MonsterSpawnArgs;
+    use sts2_core::combat_loop::end_turn_dispatch_from;
+    use sts2_core::potions::CharacterId;
+    use sts2_core::runstate::{RoomType, RunState};
+    use sts2_core::MonsterKind;
+
+    fn install_content() {
+        sts2_content::cards::dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        sts2_content::potions::dispatch::ensure_installed();
+        sts2_core::relic_effects::ensure_installed();
+    }
+
+    /// An Ironclad starter deck against `monster`, in the play phase of
+    /// round 1, built the way the run loop builds a combat.
+    fn combat_vs(monster: MonsterKind, hp: i32, seed: i32) -> CombatState {
+        install_content();
+        let mut rs = RunState {
+            current_hp: 70,
+            max_hp: 80,
+            rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            character_id: CharacterId::Ironclad,
+            ..RunState::default()
+        };
+        sts2_content::run_callbacks::populate_starter_deck(&mut rs, CharacterId::Ironclad);
+        let roster = [(monster, MonsterSpawnArgs::None, hp)];
+        let state =
+            sts2_content::run_bridge::enter_combat_from_roster(&rs, &roster, RoomType::Monster);
+        assert_eq!(state.phase, sts2_core::CombatPhase::PlayerPlayPhase);
+        state
+    }
+
+    fn telegraphed_move(state: &CombatState) -> &'static str {
+        let enemy = state.enemy_uids[0];
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == enemy.0)
+            .and_then(|c| c.ai.as_ref())
+            .expect("enemy has an AI")
+            .current_move()
+            .id
+    }
+
+    /// The act-2 ThievingHopper on round 1 (THIEVERY_MOVE, which draws the
+    /// stolen card off `combat_card_generation` in `enemy_turn_exec`) and on
+    /// round 2 (FLUTTER_MOVE, a self-buff that draws nothing).
+    fn hopper_rounds(seed: i32) -> (CombatState, CombatState) {
+        let thievery = combat_vs(MonsterKind::ThievingHopper, 60, seed);
+        assert_eq!(telegraphed_move(&thievery), "THIEVERY_MOVE");
+        let mut flutter = thievery.clone();
+        let _ = core_apply(&mut flutter, Action::EndTurn);
+        assert_eq!(flutter.phase, sts2_core::CombatPhase::PlayerPlayPhase);
+        assert_eq!(telegraphed_move(&flutter), "FLUTTER_MOVE");
+        (thievery, flutter)
+    }
+
+    /// The same state with its draw pile as the `BeliefDraw` root holds it.
+    fn as_belief(state: &CombatState) -> CombatState {
+        let mut s = state.clone();
+        sts2_core::blindfold::belief_root(&mut s, 0xB0B0);
+        s
+    }
+
+    fn prefix_len(state: &CombatState) -> usize {
+        let mut s = state.clone();
+        reseed_for_outcome(&mut s, 0xABCD, 0);
+        end_turn_probing_prefix(&mut s, 1).0
+    }
+
+    /// An enemy move that draws randomness inside `enemy_turn_exec` must end
+    /// the prefix before that phase (index 3), under both pile models; an
+    /// RNG-free move lets the prefix run through it, so the first check is
+    /// not vacuous.
+    #[test]
+    fn prefix_stops_before_an_enemy_move_that_draws_randomness() {
+        for seed in [3, 17, 4242] {
+            let (thievery, flutter) = hopper_rounds(seed);
+            for (label, s) in [
+                ("materialized", thievery.clone()),
+                ("belief", as_belief(&thievery)),
+            ] {
+                assert_eq!(
+                    prefix_len(&s),
+                    3,
+                    "seed {seed} {label}: THIEVERY's steal roll is in enemy_turn_exec"
+                );
+            }
+            for (label, s) in [
+                ("materialized", flutter.clone()),
+                ("belief", as_belief(&flutter)),
+            ] {
+                assert!(
+                    prefix_len(&s) >= 4,
+                    "seed {seed} {label}: FLUTTER draws nothing, so enemy_turn_exec is in the prefix"
+                );
+            }
+        }
+    }
+
+    /// Every widen ordinal realized through the cached prefix equals the
+    /// plain reseed-and-reapply realization, and so does the probing draw.
+    #[test]
+    fn cached_prefix_realizes_the_plain_outcome_for_every_ordinal() {
+        let mut states = Vec::new();
+        for seed in [5, 29] {
+            let (thievery, flutter) = hopper_rounds(seed);
+            let wurm = combat_vs(MonsterKind::FuzzyWurmCrawler, 57, seed);
+            for state in [&thievery, &flutter, &wurm] {
+                states.push(as_belief(state));
+                states.push(state.clone());
+            }
+        }
+        let plain = |pre: &CombatState, base: u64, n: u32| {
+            let mut s = pre.clone();
+            reseed_for_outcome(&mut s, base, n);
+            let _ = core_apply(&mut s, Action::EndTurn);
+            s
+        };
+        let mut cached_phases = Vec::new();
+        for (i, pre) in states.iter().enumerate() {
+            let base = 0x5EED_0000 + i as u64;
+            let mut probed = pre.clone();
+            reseed_for_outcome(&mut probed, base, 1);
+            let (clean, prefix) = end_turn_probing_prefix(&mut probed, 1);
+            assert!(
+                probed == plain(pre, base, 1),
+                "state {i}: the probing draw itself"
+            );
+            let prefix = prefix.expect("every fixture has an RNG-free first phase");
+            cached_phases.push(clean);
+            for n in 2..=24 {
+                let mut s = prefix.clone();
+                reseed_for_outcome(&mut s, base, n);
+                let _ = end_turn_dispatch_from(&mut s, clean);
+                assert!(
+                    s == plain(pre, base, n),
+                    "state {i} ordinal {n} ({clean} cached phases)"
+                );
+            }
+        }
+        // The fixtures cover a prefix that stops at the enemy move and one
+        // that runs through it.
+        assert!(cached_phases.contains(&3), "{cached_phases:?}");
+        assert!(cached_phases.iter().any(|&c| c >= 5), "{cached_phases:?}");
+    }
+
+    fn tree_fingerprint<P: Policy>(mcts: &Mcts<P>) -> Vec<(u32, u64, u32, u32)> {
+        mcts.tree
+            .arena
+            .iter()
+            .map(|n| {
+                (
+                    n.visits,
+                    n.search_hash,
+                    n.value_sum.to_bits(),
+                    n.chance_draws,
+                )
+            })
+            .collect()
+    }
+
+    fn cached_nodes<P: Policy>(mcts: &Mcts<P>) -> usize {
+        mcts.tree
+            .arena
+            .iter()
+            .filter(|n| matches!(n.endturn_prefix, EndTurnPrefix::Cached { .. }))
+            .count()
+    }
+
+    /// A whole search at the deployed `EndTurn` widening builds the same tree
+    /// with the cache as without it. Arming the thread-local damage trace is
+    /// the switch: it sends every draw down the plain path.
+    #[test]
+    fn search_with_the_prefix_cache_builds_the_plain_tree() {
+        let (thievery, flutter) = hopper_rounds(11);
+        let wurm = combat_vs(MonsterKind::FuzzyWurmCrawler, 57, 11);
+        for mode in [HiddenInfoMode::BeliefDraw, HiddenInfoMode::Clairvoyant] {
+            for state in [&thievery, &flutter, &wurm] {
+                let config = MctsConfig {
+                    max_simulations: 400,
+                    seed: 7,
+                    hidden_info: mode,
+                    endturn_widening_c: 5.787,
+                    endturn_widening_alpha: 0.436,
+                    ..MctsConfig::default()
+                };
+                let mut cached = Mcts::new(state.clone(), config);
+                let pick_cached = cached.search();
+
+                sts2_core::damage_trace::set_armed(true);
+                let mut plain = Mcts::new(state.clone(), config);
+                let pick_plain = plain.search();
+                sts2_core::damage_trace::set_armed(false);
+
+                assert!(
+                    cached_nodes(&cached) > 0,
+                    "{mode:?}: the cache was exercised"
+                );
+                assert_eq!(
+                    cached_nodes(&plain),
+                    0,
+                    "{mode:?}: an armed trace bypasses the cache"
+                );
+                assert_eq!(pick_cached, pick_plain, "{mode:?}");
+                assert!(
+                    tree_fingerprint(&cached) == tree_fingerprint(&plain),
+                    "{mode:?}: the trees diverge"
+                );
+            }
+        }
+    }
+
+    /// The debug guard compares real states: a prefix that does not match
+    /// its rebuild under a second reseed panics.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "depends on the reseed")]
+    fn seed_guard_rejects_a_prefix_that_differs_from_its_rebuild() {
+        let (thievery, _) = hopper_rounds(3);
+        let mut s = thievery.clone();
+        reseed_for_outcome(&mut s, 1, 0);
+        let (clean, prefix) = end_turn_probing_prefix(&mut s, 1);
+        let mut prefix = prefix.expect("prefix");
+        // Stand-in for a phase that rolled off an RNG's seed.
+        prefix.player.block += 1;
+        debug_assert_prefix_seed_independent(&thievery, &prefix, clean, 1, 0);
     }
 }

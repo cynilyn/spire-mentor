@@ -1560,7 +1560,7 @@ impl HpAwareCtx {
         let mut lowest_hp = i32::MAX;
         let mut lowest_hp_slot: Option<u8> = None;
         for (slot, uid) in state.enemy_uids.iter().enumerate() {
-            let Some(c) = state.creatures.iter().find(|c| c.id == uid.0) else {
+            let Some(c) = sts2_core::creature_by_id(&state.creatures, uid.0) else {
                 continue;
             };
             enemy_hp_sum += c.current_hp.max(0);
@@ -1748,7 +1748,7 @@ fn debuff_setup_priority_delta(
     let Some(enemy_uid) = state.enemy_uids.get(slot as usize) else {
         return 0;
     };
-    let Some(enemy) = state.creatures.iter().find(|c| c.id == enemy_uid.0) else {
+    let Some(enemy) = sts2_core::creature_by_id(&state.creatures, enemy_uid.0) else {
         return 0;
     };
     if enemy.current_hp <= 0 {
@@ -1757,7 +1757,7 @@ fn debuff_setup_priority_delta(
     let player_strength: i32 = state
         .player
         .creature_uid
-        .and_then(|uid| state.creatures.iter().find(|c| c.id == uid.0))
+        .and_then(|uid| sts2_core::creature_by_id(&state.creatures, uid.0))
         .map_or(0, |c| {
             c.powers
                 .iter()
@@ -2143,7 +2143,7 @@ fn obvious_kill_action(state: &CombatState, actions: &[Action]) -> Option<usize>
     let (player_strength, player_weak): (i32, bool) = state
         .player
         .creature_uid
-        .and_then(|uid| state.creatures.iter().find(|c| c.id == uid.0))
+        .and_then(|uid| sts2_core::creature_by_id(&state.creatures, uid.0))
         .map_or((0, false), |c| {
             let mut strength = 0i32;
             let mut weak = false;
@@ -2184,7 +2184,7 @@ fn obvious_kill_action(state: &CombatState, actions: &[Action]) -> Option<usize>
         let Some(enemy_uid) = state.enemy_uids.get(*slot as usize) else {
             continue;
         };
-        let Some(enemy) = state.creatures.iter().find(|c| c.id == enemy_uid.0) else {
+        let Some(enemy) = sts2_core::creature_by_id(&state.creatures, enemy_uid.0) else {
             continue;
         };
         if enemy.current_hp <= 0 {
@@ -3194,7 +3194,8 @@ mod tests {
             build_card(2, CardId::Apotheosis),     // -20
             build_card(3, CardId::DefendIronclad), // 55
             build_card(4, CardId::Inflame),        // 10
-        ];
+        ]
+        .into();
         state_hi.player.hand = smallvec![
             CardUid::new(1).unwrap(),
             CardUid::new(2).unwrap(),
@@ -3223,7 +3224,8 @@ mod tests {
             build_card(2, CardId::Generic),
             build_card(3, CardId::Generic),
             build_card(4, CardId::Generic),
-        ];
+        ]
+        .into();
         state_lo.player.hand = smallvec![
             CardUid::new(1).unwrap(),
             CardUid::new(2).unwrap(),
@@ -3553,7 +3555,8 @@ mod tests {
         state.cards = vec![
             make_attack_card(1, CardId::StrikeIronclad, 6, 1),
             make_attack_card(2, CardId::Bash, 8, 2),
-        ];
+        ]
+        .into();
         state.player.hand = smallvec![CardUid::new(1).unwrap(), CardUid::new(2).unwrap()];
 
         let enemy = make_enemy(100, 2);
@@ -3594,7 +3597,7 @@ mod tests {
 
         let mut state = CombatState::default();
         state.player.energy = 3;
-        state.cards = vec![make_attack_card(1, CardId::StrikeIronclad, 6, 1)];
+        state.cards = vec![make_attack_card(1, CardId::StrikeIronclad, 6, 1)].into();
         state.player.hand = smallvec![CardUid::new(1).unwrap()];
 
         let mut enemy = make_enemy(100, 9);
@@ -3636,7 +3639,7 @@ mod tests {
 
         let mut state = CombatState::default();
         state.player.energy = 3;
-        state.cards = vec![make_attack_card(1, CardId::StrikeIronclad, 6, 1)];
+        state.cards = vec![make_attack_card(1, CardId::StrikeIronclad, 6, 1)].into();
         state.player.hand = smallvec![CardUid::new(1).unwrap()];
 
         let mut enemy = make_enemy(100, 4);
@@ -3686,7 +3689,7 @@ mod tests {
             skip_next_tick: false,
         });
 
-        state.cards = vec![make_attack_card(1, CardId::StrikeIronclad, 8, 1)];
+        state.cards = vec![make_attack_card(1, CardId::StrikeIronclad, 8, 1)].into();
         state.player.hand = smallvec![CardUid::new(1).unwrap()];
 
         let enemy = make_enemy(100, 8);
@@ -3726,7 +3729,8 @@ mod tests {
         state.cards = vec![
             make_attack_card(1, CardId::Bash, 8, 2),
             make_attack_card(2, CardId::StrikeIronclad, 12, 1),
-        ];
+        ]
+        .into();
         state.player.hand = smallvec![CardUid::new(1).unwrap(), CardUid::new(2).unwrap()];
 
         // Healthy enemy (50 HP) — Bash (8) does NOT 1-shot, follow-up

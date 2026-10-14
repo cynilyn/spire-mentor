@@ -3361,9 +3361,9 @@ fn build_combat_state(
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new(seed.wrapping_add(0x9e37_79b9) as i32),
         creatures,
-        cards: cards_arena,
+        cards: cards_arena.into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player: player_state,
         allies: SmallVec::new(),

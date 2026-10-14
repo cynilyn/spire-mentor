@@ -31,12 +31,7 @@ pub(crate) fn on_after_card_played_rainbow_ring(
     if rainbow_ring_relic_mut(state).is_some_and(|r| r.counter & RAINBOW_RING_MASK_ACTIVATED != 0) {
         return EffectResult::Resolved;
     }
-    let bit = match state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
-        .map(|c| c.card_type)
-    {
+    let bit = match crate::card_by_uid(&state.cards, uid).map(|c| c.card_type) {
         Some(crate::cards::CardType::Attack) => RAINBOW_RING_MASK_ATTACK,
         Some(crate::cards::CardType::Skill) => RAINBOW_RING_MASK_SKILL,
         Some(crate::cards::CardType::Power) => RAINBOW_RING_MASK_POWER,
@@ -75,9 +70,10 @@ pub(crate) fn on_after_card_played_rainbow_ring(
 }
 
 pub(crate) fn on_after_combat_end_rainbow_ring(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = rainbow_ring_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = rainbow_ring_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -90,8 +86,9 @@ pub(crate) fn install() {
         RelicId::RainbowRing,
         on_after_card_played_rainbow_ring as AfterCardPlayedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::RainbowRing,
+        crate::RelicKind::RainbowRing,
         on_after_combat_end_rainbow_ring as AfterCombatEndFn,
     );
 }

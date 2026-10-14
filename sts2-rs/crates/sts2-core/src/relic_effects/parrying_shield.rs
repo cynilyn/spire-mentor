@@ -34,8 +34,9 @@ pub(crate) fn on_after_turn_end_parrying_shield(
 }
 
 pub(crate) fn install() {
-    register_after_turn_end(
+    register_owned_after_turn_end(
         RelicId::ParryingShield,
+        crate::RelicKind::ParryingShield,
         on_after_turn_end_parrying_shield as AfterTurnEndFn,
     );
 }

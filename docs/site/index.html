@@ -9,20 +9,21 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kreon:wght@500;700&display=swap">
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 <script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="index.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>spire-mentor</span></a>
+  <a class="brand" href="index.html" aria-label="spire-mentor home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>spire-mentor</span></a>
   <nav class="toplinks" aria-label="Site">
     <a href="index.html" aria-current="page">Docs</a>
     <a href="ai.html"><span class="l">How the AI plays</span><span class="s">AI</span></a>
     <a href="training.html"><span class="l">How it's trained</span><span class="s">Training</span></a>
+    <a href="benchmarks.html"><span class="l">Benchmarks</span><span class="s">Speed</span></a>
     <a class="gh" href="https://github.com/tfriedel/spire-mentor"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
   </nav>
   <button class="iconbtn theme" type="button" aria-label="Switch colour theme" title="Switch colour theme"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></svg></button>
-  <button class="menu" type="button" aria-controls="toc" aria-expanded="false">Contents</button>
+  <button class="menu" type="button" aria-controls="toc" aria-expanded="false" aria-label="Contents"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></svg><span class="lbl">Contents</span></button>
 </header>
 
 <div class="layout">
@@ -62,7 +63,7 @@
   <h2>Overview</h2>
   <p>Six pieces, each usable on its own:</p>
   <div class="cards">
-    <article><h3>Engine</h3><p>Rust, deterministic, the whole game: five characters, ~580 cards, ~300 relics, three acts. Built for speed (~7,000× the game's own logic) with no shortcuts on accuracy, and usable from Python.</p></article>
+    <article><h3>Engine</h3><p>Rust, deterministic, the whole game: five characters, ~580 cards, ~300 relics, three acts. Built for speed (1.3 M actions a second on one core, 31 M on a 24-core server; about 1,500× the shipped game's throughput per core), checked against the game's own code after every action, and usable from Python.</p></article>
     <article><h3>Parity harness</h3><p>Runs the game's own assembly headless and checks the engine against it after every single action, plus a fuzzer that hunts for divergences.</p></article>
     <article><h3>Run AI</h3><p>Chance-node MCTS for fights (it never sees the draw order); a PPO-trained transformer per character for every other decision. Ironclad wins 90% at A0 and 39% at A9; Defect 22% at A10.</p></article>
     <article><h3>Workbench</h3><p>The game in your browser, on any platform: rewind and branch, an AI coach, autobattle, post-run blunder review, the MCTS tree, state import from the real game, and SimLab.</p></article>
@@ -98,26 +99,53 @@
   </div>
 
   <h3>Performance</h3>
+  <p><strong><a href="benchmarks.html">Full benchmarks →</a></strong> one
+  core against the whole machine, the shipped game compared five ways,
+  search and training speed, the hardware, and two other Slay the Spire 2
+  simulators.</p>
   <div class="table-wrap">
   <table>
     <thead><tr><th>Measurement</th><th class="num">Result</th></tr></thead>
     <tbody>
-      <tr><td>State transitions per second, one core</td><td class="num">~1.4–1.5 M</td></tr>
-      <tr><td>Random-play combats per second, one core</td><td class="num">~100–110 k</td></tr>
-      <tr><td>Combats per second vs the game's own logic run headless</td><td class="num">~42,400 vs ~6</td></tr>
-      <tr><td>1,000-simulation MCTS search, native, one thread</td><td class="num">~25 ms</td></tr>
-      <tr><td>Same search in a tablet browser (WASM, one thread)</td><td class="num">~24 ms</td></tr>
-      <tr><td>WASM cost vs native on the same machine, 4,000 sims</td><td class="num">~1.9×</td></tr>
-      <tr><td>Live-advisor search, 10 threads</td><td class="num">~49 k sims/s</td></tr>
+      <tr><td>Random-play fights per second, one core</td><td class="num">59,400</td></tr>
+      <tr><td>Engine actions per second, same fights, one core</td><td class="num">1.30 M (766 ns each)</td></tr>
+      <tr><td>The same on the whole machine (24 cores, 48 threads)</td><td class="num">1.41 M fights/s<br>31.0 M actions/s</td></tr>
+      <tr><td>Against the shipped game run headless, best measured throughput</td><td class="num">1,500× per core<br>2,430× whole machine</td></tr>
+      <tr><td>Against the shipped game, CPU time per action</td><td class="num">2,970× (2,250× its game thread)</td></tr>
+      <tr><td>Against the previous engine (12 Oct 2026), same fights</td><td class="num">2.25×</td></tr>
+      <tr><td>Against two other simulators, same random-play fights, one core</td><td class="num">3.13× faster than sansb<br>sts2core 1.56× faster</td></tr>
+      <tr><td>Browser hint's search, 1,000 simulations</td><td class="num">13.7 ms native<br>18.4 ms WASM in Chromium</td></tr>
+      <tr><td>Browser hint at its default 2,000 simulations, WASM in Chromium</td><td class="num">39.9 ms</td></tr>
+      <tr><td>Advisor's search on an Act-1 boss, 8,000 simulations</td><td class="num">275 ms on 1 thread<br>39.6 ms on 8</td></tr>
+      <tr><td>A typical PPO training iteration (Ironclad, 960 games)</td><td class="num">208 s (609 s before)<br>150 in ~9 h</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="note">The 7,000× is not "Rust vs C#": it is a tight engine versus
-  the game's asynchronous, presentation-driven action pipeline. Numbers are
-  from the project's own benchmarks. The search timings compare a 2.1 GHz Xeon
-  (native, and Chrome on the same box) with a current Android tablet; in the
-  browser the search runs in a Web Worker, and small searches pay a fixed setup
-  cost that larger ones amortise.</p>
+  <p class="note">Measured on 14 October 2026 on one AMD EPYC 7443P server
+  (24 cores, 48 threads, Linux) on a quiet host; plain release builds, except
+  the training row, which uses the profile-guided build training runs on;
+  medians of interleaved runs. The fights are random play: Ironclad's
+  starter deck and Burning Blood against each of the 22 Act-1 Overgrowth
+  encounters in turn, 22.0 actions per fight on average (an action is a card
+  play or an end of turn). One core means one process on one physical core
+  with its second hardware thread idle. The shipped game is its own assembly
+  run headless by the project's harness on the same fights. One game process
+  spends most of its time asleep in the harness's 1 ms polling, so the fair
+  comparison runs many game processes at once, the best counts measured:
+  16 on one core, 192 on the machine. Earlier versions of this page said 23,000×: that
+  was the wall time of one cold game process per fight, a different
+  measurement, explained on the <a href="benchmarks.html#game">benchmarks
+  page</a>. Both other simulators are combat only.
+  <a href="https://github.com/sansb/sts2-sim">sansb/sts2-sim</a> (game build
+  v0.111.0) is certified against checksums the real game writes, and its
+  review solver searches the true state by design; the 3.13× has our relic
+  switched off, as Burning Blood is inert there.
+  <a href="https://github.com/lain-wood/sts2core">lain-wood/sts2core</a> is
+  effectively Ironclad only, with partial content and its own RNG, and its
+  live solver is given the true draw-pile order. The comparison is random
+  play, with no search involved (<a href="benchmarks.html#others">details</a>).
+  Method:
+  <a href="https://github.com/tfriedel/spire-mentor/blob/main/sts2-rs/docs/perf/2026-10-14-benchmarks.md">2026-10-14-benchmarks.md</a>.</p>
 
   <h3>Workspace</h3>
   <p>A cargo workspace of twelve crates: <code>sts2-core</code> (state, hooks,
@@ -148,13 +176,19 @@
   </figure>
 
   <ul class="facts">
-    <li><strong>Zero combat divergences</strong> on all five characters, on fuzzed
-    seeds covering every card (base and upgraded), every card against every
-    arena, pairwise hook interactions and 30-turn fights; the full tier runs
-    5,000 seeds.</li>
-    <li><strong>Whole-run parity 250/250</strong> seeds across all five
-    characters: map generation, event pools, rewards, shops and the run
-    state carried between acts.</li>
+    <li><strong>Fuzzed combat parity</strong> on seeds covering every card
+    (base and upgraded), every card against every arena, pairwise hook
+    interactions and 30-turn fights; the full tier runs 5,000 seeds. In the
+    last full sweeps Ironclad was clean on all 6,104 fights (June 2026) and
+    the other four characters on 99.4–99.8% of about 5,750 each (July 2026),
+    with a known tail still open.</li>
+    <li><strong>Whole-run parity 1,232 of 1,250</strong> runs clean (July
+    2026; five characters at Ascensions 0, 2, 5, 8 and 10): map generation,
+    event pools, rewards, shops and the run state carried between acts. The
+    runs use a random policy, so most end in Act 1.</li>
+    <li>No full sweep has run since July 2026, and the engine has changed
+    since. Checks against fights recorded from the real game, with the
+    game's own checksums, are planned but not done.</li>
     <li>Freshness gates refuse to compare against a stale engine build or a
     stale oracle: a source hash is compiled into the Python extension and
     checked at load.</li>
@@ -492,6 +526,6 @@ just workbench-local   # → http://127.0.0.1:4173</code></pre>
 
 <footer class="foot"><span>spire-mentor · MIT licence</span><span>Not affiliated with Mega Crit</span><a href="https://github.com/tfriedel/spire-mentor">Source on GitHub</a></footer>
 
-<script src="site.js?v=3"></script>
+<script src="site.js?v=4"></script>
 </body>
 </html>

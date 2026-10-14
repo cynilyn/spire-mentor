@@ -22,10 +22,26 @@ KL, clipfrac, value EV, entropy, per-surface behavior stats — appended to
 ``<save>.stats.jsonl``. Checkpoints ``<save>.iter_N.pt`` + ``<save>.pt``;
 ``--resume-from-iter`` continues schedules (absolute anchoring).
 
+The CLI refuses to start unless the imported ``sts2_rs`` is a fresh PGO
+wheel (``ppo.wheel_guard``; build it with ``just sim-engine-pgo``).
+``--allow-plain-wheel`` / ``STS2_ALLOW_PLAIN_WHEEL=1`` is the explicit opt-out
+for a host that cannot build PGO. The CLI first pins the wheel (a private copy
+in ``<save dir>/sts2_rs-pin/``; not on Windows, which has no exec) and
+restarts itself on it, so the whole run -- every iteration's spawn workers
+included -- runs the copy it checked, whatever happens to the venv.
+
+The wheel record lands in every checkpoint (``wheel``) and the wandb config;
+each ``stats.jsonl`` row carries what that iteration's workers reported
+(``wheel``, ``wheel_pgo``), and a mismatch aborts the run. The pin does not
+cover the first-party Python the workers import from disk (``python/ppo``,
+``champions.py``): each row and checkpoint also carries the run's ``py_src``
+digest, and an iteration whose workers report another one (a pull or edit
+mid-campaign) aborts the same way.
+
 Usage (from sts2-pycli):
-    PYTHONPATH=python uv run --frozen \
-        python -m ppo.trainer --iterations 2 --games-per-iter 32 \
-        --save-path /tmp/ppo_smoke
+    just sim-engine-pgo
+    PYTHONPATH=python .venv/bin/python -m ppo.trainer --iterations 2 \
+        --games-per-iter 32 --save-path /tmp/ppo_smoke
 """
 
 from __future__ import annotations
@@ -48,6 +64,17 @@ from . import schema
 from .model import AUX_IGNORE, RunPolicyNet, collate, load_compat
 from .plasticity import plasticity_stats
 from .rewards import ShapingConfig, shaped_rewards
+from .wheel_guard import (
+    FIX,
+    PIN_DIRNAME,
+    engine_change,
+    prepare_training_wheel,
+    python_source_digest,
+    wheel_banner,
+    wheel_identity,
+    worker_source_mismatch,
+    worker_wheel_mismatch,
+)
 from .workers import play_batch
 
 
@@ -717,13 +744,14 @@ def behavior_stats(rows: list[dict]) -> dict:
     return out
 
 
-def _init_wandb(cfg: PPOConfig):
+def _init_wandb(cfg: PPOConfig, wheel: dict | None = None):
     """Return a live wandb run (or None if disabled/unavailable).
 
     Never fatal: a missing package, missing login, or init failure degrades to
     stats.jsonl-only logging with a warning rather than killing an overnight
     run. `resume="allow"` + a save-path-derived id makes --resume-from-iter
-    continue the same wandb run.
+    continue the same wandb run. `wheel` (the CLI's wheel-guard record) rides
+    in the run config next to the cfg.
     """
     if not cfg.wandb_project:
         return None
@@ -740,7 +768,7 @@ def _init_wandb(cfg: PPOConfig):
             id=run_id,
             resume="allow",
             mode=cfg.wandb_mode,
-            config=cfg.__dict__,
+            config={**cfg.__dict__, **({"wheel": wheel} if wheel is not None else {})},
         )
     except Exception as e:
         print(f"wandb.init failed ({e!r}) — logging to stats.jsonl only", flush=True)
@@ -808,7 +836,28 @@ def _cpu_state_dict(net: RunPolicyNet) -> dict:
     return {k: v.detach().to("cpu") for k, v in net.state_dict().items()}
 
 
-def train(cfg: PPOConfig) -> RunPolicyNet:
+def resume_hint(save_path: str, it: int) -> str:
+    """How to continue a run that stopped before finishing iteration `it`:
+    from the newest `<save_path>.iter_K.pt` (K <= it), else from scratch."""
+    for k in range(it, 0, -1):
+        if os.path.exists(f"{save_path}.iter_{k}.pt"):
+            return (
+                f"resume by re-running the command with --resume-from-iter {k} "
+                f"(newest checkpoint: {save_path}.iter_{k}.pt)"
+            )
+    return "re-run the command as it was (no checkpoint was saved yet)"
+
+
+def train(cfg: PPOConfig, wheel: dict | None = None) -> RunPolicyNet:
+    """Run the PPO loop. `wheel` is the `ppo.wheel_guard` record the CLI checked
+    (and pinned) before calling this: it is bannered and saved into every
+    checkpoint and the wandb config. The wheel check itself stays in the CLI —
+    tests call `train(cfg)` on a plain wheel.
+
+    Every iteration, the identity each collection worker reports must equal
+    the run's (`wheel`'s, else this process's own import), or the run aborts
+    before training on that batch; each stats row carries what the workers
+    reported (`wheel`, `wheel_pgo`)."""
     torch.manual_seed(0)
     torch.set_num_threads(max(1, (os.cpu_count() or 4) // 4))
     device = resolve_device(cfg.device)
@@ -857,6 +906,24 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
                 # but say so — an empty buffer collects fresh-only until it fills.
                 print("PLR: no buffer in the resumed checkpoint — starting empty", flush=True)
         print(f"resumed from iter {start_it}", flush=True)
+        moved = engine_change(ck.get("wheel"), wheel)
+        if moved is not None:
+            # Allowed (a fix can be worth a mid-campaign rebuild), but never
+            # silent: the stats rows from here on carry the new build.
+            print(
+                f"WARNING: iteration {start_it}'s checkpoint was trained on another "
+                f"sts2_rs build; resuming on this one ({moved})",
+                flush=True,
+            )
+        ck_src = ck.get("py_src")
+        if ck_src is not None and ck_src != python_source_digest():
+            # A source change, not an engine change: the same rule applies.
+            print(
+                f"WARNING: iteration {start_it}'s checkpoint was trained with other "
+                f"first-party Python (python/ppo, champions.py); resuming on this "
+                f"source (py_src {ck_src} -> {python_source_digest()})",
+                flush=True,
+            )
     elif cfg.init_ckpt:
         ck = torch.load(cfg.init_ckpt, map_location="cpu", weights_only=True)
         load_compat(net, ck.get("state_dict", ck))
@@ -865,7 +932,11 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
     update_rng = np.random.default_rng(0)
     ckpt_dir = os.path.dirname(os.path.abspath(cfg.save_path))
     os.makedirs(ckpt_dir, exist_ok=True)
-    wb = _init_wandb(cfg)
+    wb = _init_wandb(cfg, wheel)
+    if wheel is not None:
+        print(wheel_banner(wheel), flush=True)
+    run_wheel = wheel_identity(wheel)
+    run_py_src = python_source_digest()
     if cfg.ascension_weights:
         print(f"mixed-ascension curriculum: {cfg.ascension_weights}", flush=True)
     if sampler is not None:
@@ -934,6 +1005,40 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
         t0 = time.time()
         return collect_rows(cfg, it, acting_ckpt, sampler=sampler), time.time() - t0
 
+    def check_workers_wheel(it: int, rows: list[dict]) -> None:
+        """Abort before training on a batch whose workers ran a different
+        sts2_rs than the run started on. Called on the main thread with no
+        collection in flight, so the abort does not wait for one."""
+        mismatch = worker_wheel_mismatch(rows, run_wheel)
+        if mismatch is None:
+            return
+        raise SystemExit(
+            f"ABORTING at iteration {it}: its collection workers did not run the "
+            f"sts2_rs this run started on, so nothing from it was trained on.\n"
+            f"  run started on: {json.dumps(run_wheel, sort_keys=True)}\n{mismatch}\n"
+            "Something replaced the wheel the workers import (the pin should make "
+            "that impossible for a CLI run). Check the wheel with `python -m "
+            f"ppo.wheel_guard` (`{FIX}` rebuilds it), then {resume_hint(cfg.save_path, it)}."
+        )
+
+    def check_workers_source(it: int, rows: list[dict]) -> None:
+        """Abort before training on a batch whose workers imported other
+        first-party Python than the run started with. The pin covers only the
+        sts2_rs extension; each iteration's spawn workers import `python/ppo`
+        from the checkout on disk again."""
+        mismatch = worker_source_mismatch(rows, run_py_src)
+        if mismatch is None:
+            return
+        raise SystemExit(
+            f"ABORTING at iteration {it}: its collection workers ran other first-party "
+            "Python than this run started with, so nothing from it was trained on. This "
+            "is a SOURCE change under the run (a pull, checkout, stash or edit of "
+            "sts2-pycli/python/ppo or champions.py), not an sts2_rs build change.\n"
+            f"  run started with py_src {run_py_src}\n{mismatch}\n"
+            "Restore the source the run started with, or decide to continue on the new "
+            f"code, then {resume_hint(cfg.save_path, it)}."
+        )
+
     def update_and_log(
         it: int,
         rows: list[dict],
@@ -943,10 +1048,18 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
         it_t0: float,
     ) -> None:
         ok = [r for r in rows if r.get("transitions")]
+        # `check_workers_wheel` already made every reporting row equal run_wheel.
+        worker_wheel = next((r["wheel"] for r in rows if "wheel" in r), None)
         wins = sum(1 for r in ok if r.get("won"))
         floors = [int(r["final"].get("total_floor") or 0) for r in ok]
         all_trans = [t for r in ok for t in gae_from_row(r, cfg, shaping)]
         errors = sum(1 for r in rows if r.get("outcome") in ("error", "timeout"))
+        # GH #763: name the dropped games, not just count them.
+        dropped = [
+            {k: r.get(k) for k in ("seed", "outcome", "age_s", "error") if r.get(k) is not None}
+            for r in rows
+            if r.get("outcome") in ("error", "timeout")
+        ]
         plr_stats = (
             plr_update_from_rows(sampler, rows, cfg, shaping, it) if sampler is not None else {}
         )
@@ -966,6 +1079,7 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
             "iteration": it,
             "n_runs": len(ok),
             "errors": errors,
+            "dropped": dropped,
             "win_rate": wins / max(1, len(ok)),
             "avg_floor": float(np.mean(floors)) if floors else 0.0,
             "n_transitions": len(all_trans),
@@ -988,11 +1102,21 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
             **behavior_stats(ok),
             **plast,
             **plr_stats,
+            # What the workers reported, per row: a --resume-from-iter run may
+            # resume on a different wheel, and each iteration says which it ran.
+            # Null when no run reached the engine (every one an error or a
+            # timeout), so an unchecked iteration shows as one.
+            "wheel_pgo": bool(worker_wheel["pgo"]) if worker_wheel is not None else None,
+            "wheel": worker_wheel,
+            "py_src": run_py_src,
         }
         with open(f"{cfg.save_path}.stats.jsonl", "a") as f:
             f.write(json.dumps(stats) + "\n")
         if wb is not None:
-            wb.log({k: v for k, v in stats.items() if k != "iteration"}, step=it)
+            wb.log(
+                {k: v for k, v in stats.items() if k not in ("iteration", "wheel", "py_src")},
+                step=it,
+            )
         util = stats["util_iter"]
         cpu_suffix = f" cpu={util:.0%}" if util is not None else ""
         print(
@@ -1014,6 +1138,8 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
                     # PLR buffer rides in the checkpoint so --resume-from-iter
                     # replays from the same buffer an uninterrupted run would.
                     **({"plr": sampler.state_dict()} if sampler is not None else {}),
+                    **({"wheel": wheel} if wheel is not None else {}),
+                    "py_src": run_py_src,
                 },
                 f"{cfg.save_path}.iter_{it + 1}.pt",
             )
@@ -1030,6 +1156,8 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
                 it_t0 = time.time()
                 busy_iter0 = _cpu_busy()
                 rows, collect_s = fut.result()
+                check_workers_wheel(it, rows)
+                check_workers_source(it, rows)
                 if it + 1 < cfg.iterations:
                     snapshot_acting()  # θ_it (pre-update); consumed next iter → 1 step stale
                     fut = pool_exec.submit(collect, it + 1)
@@ -1041,13 +1169,15 @@ def train(cfg: PPOConfig) -> RunPolicyNet:
             snapshot_acting()
             rows, collect_s = collect(it)
             busy_collect1 = _cpu_busy()
+            check_workers_wheel(it, rows)
+            check_workers_source(it, rows)
             update_and_log(it, rows, collect_s, busy_iter0, busy_collect1, it_t0)
     if wb is not None:
         wb.finish()
     return net
 
 
-def _cli() -> None:
+def _cli(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     for f in fields(PPOConfig):
         name = f.name.replace("_", "-")
@@ -1061,9 +1191,25 @@ def _cli() -> None:
             )
         else:
             ap.add_argument(f"--{name}", type=type(f.default), default=f.default)
-    args = ap.parse_args()
+    # Not a PPOConfig field: it is a statement about the host, not the run,
+    # and the run records what it actually got (`wheel_pgo`) instead.
+    ap.add_argument(
+        "--allow-plain-wheel",
+        action="store_true",
+        help="train on a plain (non-PGO) sts2_rs wheel, for a host that cannot "
+        "build PGO; also STS2_ALLOW_PLAIN_WHEEL=1. Collection runs ~1.28x slower.",
+    )
+    args = ap.parse_args(argv)
     cfg = PPOConfig(**{f.name: getattr(args, f.name) for f in fields(PPOConfig)})
-    train(cfg)
+    # Before train(), so a wrong wheel costs nothing, not a collection phase.
+    # Pins the wheel next to the checkpoints and restarts this process on the
+    # pinned copy, so a venv rebuild mid-campaign cannot reach the workers.
+    wheel = prepare_training_wheel(
+        pin_root=os.path.join(os.path.dirname(os.path.abspath(cfg.save_path)), PIN_DIRNAME),
+        allow_plain=args.allow_plain_wheel,
+        main_module="ppo.trainer",
+    )
+    train(cfg, wheel=wheel)
 
 
 if __name__ == "__main__":

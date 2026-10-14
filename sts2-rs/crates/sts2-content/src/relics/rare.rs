@@ -425,11 +425,7 @@ fn listener_toxic_egg_merchant(
 /// here so generated Shiv variants (e.g. silent-pool retains) also
 /// trigger. Bead `sts2-rs-8aw7`.
 fn listener_helical_dart(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::HelicalDart)
-    {
+    if !state.relics.owns(RelicKind::HelicalDart) {
         return EffectResult::NotImplemented;
     }
     let Some(card_uid) = ctx.card_uid else {
@@ -800,11 +796,7 @@ pub const TUNGSTEN_ROD_REDUCTION: i32 = 1;
 fn listener_paper_krane(state: &CombatState, ctx: &DamageCtx) -> DamageMul {
     // Ownership gate — registry walks every registered listener without
     // pre-filtering by owned relics, so each body must check.
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::PaperKrane)
-    {
+    if !state.relics.owns(RelicKind::PaperKrane) {
         return DamageMul::ONE;
     }
     // Target must be the player.

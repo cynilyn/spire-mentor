@@ -15,10 +15,7 @@ pub(crate) fn on_after_card_played_nunchaku(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_attack = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_attack = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Attack);
     if !is_attack {
         return EffectResult::NotImplemented;

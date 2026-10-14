@@ -34,9 +34,10 @@ pub(crate) fn on_after_damage_received_red_skull(
 /// the combat); only the flag is reset so the next combat re-probes
 /// from a clean slate in `before_combat_start`.
 pub(crate) fn on_after_combat_end_red_skull(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = red_skull_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = red_skull_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -49,8 +50,9 @@ pub(crate) fn install() {
         RelicId::RedSkull,
         on_after_damage_received_red_skull as AfterDamageReceivedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::RedSkull,
+        crate::RelicKind::RedSkull,
         on_after_combat_end_red_skull as AfterCombatEndFn,
     );
 }

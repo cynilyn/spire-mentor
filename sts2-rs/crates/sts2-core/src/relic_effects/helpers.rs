@@ -30,9 +30,11 @@ pub(crate) fn gain_block_player_unpowered(state: &mut CombatState, base: i32) {
 
 pub(crate) static INSTALL_ONCE: Once = Once::new();
 
-/// True iff the player currently carries `kind`.
+/// True iff the player currently carries `kind` (a non-melted relic of that
+/// kind): a bit test on the store's owned-kind set (J01b).
+#[inline]
 pub(crate) fn player_owns_relic(state: &CombatState, kind: crate::RelicKind) -> bool {
-    state.relics.iter().any(|r| !r.is_melted && r.kind == kind)
+    state.relics.owns(kind)
 }
 
 /// `Fiddle.modify_hand_draw` — `return draw + EXTRA_DRAW=2` (Python

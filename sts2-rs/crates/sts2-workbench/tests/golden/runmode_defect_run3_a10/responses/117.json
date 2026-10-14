@@ -7,20 +7,20 @@
      "action": {
       "action": "end_turn"
      },
-     "bucket": "even",
+     "bucket": "likely-loss",
      "is_best": true,
-     "losses": 7,
+     "losses": 0,
      "low_confidence": false,
-     "p_loss": 0.5833,
+     "p_loss": 0.0,
      "p_tie": 0.0,
-     "p_win": 0.4167,
-     "q": -0.3092,
+     "p_win": 0.0,
+     "q": 0.0,
      "q_saturated": false,
      "ties": 0,
-     "value": -0.1667,
-     "value_sum": -3.7108,
-     "visits": 12,
-     "wins": 5
+     "value": 0.0,
+     "value_sum": 0.0,
+     "visits": 0,
+     "wins": 0
     }
    ],
    "recommended": {
@@ -67,16 +67,16 @@
    {
     "action": "end turn",
     "is_best": true,
-    "losses": 7,
+    "losses": 0,
     "low_confidence": false,
-    "q": -0.3092,
+    "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
     "target_index": null,
     "ties": 0,
-    "visits": 12,
-    "win_prob": 0.4167,
-    "wins": 5
+    "visits": 0,
+    "win_prob": 0.0,
+    "wins": 0
    }
   ]
  },
@@ -469,20 +469,20 @@
       "action": {
        "action": "end_turn"
       },
-      "bucket": "even",
+      "bucket": "likely-loss",
       "is_best": true,
-      "losses": 7,
+      "losses": 0,
       "low_confidence": false,
-      "p_loss": 0.5833,
+      "p_loss": 0.0,
       "p_tie": 0.0,
-      "p_win": 0.4167,
-      "q": -0.3092,
+      "p_win": 0.0,
+      "q": 0.0,
       "q_saturated": false,
       "ties": 0,
-      "value": -0.1667,
-      "value_sum": -3.7108,
-      "visits": 12,
-      "wins": 5
+      "value": 0.0,
+      "value_sum": 0.0,
+      "visits": 0,
+      "wins": 0
      }
     ],
     "recommended": {

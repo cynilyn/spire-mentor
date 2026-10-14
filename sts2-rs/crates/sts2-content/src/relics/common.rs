@@ -21,8 +21,8 @@
 use sts2_core::card_effects::EffectResult;
 use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::relic_effects::{
-    register_after_card_played, register_after_energy_reset, register_after_side_turn_start,
-    register_before_combat_start, AfterCardPlayedFn, AfterEnergyResetFn, AfterSideTurnStartFn,
+    register_after_card_played, register_after_side_turn_start, register_before_combat_start,
+    register_owned_after_energy_reset, AfterCardPlayedFn, AfterEnergyResetFn, AfterSideTurnStartFn,
     BeforeCombatStartFn, CardEventCtx,
 };
 use sts2_core::relics::RelicId;
@@ -320,8 +320,9 @@ pub fn install_pool() {
         RelicId::VenerableTeaSet,
         listener_venerable_tea_set_rest_latch as AfterRoomEnteredRunFn,
     );
-    register_after_energy_reset(
+    register_owned_after_energy_reset(
         RelicId::VenerableTeaSet,
+        RelicKind::VenerableTeaSet,
         listener_venerable_tea_set_consume as AfterEnergyResetFn,
     );
     // Bead `sts2-rs-lqpw`: real `after_card_played` listener for
@@ -478,11 +479,7 @@ fn listener_fencing_manual(state: &mut CombatState, side: Side) -> EffectResult 
     if state.round != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::FencingManual)
-    {
+    if !state.relics.owns(RelicKind::FencingManual) {
         return EffectResult::NotImplemented;
     }
     let Some(player_uid) = state.player.creature_uid else {

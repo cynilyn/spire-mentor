@@ -16,13 +16,7 @@ pub(crate) fn on_before_side_turn_start_power_cell(
         .draw
         .iter()
         .copied()
-        .filter(|uid| {
-            state
-                .cards
-                .iter()
-                .find(|c| c.uid == *uid)
-                .is_some_and(|c| c.cost == 0)
-        })
+        .filter(|uid| crate::card_by_uid(&state.cards, *uid).is_some_and(|c| c.cost == 0))
         .collect();
     if candidates.is_empty() {
         return EffectResult::NotImplemented;

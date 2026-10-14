@@ -299,6 +299,10 @@ pub fn enter_combat_from_roster(
     // This subsumes the former LavaLamp-only shim; LavaLamp now flows
     // through the general path (its `reset_lava_lamp_flag` run-side
     // reset before combat still applies).
+    //
+    // The rows are collected first and handed over in one `extend`: every
+    // `RelicStore` write rebuilds its per-combat relic plan (M01).
+    let mut relics = Vec::with_capacity(rs.relics.len());
     for (i, &relic_id) in rs.relics.iter().enumerate() {
         let Some(kind) = relic_id.to_relic_kind() else {
             continue;
@@ -309,7 +313,7 @@ pub fn enter_combat_from_roster(
             .copied()
             .unwrap_or_else(|| kind.initial_counter());
         let raw = u32::try_from(i + 1).expect("relic count fits in u32");
-        state.relics.push(sts2_core::Relic {
+        relics.push(sts2_core::Relic {
             id: NonZeroU32::new(raw).expect("non-zero"),
             kind,
             counter,
@@ -320,6 +324,7 @@ pub fn enter_combat_from_roster(
             is_melted: rs.melted_relics.contains(&relic_id),
         });
     }
+    state.relics.extend(relics);
 
     state.act_index = rs.act_index;
 

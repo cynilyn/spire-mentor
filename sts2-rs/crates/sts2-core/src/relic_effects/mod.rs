@@ -234,12 +234,12 @@ pub fn install_default_registry() {
         lava_lamp::install();
         lizard_tail::install();
 
-        // Every channel is now fully populated and never mutated again in
-        // production. Publish each channel's immutable `&'static` read view so
-        // the dispatch hot path is a cheap `OnceLock::get` instead of an
-        // `ArcSwap::load` debt-slot dance (bead sts2-rs-05mjm; see
-        // `docs/perf/2026-06-14-dispatch-registry-freeze-design.md`).
-        channels::freeze_all_channels();
+        // No freeze here: the content installer
+        // (`sts2_content::relics::dispatch::install_default_registry`)
+        // registers its pools on top of these handlers, and a registration
+        // after `channels::freeze_all_channels()` would send that channel back
+        // to the `ArcSwap` read path for good. The content installer freezes
+        // once everything is in (M02).
     });
 }
 

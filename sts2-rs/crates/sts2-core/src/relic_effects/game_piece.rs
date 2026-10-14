@@ -15,10 +15,7 @@ pub(crate) fn on_after_card_played_game_piece(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_power = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_power = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Power);
     if !is_power {
         return EffectResult::NotImplemented;

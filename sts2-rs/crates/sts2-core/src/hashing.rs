@@ -284,7 +284,7 @@ fn hash_enemies_cards_items_pending<E: HashEncoding, H: Hasher>(state: &CombatSt
     (state.enemy_uids.len() as u64).hash(h);
     for uid in &state.enemy_uids {
         uid.get().hash(h);
-        if let Some(c) = state.creatures.iter().find(|c| c.id == uid.0) {
+        if let Some(c) = crate::creature_by_id(&state.creatures, uid.0) {
             c.id.get().hash(h);
             c.current_hp.hash(h);
             c.max_hp.hash(h);
@@ -328,18 +328,8 @@ fn hash_enemies_cards_items_pending<E: HashEncoding, H: Hasher>(state: &CombatSt
         // (declaration order vs lexicographic), but equality is preserved
         // — equal maps still produce the same canonical sequence, which is
         // all the hash contract requires.
-        let mut cv: Vec<_> = c.combat_vars.iter().collect();
-        cv.sort_unstable_by_key(|(k, _)| *k);
-        for (k, v) in cv {
-            k.hash(h);
-            v.hash(h);
-        }
-        let mut en: Vec<_> = c.enchantments.iter().collect();
-        en.sort_unstable_by_key(|(k, _)| *k);
-        for (k, v) in en {
-            k.hash(h);
-            v.hash(h);
-        }
+        hash_entries_by_key(c.combat_vars.as_slice(), h);
+        hash_entries_by_key(c.enchantments.as_slice(), h);
         // Card afflictions (Bound / ChainsOfBinding "freeze" from the Queen
         // boss, etc.) are real searchable state: two hands differing only in
         // which cards are Bound are genuinely different positions and must
@@ -386,6 +376,32 @@ fn hash_enemies_cards_items_pending<E: HashEncoding, H: Hasher>(state: &CombatSt
     // Auto-play suspended on a surfaced card-select (parity bug
     // `combat_select_ironclad`) — track presence like `pending_play`.
     state.pending_autoplay_resume.is_some().hash(h);
+}
+
+/// Fold a card's `(key, amount)` map (`combat_vars` / `enchantments`) into
+/// `h` in ascending key order.
+///
+/// Most maps are empty or already in key order, and sorting one of those
+/// moves nothing (`sort_unstable` leaves a non-decreasing slice as it is),
+/// so it is hashed straight from the slice. Collecting it into a `Vec` cost
+/// a malloc/free pair per card with any entry, on every hash. An
+/// out-of-order map is still sorted exactly as before (a `Vec` of
+/// references, `sort_unstable_by_key`), so the hash bytes are the same on
+/// both paths, a repeated key included.
+fn hash_entries_by_key<K: Copy + Ord + Hash, H: Hasher>(entries: &[(K, i32)], h: &mut H) {
+    if entries.windows(2).all(|w| w[0].0 <= w[1].0) {
+        for (k, v) in entries {
+            k.hash(h);
+            v.hash(h);
+        }
+        return;
+    }
+    let mut sorted: Vec<_> = entries.iter().collect();
+    sorted.sort_unstable_by_key(|(k, _)| *k);
+    for (k, v) in sorted {
+        k.hash(h);
+        v.hash(h);
+    }
 }
 
 /// Hash every stream's `seed()` + `counter()` (the cursor) of a
@@ -725,9 +741,11 @@ fn hash_draw_pile_chance_dedup<H: Hasher>(p: &PlayerCombatState, state: &CombatS
 /// with no matching arena entry is dropped (conservative: it contributes
 /// nothing rather than panicking or aliasing another card's key).
 fn hash_pile_observational<H: Hasher>(pile: &[crate::CardUid], state: &CombatState, h: &mut H) {
-    let mut keys: Vec<u64> = pile
+    // Stack buffer sized like `unknown_middle_uids`' (a hand never comes
+    // close); the sorted `u64`s are the same whatever holds them.
+    let mut keys: smallvec::SmallVec<[u64; 32]> = pile
         .iter()
-        .filter_map(|uid| state.cards.iter().find(|c| c.uid == *uid))
+        .filter_map(|uid| crate::card_by_uid(&state.cards, *uid))
         .map(card_observational_key)
         .collect();
     keys.sort_unstable();
@@ -1273,6 +1291,105 @@ mod tests {
             "sanity: search_hash DOES distinguish these (uid-based) — \
              that's the ambiguity chance_outcome_hash exists to collapse"
         );
+    }
+
+    /// `hash_pile_observational` finds a card through its canonical
+    /// `cards[uid - 1]` slot, falling back to a scan. On a dense arena and on
+    /// a sparse fixture arena (skipped uids) it must fold exactly what the
+    /// scan-only lookup folded, including dropping a uid with no card.
+    #[test]
+    fn pile_observational_lookup_matches_scan_on_sparse_arena() {
+        use crate::cards::CardId;
+        let scan_fold = |pile: &[CardUid], s: &CombatState| {
+            let mut keys: Vec<u64> = pile
+                .iter()
+                .filter_map(|uid| s.cards.iter().find(|c| c.uid == *uid))
+                .map(card_observational_key)
+                .collect();
+            keys.sort_unstable();
+            let mut h = new_hasher();
+            (keys.len() as u64).hash(&mut h);
+            for k in &keys {
+                k.hash(&mut h);
+            }
+            h.finish()
+        };
+        let fold = |pile: &[CardUid], s: &CombatState| {
+            let mut h = new_hasher();
+            hash_pile_observational(pile, s, &mut h);
+            h.finish()
+        };
+        let uids = |ns: &[u32]| -> Vec<CardUid> {
+            ns.iter()
+                .map(|&n| CardUid::new(n).expect("non-zero"))
+                .collect()
+        };
+        let dense = draw_state(&[
+            (CardId::StrikeIronclad, false),
+            (CardId::Bash, true),
+            (CardId::DefendIronclad, false),
+        ]);
+        // Same cards at uids 2/5/9: every lookup misses its canonical slot
+        // (`cards[1]` holds uid 5, `cards[4]` and `cards[8]` do not exist).
+        let mut sparse = dense.clone();
+        for (c, uid) in sparse.cards.iter_mut().zip([2u32, 5, 9]) {
+            c.uid = CardUid::new(uid).expect("non-zero");
+        }
+        for (s, pile) in [
+            (&dense, uids(&[3, 1, 2])),
+            (&dense, uids(&[2, 7])),
+            (&sparse, uids(&[9, 2, 5])),
+            (&sparse, uids(&[1, 3, 5])),
+        ] {
+            assert_eq!(fold(&pile, s), scan_fold(&pile, s), "pile {pile:?}");
+        }
+        // The fallback reads the card it found: uid 5's content shows.
+        let mut changed = sparse.clone();
+        changed.cards[1].upgraded = false;
+        assert_ne!(fold(&uids(&[5]), &sparse), fold(&uids(&[5]), &changed));
+    }
+
+    /// `hash_entries_by_key` hashes an in-order map straight from its slice
+    /// and sorts only an out-of-order one. Both paths must write the bytes
+    /// the always-sort fold wrote (`Vec` of references +
+    /// `sort_unstable_by_key`), including for a key that appears twice.
+    #[test]
+    fn entries_by_key_matches_always_sort_fold() {
+        use crate::cards::VarKey;
+        let sort_fold = |entries: &[(VarKey, i32)]| {
+            let mut sorted: Vec<_> = entries.iter().collect();
+            sorted.sort_unstable_by_key(|(k, _)| *k);
+            let mut h = new_hasher();
+            for (k, v) in sorted {
+                k.hash(&mut h);
+                v.hash(&mut h);
+            }
+            h.finish()
+        };
+        let fold = |entries: &[(VarKey, i32)]| {
+            let mut h = new_hasher();
+            hash_entries_by_key(entries, &mut h);
+            h.finish()
+        };
+        let mut keys = [
+            VarKey::FreeThisTurn,
+            VarKey::CostAbsolutelySet,
+            VarKey::RampageDamage,
+        ];
+        keys.sort_unstable();
+        let [a, b, c] = keys;
+        for entries in [
+            vec![],
+            vec![(b, 4)],
+            vec![(a, 1), (b, 2), (c, 3)],
+            vec![(a, 1), (a, 7), (c, 3)],
+            vec![(c, 3), (a, 1), (b, 2)],
+            vec![(b, 2), (a, 7), (b, 9), (a, 1)],
+        ] {
+            assert_eq!(fold(&entries), sort_fold(&entries), "{entries:?}");
+        }
+        // Key order is what is hashed, not insertion order.
+        assert_eq!(fold(&[(a, 1), (b, 2)]), fold(&[(b, 2), (a, 1)]));
     }
 
     // ── sts2-rs-jyd15: the orb belt must contribute to the hash ────────

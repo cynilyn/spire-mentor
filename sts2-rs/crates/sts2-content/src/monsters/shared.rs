@@ -60,7 +60,7 @@ use sts2_core::powers::PowerKind;
 use sts2_core::CombatState;
 
 use super::apply_power_to_player_via_legacy_surface;
-use super::dsl::mv;
+use super::dsl::{mv, proto_ai, proto_ais, ProtoAis};
 
 /// `FakeMerchantMonster` ENRAGE_MOVE: self-buff `Strength(2)`. Mirrors C#
 /// `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Monsters/FakeMerchantMonster.cs:104-109`
@@ -388,7 +388,17 @@ pub fn create_dense_vegetation_wriggler_ai(slot: DenseVegetationWrigglerSlot) ->
 /// previously used the slot-LESS `act2_hive::create_wriggler_ai()`, which
 /// always followed the stun with NASTY_BITE regardless of slot — the
 /// MONSTER_STATE / PLAYER_HP parity divergence.
+///
+/// Four of these spawn on every PhrogParasite death inside the search, so
+/// each is a clone of a per-thread prototype (`proto_ai`).
 pub fn create_infested_wriggler_ai(slot: DenseVegetationWrigglerSlot) -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<4> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, slot as usize, || build_infested_wriggler_ai(slot))
+}
+
+pub(crate) fn build_infested_wriggler_ai(slot: DenseVegetationWrigglerSlot) -> MonsterAi {
     let mut s = BTreeMap::new();
     // SPAWNED_MOVE → the slot-conditional first real move (StartStunned=true).
     let post_stun = match slot {

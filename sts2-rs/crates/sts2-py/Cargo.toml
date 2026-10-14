@@ -86,6 +86,9 @@ sts2-cli = { workspace = true }
 # Run-level policies + agents (HeuristicRunAgent / PpoRunAgent /
 # MctsCombatAgent) exposed to the Python workbench and the PPO env.
 sts2-runai = { workspace = true }
+# Linked through sts2-runai / sts2-wire anyway; named here only so `src_hash()`
+# can fold in its `SRC_HASH`.
+sts2-vocab = { workspace = true }
 pyo3 = { version = "0.24", features = ["abi3-py311"] }
 # `pythonize` 0.24 matches the pyo3 0.24 minor — required for converting
 # the `serde_json::Value` returned by `sts2_core::parity::combat_state_to_bridge_state`
@@ -108,6 +111,21 @@ serde_json = { workspace = true }
 # `Vec<ActionDesc>`; the `DeserializeOwned` bound needs serde itself, not just
 # the JSON front end.
 serde = { workspace = true }
+# The module's `#[global_allocator]` (src/allocator.rs), so the trainer wheel
+# runs on the same allocator as the `sts2-cli` binaries. The module init sets
+# mimalloc's `purge_delay` to -1 there (A1b): with the default 1,000 ms, every
+# advisor call seconds after the last faulted its search memory back in. That
+# call needs no extra feature: mimalloc.h's `mi_option_set` sits in the static
+# library this crate already links. `local_dynamic_tls` is
+# REQUIRED: with mimalloc's default initial-exec TLS model the .so is flagged
+# `STATIC_TLS`, glibc must place the module's whole TLS block (~8 KB) in the
+# small static-TLS surplus it keeps for dlopen'd objects, and
+# `import sts2_rs` fails with "cannot allocate memory in static TLS block".
+# Cargo unifies the feature into `sts2-cli`'s mimalloc only when both are
+# built in one invocation, and the linker relaxes local-dynamic TLS to
+# local-exec in an executable, so the binaries are unaffected. The flag is
+# Unix-only in libmimalloc-sys's build script (a no-op on MSVC).
+mimalloc = { workspace = true, features = ["local_dynamic_tls"] }
 
 # Issue #15 / bead sts2-rs-cg5ci: build.rs stamps STS2_PY_SRC_HASH (incl. the
 # include_bytes! value/policy-net data) + STS2_WORKSPACE_HASH (Cargo.lock +

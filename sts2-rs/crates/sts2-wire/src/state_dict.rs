@@ -3249,6 +3249,9 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     }
 
     // --- relics ---
+    // Collected first, then one `extend`: every `RelicStore` write rebuilds
+    // its per-combat relic plan (M01).
+    let mut relics = Vec::with_capacity(parsed.player.relics.len());
     for (raw, r) in (1_u32..).zip(parsed.player.relics.iter()) {
         let id = NonZeroU32::new(raw).expect("non-zero relic id");
         let mut counter = r.counter.unwrap_or(0);
@@ -3262,7 +3265,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         if r.kind == RelicKind::RedSkull && r.counter.is_none() {
             counter = i32::from(2 * parsed.player.hp <= parsed.player.max_hp);
         }
-        state.relics.push(Relic {
+        relics.push(Relic {
             id,
             kind: r.kind,
             counter,
@@ -3270,6 +3273,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             is_melted: r.is_melted,
         });
     }
+    state.relics.extend(relics);
 
     // --- cards arena + piles ---
     // We allocate CardUids sequentially as we walk each pile in the

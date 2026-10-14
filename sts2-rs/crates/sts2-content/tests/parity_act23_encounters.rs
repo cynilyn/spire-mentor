@@ -329,9 +329,9 @@ fn build_state(fixture_initial: &Value, encounter: &str, seed: u64) -> CombatSta
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
         creatures: vec![creature],
-        cards: Vec::new(),
+        cards: Vec::new().into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),

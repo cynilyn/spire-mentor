@@ -26,6 +26,11 @@ ppo = ["dep:tract-onnx"]
 # wall-clock `Instant`s — none of which run in the browser).
 sweeps = ["dep:rayon", "dep:flate2", "dep:sha2"]
 
+# build.rs stamps a content hash of this crate's build inputs into
+# STS2_RUNAI_SRC_HASH (compiled in as `SRC_HASH`): part of the sts2_rs src_hash.
+[build-dependencies]
+sts2-srchash = { path = "../sts2-srchash" }
+
 [dependencies]
 sts2-core = { workspace = true }
 sts2-content = { workspace = true }

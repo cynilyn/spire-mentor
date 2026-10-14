@@ -65,7 +65,7 @@ fn parse_card_id(s: &str) -> CardId {
 /// flags. Maps the option index → uid `idx+1` so the bridge helper
 /// finds them via the `card_uid` lookup path.
 fn build_arena(options_json: &[Value]) -> (CardStore, Vec<ChoiceOption>) {
-    let mut arena: CardStore = Vec::with_capacity(options_json.len());
+    let mut arena: CardStore = Vec::with_capacity(options_json.len()).into();
     let mut opts: Vec<ChoiceOption> = Vec::with_capacity(options_json.len());
     for (idx, opt) in options_json.iter().enumerate() {
         let card_id = parse_card_id(opt["card_id"].as_str().expect("card_id is string"));

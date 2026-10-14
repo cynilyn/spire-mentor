@@ -30,8 +30,9 @@ pub(crate) fn on_on_stars_spent_galactic_dust(
 }
 
 pub(crate) fn install() {
-    register_on_stars_spent(
+    register_owned_on_stars_spent(
         RelicId::GalacticDust,
+        crate::RelicKind::GalacticDust,
         on_on_stars_spent_galactic_dust as OnStarsSpentFn,
     );
 }

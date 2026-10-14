@@ -287,6 +287,33 @@ sim-api: _sim-engine-fresh
 sim-engine:
     scripts/wheel-venv.sh build
 
+# Installs into this checkout's venv (main -> .venv, a worktree -> its own
+# .venv-h/<hash>). PPO training (`ppo.trainer`, `ppo.screen`) refuses any other
+# wheel. Runs ../sts2-rs/scripts/pgo_wheel.sh: plain build + 50-run identity
+# baseline, instrumented build, profile workload (5 characters x 8 seeds of PPO
+# full runs), optimized build, identity re-check. Measured 2026-10-13 on the
+# 48-thread dev host: 14.4 min end to end with the plain build already current
+# (instrumented build 5m51s, optimized build 3m56s, the three workloads ~4 min
+# at --jobs 10); after an engine edit add the plain fat-LTO build, 3m11s.
+# A no-op (~1 s) when a PGO wheel fresh for the current source is already
+# installed (WHEEL_VENV_REPLACE_PGO=1 forces a rebuild); `just sim-engine` and
+# the `_sim-engine-fresh` recipes keep such a wheel instead of downgrading it,
+# and so do `uv run` / `uv sync` until a file uv's cache-keys name changes after
+# the build started (the install writes the key taken before it:
+# scripts/uv_stamp_wheel.py; nothing re-keys it later). Run it after the gates.
+#
+# Build the PGO sts2_rs wheel PPO training requires (~15-18 min; no-op when fresh)
+[unix]
+sim-engine-pgo:
+    STS2_WHEEL_PGO=1 scripts/wheel-venv.sh build
+
+# pgo_wheel.sh is bash (Linux; macOS with bash >= 4.3). On Windows, train on the
+# plain wheel (`just sim-engine`) with the trainer's explicit opt-out.
+[windows]
+sim-engine-pgo:
+    @echo "sim-engine-pgo: the PGO build is bash-only. On Windows run 'just sim-engine', then train with --allow-plain-wheel (or STS2_ALLOW_PLAIN_WHEEL=1)."
+    @exit 1
+
 # Ensure the installed sts2_rs engine matches the source before serving.
 # Always goes through `wheel-venv.sh build` (maturin: a ~1s no-op when nothing
 # changed) which now self-VERIFIES freshness (build_git vs HEAD + .rmeta +

@@ -18,11 +18,7 @@ pub(crate) fn on_after_card_played_ivory_tile(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let energy_spent = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
-        .map_or(0, |c| c.energy_spent);
+    let energy_spent = crate::card_by_uid(&state.cards, uid).map_or(0, |c| c.energy_spent);
     if energy_spent < 3 {
         return EffectResult::NotImplemented;
     }

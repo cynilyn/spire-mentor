@@ -18,8 +18,9 @@ pub(crate) fn on_after_card_discarded_tough_bandages(
 }
 
 pub(crate) fn install() {
-    register_after_card_discarded(
+    register_owned_after_card_discarded(
         RelicId::ToughBandages,
+        crate::RelicKind::ToughBandages,
         on_after_card_discarded_tough_bandages as AfterCardDiscardedFn,
     );
 }

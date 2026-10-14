@@ -66,7 +66,7 @@
 {"i": 65, "method": "POST", "route": "/api/live/action", "body": {"action": "end_turn", "args": {}}, "status": 200, "sha256": "242eb0869b52f775e9ad3f3190171f30ffc39834e1b919e798f91e149836e971", "decision": "combat_play"}
 {"i": 66, "method": "GET", "route": "/api/live/timeline", "body": null, "status": 200, "sha256": "1710d65b127423ec64e0ee7fba733b09178be1e35e4f6b0f9760979a50b59eed", "decision": null}
 {"i": 67, "method": "POST", "route": "/api/live/seek", "body": {"node_id": 48}, "status": 200, "sha256": "949bbe146b0e00616c0e9b08c89dc33c8d5645e3770d040de71c0820598a265b", "decision": "combat_play"}
-{"i": 68, "method": "POST", "route": "/api/live/autobattle/step", "body": null, "status": 200, "sha256": "02ee62d19e68c8a6d94ec908a78b6b9a3a396465323e57cdf8a210d7f636d503", "decision": "combat_play"}
+{"i": 68, "method": "POST", "route": "/api/live/autobattle/step", "body": null, "status": 200, "sha256": "8b928f334e048a65668ad1bd9cc79221382298da18d8e3b238ceb8f5b0f7d8de", "decision": "combat_play"}
 {"i": 69, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0}}, "status": 200, "sha256": "80c0d3594ee4ed660567e033b87d79aff5f08da3695b48a5daff9ac1ca4c6c92", "decision": "combat_play"}
 {"i": 70, "method": "POST", "route": "/api/live/autobattle/step", "body": null, "status": 200, "sha256": "c140082d9f033a0634aabf4adaf58fc6bc9c4f85c6706c14375a8ca93bfd0823", "decision": "combat_play"}
 {"i": 71, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0, "target_index": 0}}, "status": 200, "sha256": "1d1e66b4e11fd477355140d82a07183453fe4f60474faca0cad77a1d9314eb47", "decision": "combat_play"}

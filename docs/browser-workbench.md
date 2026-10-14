@@ -235,7 +235,8 @@ for a config, which is what makes them golden-testable.
   non-applicable stream is an `{"type": "error"}` line on a 200, like the
   Python server (`advice_stream.py`).
 
-Cost on the tablet (Xiaomi Pad Mini, 0.023 ms/sim): the hint at the
+Cost on the tablet (Xiaomi Pad Mini, September 2026, clairvoyant search,
+before the October engine speed-up; 0.023 ms/sim): the hint at the
 default 2000 sims is ~50 ms; the EV advisors at their defaults (12 rollouts
 × 128 sims × the rest of the act) run for tens of seconds — the SPA's
 budget selectors apply as before.

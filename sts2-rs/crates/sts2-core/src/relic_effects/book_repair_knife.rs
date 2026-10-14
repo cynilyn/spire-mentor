@@ -39,8 +39,9 @@ pub(crate) fn on_after_died_to_doom(state: &mut CombatState, ctx: &DiedToDoomCtx
 }
 
 pub(crate) fn install() {
-    register_after_died_to_doom(
+    register_owned_after_died_to_doom(
         RelicId::BookRepairKnife,
+        crate::RelicKind::BookRepairKnife,
         on_after_died_to_doom as AfterDiedToDoomFn,
     );
 }

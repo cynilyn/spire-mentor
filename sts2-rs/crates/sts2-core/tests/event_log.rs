@@ -82,7 +82,8 @@ fn fixture(record: bool) -> CombatState {
             0,
             5,
         ),
-    ];
+    ]
+    .into();
     let mut hand: SmallVec<[CardUid; 16]> = SmallVec::new();
     hand.push(CardUid::new(1).expect("non-zero"));
     hand.push(CardUid::new(2).expect("non-zero"));

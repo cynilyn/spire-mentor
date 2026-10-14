@@ -34,8 +34,9 @@ pub(crate) fn on_after_death_gremlin_horn(
 }
 
 pub(crate) fn install() {
-    register_after_death(
+    register_owned_after_death(
         RelicId::GremlinHorn,
+        crate::RelicKind::GremlinHorn,
         on_after_death_gremlin_horn as AfterDeathFn,
     );
 }

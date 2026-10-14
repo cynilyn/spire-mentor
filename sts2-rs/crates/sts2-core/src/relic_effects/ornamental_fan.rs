@@ -29,10 +29,7 @@ pub(crate) fn on_after_card_played_ornamental_fan(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_attack = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_attack = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Attack);
     if !is_attack {
         return EffectResult::NotImplemented;
@@ -53,9 +50,10 @@ pub(crate) fn on_after_card_played_ornamental_fan(
 
 /// `OrnamentalFan.after_combat_end` — `_attacks_this_turn = 0`.
 pub(crate) fn on_after_combat_end_ornamental_fan(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = ornamental_fan_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = ornamental_fan_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -68,8 +66,9 @@ pub(crate) fn install() {
         RelicId::OrnamentalFan,
         on_after_card_played_ornamental_fan as AfterCardPlayedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::OrnamentalFan,
+        crate::RelicKind::OrnamentalFan,
         on_after_combat_end_ornamental_fan as AfterCombatEndFn,
     );
 }

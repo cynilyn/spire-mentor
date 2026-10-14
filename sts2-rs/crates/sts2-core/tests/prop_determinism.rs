@@ -105,9 +105,9 @@ fn make_combat(seed: u64, kind: MonsterKind, hp: i32) -> CombatState {
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
         creatures: vec![make_creature(uid, kind, hp)],
-        cards: Vec::new(),
+        cards: Vec::new().into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player: make_player(),
         allies: SmallVec::new(),

@@ -40,7 +40,7 @@ pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
         return EffectResult::NotImplemented;
     }
     for &uid in &uids {
-        if let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) {
+        if let Some(card) = crate::card_by_uid_mut(&mut state.cards, uid) {
             card.cost = 0;
         }
     }

@@ -42,7 +42,7 @@ use sts2_core::monsters::Intent;
 use sts2_core::powers::PowerKind;
 use sts2_core::CombatState;
 
-use super::dsl::{always_true, br, cb, cb_owner, mv, mv_eff};
+use super::dsl::{always_true, br, cb, cb_owner, mv, mv_eff, proto_ai, proto_ais, ProtoAis};
 use super::{apply_power_to_player_via_legacy_surface, apply_signed_power_to_player};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -761,7 +761,17 @@ pub fn create_fossil_stalker_ai() -> MonsterAi {
 /// (`moveState2.FollowUpState = moveState2`). The prior port was a
 /// fabricated `STAB 8` self-loop with no spawn-stun turn (bead
 /// `sts2-rs-kr7r7`). Non-ascension `TackleDamage = 9` (Deadly = 10).
+///
+/// Summoned by the GremlinMerc's `SurprisePower`, so a clone of a per-thread
+/// prototype (`proto_ai`).
 pub fn create_sneaky_gremlin_ai() -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<1> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, 0, build_sneaky_gremlin_ai)
+}
+
+pub(crate) fn build_sneaky_gremlin_ai() -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert("SPAWNED", mv("SPAWNED", smallvec![Intent::Stun], "TACKLE"));
     s.insert(
@@ -777,7 +787,17 @@ pub fn create_sneaky_gremlin_ai() -> MonsterAi {
 /// `perform_intent` handles removal by zeroing the fleeing creature's
 /// HP — Rust keeps corpses (see `feedback_dead_enemy_array_removal_divergence`).
 /// Bead `sts2-rs-8f336`.
+///
+/// Summoned by the GremlinMerc's `SurprisePower`, so a clone of a per-thread
+/// prototype (`proto_ai`).
 pub fn create_fat_gremlin_ai() -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<1> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, 0, build_fat_gremlin_ai)
+}
+
+pub(crate) fn build_fat_gremlin_ai() -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert("SPAWNED", mv("SPAWNED", smallvec![Intent::Stun], "FLEE"));
     s.insert("FLEE", mv("FLEE", smallvec![Intent::Escape], "FLEE"));
@@ -1022,7 +1042,17 @@ pub fn create_haunted_ship_ai() -> MonsterAi {
 /// `DamageCmd.Attack(ExplodeDamage)` → `CreatureCmd.Kill(base.Creature)`,
 /// `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Monsters/GasBomb.cs`).
 /// Bead `sts2-rs-f99e7`.
+///
+/// LivingFog summons up to five per combat, so each is a clone of a
+/// per-thread prototype (`proto_ai`).
 pub fn create_gas_bomb_ai() -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<1> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, 0, build_gas_bomb_ai)
+}
+
+pub(crate) fn build_gas_bomb_ai() -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert(
         "EXPLODE",
@@ -1448,7 +1478,19 @@ pub enum TwoTailedRatSlot {
 /// (total 3), and `RAND_SUMMON` is exactly C#'s `CanSummon` 4-way draw
 /// (total 1.0 = 1/12·3 + 0.75) — both draw a single `NextFloat(total)`
 /// against the same effective weights and `state_log`.
+///
+/// CALL_FOR_BACKUP summons another one mid-combat, so each is a clone of a
+/// per-thread prototype (`proto_ai`). The build also constructs a default
+/// `CombatState` to resolve the opening state, which makes it the dearest of
+/// the summon builds.
 pub fn create_two_tailed_rat_ai(slot: TwoTailedRatSlot) -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<4> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, slot as usize, || build_two_tailed_rat_ai(slot))
+}
+
+pub(crate) fn build_two_tailed_rat_ai(slot: TwoTailedRatSlot) -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert(
         "RAND",

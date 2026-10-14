@@ -6,9 +6,10 @@
 //! the source *bytes*. This crate is the single hash implementation used by
 //! BOTH sides of that proof:
 //!
-//!   * each engine crate's `build.rs` calls [`hash_crate`] over its own source
-//!     and bakes the result into a `pub const SRC_HASH` compiled INTO the crate
-//!     (so a crate cargo wrongly skips recompiling carries its *old* hash), and
+//!   * each engine crate's `build.rs` calls [`hash_crate`] (or
+//!     [`emit_build_stamp`]) over its own source and bakes the result into a
+//!     `pub const SRC_HASH` compiled INTO the crate (so a crate cargo wrongly
+//!     skips recompiling carries its *old* hash), and
 //!   * `sts2-py` exposes a runtime recompute over the on-disk source.
 //!
 //! Because both call the SAME function here, the two can never drift — the
@@ -99,17 +100,91 @@ pub fn combine(parts: &[&str]) -> String {
 /// one would let two different engines share a content identity.
 pub const PY_DATA_INPUTS: [(&str, &str); 0] = [];
 
-/// The engine crates whose `SRC_HASH` is stamped in, in the FIXED order used by
-/// both the aggregate and the recompute. `sts2_py::src_hash()` must combine the
-/// compiled-in consts in this same order.
-pub const ENGINE_CRATES: [&str; 4] = ["sts2-core", "sts2-content", "sts2-mcts", "sts2-py"];
+/// Extra out-of-`src` engine inputs for sts2-runai: the HeuristicV weights
+/// `src/eval/mod.rs` bakes in with `include_str!`.
+pub const RUNAI_DATA_INPUTS: [(&str, &str); 1] =
+    [("data/runai/heuristic_v.toml", "data/runai/heuristic_v.toml")];
+
+/// Every workspace crate compiled into the `sts2_rs` extension, in the FIXED
+/// order used by both the aggregate and the recompute. `sts2_py::src_hash()`
+/// must combine the compiled-in consts in this same order.
+///
+/// That is the closure of sts2-py's normal path dependencies, minus
+/// `sts2-srchash` itself (it only computes these hashes). It used to be the
+/// first four alone, so an edit to the run-AI, wire, CLI or vocab crate left
+/// `src_hash` unchanged: a `.so` without the edit passed every freshness check
+/// (the PPO trainer's guard, `wheel-venv.sh`'s keep-the-PGO-wheel path). The
+/// sts2-py test `engine_crates_are_what_sts2_rs_links` checks the list against
+/// `cargo metadata`, so a new dependency cannot be left out again.
+pub const ENGINE_CRATES: [&str; 8] = [
+    "sts2-core",
+    "sts2-content",
+    "sts2-mcts",
+    "sts2-py",
+    "sts2-runai",
+    "sts2-wire",
+    "sts2-cli",
+    "sts2-vocab",
+];
+
+/// The out-of-`src` inputs of engine crate `krate`, as `(label, path relative
+/// to the sts2-rs root)`.
+pub fn data_inputs(krate: &str) -> &'static [(&'static str, &'static str)] {
+    match krate {
+        "sts2-py" => &PY_DATA_INPUTS,
+        "sts2-runai" => &RUNAI_DATA_INPUTS,
+        _ => &[],
+    }
+}
+
+/// [`hash_crate`] of engine crate `krate` in the checkout at `rs_root`, with its
+/// [`data_inputs`].
+pub fn hash_engine_crate(rs_root: &Path, krate: &str) -> String {
+    let extra: Vec<(&str, PathBuf)> = data_inputs(krate)
+        .iter()
+        .map(|(label, rel)| (*label, rs_root.join(rel)))
+        .collect();
+    hash_crate(&rs_root.join("crates").join(krate), &extra)
+}
+
+/// The build-script half of [`hash_engine_crate`], for an engine crate's
+/// `build.rs`: prints `cargo:rustc-env=<env_var>=<hash>` and a
+/// `rerun-if-changed` for every input it hashed (`src`, `Cargo.toml` and the
+/// [`data_inputs`]). Cargo's default rerun rule (any file in the package) would
+/// miss a data input outside the package and leave the stamp stale.
+pub fn emit_build_stamp(krate: &str, env_var: &str) {
+    let crate_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo"),
+    );
+    assert_eq!(
+        crate_dir.file_name().and_then(|n| n.to_str()),
+        Some(krate),
+        "emit_build_stamp({krate:?}) called from another crate's build script"
+    );
+    let rs_root = crate_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("an engine crate lives at <rs_root>/crates/<name>");
+    println!(
+        "cargo:rustc-env={env_var}={}",
+        hash_engine_crate(rs_root, krate)
+    );
+    let data = data_inputs(krate).iter().map(|(_, rel)| rs_root.join(rel));
+    for path in [crate_dir.join("src"), crate_dir.join("Cargo.toml")]
+        .into_iter()
+        .chain(data)
+    {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
 
 /// Hash the workspace-wide engine inputs that no single crate's `src` owns: the
+/// workspace manifest (`[profile.*]`, `[workspace.dependencies]` features), the
 /// resolved dependency versions (`Cargo.lock`) and the pinned toolchain
 /// (`rust-toolchain.toml`). `rs_root` is the sts2-rs checkout root.
 pub fn hash_workspace(rs_root: &Path) -> String {
     let mut records: Vec<(String, Vec<u8>)> = Vec::new();
-    for name in ["Cargo.lock", "rust-toolchain.toml"] {
+    for name in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"] {
         if let Ok(bytes) = std::fs::read(rs_root.join(name)) {
             records.push((name.to_string(), bytes));
         }
@@ -119,22 +194,17 @@ pub fn hash_workspace(rs_root: &Path) -> String {
 
 /// Recompute the aggregate engine hash from the on-disk source at `rs_root`
 /// (the sts2-rs checkout root containing `crates/`, `data/`, `Cargo.lock`).
-/// Combines the four engine crates' per-crate hashes and the workspace hash in
+/// Combines the engine crates' per-crate hashes and the workspace hash in
 /// [`ENGINE_CRATES`] order — the SAME order `sts2_py::src_hash()` combines the
 /// compiled-in `SRC_HASH` consts — so on a clean tree baked == recomputed. This
 /// is the runtime half of the content-identity proof (issue #15).
 pub fn recompute_engine_hash(rs_root: &Path) -> String {
-    let crates = rs_root.join("crates");
-    let core = hash_crate(&crates.join("sts2-core"), &[]);
-    let content = hash_crate(&crates.join("sts2-content"), &[]);
-    let mcts = hash_crate(&crates.join("sts2-mcts"), &[]);
-    let py_extra: Vec<(&str, PathBuf)> = PY_DATA_INPUTS
+    let mut parts: Vec<String> = ENGINE_CRATES
         .iter()
-        .map(|(label, rel)| (*label, rs_root.join(rel)))
+        .map(|krate| hash_engine_crate(rs_root, krate))
         .collect();
-    let py = hash_crate(&crates.join("sts2-py"), &py_extra);
-    let workspace = hash_workspace(rs_root);
-    combine(&[&core, &content, &mcts, &py, &workspace])
+    parts.push(hash_workspace(rs_root));
+    combine(&parts.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 /// Recursively collect every file under `dir` as `(label, contents)`, where
@@ -183,8 +253,8 @@ mod tests {
         d
     }
 
-    /// A fake sts2-rs checkout root: the four engine crate dirs,
-    /// `Cargo.lock`, and `rust-toolchain.toml`.
+    /// A fake sts2-rs checkout root: every engine crate dir, the runai weights,
+    /// the workspace `Cargo.toml`, `Cargo.lock`, and `rust-toolchain.toml`.
     fn tmp_rs_root() -> PathBuf {
         let n = CTR.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!("sts2rsroot_{}_{n}", std::process::id()));
@@ -195,6 +265,9 @@ mod tests {
             fs::write(cd.join("Cargo.toml"), b"[package]\n").unwrap();
             fs::write(cd.join("src/lib.rs"), b"// x").unwrap();
         }
+        fs::create_dir_all(root.join("data/runai")).unwrap();
+        fs::write(root.join("data/runai/heuristic_v.toml"), b"w = 1").unwrap();
+        fs::write(root.join("Cargo.toml"), b"[workspace]\n").unwrap();
         fs::write(root.join("Cargo.lock"), b"lock-v1").unwrap();
         fs::write(
             root.join("rust-toolchain.toml"),
@@ -218,15 +291,43 @@ mod tests {
         );
     }
 
+    /// Every crate compiled into the wheel moves the aggregate, not just the
+    /// engine core: the PPO trainer's combat agent lives in sts2-runai.
+    #[test]
+    fn recompute_engine_hash_tracks_every_linked_crate_and_its_data() {
+        let root = tmp_rs_root();
+        let mut seen = vec![recompute_engine_hash(&root)];
+        for c in ENGINE_CRATES {
+            fs::write(root.join("crates").join(c).join("src/lib.rs"), b"// edited").unwrap();
+            seen.push(recompute_engine_hash(&root));
+        }
+        fs::write(root.join("data/runai/heuristic_v.toml"), b"w = 2").unwrap();
+        seen.push(recompute_engine_hash(&root));
+        let distinct: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            seen.len(),
+            "an edit left the hash unchanged: {seen:?}"
+        );
+    }
+
     #[test]
     fn recompute_engine_hash_tracks_workspace() {
         let root = tmp_rs_root();
-        let base = recompute_engine_hash(&root);
-        fs::write(root.join("Cargo.lock"), b"lock-v2").unwrap();
-        assert_ne!(
-            base,
-            recompute_engine_hash(&root),
-            "a Cargo.lock change must change the aggregate"
+        let mut seen = vec![recompute_engine_hash(&root)];
+        for (name, bytes) in [
+            ("Cargo.toml", &b"[workspace]\n[profile.release]\n"[..]),
+            ("Cargo.lock", b"lock-v2"),
+            ("rust-toolchain.toml", b"[toolchain]\nchannel=\"1.96\"\n"),
+        ] {
+            fs::write(root.join(name), bytes).unwrap();
+            seen.push(recompute_engine_hash(&root));
+        }
+        let distinct: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            seen.len(),
+            "a workspace manifest, Cargo.lock or toolchain change must change the aggregate: {seen:?}"
         );
     }
 

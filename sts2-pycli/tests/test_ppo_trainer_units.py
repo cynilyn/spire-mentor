@@ -439,7 +439,7 @@ def test_play_batch_returns_submission_order_despite_reversed_completion(monkeyp
             return False
 
         def apply_async(self, fn, args):
-            seed = args[0][0]
+            seed = args[1][0]  # (job index, job tuple)
             # Later submissions become ready EARLIER (spacing > the 0.1s poll
             # sleep so each readies alone) -> completion order is the reverse of
             # submission order.
@@ -448,8 +448,11 @@ def test_play_batch_returns_submission_order_despite_reversed_completion(monkeyp
             return FakeResult(seed, ready_at)
 
     class FakeCtx:
-        def Pool(self, processes=None):
+        def Pool(self, processes=None, initializer=None, initargs=()):
             return FakePool()
+
+        def Array(self, typecode, size, lock=True):
+            return [0.0] * size
 
     monkeypatch.setattr(workers.mp, "get_context", lambda method: FakeCtx())
     monkeypatch.setattr(workers, "time", clock)

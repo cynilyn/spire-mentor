@@ -41,10 +41,7 @@ pub(crate) fn on_after_card_played_letter_opener(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_skill = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_skill = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Skill);
     if !is_skill {
         return EffectResult::NotImplemented;
@@ -69,9 +66,10 @@ pub(crate) fn on_after_card_played_letter_opener(
 /// `LetterOpener.after_combat_end` — `_skills_this_turn = 0`
 /// (`uncommon.py::LetterOpener`, line 361). Bead `sts2-rs-7po6`.
 pub(crate) fn on_after_combat_end_letter_opener(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = letter_opener_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = letter_opener_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -84,8 +82,9 @@ pub(crate) fn install() {
         RelicId::LetterOpener,
         on_after_card_played_letter_opener as AfterCardPlayedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::LetterOpener,
+        crate::RelicKind::LetterOpener,
         on_after_combat_end_letter_opener as AfterCombatEndFn,
     );
 }

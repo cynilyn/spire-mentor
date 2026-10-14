@@ -104,6 +104,19 @@ describe("Reasoning panel", () => {
     }
   });
 
+  it("shows a forced move as not searched, not as an even fight", () => {
+    // The run-AI skips the search when only one action is legal, and records
+    // that move alone with zero visits. Its zero Q and 0/0/0 are "no data",
+    // so the row must not print them.
+    render(<Reasoning pv={null} scores={[
+      score({ stable_idx: -1, action: "end turn", q: 0, win_prob: 0, visits: 0,
+        wins: 0, losses: 0, ties: 0, is_best: true }),
+    ]} />);
+    expect(screen.getByText("forced · not searched")).toBeInTheDocument();
+    expect(screen.queryByText("+0.00")).toBeNull();
+    expect(screen.queryByText("0/0/0")).toBeNull();
+  });
+
   it("gives the principal variation a tooltip so a long line stays readable", () => {
     render(<Reasoning pv={["Strike", "Defend", "end turn"]} scores={[]} />);
     expect(screen.getByText(/^pv:/)).toHaveAttribute("title", "Strike → Defend → end turn");

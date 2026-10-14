@@ -37,9 +37,10 @@ surface first.
 
 ---
 
-## 0. Before you train anything: three pre-flight checks
+## 0. Before you train anything: four pre-flight checks
 
-These are cheap and each one has already cost a full run somewhere.
+These are cheap and each of the first three has already cost a full run
+somewhere. The fourth (§0.4) is enforced by the trainer itself.
 
 ### 0.1 Is the environment actually presenting the decisions you think?
 
@@ -131,14 +132,194 @@ pooled are clairvoyant-era and not comparable to anything measured today.
 Skipping it cost a wrong "the champion is stale" finding that had to be
 retracted (`9f85701a8`) — the rent doc already warned about exactly that trap.
 
+### 0.4 Is the trainer running on a fresh PGO wheel?
+
+Collection is 86–97% of campaign wall clock (97% in the current 960-games/iter
+recipe, 86–92% in the older 256-game legs), and nearly all of it runs inside the
+`sts2_rs` extension. Its PGO build makes the same decisions as the plain build.
+`sts2-rs/scripts/pgo_wheel.sh` re-checks that on every build: 50 full runs
+(five characters, A0/A5/A10) must produce identical decision traces, including
+each combat root's visit and value sums. It is also faster:
+
+- **1.28×** on the trainer's own collection path: `play_batch`, `policy=net`,
+  250/1000 sims, Ironclad, one pinned core, 31.2 s → 24.3 s.
+- **1.33–1.35×** on the trainer-wheel workload (item M13 in
+  `sts2-rs/docs/perf/2026-10-13-engine-speed-exact-design.md`).
+
+On a 31–82 h campaign that saves hours, and the build costs about a quarter of
+an hour: 14.4 min measured end to end on the dev host, plus ~3 min for the
+plain build after an engine edit. So build it first:
+
+```bash
+cd sts2-pycli
+just sim-engine-pgo    # ~15-18 min; ~1 s when a fresh PGO wheel is already installed
+PYTHONPATH=python .venv/bin/python -m ppo.wheel_guard   # optional: print the record the trainer will check
+```
+
+**`ppo.trainer` refuses to start** unless the imported `sts2_rs` passes three
+checks, and so does `ppo.screen`, before it launches either arm:
+
+- **Fresh.** `src_hash()` equals the hash of the on-disk source. This is the
+  same content-addressed check as `parity_audit.assert_wheel_fresh`, except that
+  `STS2_SKIP_WHEEL_CHECK` does not bypass it. The hash covers every workspace
+  crate compiled into `sts2_rs` (engine, content, MCTS, run AI including the
+  trainer's `MctsCombatPolicy`, wire, CLI loader, vocab, and the HeuristicV
+  weights the run AI bakes in), the workspace `Cargo.toml`, `Cargo.lock` and the
+  toolchain pin.
+- **Verified.** It is not imported from one of `pgo_wheel.sh`'s own build dirs
+  (`sts2-rs/target-pgo-wheel-*`, e.g. through `PYTHONPATH`) and is not the
+  instrumented build. A PGO module there reports `pgo` without having passed
+  the identity check (or, after `--skip-identity`, without ever running it);
+  the script puts a PGO `.so` into the venv only after the check passes.
+- **PGO.** `build_info()["pgo"]` is true. Only `pgo_wheel.sh`'s profile-use
+  build sets that stamp, together with the sha256 of the profile it compiled
+  against.
+
+Either refusal names the fix, `just sim-engine-pgo`. The check runs in the CLI
+before `train()`, so a wrong wheel costs seconds, not a collection phase.
+
+**What keeps a PGO wheel installed, and what replaces it.** `just sim-engine`,
+`just workbench`, the `sim*` recipes and anything else that goes through
+`wheel-venv.sh build` keep a PGO `.so` whose `src_hash` matches the source.
+They used to reinstall the plain one over it, because `maturin develop`
+reinstalls even when nothing changed. `uv run` / `uv sync` (`just test`,
+`lint`, `typecheck`, `check`, `advisor-warm`, …) keep it too, until a file uv
+watches changes: `pgo_wheel.sh` records uv's freshness key before it builds
+anything and writes that key into the dist-info when it installs the wheel
+(`sts2-pycli/scripts/uv_stamp_wheel.py`, which also re-checks `src_hash`).
+These replace it with a plain build, and the guard catches each at launch:
+
+- **Any change, after `just sim-engine-pgo` started, to a file uv's
+  `cache-keys` name** (`sts2-rs/crates/sts2-py/pyproject.toml`): that
+  `pyproject.toml` itself, every `.rs` and `Cargo.toml` under
+  `sts2-rs/crates/`, every file in a crate's `src/` (the vocab pins and the
+  other `include_str!` inputs), `data/runai/heuristic_v.toml`, the workspace
+  `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml`. These are the inputs
+  `src_hash` covers, plus tests, benches and the other crates, so in practice
+  a write to any input `src_hash` covers makes `uv run` rebuild. uv compares
+  one timestamp, not contents: the newest ctime among those files on unix,
+  so this includes an edit to any crate, a `git checkout` / `pull` / `stash`
+  that rewrites a file, even a `chmod`; on Windows the newest mtime, which a
+  restore that keeps mtimes (`cp -p`, `tar -x`, `rsync -t`) does not move.
+  Deleting a file that is not the newest moves `src_hash` but not uv's key,
+  so uv then keeps a wheel the guard calls stale. The trainer's guard is the
+  backstop for those cases: it refuses such a wheel at launch. The next `uv run` / `uv sync`
+  rebuilds a plain wheel from the current source: the stale-wheel protection
+  working as intended. Nothing re-keys a PGO wheel afterwards (`just
+  sim-engine` keeps it in the venv but does not tell uv), so once uv has
+  replaced it, only a rebuild (~15 min) brings it back. An edit to a crate
+  compiled into the wheel also moves `src_hash`, so the next `just sim-engine`
+  builds plain as well. A change only uv sees (a test, the `pyproject.toml`)
+  leaves the PGO wheel fresh for the guard, so `just sim-engine-pgo` is then
+  a no-op although uv will replace the wheel; `WHEEL_VENV_REPLACE_PGO=1 just
+  sim-engine-pgo` rebuilds it.
+- **`./setup.sh` / `just build-rust`.** Both run a bare `maturin develop`.
+- **`WHEEL_VENV_REPLACE_PGO=1`**, which asks for exactly that.
+
+So run the gates (`just test`, …) first and `just sim-engine-pgo` last, right
+before the launch, with no source change in between. A wheel replaced anyway
+makes the trainer refuse to start; it is never trained on silently.
+
+**A started run is pinned against a wheel swap.** The CLI copies the checked
+wheel into `<save dir>/sts2_rs-pin/<sha256[:16]>/` (~30 MB, content-addressed:
+pinning the same bytes again reuses the dir) and restarts itself with that dir
+first on `PYTHONPATH`. The guard then checks the copy, and every iteration's
+spawn workers import it, because they inherit the parent's `sys.path`.
+Rebuilding or downgrading the venv's wheel mid-campaign does not reach the run
+(the venv's other packages are another matter, below). Before training on a
+batch, the trainer also checks that every worker reported the build the run
+started on; if not, it aborts without training on that batch and names the
+`--resume-from-iter` to continue from. `ppo.screen` pins once, under
+`--out/sts2_rs-pin/`, for both arms and both evals. A fresh eval whose runs
+report another build aborts the screen, and its file is moved aside
+(`eval-<arm>.jsonl.wheel-mismatch-<time>`), so a re-run evaluates that arm
+again instead of reusing it unchecked.
+
+The pin dir is gitignored and nothing collects it; every distinct wheel a save
+dir trains on adds one ~30 MB copy. **Runs whose `--save-path` shares a parent
+dir share one pin root**: every default `--save-path ppo_run` launched from
+`sts2-pycli/` pins into `sts2-pycli/sts2_rs-pin/`, while the recipe's
+`<run>/main` gives each run its own. A live run's workers import from it every
+iteration, so delete it only when no run saving into that dir is still
+running, or that run's next iteration aborts. A `.pinning-*` dir in it is a
+copy that a kill interrupted; delete that too.
+
+- **The save dir must allow executing files, and be yours.** The pinned
+  `.so` is loaded from there, so a `noexec` mount (some Docker volumes and
+  data disks) fails the restart with an `ImportError`. Put the save dir on an
+  exec mount you own: a pin dir another user created is refused, because its
+  `__init__.py` would run before any check.
+- **The pin covers the extension, not the Python.** Each iteration's workers
+  import `python/ppo` and `champions.py` from the checkout on disk, so a
+  pull, checkout or edit mid-campaign changes the code they run. Every worker
+  reports a digest of those files (`py_src`), and the trainer aborts an
+  iteration whose workers ran another one, naming it a source change rather
+  than an sts2_rs build change. Do not pull or switch branches in the checkout
+  a campaign runs from.
+- **The venv itself is not pinned.** The workers run the venv's interpreter
+  and its torch and numpy. In a worktree, a build after an engine edit
+  (`just sim-engine`, `just sim-engine-pgo`) creates a new `.venv-h/<hash>`
+  and by default deletes every `.venv-h/<hash>` no live checkout hashes to,
+  including the one a running campaign started from. While a worktree
+  campaign runs, build with `WHEEL_VENV_NO_GC=1`, or launch campaigns from the
+  main checkout's `.venv`.
+- **A resume re-pins whatever the venv holds.** The old pin cannot carry a
+  resume across a source edit: the guard checks every import, a pinned copy
+  included, against the current source. So after an edit, resume on a rebuilt
+  wheel (`just sim-engine-pgo`), or from a checkout of the old commit to stay
+  on the old engine. After a pull and a rebuild, `--resume-from-iter`
+  continues on the new build. The trainer prints a
+  `WARNING: iteration K's checkpoint was trained on another sts2_rs build`
+  naming what moved (`src_hash`, `pgo`, the profile), and the stats rows from
+  there on record the new build. A resume on other first-party Python prints
+  a similar warning naming the `py_src` change.
+- **Windows does not pin, and cannot build PGO.** `pgo_wheel.sh` is bash
+  (Linux, or macOS with bash >= 4.3), so on Windows run `just sim-engine` and
+  train with `--allow-plain-wheel`. There is no exec there either
+  (`os.execve` starts a new process and exits the old one, so the shell would
+  see the run end at once),
+  so the CLI only runs the check and records `pinned: null`. The per-iteration
+  worker check still aborts a run whose workers load another build.
+
+**A host that cannot build PGO** (no `rustup component add llvm-tools`, Windows,
+or a checkout without `sts2-rs/scripts/pgo_wheel.sh`; the refusal says which) runs
+`just sim-engine` and passes `--allow-plain-wheel` to the trainer or the screen,
+or exports `STS2_ALLOW_PLAIN_WHEEL=1`. The run prints a loud warning and
+records that it trained on the plain wheel. Freshness has no opt-out.
+
+**Every run records its wheel.** The startup log prints a
+`wheel: PGO sts2_rs (profdata sha256 …, portable, src_hash …, pinned at …)`
+line. The whole `build_info()` record (pgo, profdata sha256, target cpu,
+src_hash, build_git, `.so` path, pin dir) is saved under `wheel` in every
+`<save>.iter_N.pt` and in the wandb config. Each `<save>.stats.jsonl` row
+carries `py_src` (the run's first-party Python digest, also in every
+checkpoint) and what that iteration's workers reported: `wheel` (the build stamps plus
+the `.so` they loaded, i.e. the pinned copy) and `wheel_pgo`:
+
+```
+wheel_pgo  true   = healthy
+wheel_pgo  false  = trained under --allow-plain-wheel: same decisions, ~1.28x slower collection
+wheel_pgo  null   = no run of that iteration reached the engine (all errors or timeouts, see
+                    `errors`), so no worker reported a build and nothing was checked
+```
+
+A `wheel_pgo: false` run is not invalid, because the two builds are
+decision-identical. It was only slower.
+
+`wheel.so_path` is an absolute path, so a stats or eval file committed under
+an exported path fails `just check-public`'s home-directory rule: strip it
+first.
+
 ---
 
 ## 1. The recipe
 
-The flags that actually matter. Everything else can stay at defaults.
+The flags that actually matter. Everything else can stay at defaults. Run it
+from `sts2-pycli/`, after the wheel build in §0.4:
 
 ```bash
-.venv/bin/python -m ppo.trainer \
+just sim-engine-pgo   # §0.4: last, after any gates; the trainer refuses a plain or stale wheel
+PYTHONPATH=python .venv/bin/python -m ppo.trainer \
   --character <Char> \
   --iterations 150 \
   --sims 250 --boss-sims 1000 --games-per-iter 960 \
@@ -223,8 +404,14 @@ depending on an env var forever.
 
 `--device cuda` is in the block for a reason: `PPOConfig.device` defaults to
 `"cpu"`, and on CPU the update costs ~497 s against ~33 s on a 3090 — the
-learner goes from ~4% of iteration wall clock to ~50%. Every champion was
-trained with `cuda`. If you hand-roll a trainer command, carry the flag.
+learner goes from ~4% of iteration wall clock to ~50%. Not every champion
+was trained with `cuda`: only the recent legs (Silent `cont_it300`, Ironclad
+`plr_it550` and its `simscale` / `underdocks` parents) ran the update there.
+The Necrobinder, Regent and Defect `deckmut_it150` champions, and Silent's
+`deckmut_it150` parent, updated on the CPU (about 0.69 s per minibatch against
+0.05 s on a 3090, the same minibatch size): affordable at 256 games per
+iteration, about 100 s per update, not at 960. If you hand-roll a trainer
+command, carry the flag.
 
 ### `--epochs 4` — adopted 2026-08-24, bundled deliberately
 

@@ -9,8 +9,9 @@ pub(crate) fn on_modify_hand_draw_fiddle(state: &CombatState, current_draw: i32)
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::Fiddle,
+        crate::RelicKind::Fiddle,
         on_modify_hand_draw_fiddle as ModifyHandDrawFn,
     );
 }

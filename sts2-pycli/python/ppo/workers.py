@@ -19,8 +19,37 @@ import random
 import time
 from typing import Any
 
-# Per-run wall-clock kill (seconds). run_arena uses 600s per seed process.
+from ppo.wheel_guard import python_source_digest, wheel_identity
+
+# Take the digest of the first-party source now, at import (a spawn worker's
+# first act), so it describes what this process loaded.
+python_source_digest()
+
+# Stall window (seconds): how long `play_batch` waits with no completion
+# before it even considers a still-running game hung.
 DEFAULT_RUN_TIMEOUT_S = 600.0
+# Per-game budget (seconds): a running game is only abandoned once it has run
+# this long itself (GH #763). One combat is a single `env.step`, so a slow boss
+# fight shows no Python-visible progress for its whole length: the slowest game
+# seen took 1,198 s on the 2026-10-12 engine and 226-255 s after PR #761.
+DEFAULT_GAME_TIMEOUT_S = 1800.0
+
+# Per-job start times (time.time(); 0.0 = not started), shared with the pool
+# workers through the initializer so the watchdog can age each running game.
+_JOB_STARTS: Any = None
+
+
+def _init_job_starts(starts: Any) -> None:
+    global _JOB_STARTS
+    _JOB_STARTS = starts
+
+
+def _worker_at(i: int, args: tuple) -> dict[str, Any]:
+    """`_worker`, stamping job `i`'s start time first (see `_JOB_STARTS`)."""
+    if _JOB_STARTS is not None:
+        _JOB_STARTS[i] = time.time()
+    return _worker(args)
+
 
 # Per-process NetPolicy cache: pool workers play many seeds per iteration;
 # reload the checkpoint only when its path changes.
@@ -244,6 +273,13 @@ def play_one(
         "resolution_counts": counts,
         "decisions": decisions,
         "transitions": transitions,
+        # The sts2_rs build this process actually ran (`ppo.wheel_guard`): the
+        # trainer refuses a batch whose workers ran anything but the run's own.
+        "wheel": wheel_identity(),
+        # And the first-party Python it imported (digest taken at import, at the
+        # top of this module): the pin covers only the extension, so a pull
+        # mid-campaign would change this.
+        "py_src": python_source_digest(),
         **({"search_stats": search_stats} if search_stats is not None else {}),
     }
 
@@ -312,7 +348,7 @@ def _worker(
         # the identical guard in `multiprocessing/pool.py`) lets it through, so
         # the worker process dies at `_bootstrap` and its in-flight
         # `AsyncResult` never becomes ready — the batch then hangs until
-        # `play_batch`'s stall watchdog fires (~`DEFAULT_RUN_TIMEOUT_S`).
+        # `play_batch`'s watchdog fires (after `DEFAULT_GAME_TIMEOUT_S`).
         # Booking it as an `outcome="error"` row costs one run instead.
         # `KeyboardInterrupt` / `SystemExit` still propagate (re-raised above).
         return {"seed": seed, "policy": policy, "outcome": "error", "won": False, "error": repr(e)}
@@ -326,6 +362,7 @@ def play_batch(
     procs: int | None = None,
     record_decisions: bool = False,
     run_timeout_s: float = DEFAULT_RUN_TIMEOUT_S,
+    game_timeout_s: float = DEFAULT_GAME_TIMEOUT_S,
     out_path: str | None = None,
     ckpt_path: str | None = None,
     ascensions: list[int] | None = None,
@@ -351,17 +388,17 @@ def play_batch(
     non-JSON 'transitions' payload (policy='net') is stripped from the sink but
     kept in the returned rows.
 
-    `run_timeout_s` is a STALL watchdog, not a per-run cap: it bounds how long
-    the batch may go with NO run completing before the still-pending runs are
-    declared hung. While runs keep finishing (healthy batch), the clock resets
-    on every completion, so legitimately slow deep-deck games never trip it —
-    only a genuine stall does (all remaining workers stuck, e.g. a native
-    infinite-combat loop that ignores Python signals). Once no run has completed
-    for `run_timeout_s`, every pending run is abandoned as outcome='timeout' and
-    the pool is terminated so the runaway workers stop spinning immediately
-    (the old formula waited ~run_timeout_s * batches ≈ tens of minutes and let
-    the spinners burn cores until pool exit). A worker that dies hard (e.g.
-    segfault) is recorded as outcome='error' rather than crashing the batch.
+    The watchdog abandons the still-pending runs as outcome='timeout' (and
+    terminates the pool, so a native infinite-combat loop that ignores Python
+    signals stops burning cores) only when BOTH hold:
+      - no run has completed for `run_timeout_s` (a stall), and
+      - every run still executing has itself run longer than `game_timeout_s`.
+    The second condition is GH #763: with only the first, a slow game that is
+    still progressing was dropped as soon as it outlived every other game by
+    `run_timeout_s` (2.8% of past Ironclad iterations lost their slowest game
+    that way). A timeout row carries `age_s`, how long that game had run (None
+    if it never started). A worker that dies hard (e.g. segfault) is recorded
+    as outcome='error' rather than crashing the batch.
 
     `ascensions`, when given, is a per-seed ascension list (same length as
     `seeds`) used by the mixed-ascension curriculum; otherwise the scalar
@@ -437,17 +474,16 @@ def play_batch(
             sink.write(json.dumps({k: v for k, v in row.items() if k != "transitions"}) + "\n")
             sink.flush()
 
+    starts = ctx.Array("d", len(jobs), lock=False)
     try:
-        with ctx.Pool(processes=procs) as pool:
+        with ctx.Pool(processes=procs, initializer=_init_job_starts, initargs=(starts,)) as pool:
             pending: dict[Any, tuple[int, int]] = {}
             for i, job in enumerate(jobs):
-                pending[pool.apply_async(_worker, (job,))] = (i, job[0])
+                pending[pool.apply_async(_worker_at, (i, job))] = (i, job[0])
             remaining = set(pending)
-            # Stall watchdog: abandon the batch only after `run_timeout_s` of NO
-            # completion. Reset on every completion so slow-but-progressing
-            # batches run as long as they need; a true hang (native combat loop)
-            # never completes, so the window elapses and we bail. Initialised to
-            # now so the first completion has the full window to arrive.
+            # Stall watchdog (see the docstring): `last_progress` resets on
+            # every completion; it is initialised to now so the first
+            # completion has the full window to arrive.
             last_progress = time.time()
             while remaining:
                 just_done = {ar for ar in remaining if ar.ready()}
@@ -468,12 +504,19 @@ def play_batch(
                 if just_done:
                     last_progress = time.time()
                 elif remaining:
-                    if time.time() - last_progress > run_timeout_s:
-                        # No run has completed for the whole watchdog window ->
-                        # the remaining workers are hung. Record them as
-                        # 'timeout' and terminate the pool so the spinning
-                        # workers (native infinite loop) stop burning cores now
-                        # rather than at scope exit.
+                    now = time.time()
+                    ages = [
+                        now - starts[pending[ar][0]]
+                        for ar in remaining
+                        if starts[pending[ar][0]] > 0
+                    ]
+                    if now - last_progress > run_timeout_s and all(
+                        a > game_timeout_s for a in ages
+                    ):
+                        # A stall, and every game still running is past its own
+                        # budget -> hung. Record the pending runs as 'timeout'
+                        # and terminate the pool so the spinning workers stop
+                        # burning cores now rather than at scope exit.
                         for ar in remaining:
                             i, seed = pending[ar]
                             _emit(
@@ -483,6 +526,7 @@ def play_batch(
                                     "policy": policy,
                                     "outcome": "timeout",
                                     "won": False,
+                                    "age_s": round(now - starts[i], 1) if starts[i] > 0 else None,
                                 },
                             )
                         remaining.clear()

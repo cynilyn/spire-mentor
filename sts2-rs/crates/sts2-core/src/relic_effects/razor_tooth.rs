@@ -11,7 +11,7 @@ pub(crate) fn on_after_card_played_razor_tooth(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) else {
+    let Some(card) = crate::card_by_uid_mut(&mut state.cards, uid) else {
         return EffectResult::NotImplemented;
     };
     if !matches!(

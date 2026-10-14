@@ -15,10 +15,7 @@ pub(crate) fn on_after_card_played_art_of_war(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_attack = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_attack = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Attack);
     if !is_attack {
         return EffectResult::NotImplemented;
@@ -75,9 +72,10 @@ pub(crate) fn on_after_energy_reset_art_of_war(state: &mut CombatState) -> Effec
 /// `ArtOfWar.after_combat_end` — reset both per-combat flags
 /// (`rare.py::ArtOfWar`, line 62). Bead `sts2-rs-80vi`.
 pub(crate) fn on_after_combat_end_art_of_war(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = art_of_war_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = art_of_war_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -86,16 +84,19 @@ pub(crate) fn install() {
         RelicId::ArtOfWar,
         on_after_card_played_art_of_war as AfterCardPlayedFn,
     );
-    register_after_turn_end(
+    register_owned_after_turn_end(
         RelicId::ArtOfWar,
+        crate::RelicKind::ArtOfWar,
         on_after_turn_end_art_of_war as AfterTurnEndFn,
     );
-    register_after_energy_reset(
+    register_owned_after_energy_reset(
         RelicId::ArtOfWar,
+        crate::RelicKind::ArtOfWar,
         on_after_energy_reset_art_of_war as AfterEnergyResetFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::ArtOfWar,
+        crate::RelicKind::ArtOfWar,
         on_after_combat_end_art_of_war as AfterCombatEndFn,
     );
 }

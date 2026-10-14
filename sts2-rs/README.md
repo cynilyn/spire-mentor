@@ -145,19 +145,26 @@ and rationale.
 
 ## Performance
 
-Measured on a typical Linux developer workstation, single-threaded. Reproduce
-with `cargo bench -p sts2-bench` on as quiet a host as possible.
+Measured 14 October 2026 on an AMD EPYC 7443P (24 cores / 48 threads, Linux
+6.8), plain `--release` (fat LTO, no PGO); medians of interleaved runs on a
+quiet host. One core = one pinned process with its second hardware thread
+idle; whole machine = one pinned process per hardware thread (48), started
+together by `scripts/site-bench/scale_runner.py`. All results, the hardware,
+the shipped game and two other STS2 simulators:
+[benchmarks page](https://tfriedel.github.io/spire-mentor/benchmarks.html);
+method and commands:
+[`docs/perf/2026-10-14-benchmarks.md`](docs/perf/2026-10-14-benchmarks.md).
 
-| Metric | Bench | Band (2026-05-21, `1c9c643`) |
-|---|---|---|
-| Engine state transitions | `transitions_per_sec/endturn_full_combat` | ~1.4–1.5 M tx/sec |
-| Random-play combats (derived) | — | ~100–110 k combats/sec |
-| MCTS @ 1000 sims/move (Ironclad vs Nibbit) | `mcts_smoke/ironclad_vs_nibbit_1000sims` | ~45–48 searches/sec |
+| Metric | Harness | One core | Whole machine |
+|---|---|---|---|
+| Random-play fights/s (Ironclad starter deck + Burning Blood vs each of the 22 Act-1 Overgrowth encounters in turn) | `cargo run --release -p sts2-bench --example site_random_bench` | ~59 k | ~1.4 M |
+| Engine actions/s (same run; an action is a card play or an end of turn) | same | ~1.3 M (~0.77 µs each) | ~31 M |
+| The browser hint's search, 1,000 sims, one thread per search (seed BENCH1, first fight) | `cargo run --release -p sts2-workbench --example hint_bench` | ~14 ms (~73 searches/s) | ~1,490 searches/s |
 
-A later MCTS single-thread speedup branch landed a 1.76× (plain release) /
-2.05× (PGO, `scripts/pgo_build.sh`) speedup on the realistic-deck search
-workload; the bands above predate it and need re-baselining. A `mimalloc`
-cargo feature on `sts2-core` exists for allocator experiments (default off).
+`transitions_per_sec` (criterion) is an EndTurn-only regression canary with
+no cards, relics or monster AI, not a throughput figure. The `sts2_rs` Python
+extension links mimalloc; the benchmark binaries above use the system
+allocator.
 
 ## Testing & parity
 
@@ -189,9 +196,12 @@ locally only.
 
 ## Status
 
-All five characters (Ironclad, Silent, Defect, Necrobinder, Regent) reached
-zero combat-parity divergences against the C# oracle, whole-run parity is
-100/100, and full-run PPO champions are trained and served for every character.
+All five characters (Ironclad, Silent, Defect, Necrobinder, Regent) are
+ported and checked against the C# oracle. In the last full sweeps Ironclad was
+clean on all 6,104 fuzzed fights (June 2026), the other four on 99.4–99.8%
+(July 2026, a known tail still open), and 1,232 of 1,250 whole runs were clean
+(July 2026); see `docs/audits/2026-07-07-parity-sweep-findings.md`. Full-run
+PPO champions are trained and served for every character.
 [`CHANGELOG.md`](CHANGELOG.md) records the phase-by-phase history (its
 "0.1.0" entry is a combat-engine milestone label from the porting plan, not
 a released version — the workspace version is 0.0.1). Historical phase

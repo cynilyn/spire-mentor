@@ -38,8 +38,8 @@
 //! - **`DaughterOfTheWind`** — `after_card_played` → +1 block per Attack.
 //! - **`TheBoot`** — `modify_hp_lost` floor to 5 on powered attacks 1–4.
 //!
-//! Every listener is gated by `state.relics.iter().any(|r| !r.is_melted && r.kind == …)`
-//! so the registered handler is a no-op for runs that don't carry the
+//! Every listener is gated by `state.relics.owns(…)` (a non-melted relic of
+//! that kind) so the registered handler is a no-op for runs that don't carry the
 //! relic. The follow-up bead `sts2-rs-46ms` (wave 2) lands six more
 //! listeners against the P7-surf prereqs.
 //!
@@ -125,16 +125,17 @@ use sts2_core::cards::{Card, EnchantmentId};
 use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
-    register_after_card_exhausted, register_after_card_played, register_after_combat_victory,
-    register_after_damage_given, register_after_energy_reset, register_after_player_turn_start,
-    register_after_side_turn_start, register_before_combat_start, register_before_play_phase_start,
-    register_before_side_turn_start, register_before_turn_end, register_modify_damage_additive,
-    register_modify_hand_draw, register_modify_hp_lost, register_on_card_added_to_deck,
-    AfterCardExhaustedFn, AfterCardPlayedFn, AfterCombatVictoryFn, AfterDamageGivenFn,
-    AfterEnergyResetFn, AfterPlayerTurnStartFn, AfterSideTurnStartFn, BeforeCombatStartFn,
-    BeforePlayPhaseStartFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardAddedCtx, CardEventCtx,
-    DamageGivenCtx, ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyHandDrawFn, ModifyHpLostCtx,
-    ModifyHpLostFn, OnCardAddedToDeckFn,
+    register_after_card_played, register_after_damage_given, register_after_player_turn_start,
+    register_after_side_turn_start, register_before_combat_start, register_before_side_turn_start,
+    register_before_turn_end, register_modify_damage_additive, register_modify_hp_lost,
+    register_on_card_added_to_deck, register_owned_after_card_exhausted,
+    register_owned_after_combat_victory, register_owned_after_energy_reset,
+    register_owned_before_play_phase_start, register_owned_modify_hand_draw, AfterCardExhaustedFn,
+    AfterCardPlayedFn, AfterCombatVictoryFn, AfterDamageGivenFn, AfterEnergyResetFn,
+    AfterPlayerTurnStartFn, AfterSideTurnStartFn, BeforeCombatStartFn, BeforePlayPhaseStartFn,
+    BeforeSideTurnStartFn, BeforeTurnEndFn, CardAddedCtx, CardEventCtx, DamageGivenCtx,
+    ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyHandDrawFn, ModifyHpLostCtx, ModifyHpLostFn,
+    OnCardAddedToDeckFn,
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
@@ -334,8 +335,9 @@ fn install_listeners() {
         RelicId::FakeVenerableTeaSet,
         listener_fake_venerable_tea_set_rest_latch as AfterRoomEnteredRunFn,
     );
-    register_after_energy_reset(
+    register_owned_after_energy_reset(
         RelicId::FakeVenerableTeaSet,
+        RelicKind::FakeVenerableTeaSet,
         listener_fake_venerable_tea_set_consume as AfterEnergyResetFn,
     );
 
@@ -360,8 +362,9 @@ fn install_listeners() {
     // BeforePlayPhaseStart` scans `History.CardPlaysFinished` for the last
     // non-dupe Attack/Skill with `RoundNumber == round - 1` and
     // `CardCmd.AutoPlay`s a dupe.
-    register_before_play_phase_start(
+    register_owned_before_play_phase_start(
         RelicId::HistoryCourse,
+        RelicKind::HistoryCourse,
         listener_history_course as BeforePlayPhaseStartFn,
     );
 
@@ -396,8 +399,9 @@ fn install_listeners() {
         listener_mr_struggles as AfterPlayerTurnStartFn,
     );
     register_after_card_played(RelicId::LostWisp, listener_lost_wisp as AfterCardPlayedFn);
-    register_after_card_exhausted(
+    register_owned_after_card_exhausted(
         RelicId::ForgottenSoul,
+        RelicKind::ForgottenSoul,
         listener_forgotten_soul as AfterCardExhaustedFn,
     );
 
@@ -520,8 +524,9 @@ fn install_listeners() {
     // clause routes through `rs.upgrade_random_cards` (real impl
     // since bead `sts2-rs-7krx0` — partial Fisher-Yates on
     // master_deck, gated only by deck size).
-    register_after_combat_victory(
+    register_owned_after_combat_victory(
         RelicId::SwordOfStone,
+        RelicKind::SwordOfStone,
         listener_sword_of_stone as AfterCombatVictoryFn,
     );
     register_after_combat_victory_run(
@@ -576,8 +581,9 @@ fn install_listeners() {
         RelicId::PollinousCore,
         listener_pollinous_core_tick as BeforeSideTurnStartFn,
     );
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::PollinousCore,
+        RelicKind::PollinousCore,
         listener_pollinous_core_modify_hand_draw as ModifyHandDrawFn,
     );
 }
@@ -587,7 +593,7 @@ fn install_listeners() {
 // ---------------------------------------------------------------------------
 
 fn player_owns(state: &CombatState, kind: RelicKind) -> bool {
-    state.relics.iter().any(|r| !r.is_melted && r.kind == kind)
+    state.relics.owns(kind)
 }
 
 /// Local analogue of `card_effects::gain_block_player` but with

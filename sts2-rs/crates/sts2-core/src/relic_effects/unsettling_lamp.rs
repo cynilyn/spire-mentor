@@ -83,20 +83,23 @@ pub(crate) fn on_after_combat_end_unsettling_lamp(state: &mut CombatState) -> Ef
 }
 
 pub(crate) fn install() {
-    register_before_power_amount_changed(
+    register_owned_before_power_amount_changed(
         RelicId::UnsettlingLamp,
+        crate::RelicKind::UnsettlingLamp,
         on_before_power_amount_changed_unsettling_lamp as BeforePowerAmountChangedFn,
     );
-    register_modify_power_amount_given(
+    register_owned_modify_power_amount_given(
         RelicId::UnsettlingLamp,
+        crate::RelicKind::UnsettlingLamp,
         on_modify_power_amount_given_unsettling_lamp as ModifyPowerAmountGivenFn,
     );
     register_after_card_played(
         RelicId::UnsettlingLamp,
         on_after_card_played_unsettling_lamp as AfterCardPlayedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::UnsettlingLamp,
+        crate::RelicKind::UnsettlingLamp,
         on_after_combat_end_unsettling_lamp as AfterCombatEndFn,
     );
 }

@@ -16,10 +16,7 @@ pub(crate) fn on_after_card_played_tuning_fork(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_skill = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_skill = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Skill);
     if !is_skill {
         return EffectResult::NotImplemented;

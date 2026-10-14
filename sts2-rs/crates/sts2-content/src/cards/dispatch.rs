@@ -211,6 +211,14 @@ pub fn install_default_registry() {
         sts2_core::powers::PowerKind::Surprise,
         crate::monsters::act1_underdocks::surprise_after_death_spawn,
     );
+
+    // Every on-play handler and late effect is registered by now: publish the
+    // dense `CardId`-indexed copies `lookup` / `fire_late_effects` read on
+    // every card play. This must stay the LAST step. A re-install (production
+    // runs two) re-registers the same handlers, which suspends the tables
+    // until this call re-checks them against the registries (M06,
+    // `docs/perf/2026-10-13-engine-speed-exact-design.md`).
+    card_effects::freeze_card_tables();
 }
 
 /// Walk every generated `CardSpec` slice and register the `EXHAUST` keyword

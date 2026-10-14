@@ -40,7 +40,7 @@ fn bench_clone(c: &mut Criterion) {
 
     c.bench_function("combatstate_clone_grown_arena_48", |b| {
         let state = CombatState {
-            cards: grown_arena(48),
+            cards: grown_arena(48).into(),
             ..Default::default()
         };
         b.iter(|| black_box(state.clone()));

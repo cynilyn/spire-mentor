@@ -8919,15 +8919,29 @@ fn combat_start_and_victory_relic_fan_out_orders_anchor_then_burning_blood() {
 mod freeze_guard {
     use super::super::channels::*;
     use super::super::ensure_installed;
+    use crate::relics::RelicId;
 
-    /// `install_default_registry` must freeze every hot relic hook channel so
-    /// the dispatch read path takes the cheap `OnceLock` slice instead of the
+    /// `freeze_all_channels()` must freeze every hot relic hook channel so the
+    /// dispatch read path takes the cheap `OnceLock` slice instead of the
     /// `ArcSwap` debt-slot dance (bead sts2-rs-05mjm). A channel missing from
-    /// `freeze_all_channels()` is still *correct* (it falls back to `ArcSwap`),
-    /// but silently loses the perf win — this guards the per-dispatch hot set.
+    /// it is still *correct* (it falls back to `ArcSwap`), but silently loses
+    /// the perf win — this guards the per-dispatch hot set.
+    ///
+    /// The freeze belongs to the CONTENT installer, which registers its pools
+    /// after this crate's installer; the core installer alone must leave the
+    /// channels unfrozen (M02). The test also proves the probe is not vacuous:
+    /// a registration after the freeze — what the content pools did while the
+    /// core installer froze — must read as un-frozen, which is what
+    /// `sts2-content`'s `every_channel_frozen_after_content_install` relies on.
     #[test]
     fn hot_channels_frozen_after_install() {
         ensure_installed();
+        assert!(
+            !all_channels_frozen(),
+            "the core installer must leave the freeze to the content installer"
+        );
+        freeze_all_channels();
+        assert!(all_channels_frozen());
         assert!(registry_after_card_played().is_frozen());
         assert!(registry_before_card_played().is_frozen());
         assert!(registry_after_damage_received().is_frozen());
@@ -8943,6 +8957,16 @@ mod freeze_guard {
         assert!(registry_before_side_turn_start().is_frozen());
         assert!(registry_after_player_turn_start().is_frozen());
         assert!(registry_should_clear_block().is_frozen());
+
+        // Re-register an existing handler unchanged (what a second, unguarded
+        // content install does): the listener set is identical, but the
+        // channel must report that it left the frozen path.
+        let divine_right = lookup_after_side_turn_start(RelicId::DivineRight)
+            .expect("DivineRight is a core after_side_turn_start listener");
+        register_after_side_turn_start(RelicId::DivineRight, divine_right);
+        assert!(!registry_after_side_turn_start().is_frozen());
+        assert!(!all_channels_frozen());
+        assert!(registry_after_card_played().is_frozen());
     }
 }
 
@@ -9202,13 +9226,13 @@ fn bookmark_noop_without_costing_retained_card() {
 
 /// Melt the (single) relic of `kind` the player owns.
 fn melt_player_relic(state: &mut CombatState, kind: RelicKind) {
-    let r = state
+    let idx = state
         .relics
-        .iter_mut()
-        .find(|r| r.kind == kind)
+        .iter()
+        .position(|r| r.kind == kind)
         .expect("relic to melt");
-    r.is_wax = true;
-    r.is_melted = true;
+    state.relics[idx].is_wax = true;
+    state.relics.set_melted(idx, true);
 }
 
 /// `StrikeDummy` adds +3 to a Strike attack while live, and NOTHING once

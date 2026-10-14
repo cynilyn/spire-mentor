@@ -31,8 +31,9 @@ pub(crate) fn on_after_combat_end_lasting_candy(state: &mut CombatState) -> Effe
 }
 
 pub(crate) fn install() {
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::LastingCandy,
+        crate::RelicKind::LastingCandy,
         on_after_combat_end_lasting_candy as AfterCombatEndFn,
     );
 }

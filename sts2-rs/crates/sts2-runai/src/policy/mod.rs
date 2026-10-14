@@ -385,7 +385,8 @@ pub struct MctsCombatPolicy<M> {
     /// Per-run combat-decision counter (seeds decision `k`'s search).
     decisions: u64,
     /// Of [`Self::decisions`], how many were made in elite / boss combats,
-    /// and the simulations actually requested across all of them. These
+    /// and the simulations actually requested across all of them (a
+    /// forced move, which is not searched, requests none). These
     /// are what let a budget-reallocation arm prove it is compute-neutral
     /// (GH #446) instead of asserting it.
     decisions_elite: u64,
@@ -481,6 +482,10 @@ pub struct MctsCombatPolicy<M> {
 /// captured so a stepwise driver (the workbench's `HeuristicRunAgent`) can
 /// surface the same visit/Q panel `mcts_recommend` shows — without
 /// re-running the search (which would diverge on seed).
+///
+/// A forced move (one legal action) is not searched: its record is a
+/// one-row stub, `chosen` with zero visits and zero value — "no search
+/// ran", not "this action loses".
 #[derive(Clone, Debug)]
 pub struct CombatSearchRecord {
     pub outcomes: Vec<sts2_mcts::RootOutcome>,
@@ -1214,7 +1219,8 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
 
     /// `(elite decisions, boss decisions, motif-tagged common decisions,
     /// simulations requested)` over the run — the compute-neutrality
-    /// readout for budget arms (GH #446).
+    /// readout for budget arms (GH #446). Forced moves count as decisions
+    /// but request no simulations.
     #[must_use]
     pub fn combat_budget_spent(&self) -> (u64, u64, u64, u64) {
         (
@@ -1297,7 +1303,6 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
             && (self.budget.motif_sims.is_some() || self.count_motifs)
             && CombatBudget::budget_motif_at(combat);
         let sims = self.budget.sims_for_with(tier, motif);
-        self.sims_spent += u64::from(sims);
         match tier {
             BudgetTier::Elite => self.decisions_elite += 1,
             BudgetTier::Boss => self.decisions_boss += 1,
@@ -1307,6 +1312,25 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
                 }
             }
         }
+
+        // Forced move: the search could only return the one legal action,
+        // so skip it (a forced EndTurn used to pay the full budget). The
+        // counter above has already advanced, so every later decision keeps
+        // its seed.
+        if let Some(only) = self.forced_root_action(combat, sims) {
+            let stub = sts2_mcts::RootOutcome {
+                action: only.clone(),
+                visits: 0,
+                wins: 0,
+                losses: 0,
+                ties: 0,
+                value_sum: 0.0,
+                value_sq_sum: 0.0,
+                mean_value: 0.0,
+            };
+            return self.surface_pick(only, vec![stub], actions);
+        }
+        self.sims_spent += u64::from(sims);
 
         let seed_bits = u64::from(u32::from_ne_bytes(self.run_seed.to_ne_bytes()));
         let seed = splitmix64(seed_bits ^ (counter + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -1440,6 +1464,47 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
             }
             None => chosen,
         };
+        self.surface_pick(chosen, root_outcomes, actions)
+    }
+
+    /// The root's only legal action, when `mcts_pick` may answer without
+    /// searching. Exact: every search pick goes through
+    /// `Mcts::legalize_root_action`, which returns a member of
+    /// `legal_actions` at the search root, and the honest-mode root
+    /// blindfold reorders the draw pile and reseeds RNG streams without
+    /// touching the hand, so that set is this one. The search runs on a
+    /// clone with its own RNG, so skipping it changes only the record.
+    ///
+    /// `None` (search as before) when there is a real choice; when `sims`
+    /// is 0, because a search that never expands the root returns
+    /// `TerminalRoot` and hands the pick to the meta; and when a potion
+    /// seam is active: `potion_oc` advances its own state on every search
+    /// (`charge_slots_ctx` takes `&mut self`), `potion_timing` rewrites
+    /// the pick from the root outcomes, and `drink_jitter` exists to
+    /// generate search corpora.
+    fn forced_root_action(&self, combat: &CombatState, sims: u32) -> Option<Action> {
+        if sims == 0
+            || self.potion_oc.is_some()
+            || self.potion_timing.is_some()
+            || self.drink_jitter.is_some()
+        {
+            return None;
+        }
+        match sts2_core::legal_actions(combat).as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    /// Translate the combat pick into the index of its surfaced
+    /// `RunAction` and record the root distribution, or tally the
+    /// fallback (issue #164) and return `None`.
+    fn surface_pick(
+        &mut self,
+        chosen: Action,
+        outcomes: Vec<sts2_mcts::RootOutcome>,
+        actions: &[RunAction],
+    ) -> Option<usize> {
         let Some(run_action) = translate_combat_action(&chosen) else {
             self.fallbacks.untranslatable += 1;
             self.log_fallback("untranslatable", Some(&chosen));
@@ -1449,10 +1514,7 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
             // Record only on the success path: fallbacks (untranslatable /
             // not_surfaced) leave `last_combat_search` as `None` so the
             // workbench never surfaces a stale distribution.
-            self.last_combat_search = Some(CombatSearchRecord {
-                outcomes: root_outcomes,
-                chosen: chosen.clone(),
-            });
+            self.last_combat_search = Some(CombatSearchRecord { outcomes, chosen });
             Some(idx)
         } else {
             self.fallbacks.not_surfaced += 1;
@@ -2938,7 +3000,7 @@ mod tests {
             rng: sts2_core::dotnet_rng::Rng::new(seed),
             run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
             creatures: vec![cultist],
-            cards,
+            cards: cards.into(),
             player: PlayerCombatState {
                 hand: (1u32..=6)
                     .map(|i| CardUid::new(i).expect("non-zero"))
@@ -3029,6 +3091,80 @@ mod tests {
             rec.outcomes.iter().any(|o| o.action == rec.chosen),
             "chosen action must be present in the recorded root outcomes"
         );
+    }
+
+    /// A forced root (one legal action) is answered without a search, and
+    /// no later decision can tell. The control policy carries a no-op
+    /// drink-jitter seam (`p = 0` never masks), which keeps every ply
+    /// searched under an otherwise identical config: both must take the
+    /// same forced pick AND produce a bit-identical search on the next
+    /// decision, i.e. the skipped search advanced nothing but the counter.
+    #[test]
+    fn mcts_pick_skips_the_search_on_a_forced_root() {
+        let run_seed = 3;
+        let sims = 200;
+        let open = build_ftl_busy_hand_state(run_seed);
+        let mut forced = open.clone();
+        let hand = std::mem::take(&mut forced.player.hand);
+        forced.player.discard.extend(hand);
+        assert_eq!(
+            sts2_core::legal_actions(&forced).as_slice(),
+            &[Action::EndTurn]
+        );
+
+        let rm = new_run_manager_for_character(run_seed, CharacterId::Ironclad);
+        let budget = CombatBudget {
+            sims,
+            boss_sims: sims,
+            elite_sims: None,
+            motif_sims: None,
+            leaf: LeafKind::TexelWide,
+        };
+        let mut actions: Vec<RunAction> = vec![RunAction::EndTurn];
+        for hand_idx in 0..6 {
+            for target in [None, Some(0), Some(1), Some(2)] {
+                actions.push(RunAction::PlayCard { hand_idx, target });
+            }
+        }
+        let mut skipping = MctsCombatPolicy::new(FirstOptionPolicy, budget, run_seed);
+        let mut searching = MctsCombatPolicy::new(FirstOptionPolicy, budget, run_seed);
+        searching.drink_jitter = potion_oc::resolve_drink_jitter(Some("0:0"));
+
+        // Decision 0: forced.
+        let picked = skipping.mcts_pick(&rm, &forced, &actions);
+        assert_eq!(picked, Some(0), "EndTurn is surfaced at index 0");
+        assert_eq!(picked, searching.mcts_pick(&rm, &forced, &actions));
+        let stub = skipping
+            .last_combat_search()
+            .expect("a forced pick records");
+        assert_eq!(stub.chosen, Action::EndTurn);
+        assert_eq!(stub.outcomes.len(), 1);
+        assert_eq!(stub.outcomes[0].action, Action::EndTurn);
+        assert_eq!(stub.outcomes[0].visits, 0, "no search ran");
+        let searched = searching.last_combat_search().expect("search recorded");
+        assert!(searched.outcomes.iter().map(|o| o.visits).sum::<u32>() > 0);
+        assert_eq!(
+            skipping.combat_decisions(),
+            1,
+            "the forced move takes its slot"
+        );
+        assert_eq!(skipping.combat_budget_spent().3, 0);
+        assert_eq!(searching.combat_budget_spent().3, u64::from(sims));
+
+        // Decision 1: a real choice, searched by both under decision 1's seed.
+        let picked = skipping.mcts_pick(&rm, &open, &actions);
+        assert!(picked.is_some());
+        assert_eq!(picked, searching.mcts_pick(&rm, &open, &actions));
+        let root = |p: &MctsCombatPolicy<FirstOptionPolicy>| {
+            let rec = p.last_combat_search().expect("searched");
+            let rows: Vec<_> = rec
+                .outcomes
+                .iter()
+                .map(|o| (o.action.clone(), o.visits, o.value_sum.to_bits()))
+                .collect();
+            (rec.chosen.clone(), rows)
+        };
+        assert_eq!(root(&skipping), root(&searching));
     }
 
     // -- `mcts_config_for` baked-constants regression test ------------------

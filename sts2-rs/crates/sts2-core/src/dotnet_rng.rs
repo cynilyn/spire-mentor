@@ -59,7 +59,7 @@ pub fn canonicalize_seed(seed: &str) -> String {
 /// once so the gate is a single relaxed load on the hot `next_int` path —
 /// zero overhead when unset. Symmetric with the C# headless `RngTracePatches`
 /// (shuffle-op cascade diagnosis, bead `sts2-rs-adsld`).
-fn rng_trace_enabled() -> bool {
+pub(crate) fn rng_trace_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("STS2_TRACE_RNG").is_some())

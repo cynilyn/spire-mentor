@@ -11,5 +11,10 @@ publish = false
 [lints]
 workspace = true
 
+# build.rs stamps a content hash of this crate's build inputs into
+# STS2_VOCAB_SRC_HASH (compiled in as `SRC_HASH`): part of the sts2_rs src_hash.
+[build-dependencies]
+sts2-srchash = { path = "../sts2-srchash" }
+
 [dependencies]
 sts2-core = { workspace = true }

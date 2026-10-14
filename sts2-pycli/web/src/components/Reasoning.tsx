@@ -68,6 +68,10 @@ export default function Reasoning({ scores, pv, advice, enemies, heading = true 
   // every move and read flat; visit share + Q separates the lines.
   const totalVisits = scores.reduce((sum, s) => sum + s.visits, 0);
   const labelFor = enemyLabeller(enemies);
+  // The run-AI does not search a forced move (one legal action): its record
+  // is the move alone with zero visits. There is no Q, share or W/L/T to show,
+  // and a "+0.00" would read as an even fight.
+  const unsearched = scores.length > 0 && totalVisits === 0;
 
   // Is the top row actually separated from the runner-up? Sort by Q here
   // rather than trusting row order: rows arrive sorted by win_prob, which is
@@ -124,6 +128,14 @@ export default function Reasoning({ scores, pv, advice, enemies, heading = true 
         {scores.map((s) => {
           const share = totalVisits > 0 ? Math.round((s.visits / totalVisits) * 100) : 0;
           const label = `${s.action}${s.target_index != null ? ` → ${labelFor(s.target_index)}` : ""}`;
+          if (unsearched) {
+            return (
+              <Fragment key={`${s.stable_idx}:${s.target_index}`}>
+                <span title={`${label} — the only legal move, not searched`} style={LABEL_CELL}>{label}</span>
+                <span style={{ ...NUM_CELL, gridColumn: "span 4" }}>forced · not searched</span>
+              </Fragment>
+            );
+          }
           // Two lines hold most moves, but a long one ("drink Potion of
           // Binding → Gremlin Nob #2") still clamps, so the label carries the
           // whole line as a tooltip. The numeric cells keep their own, more

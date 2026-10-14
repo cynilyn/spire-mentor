@@ -47,6 +47,15 @@ work without any feature at all.)
 Every arm's stdout, `stats.jsonl` and checkpoints land under `--out/<arm>/`,
 and the eval rows under `--out/eval-<arm>.jsonl`, so a killed screen can be
 inspected (and its finished arm reused) rather than redone.
+
+Like `ppo.trainer`, the screen refuses to start unless the imported `sts2_rs`
+is a fresh PGO wheel (`ppo.wheel_guard`; `just sim-engine-pgo`). It checks
+before launching anything, so a wrong wheel fails in seconds rather than one
+arm in; each arm's trainer re-checks. `--allow-plain-wheel` exports
+`STS2_ALLOW_PLAIN_WHEEL=1`, which the arms' trainers inherit. The screen pins
+the wheel once, under `--out/sts2_rs-pin/`, and both arms' trainers and evals
+inherit that pin, so the two arms cannot end up on different wheels; an eval
+whose runs report another build aborts the screen.
 """
 
 from __future__ import annotations
@@ -60,7 +69,16 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from .wheel_guard import (
+    ALLOW_PLAIN_ENV,
+    PIN_DIRNAME,
+    prepare_training_wheel,
+    wheel_identity,
+    worker_wheel_mismatch,
+)
 
 # Screen preset. Every value here is a deliberate cut from the campaign recipe
 # with a measured cost; `docs/ppo-screen-playbook.md` carries the rationale and
@@ -147,6 +165,32 @@ def build_cmd(arm: Arm, cfg: dict[str, Any], save_path: str) -> list[str]:
     return cmd
 
 
+def _trained_wheel(arm_dir: str) -> dict | None:
+    """The sts2_rs identity the arm's last logged iteration's workers ran
+    (`stats.jsonl` `wheel`), or None when it predates that record."""
+    try:
+        with open(os.path.join(arm_dir, "main.stats.jsonl")) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except (OSError, ValueError):
+        return None
+    return rows[-1].get("wheel") if rows else None
+
+
+def _eval_path(out_dir: str, arm_name: str) -> str:
+    return os.path.join(out_dir, f"eval-{arm_name}.jsonl")
+
+
+def _eval_wheel(path: str) -> dict | None:
+    """The sts2_rs identity an eval file's runs reported (their rows' `wheel`),
+    or None when it predates that record."""
+    try:
+        with open(path) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except (OSError, ValueError):
+        return None
+    return next((r["wheel"] for r in rows if "wheel" in r), None)
+
+
 def run_arm(arm: Arm, cfg: dict[str, Any], out_dir: str, dry_run: bool) -> str:
     """Train one arm; returns the path to its final checkpoint."""
     arm_dir = os.path.join(out_dir, arm.name)
@@ -177,17 +221,30 @@ def run_arm(arm: Arm, cfg: dict[str, Any], out_dir: str, dry_run: bool) -> str:
 
 
 def eval_arm(
-    arm: Arm, ckpt: str, cfg: dict[str, Any], out_dir: str, seeds: int, dry_run: bool
+    arm: Arm,
+    ckpt: str,
+    cfg: dict[str, Any],
+    out_dir: str,
+    seeds: int,
+    dry_run: bool,
+    wheel: dict | None = None,
 ) -> dict[int, bool]:
     """Greedy replay of `ckpt` over the shared eval panel → {seed: won}.
 
     Runs in a subprocess because the encoder schema is fixed at import time:
-    arm B may have a different `N_CAT` than this process does.
+    arm B may have a different `N_CAT` than this process does. With `wheel`
+    (the screen's pinned record), a fresh eval whose runs report another
+    sts2_rs build aborts, after moving its file aside so that a re-run
+    evaluates again instead of reusing it; an eval file from an earlier
+    invocation is reused as is (`main` lists it in screen.json). Runs that
+    ended in an error or a timeout are dropped from the result, so the pairing
+    leaves their seeds out instead of scoring them as losses.
     """
-    out_path = os.path.join(out_dir, f"eval-{arm.name}.jsonl")
+    out_path = _eval_path(out_dir, arm.name)
     if dry_run:
         return {}
-    if not os.path.exists(out_path):
+    fresh = not os.path.exists(out_path)
+    if fresh:
         code = _EVAL_SNIPPET
         env = dict(
             os.environ,
@@ -213,7 +270,37 @@ def eval_arm(
         if proc.returncode != 0:
             raise SystemExit(f"[{arm.name}] eval failed (rc={proc.returncode})")
     rows = [json.loads(line) for line in open(out_path)]
-    return {int(r["seed"]): bool(r["won"]) for r in rows}
+    if fresh and wheel is not None:
+        expected = wheel_identity(wheel)
+        mismatch = worker_wheel_mismatch(rows, expected)
+        if mismatch is not None:
+            # Moved, not left: a re-run would otherwise find the file, take it
+            # for an earlier invocation's eval and reuse it unchecked.
+            aside = f"{out_path}.wheel-mismatch-{time.strftime('%Y%m%dT%H%M%S')}"
+            Path(out_path).replace(aside)
+            raise SystemExit(
+                f"[{arm.name}] the eval's runs did not run the sts2_rs this screen pinned.\n"
+                f"  pinned: {json.dumps(expected, sort_keys=True)}\n{mismatch}\n"
+                f"Moved the eval to {aside}; re-running the screen evaluates this arm again."
+            )
+    failed = [r for r in rows if r.get("outcome") in _FAILED_OUTCOMES]
+    if failed:
+        print(
+            f"[{arm.name}] WARNING: {len(failed)} of {len(rows)} eval run(s) ended in an "
+            "error or a timeout; their seeds are left out of the pairing (a crash is not "
+            "a loss). Check the eval before trusting the result.",
+            file=sys.stderr,
+            flush=True,
+        )
+    return {
+        int(r["seed"]): bool(r["won"]) for r in rows if r.get("outcome") not in _FAILED_OUTCOMES
+    }
+
+
+# `play_batch` rows for a run that never finished. Scoring them as losses
+# charges an engine crash to the arm (it once flipped the sign of a pooled
+# `ppo.probe` delta), so they are left out of the pairing.
+_FAILED_OUTCOMES = ("error", "timeout")
 
 
 # Run in its own interpreter (see `eval_arm`). Kept as source rather than a
@@ -256,6 +343,7 @@ with open(os.environ["SCREEN_OUT"], "w") as f:
             "seed": r["seed"], "won": bool(r.get("won")), "ascension": a,
             "outcome": r.get("outcome"),
             "total_floor": (r.get("final") or {}).get("total_floor"),
+            **({"wheel": r["wheel"]} if "wheel" in r else {}),
         }) + "\\n")
 """
 
@@ -274,7 +362,17 @@ def tail_pooled(stats: list[dict], k: int) -> tuple[float, int]:
     return (wins / n if n else 0.0), n
 
 
-def report(a: Arm, b: Arm, res_a: dict[int, bool], res_b: dict[int, bool], out_dir: str) -> dict:
+def report(
+    a: Arm,
+    b: Arm,
+    res_a: dict[int, bool],
+    res_b: dict[int, bool],
+    out_dir: str,
+    dropped: dict[str, int] | None = None,
+) -> dict:
+    """Pair the two arms' evals on their shared seeds and write report.json.
+    ``dropped`` is how many eval runs per arm ended in an error or a timeout
+    (left out of the pairing), recorded as ``dropped_<arm>``."""
     shared = sorted(set(res_a) & set(res_b))
     n = len(shared)
     wins_a = sum(res_a[s] for s in shared)
@@ -295,6 +393,7 @@ def report(a: Arm, b: Arm, res_a: dict[int, bool], res_b: dict[int, bool], out_d
         "flips_a_only": b_only,
         "flips_b_only": c_only,
         "mcnemar_p": round(p, 6),
+        **{f"dropped_{arm}": n_dropped for arm, n_dropped in (dropped or {}).items()},
     }
 
     print("\n" + "=" * 72)
@@ -308,6 +407,9 @@ def report(a: Arm, b: Arm, res_a: dict[int, bool], res_b: dict[int, bool], out_d
         print(f"delta (B - A)            {100.0 * delta:+.2f} pp")
         print(f"discordant  A-only/B-only {b_only} / {c_only}")
         print(f"McNemar exact p          {p:.4g}")
+    for arm_name, n_dropped in (dropped or {}).items():
+        if n_dropped:
+            print(f"[{arm_name}] eval runs dropped (error / timeout): {n_dropped}")
 
     for arm in (a, b):
         stats = read_stats(os.path.join(out_dir, arm.name, "main.stats.jsonl"))
@@ -374,9 +476,46 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--combat", choices=("mcts", "surrogate"), default="mcts")
     ap.add_argument("--surrogate-path", default="")
     ap.add_argument("--dry-run", action="store_true", help="print the commands and exit")
+    ap.add_argument(
+        "--allow-plain-wheel",
+        action="store_true",
+        help=f"train both arms on a plain (non-PGO) sts2_rs wheel; exports {ALLOW_PLAIN_ENV}=1 "
+        "to the arms' trainers",
+    )
     for key, value in PRESET.items():
         ap.add_argument(f"--{key.replace('_', '-')}", type=type(value), default=value)
     args = ap.parse_args(argv)
+
+    # Fail fast, before either arm launches. This pins the wheel and restarts
+    # the screen on the pinned copy; the arms' trainers and evals inherit the
+    # pin through the environment `run_arm` / `eval_arm` pass on, and so does
+    # the opt-out. Each arm's trainer checks again.
+    wheel = None
+    if not args.dry_run:
+        wheel = prepare_training_wheel(
+            pin_root=os.path.join(args.out, PIN_DIRNAME),
+            allow_plain=args.allow_plain_wheel,
+            main_module="ppo.screen",
+        )
+        if not wheel["wheel_pgo"]:
+            os.environ[ALLOW_PLAIN_ENV] = "1"
+        # An arm trained, or an eval run, by an earlier invocation is reused as
+        # is (`run_arm`, `eval_arm`), so it ran on whatever wheel that
+        # invocation had; say which.
+        reused = {
+            arm: _trained_wheel(os.path.join(args.out, arm))
+            for arm in ("a", "b")
+            if os.path.exists(os.path.join(args.out, arm, "main.pt"))
+        }
+        reused_evals = {
+            arm: _eval_wheel(_eval_path(args.out, arm))
+            for arm in ("a", "b")
+            if os.path.exists(_eval_path(args.out, arm))
+        }
+        if reused:
+            wheel = {**wheel, "reused_arms": reused}
+        if reused_evals:
+            wheel = {**wheel, "reused_evals": reused_evals}
 
     if not args.init_ckpt:
         print(
@@ -429,6 +568,7 @@ def main(argv: list[str] | None = None) -> int:
                 "arm_b": overrides_b,
                 "arm_a_features": arm_a.features,
                 "arm_b_features": arm_b.features,
+                "wheel": wheel,
             },
             f,
             indent=2,
@@ -437,11 +577,14 @@ def main(argv: list[str] | None = None) -> int:
     results = {}
     for arm in (arm_a, arm_b):
         ckpt = run_arm(arm, cfg, args.out, args.dry_run)
-        results[arm.name] = eval_arm(arm, ckpt, cfg, args.out, args.eval_seeds, args.dry_run)
+        results[arm.name] = eval_arm(
+            arm, ckpt, cfg, args.out, args.eval_seeds, args.dry_run, wheel=wheel
+        )
     if args.dry_run:
         return 0
 
-    report(arm_a, arm_b, results["a"], results["b"], args.out)
+    dropped = {name: max(0, args.eval_seeds - len(res)) for name, res in results.items()}
+    report(arm_a, arm_b, results["a"], results["b"], args.out, dropped=dropped)
     return 0
 
 

@@ -153,9 +153,9 @@ pub fn build_handful(
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
         creatures: vec![cultist],
-        cards: cards_arena,
+        cards: cards_arena.into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),
@@ -302,9 +302,9 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
         creatures: vec![cultist],
-        cards: cards_arena,
+        cards: cards_arena.into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),

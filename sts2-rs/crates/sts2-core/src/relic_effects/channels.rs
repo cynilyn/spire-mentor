@@ -149,19 +149,119 @@ pub struct MaxHpChangeCtx {
     pub delta: i32,
 }
 
-/// Inline-capacity listener snapshot returned by every generated
-/// `listeners_*()` accessor (and [`ChannelRegistry::listeners`]).
+/// Listener snapshot returned by every generated `listeners_*()` accessor
+/// (and `ChannelRegistry::listeners`): the channel's `(RelicId, handler)`
+/// pairs in sorted order, read through `Deref<Target = [_]>` or iterated by
+/// value.
 ///
-/// Perf (2026-07-04 realistic-deck callgrind): the per-dispatch
-/// `listeners_*()` snapshot was a heap `Vec` clone — ~2.7% of MCTS-search
-/// instructions in malloc/free traffic alone. The snapshot semantics
-/// (collect under the registry read view, dispatch after release) are
-/// load-bearing — listeners may re-enter `dispatch_*` — so the snapshot
-/// stays, but it now lives inline on the stack. Capacity 32 covers the
-/// most-registered channel at install time (`after_combat_end`, ~26
-/// production registrants); a channel outgrowing 32 spills to the heap
-/// with identical behavior.
-pub type ListenerSnapshot<F> = smallvec::SmallVec<[(RelicId, F); 32]>;
+/// The snapshot semantics (collect under the registry read view, dispatch
+/// after release) are load-bearing — listeners may re-enter `dispatch_*` — so
+/// a dispatcher never walks the live registry. Perf history: the snapshot was
+/// a heap `Vec` clone (~2.7% of MCTS-search instructions in malloc/free,
+/// 2026-07-04 callgrind), then an inline 32-entry `SmallVec` copy (~520 B per
+/// dispatch). A frozen channel's read view is already an immutable
+/// `&'static` slice, so the snapshot now just borrows it — no copy at all.
+/// Before the freeze (install in progress, core-only test installs) or after a
+/// test mutates a frozen channel, it holds an `Arc` of the live staging list
+/// instead; the `rcu` writers never mutate a published `Vec` in place, so that
+/// `Arc` is as stable a snapshot as the old copy.
+#[derive(Clone, Debug)]
+pub enum ListenerSnapshot<F: Copy + 'static> {
+    /// The channel's frozen read view (the production steady state).
+    Frozen(&'static [(RelicId, F)]),
+    /// The live staging list at snapshot time (`None` = nothing registered).
+    Staged(Option<Arc<ListenerList<F>>>),
+}
+
+impl<F: Copy + 'static> std::ops::Deref for ListenerSnapshot<F> {
+    type Target = [(RelicId, F)];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Frozen(list) => list,
+            Self::Staged(Some(list)) => list.entries.as_slice(),
+            Self::Staged(None) => &[],
+        }
+    }
+}
+
+impl<F: Copy + 'static> IntoIterator for ListenerSnapshot<F> {
+    type Item = (RelicId, F);
+    type IntoIter = ListenerSnapshotIter<F>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        ListenerSnapshotIter {
+            snapshot: self,
+            next: 0,
+        }
+    }
+}
+
+/// By-value iterator over a [`ListenerSnapshot`]: yields each
+/// `(RelicId, handler)` pair in sorted order.
+#[derive(Clone, Debug)]
+pub struct ListenerSnapshotIter<F: Copy + 'static> {
+    snapshot: ListenerSnapshot<F>,
+    next: usize,
+}
+
+impl<F: Copy + 'static> Iterator for ListenerSnapshotIter<F> {
+    type Item = (RelicId, F);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.snapshot.get(self.next).copied()?;
+        self.next += 1;
+        Some(item)
+    }
+}
+
+/// Declared guard of a registered relic handler (J03). The all-registered
+/// dispatchers (the `GuardedChannel`s) leave a handler out of the walk when
+/// its guard says it cannot act for the player's relics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelicGuard {
+    /// Called on every dispatch: plain `register_*`. Kind-less ids, test
+    /// listeners, and handlers that write state whatever the player owns
+    /// (`JossPaper`'s `after_combat_end` reset).
+    Always,
+    /// Registered through `register_owned_*`. Without a non-melted relic of
+    /// this kind the handler is inert: it returns its channel's identity and
+    /// writes no state, draws no RNG and records nothing. Every path that
+    /// does otherwise sits behind its own `!is_melted && kind == K` check,
+    /// and code before that check only reads.
+    Owned(crate::RelicKind),
+}
+
+impl RelicGuard {
+    /// Whether a dispatch for a player whose non-melted relic kinds are
+    /// `owned` must call the handler.
+    #[inline]
+    #[must_use]
+    pub fn admits(self, owned: &crate::RelicKindSet) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Owned(kind) => owned.contains(kind),
+        }
+    }
+}
+
+/// One channel's registrations, sorted by `RelicId`, each handler's declared
+/// [`RelicGuard`] at the same index. Opaque: read it through
+/// [`ListenerSnapshot`]'s slice view.
+#[derive(Clone, Debug)]
+pub struct ListenerList<F: Copy + 'static> {
+    entries: Vec<(RelicId, F)>,
+    guards: Vec<RelicGuard>,
+}
+
+/// A channel's frozen read view: the staging list at freeze time.
+struct FrozenList<F: Copy + 'static> {
+    entries: Box<[(RelicId, F)]>,
+    guards: Box<[RelicGuard]>,
+}
 
 /// Storage backing one relic hook channel: the lock-guarded handler map
 /// plus a lock-free "has ≥1 listener" flag.
@@ -175,36 +275,41 @@ pub type ListenerSnapshot<F> = smallvec::SmallVec<[(RelicId, F); 32]>;
 /// combat's relics actually populate.
 pub(crate) struct ChannelRegistry<F: Copy + 'static> {
     // Mutable staging snapshot of (RelicId, handler) pairs, kept sorted by
-    // RelicId. Written only at content install (write-once in production, gated
+    // RelicId, with each handler's declared guard (J03). Written only at
+    // content install (write-once in production, gated
     // by `INSTALL_ONCE`) via copy-on-write `rcu`. Read on the dispatch path ONLY
     // before `freeze()` runs (install-in-progress / tests that never freeze);
     // after `freeze()` the read path goes through `frozen` instead and never
     // touches this `ArcSwap` again. `ArcSwap` keeps the staging window fully
     // thread-safe (bead `sts2-rs-b8z17`).
-    listeners: arc_swap::ArcSwapOption<Vec<(RelicId, F)>>,
-    // Frozen read view, published exactly once by `freeze()` at the tail of
-    // `INSTALL_ONCE` after every channel is fully populated. The registries are
-    // install-once-then-read-only, so `ArcSwap`'s per-`load` hazard-pointer
-    // (debt-slot) acquire/release — wait-free protection against concurrent
-    // writers we no longer have — was pure overhead on the (millions of) reads
-    // and the single largest `fight_delta` bucket (~15%, 2026-06-14 profile:
-    // arc-swap `compare_exchange`/`swap`/`sub` + its `HybridStrategy` lock
-    // fallback under debt-slot exhaustion). `OnceLock::get` is a single
+    listeners: arc_swap::ArcSwapOption<ListenerList<F>>,
+    // Frozen read view, published exactly once by `freeze()` at the tail of the
+    // content installer's install-once (`sts2_content::relics::dispatch::
+    // install_default_registry`) after every channel is fully populated. The
+    // registries are install-once-then-read-only, so `ArcSwap`'s per-`load`
+    // hazard-pointer (debt-slot) acquire/release — wait-free protection against
+    // concurrent writers we no longer have — was pure overhead on the (millions
+    // of) reads and the single largest `fight_delta` bucket (~15%, 2026-06-14
+    // profile: arc-swap `compare_exchange`/`swap`/`sub` + its `HybridStrategy`
+    // lock fallback under debt-slot exhaustion). `OnceLock::get` is a single
     // `Acquire` load + branch returning a `&'static` slice — no CAS, no `Arc`
-    // refcount, no debt, no lock. The `set` `Release` inside `INSTALL_ONCE`
+    // refcount, no debt, no lock. The `set` `Release` inside that install-once
     // happens-before every later `get` `Acquire` on rayon worker threads, so
     // this is *more* obviously MT-safe than the `ArcSwap` it shadows (there is
     // no writer to race after freeze). See
     // `docs/perf/2026-06-14-dispatch-registry-freeze-design.md`.
-    frozen: std::sync::OnceLock<Box<[(RelicId, F)]>>,
+    frozen: std::sync::OnceLock<FrozenList<F>>,
     // Set if a mutation (`insert`/`remove`) lands AFTER `freeze()` — which never
     // happens in production (install-once → freeze → read-only) but DOES in
-    // tests that call the full `ensure_installed()` (freezing every channel) and
-    // then register a synthetic relic. When set, the read path abandons the now
-    // stale `frozen` view and falls back to the live `ArcSwap` staging, so those
-    // tests still observe their synthetic listeners. One extra relaxed load on
-    // the hot path; never set in production, so it predicts perfectly and the
-    // cheap frozen path stands.
+    // tests that run the content crate's full `ensure_installed()` (freezing
+    // every channel) and then register a synthetic relic. When set, the read
+    // path abandons the now stale `frozen` view and falls back to the live
+    // `ArcSwap` staging, so those tests still observe their synthetic listeners.
+    // One extra relaxed load on the hot path; never set in production, so it
+    // predicts perfectly and the cheap frozen path stands. (Until M02 the freeze
+    // ran at the end of the CORE installer, the content pools then registered
+    // on top, and this flag silently sent 25 of the 53 channels down the
+    // `ArcSwap` path in production.)
     mutated_after_freeze: std::sync::atomic::AtomicBool,
     nonempty: std::sync::atomic::AtomicBool,
 }
@@ -231,21 +336,39 @@ impl<F: Copy + 'static> ChannelRegistry<F> {
         {
             return None;
         }
-        Some(frozen)
+        Some(&frozen.entries)
+    }
+
+    /// The frozen list's entries as published, stale or not (the per-combat
+    /// plan indexes these; dispatch re-checks staleness via `frozen_view`).
+    #[inline]
+    fn published_entries(&self) -> Option<&[(RelicId, F)]> {
+        self.frozen.get().map(|frozen| &*frozen.entries)
+    }
+
+    /// The frozen list's declared guards, index for index with
+    /// [`Self::published_entries`].
+    #[inline]
+    fn published_guards(&self) -> Option<&[RelicGuard]> {
+        self.frozen.get().map(|frozen| &*frozen.guards)
     }
 
     /// Publish the current staging snapshot as the immutable `&'static` read
     /// view. Called once per channel from `freeze_all_channels()` at the tail of
-    /// `INSTALL_ONCE`, after every `register_*` has run. Idempotent: a second
-    /// call (e.g. a second `install_default_registry` in the same process) is a
-    /// no-op via `OnceLock::set`'s `Err`.
+    /// the content installer's install-once, after every `register_*` has run.
+    /// Idempotent: a second call is a no-op via `OnceLock::set`'s `Err`.
     pub(crate) fn freeze(&self) {
-        let snap: Box<[(RelicId, F)]> = self
-            .listeners
-            .load()
-            .as_ref()
-            .map(|v| v.as_slice().into())
-            .unwrap_or_default();
+        let staged = self.listeners.load();
+        let snap = FrozenList {
+            entries: staged
+                .as_ref()
+                .map(|list| list.entries.as_slice().into())
+                .unwrap_or_default(),
+            guards: staged
+                .as_ref()
+                .map(|list| list.guards.as_slice().into())
+                .unwrap_or_default(),
+        };
         let _ = self.frozen.set(snap);
     }
 
@@ -261,29 +384,60 @@ impl<F: Copy + 'static> ChannelRegistry<F> {
             return;
         }
         if let Some(list) = self.listeners.load().as_ref() {
-            for &(id, h) in list.iter() {
+            for &(id, h) in &list.entries {
                 f(id, h);
             }
         }
     }
 
-    /// Insert (or replace) a handler, keeping the snapshot sorted by `RelicId`.
+    /// Insert (or replace) a handler with guard [`RelicGuard::Always`].
+    #[inline]
+    pub(crate) fn insert(&self, relic_id: RelicId, handler: F) {
+        self.insert_guarded(relic_id, handler, RelicGuard::Always);
+    }
+
+    /// Insert (or replace) a handler and its declared guard, keeping the
+    /// snapshot sorted by `RelicId`. A replace replaces the guard too.
     /// Copy-on-write under `rcu`, so it is safe even if two threads register
     /// concurrently (the loser retries). Registration is install-time only in
     /// production; replace-on-equal mirrors the prior `BTreeMap::insert`.
     #[inline]
-    pub(crate) fn insert(&self, relic_id: RelicId, handler: F) {
+    pub(crate) fn insert_guarded(&self, relic_id: RelicId, handler: F, guard: RelicGuard) {
         self.mark_mutated_if_frozen();
         self.listeners.rcu(|cur| {
-            let mut next: Vec<(RelicId, F)> = cur.as_deref().cloned().unwrap_or_default();
-            match next.binary_search_by_key(&relic_id, |(k, _)| *k) {
-                Ok(pos) => next[pos].1 = handler,
-                Err(pos) => next.insert(pos, (relic_id, handler)),
+            let mut next: ListenerList<F> = cur.as_deref().cloned().unwrap_or(ListenerList {
+                entries: Vec::new(),
+                guards: Vec::new(),
+            });
+            match next.entries.binary_search_by_key(&relic_id, |(k, _)| *k) {
+                Ok(pos) => {
+                    next.entries[pos].1 = handler;
+                    next.guards[pos] = guard;
+                }
+                Err(pos) => {
+                    next.entries.insert(pos, (relic_id, handler));
+                    next.guards.insert(pos, guard);
+                }
             }
             Some(Arc::new(next))
         });
         self.nonempty
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Every registration's `(RelicId, declared guard)`, in `RelicId` order
+    /// (the live staging list, so a post-freeze registration shows).
+    pub(crate) fn guards(&self) -> Vec<(RelicId, RelicGuard)> {
+        self.listeners
+            .load()
+            .as_ref()
+            .map_or_else(Vec::new, |list| {
+                list.entries
+                    .iter()
+                    .zip(&list.guards)
+                    .map(|(&(id, _), &guard)| (id, guard))
+                    .collect()
+            })
     }
 
     /// If a mutation lands after `freeze()` (tests only — see
@@ -306,9 +460,13 @@ impl<F: Copy + 'static> ChannelRegistry<F> {
     pub(crate) fn remove(&self, relic_id: RelicId) {
         self.mark_mutated_if_frozen();
         self.listeners.rcu(|cur| {
-            let mut next: Vec<(RelicId, F)> = cur.as_deref().cloned().unwrap_or_default();
-            if let Ok(pos) = next.binary_search_by_key(&relic_id, |(k, _)| *k) {
-                next.remove(pos);
+            let mut next: ListenerList<F> = cur.as_deref().cloned().unwrap_or(ListenerList {
+                entries: Vec::new(),
+                guards: Vec::new(),
+            });
+            if let Ok(pos) = next.entries.binary_search_by_key(&relic_id, |(k, _)| *k) {
+                next.entries.remove(pos);
+                next.guards.remove(pos);
             }
             Some(Arc::new(next))
         });
@@ -323,22 +481,18 @@ impl<F: Copy + 'static> ChannelRegistry<F> {
                 .map(|pos| frozen[pos].1);
         }
         let snap = self.listeners.load();
-        let list = snap.as_ref()?;
+        let list = &snap.as_ref()?.entries;
         list.binary_search_by_key(&relic_id, |(k, _)| *k)
             .ok()
             .map(|pos| list[pos].1)
     }
 
     #[inline]
-    pub(crate) fn listeners(&self) -> ListenerSnapshot<F> {
+    pub(crate) fn listeners(&'static self) -> ListenerSnapshot<F> {
         if let Some(frozen) = self.frozen_view() {
-            return ListenerSnapshot::from_slice(frozen);
+            return ListenerSnapshot::Frozen(frozen);
         }
-        self.listeners
-            .load()
-            .as_ref()
-            .map(|list| ListenerSnapshot::from_slice(list.as_slice()))
-            .unwrap_or_default()
+        ListenerSnapshot::Staged(self.listeners.load_full())
     }
 
     #[inline]
@@ -397,8 +551,8 @@ macro_rules! relic_hook_channel {
 
         #[doc = concat!("Snapshot every (RelicId, handler) pair registered on the `",
             stringify!($fn_alias),
-            "` channel, sorted by `RelicId`, into an inline-capacity [`ListenerSnapshot`] \
-            (no heap allocation for ≤32 registrants). Used by the dispatchers and by tests.")]
+            "` channel, sorted by `RelicId`, as a [`ListenerSnapshot`] \
+            (the frozen `&'static` slice once frozen — no copy). Used by the dispatchers and by tests.")]
         #[must_use]
         pub fn $listeners_fn() -> ListenerSnapshot<$fn_alias> {
             $registry_static.listeners()
@@ -415,6 +569,50 @@ macro_rules! relic_hook_channel {
         #[must_use]
         pub fn $is_empty_fn() -> bool {
             $registry_static.is_empty()
+        }
+    };
+    // A [`GuardedChannel`]: its dispatcher calls every registered handler,
+    // and handlers may declare an ownership guard so the walk can skip them
+    // (J03).
+    (
+        $fn_alias:ident,
+        $registry_static:ident,
+        $registry_fn:ident,
+        $register_fn:ident,
+        $register_many_fn:ident,
+        $lookup_fn:ident,
+        $listeners_fn:ident,
+        $is_empty_fn:ident,
+        $sig:ty;
+        guarded: $register_owned_fn:ident, $guards_fn:ident
+    ) => {
+        relic_hook_channel!(
+            $fn_alias,
+            $registry_static,
+            $registry_fn,
+            $register_fn,
+            $register_many_fn,
+            $lookup_fn,
+            $listeners_fn,
+            $is_empty_fn,
+            $sig
+        );
+
+        #[doc = concat!("Register a handler for the `", stringify!($fn_alias),
+            "` channel that is inert unless the player holds a non-melted `kind` relic \
+            ([`RelicGuard::Owned`]): dispatch skips it otherwise. The handler must return \
+            the channel's identity and leave the state untouched (no write, no RNG draw) \
+            whenever `kind` is not owned. A later registration of the same `relic_id` \
+            replaces handler and guard.")]
+        pub fn $register_owned_fn(relic_id: RelicId, kind: crate::RelicKind, handler: $fn_alias) {
+            $registry_static.insert_guarded(relic_id, handler, RelicGuard::Owned(kind));
+        }
+
+        #[doc = concat!("Every `(RelicId, declared guard)` registered on the `",
+            stringify!($fn_alias), "` channel, in `RelicId` order.")]
+        #[must_use]
+        pub fn $guards_fn() -> Vec<(RelicId, RelicGuard)> {
+            $registry_static.guards()
         }
     };
 }
@@ -508,7 +706,9 @@ relic_hook_channel!(
     lookup_after_card_exhausted,
     listeners_after_card_exhausted,
     is_empty_after_card_exhausted,
-    fn(&mut CombatState, ctx: &CardEventCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &CardEventCtx) -> EffectResult;
+    guarded: register_owned_after_card_exhausted,
+        listener_guards_after_card_exhausted
 );
 
 relic_hook_channel!(
@@ -520,7 +720,9 @@ relic_hook_channel!(
     lookup_before_hand_draw,
     listeners_before_hand_draw,
     is_empty_before_hand_draw,
-    fn(&mut CombatState) -> EffectResult
+    fn(&mut CombatState) -> EffectResult;
+    guarded: register_owned_before_hand_draw,
+        listener_guards_before_hand_draw
 );
 
 relic_hook_channel!(
@@ -532,7 +734,9 @@ relic_hook_channel!(
     lookup_after_card_discarded,
     listeners_after_card_discarded,
     is_empty_after_card_discarded,
-    fn(&mut CombatState, ctx: &crate::hooks::CardCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::CardCtx) -> EffectResult;
+    guarded: register_owned_after_card_discarded,
+        listener_guards_after_card_discarded
 );
 
 relic_hook_channel!(
@@ -556,7 +760,9 @@ relic_hook_channel!(
     lookup_should_clear_block,
     listeners_should_clear_block,
     is_empty_should_clear_block,
-    fn(&CombatState, ctx: &crate::hooks::BlockClearedCtx) -> bool
+    fn(&CombatState, ctx: &crate::hooks::BlockClearedCtx) -> bool;
+    guarded: register_owned_should_clear_block,
+        listener_guards_should_clear_block
 );
 
 relic_hook_channel!(
@@ -568,7 +774,9 @@ relic_hook_channel!(
     lookup_after_hand_emptied,
     listeners_after_hand_emptied,
     is_empty_after_hand_emptied,
-    fn(&mut CombatState, ctx: &crate::hooks::CombatLifecycleCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::CombatLifecycleCtx) -> EffectResult;
+    guarded: register_owned_after_hand_emptied,
+        listener_guards_after_hand_emptied
 );
 
 relic_hook_channel!(
@@ -580,7 +788,9 @@ relic_hook_channel!(
     lookup_on_orb_channeled,
     listeners_on_orb_channeled,
     is_empty_on_orb_channeled,
-    fn(&mut CombatState, ctx: &crate::hooks::OrbChanneledCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::OrbChanneledCtx) -> EffectResult;
+    guarded: register_owned_on_orb_channeled,
+        listener_guards_on_orb_channeled
 );
 
 relic_hook_channel!(
@@ -592,7 +802,9 @@ relic_hook_channel!(
     lookup_on_stars_spent,
     listeners_on_stars_spent,
     is_empty_on_stars_spent,
-    fn(&mut CombatState, ctx: &crate::hooks::StarsSpentCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::StarsSpentCtx) -> EffectResult;
+    guarded: register_owned_on_stars_spent,
+        listener_guards_on_stars_spent
 );
 
 relic_hook_channel!(
@@ -616,7 +828,9 @@ relic_hook_channel!(
     lookup_after_combat_end,
     listeners_after_combat_end,
     is_empty_after_combat_end,
-    fn(&mut CombatState) -> EffectResult
+    fn(&mut CombatState) -> EffectResult;
+    guarded: register_owned_after_combat_end,
+        listener_guards_after_combat_end
 );
 
 relic_hook_channel!(
@@ -628,7 +842,9 @@ relic_hook_channel!(
     lookup_should_die_late,
     listeners_should_die_late,
     is_empty_should_die_late,
-    fn(&mut CombatState) -> EffectResult
+    fn(&mut CombatState) -> EffectResult;
+    guarded: register_owned_should_die_late,
+        listener_guards_should_die_late
 );
 
 relic_hook_channel!(
@@ -640,7 +856,9 @@ relic_hook_channel!(
     lookup_after_combat_victory,
     listeners_after_combat_victory,
     is_empty_after_combat_victory,
-    fn(&mut CombatState) -> EffectResult
+    fn(&mut CombatState) -> EffectResult;
+    guarded: register_owned_after_combat_victory,
+        listener_guards_after_combat_victory
 );
 
 relic_hook_channel!(
@@ -664,7 +882,9 @@ relic_hook_channel!(
     lookup_after_turn_end,
     listeners_after_turn_end,
     is_empty_after_turn_end,
-    fn(&mut CombatState, side: Side) -> EffectResult
+    fn(&mut CombatState, side: Side) -> EffectResult;
+    guarded: register_owned_after_turn_end,
+        listener_guards_after_turn_end
 );
 
 relic_hook_channel!(
@@ -688,7 +908,9 @@ relic_hook_channel!(
     lookup_after_died_to_doom,
     listeners_after_died_to_doom,
     is_empty_after_died_to_doom,
-    fn(&mut CombatState, ctx: &DiedToDoomCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &DiedToDoomCtx) -> EffectResult;
+    guarded: register_owned_after_died_to_doom,
+        listener_guards_after_died_to_doom
 );
 
 relic_hook_channel!(
@@ -712,7 +934,9 @@ relic_hook_channel!(
     lookup_after_energy_reset,
     listeners_after_energy_reset,
     is_empty_after_energy_reset,
-    fn(&mut CombatState) -> EffectResult
+    fn(&mut CombatState) -> EffectResult;
+    guarded: register_owned_after_energy_reset,
+        listener_guards_after_energy_reset
 );
 
 relic_hook_channel!(
@@ -772,7 +996,9 @@ relic_hook_channel!(
     lookup_modify_hand_draw,
     listeners_modify_hand_draw,
     is_empty_modify_hand_draw,
-    fn(&CombatState, current_draw: i32) -> i32
+    fn(&CombatState, current_draw: i32) -> i32;
+    guarded: register_owned_modify_hand_draw,
+        listener_guards_modify_hand_draw
 );
 
 relic_hook_channel!(
@@ -784,7 +1010,9 @@ relic_hook_channel!(
     lookup_modify_x_value,
     listeners_modify_x_value,
     is_empty_modify_x_value,
-    fn(&CombatState, current_x: i32) -> i32
+    fn(&CombatState, current_x: i32) -> i32;
+    guarded: register_owned_modify_x_value,
+        listener_guards_modify_x_value
 );
 
 relic_hook_channel!(
@@ -796,7 +1024,9 @@ relic_hook_channel!(
     lookup_relic_modify_card_play_count,
     listeners_relic_modify_card_play_count,
     is_empty_relic_modify_card_play_count,
-    fn(&mut CombatState, ctx: &crate::hooks::CardPlayCountCtx) -> i32
+    fn(&mut CombatState, ctx: &crate::hooks::CardPlayCountCtx) -> i32;
+    guarded: register_owned_relic_modify_card_play_count,
+        listener_guards_relic_modify_card_play_count
 );
 
 relic_hook_channel!(
@@ -844,7 +1074,9 @@ relic_hook_channel!(
     lookup_after_death,
     listeners_after_death,
     is_empty_after_death,
-    fn(&mut CombatState, ctx: &crate::hooks::AfterDeathCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::AfterDeathCtx) -> EffectResult;
+    guarded: register_owned_after_death,
+        listener_guards_after_death
 );
 
 relic_hook_channel!(
@@ -856,7 +1088,9 @@ relic_hook_channel!(
     lookup_modify_power_amount_given,
     listeners_modify_power_amount_given,
     is_empty_modify_power_amount_given,
-    fn(&CombatState, ctx: &crate::hooks::PowerAmountCtx) -> i32
+    fn(&CombatState, ctx: &crate::hooks::PowerAmountCtx) -> i32;
+    guarded: register_owned_modify_power_amount_given,
+        listener_guards_modify_power_amount_given
 );
 
 relic_hook_channel!(
@@ -868,7 +1102,9 @@ relic_hook_channel!(
     lookup_modify_power_amount_received,
     listeners_modify_power_amount_received,
     is_empty_modify_power_amount_received,
-    fn(&CombatState, ctx: &crate::hooks::PowerAmountCtx) -> i32
+    fn(&CombatState, ctx: &crate::hooks::PowerAmountCtx) -> i32;
+    guarded: register_owned_modify_power_amount_received,
+        listener_guards_modify_power_amount_received
 );
 
 relic_hook_channel!(
@@ -880,7 +1116,9 @@ relic_hook_channel!(
     lookup_before_power_amount_changed,
     listeners_before_power_amount_changed,
     is_empty_before_power_amount_changed,
-    fn(&mut CombatState, ctx: &crate::hooks::PowerAmountCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::PowerAmountCtx) -> EffectResult;
+    guarded: register_owned_before_power_amount_changed,
+        listener_guards_before_power_amount_changed
 );
 
 relic_hook_channel!(
@@ -892,7 +1130,9 @@ relic_hook_channel!(
     lookup_after_modifying_power_amount_given,
     listeners_after_modifying_power_amount_given,
     is_empty_after_modifying_power_amount_given,
-    fn(&mut CombatState, ctx: &crate::hooks::PowerAmountCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::PowerAmountCtx) -> EffectResult;
+    guarded: register_owned_after_modifying_power_amount_given,
+        listener_guards_after_modifying_power_amount_given
 );
 
 relic_hook_channel!(
@@ -904,7 +1144,9 @@ relic_hook_channel!(
     lookup_after_modifying_power_amount_received,
     listeners_after_modifying_power_amount_received,
     is_empty_after_modifying_power_amount_received,
-    fn(&mut CombatState, ctx: &crate::hooks::PowerAmountCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &crate::hooks::PowerAmountCtx) -> EffectResult;
+    guarded: register_owned_after_modifying_power_amount_received,
+        listener_guards_after_modifying_power_amount_received
 );
 
 relic_hook_channel!(
@@ -952,7 +1194,9 @@ relic_hook_channel!(
     lookup_after_potion_used,
     listeners_after_potion_used,
     is_empty_after_potion_used,
-    fn(&mut CombatState, kind: crate::potions::PotionKind, target: Option<u8>) -> EffectResult
+    fn(&mut CombatState, kind: crate::potions::PotionKind, target: Option<u8>) -> EffectResult;
+    guarded: register_owned_after_potion_used,
+        listener_guards_after_potion_used
 );
 
 relic_hook_channel!(
@@ -964,7 +1208,9 @@ relic_hook_channel!(
     lookup_after_card_entered_combat,
     listeners_after_card_entered_combat,
     is_empty_after_card_entered_combat,
-    fn(&mut CombatState, card_uid: crate::CardUid, added_by_player: bool) -> EffectResult
+    fn(&mut CombatState, card_uid: crate::CardUid, added_by_player: bool) -> EffectResult;
+    guarded: register_owned_after_card_entered_combat,
+        listener_guards_after_card_entered_combat
 );
 
 /// Collect the handlers registered for currently-owned relics, in registry
@@ -994,15 +1240,1183 @@ fn collect_owned_listeners<F: Copy + 'static>(
     if state.relics.is_empty() {
         return owned;
     }
+    for_each_owned_listener(registry, state, |_, f| owned.push(f));
+    owned
+}
+
+/// The `collect_owned_listeners` walk: every registered `(RelicId, handler)`
+/// whose relic the player owns (non-melted), in registry (`RelicId`) order.
+#[inline]
+fn for_each_owned_listener<F: Copy + 'static>(
+    registry: &ChannelRegistry<F>,
+    state: &CombatState,
+    mut visit: impl FnMut(RelicId, F),
+) {
     registry.for_each_listener(|id, f| {
         if id
             .to_relic_kind()
             .is_some_and(|k| state.relics.iter().any(|r| !r.is_melted && r.kind == k))
         {
-            owned.push(f);
+            visit(id, f);
         }
     });
+}
+
+/// The equip-order walk of `dispatch_after_side_turn_start` and
+/// `dispatch_after_player_turn_start_from`: every registered handler whose
+/// relic kind the player owns, tagged with the RAW `state.relics` position of
+/// the first non-melted relic of that kind (melted slots still count — the
+/// GamblingChip resume index and sts2-py's `arm_turn_start_resume` are raw
+/// positions), stable-sorted by that position. A tie (two registered ids of
+/// one kind) keeps `RelicId` order.
+fn collect_equip_order_listeners<F: Copy + 'static>(
+    registry: &ChannelRegistry<F>,
+    state: &CombatState,
+) -> smallvec::SmallVec<[(usize, RelicId, F); 8]> {
+    let mut owned: smallvec::SmallVec<[(usize, RelicId, F); 8]> = smallvec::SmallVec::new();
+    registry.for_each_listener(|id, f| {
+        if let Some(kind) = id.to_relic_kind() {
+            if let Some(idx) = state
+                .relics
+                .iter()
+                .position(|r| !r.is_melted && r.kind == kind)
+            {
+                owned.push((idx, id, f));
+            }
+        }
+    });
+    owned.sort_by_key(|(idx, _, _)| *idx);
     owned
+}
+
+/// The obtain-order walk of `dispatch_before_side_turn_start`: one call per
+/// non-melted relic INSTANCE in `state.relics` order (a duplicated kind fires
+/// twice), each resolving to the first registered handler whose `RelicId`
+/// python name equals the relic kind's.
+fn for_each_obtain_order_listener(
+    listeners: &[(RelicId, BeforeSideTurnStartFn)],
+    relics: &[crate::Relic],
+    mut visit: impl FnMut(RelicId, BeforeSideTurnStartFn),
+) {
+    for r in relics.iter().filter(|r| !r.is_melted) {
+        let name = r.kind.python_name();
+        if let Some(&(id, f)) = listeners.iter().find(|(id, _)| id.to_python_name() == name) {
+            visit(id, f);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-combat relic plan (M01)
+// ---------------------------------------------------------------------------
+//
+// Which handlers an owned / equip-order / obtain-order relic dispatch calls is
+// a function of (a) the relic sequence's `(kind, is_melted)` pairs, constant
+// for the whole combat, and (b) the channel's registered handlers, constant
+// once the content installer freezes the channels (M02). So the walk is done
+// once, when the `RelicStore` is built, and stored on it as a `RelicPlan`:
+// per channel, the positions of the handlers to call in that channel's frozen
+// `&'static` list. A dispatch then reads the plan instead of scanning every
+// registered handler against every relic (the old `to_relic_kind` × relic
+// scan per owned channel, and `before_side_turn_start`'s per-relic
+// `to_python_name` string search over its whole registry).
+//
+// The plan is inline `Copy` data (no `Arc`, no thread-local, no atomic: both
+// measured as losses), so a state clone copies it.
+//
+// Staleness. Positions index the frozen list, which `OnceLock` publishes once
+// and never changes. A registration after the freeze (tests only) sets the
+// channel's sticky `mutated_after_freeze` flag, after which `frozen_view()`
+// returns `None` and the dispatcher takes its generic path over the live
+// staging list. That flag is the registry generation: every registration that
+// can make a plan stale bumps it, and every planned dispatch checks it through
+// `frozen_view()`, the same check the generic path already made. A plan built
+// before the freeze has no positions (`ready` clear) and is rebuilt at the
+// next `apply` (`RelicStore::ensure_plan`).
+//
+// Debug builds check every planned dispatch against the generic walk (the
+// `shadow_*` fns) and every `apply` entry against a rebuilt plan.
+//
+// Live bits (J01b). The plan also records which planned channels list no
+// handler at all (`RelicPlan::dead`). The engine's call sites test
+// `relic_channel_live` before such a dispatch and skip it, and the building
+// of its context, when the channel is dead; the dispatcher would have called
+// nothing and returned its identity. The same `frozen_view()` check guards
+// that answer, and debug builds re-run the generic walk on every dead answer.
+//
+// Guarded channels (J03). The all-registered channels call every registered
+// handler, and each handler checks ownership itself. Handlers registered with
+// `register_owned_*` declare that check as a `RelicGuard::Owned(kind)`, stored
+// in the registry entry beside the handler; the plan keeps per
+// `GuardedChannel` a `u32` of the frozen positions a dispatch must call
+// (`Always` handlers, and `Owned` ones whose kind is owned), so the walk skips
+// the rest and a channel with no bit set is dead. An empty store and a channel
+// past `GUARDED_PLAN_CAP` handlers have no guarded plan and walk everything.
+// Debug builds re-derive the bits from the declared guards, run every skipped
+// handler at its place in the walk on a clone of the state (it must leave the
+// clone unchanged and not change the walk's answer), and run every dispatch a
+// call site skips on a clone (`dispatch_if_live`, `fold_if_live`).
+
+/// Owned-collect relic channels: their dispatchers call each owned relic's
+/// handler once, in `RelicId` order. The discriminant indexes
+/// [`RelicPlan::owned`] and the low bits of [`RelicPlan::ready`].
+#[derive(Clone, Copy, Debug)]
+enum OwnedChannel {
+    AfterCardPlayed,
+    BeforeCardPlayed,
+    BeforeTurnEnd,
+    AfterDamageGiven,
+    AfterBlockGained,
+    AfterBlockCleared,
+    ModifyDamageAdditive,
+    ModifyBlockMultiplicative,
+    ModifyDamageMultiplicative,
+    AfterDamageReceived,
+    ModifyHpLost,
+}
+
+/// Number of [`OwnedChannel`]s.
+const OWNED_CHANNELS: usize = 11;
+/// [`RelicPlan::ready`] bits of the three ordered channels (above the owned ones).
+const READY_AFTER_SIDE_TURN_START: u16 = 1 << OWNED_CHANNELS;
+const READY_AFTER_PLAYER_TURN_START: u16 = 1 << (OWNED_CHANNELS + 1);
+const READY_BEFORE_SIDE_TURN_START: u16 = 1 << (OWNED_CHANNELS + 2);
+/// Every planned channel's [`RelicPlan::ready`] / [`RelicPlan::dead`] bit.
+const ALL_PLANNED: u16 = (1 << (OWNED_CHANNELS + 3)) - 1;
+
+/// A relic channel whose dispatcher reads the per-combat [`RelicPlan`]: the
+/// eleven [`OwnedChannel`]s, then the three ordered channels. Engine call
+/// sites test [`relic_channel_live`] before dispatching one of these (J01b).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlannedChannel {
+    AfterCardPlayed,
+    BeforeCardPlayed,
+    BeforeTurnEnd,
+    AfterDamageGiven,
+    AfterBlockGained,
+    AfterBlockCleared,
+    ModifyDamageAdditive,
+    ModifyBlockMultiplicative,
+    ModifyDamageMultiplicative,
+    AfterDamageReceived,
+    ModifyHpLost,
+    AfterSideTurnStart,
+    AfterPlayerTurnStart,
+    BeforeSideTurnStart,
+}
+
+impl PlannedChannel {
+    /// This channel's bit in [`RelicPlan::ready`] and [`RelicPlan::dead`].
+    #[inline]
+    const fn bit(self) -> u16 {
+        match self {
+            Self::AfterCardPlayed => 1 << OwnedChannel::AfterCardPlayed as u16,
+            Self::BeforeCardPlayed => 1 << OwnedChannel::BeforeCardPlayed as u16,
+            Self::BeforeTurnEnd => 1 << OwnedChannel::BeforeTurnEnd as u16,
+            Self::AfterDamageGiven => 1 << OwnedChannel::AfterDamageGiven as u16,
+            Self::AfterBlockGained => 1 << OwnedChannel::AfterBlockGained as u16,
+            Self::AfterBlockCleared => 1 << OwnedChannel::AfterBlockCleared as u16,
+            Self::ModifyDamageAdditive => 1 << OwnedChannel::ModifyDamageAdditive as u16,
+            Self::ModifyBlockMultiplicative => 1 << OwnedChannel::ModifyBlockMultiplicative as u16,
+            Self::ModifyDamageMultiplicative => {
+                1 << OwnedChannel::ModifyDamageMultiplicative as u16
+            }
+            Self::AfterDamageReceived => 1 << OwnedChannel::AfterDamageReceived as u16,
+            Self::ModifyHpLost => 1 << OwnedChannel::ModifyHpLost as u16,
+            Self::AfterSideTurnStart => READY_AFTER_SIDE_TURN_START,
+            Self::AfterPlayerTurnStart => READY_AFTER_PLAYER_TURN_START,
+            Self::BeforeSideTurnStart => READY_BEFORE_SIDE_TURN_START,
+        }
+    }
+
+    /// The channel still serves the frozen list its plan was built against
+    /// (no registration since the freeze): the same `frozen_view()` check the
+    /// planned dispatch path makes.
+    #[inline]
+    fn serves_frozen_list(self) -> bool {
+        match self {
+            Self::AfterCardPlayed => registry_after_card_played().frozen_view().is_some(),
+            Self::BeforeCardPlayed => registry_before_card_played().frozen_view().is_some(),
+            Self::BeforeTurnEnd => registry_before_turn_end().frozen_view().is_some(),
+            Self::AfterDamageGiven => registry_after_damage_given().frozen_view().is_some(),
+            Self::AfterBlockGained => registry_after_block_gained().frozen_view().is_some(),
+            Self::AfterBlockCleared => registry_after_block_cleared().frozen_view().is_some(),
+            Self::ModifyDamageAdditive => registry_modify_damage_additive().frozen_view().is_some(),
+            Self::ModifyBlockMultiplicative => registry_modify_block_multiplicative()
+                .frozen_view()
+                .is_some(),
+            Self::ModifyDamageMultiplicative => registry_modify_damage_multiplicative()
+                .frozen_view()
+                .is_some(),
+            Self::AfterDamageReceived => registry_after_damage_received().frozen_view().is_some(),
+            Self::ModifyHpLost => registry_modify_hp_lost().frozen_view().is_some(),
+            Self::AfterSideTurnStart => registry_after_side_turn_start().frozen_view().is_some(),
+            Self::AfterPlayerTurnStart => {
+                registry_after_player_turn_start().frozen_view().is_some()
+            }
+            Self::BeforeSideTurnStart => registry_before_side_turn_start().frozen_view().is_some(),
+        }
+    }
+
+    /// Number of handlers the channel's generic (unplanned) walk calls for
+    /// `state`: the debug shadow of [`relic_channel_live`].
+    #[cfg(any(test, debug_assertions))]
+    fn generic_call_count(self, state: &CombatState) -> usize {
+        fn owned<F: Copy + 'static>(registry: &ChannelRegistry<F>, state: &CombatState) -> usize {
+            let mut n = 0;
+            for_each_owned_listener(registry, state, |_, _| n += 1);
+            n
+        }
+        match self {
+            Self::AfterCardPlayed => owned(registry_after_card_played(), state),
+            Self::BeforeCardPlayed => owned(registry_before_card_played(), state),
+            Self::BeforeTurnEnd => owned(registry_before_turn_end(), state),
+            Self::AfterDamageGiven => owned(registry_after_damage_given(), state),
+            Self::AfterBlockGained => owned(registry_after_block_gained(), state),
+            Self::AfterBlockCleared => owned(registry_after_block_cleared(), state),
+            Self::ModifyDamageAdditive => owned(registry_modify_damage_additive(), state),
+            Self::ModifyBlockMultiplicative => owned(registry_modify_block_multiplicative(), state),
+            Self::ModifyDamageMultiplicative => {
+                owned(registry_modify_damage_multiplicative(), state)
+            }
+            Self::AfterDamageReceived => owned(registry_after_damage_received(), state),
+            Self::ModifyHpLost => owned(registry_modify_hp_lost(), state),
+            Self::AfterSideTurnStart => {
+                collect_equip_order_listeners(registry_after_side_turn_start(), state).len()
+            }
+            Self::AfterPlayerTurnStart => {
+                collect_equip_order_listeners(registry_after_player_turn_start(), state).len()
+            }
+            Self::BeforeSideTurnStart => {
+                let mut n = 0;
+                for_each_obtain_order_listener(
+                    &listeners_before_side_turn_start(),
+                    &state.relics,
+                    |_, _| n += 1,
+                );
+                n
+            }
+        }
+    }
+}
+
+/// Whether dispatching `channel` can call any relic handler for `state` (the
+/// J01b live bit). `false` only when the per-combat plan covers the channel,
+/// lists no handler for it, and the channel still serves the frozen list the
+/// plan was built against. The dispatcher would then call nothing and return
+/// its identity (`NotImplemented`, `0`, `DamageMul::ONE`, the unchanged
+/// amount, `None`), so a call site that tests this first may skip the
+/// dispatch and the construction of its context. An empty store's plan marks
+/// every channel dead (nothing can be owned under any registry).
+///
+/// Debug builds re-run the channel's generic walk whenever this answers
+/// `false` and assert it calls nothing.
+#[inline]
+pub(crate) fn relic_channel_live(state: &CombatState, channel: PlannedChannel) -> bool {
+    if state.relics.plan().dead & channel.bit() == 0 || !channel.serves_frozen_list() {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    assert_eq!(
+        channel.generic_call_count(state),
+        0,
+        "relic channel {channel:?} planned dead but its generic walk calls a handler"
+    );
+    false
+}
+
+/// All-registered relic channels (J03). Their dispatchers walk every
+/// registered handler, and each handler checks ownership itself, so most
+/// calls return at once. A handler registered through `register_owned_*`
+/// declares that check ([`RelicGuard::Owned`]); the per-combat plan keeps,
+/// per channel, only the handlers a dispatch must call (the `Always` ones and
+/// the `Owned` ones whose kind the player holds), in `RelicId` order, and a
+/// channel whose list is empty is dead. The discriminant indexes
+/// [`RelicPlan::guarded`] and the bits of [`RelicPlan::guarded_ready`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GuardedChannel {
+    BeforeHandDraw,
+    AfterCardExhausted,
+    AfterCardEnteredCombat,
+    AfterPotionUsed,
+    ShouldDieLate,
+    AfterCombatVictory,
+    AfterCombatEnd,
+    AfterTurnEnd,
+    AfterDiedToDoom,
+    AfterCardDiscarded,
+    ShouldClearBlock,
+    AfterHandEmptied,
+    OnOrbChanneled,
+    OnStarsSpent,
+    AfterEnergyReset,
+    AfterDeath,
+    ModifyHandDraw,
+    ModifyXValue,
+    RelicModifyCardPlayCount,
+    ModifyPowerAmountGiven,
+    ModifyPowerAmountReceived,
+    BeforePowerAmountChanged,
+    AfterModifyingPowerAmountGiven,
+    AfterModifyingPowerAmountReceived,
+    CountPets,
+    ModifyVulnerableMultiplier,
+    BeforePlayPhaseStart,
+    AfterShuffleBus,
+}
+
+/// Number of [`GuardedChannel`]s.
+const GUARDED_CHANNELS: usize = 28;
+/// Most handlers a guarded channel's plan covers (one `u32` of call bits). A
+/// longer list leaves the channel un-planned: its dispatch calls everything.
+const GUARDED_PLAN_CAP: usize = 32;
+
+impl GuardedChannel {
+    /// Every guarded channel, in discriminant order.
+    pub(crate) const ALL: [Self; GUARDED_CHANNELS] = [
+        Self::BeforeHandDraw,
+        Self::AfterCardExhausted,
+        Self::AfterCardEnteredCombat,
+        Self::AfterPotionUsed,
+        Self::ShouldDieLate,
+        Self::AfterCombatVictory,
+        Self::AfterCombatEnd,
+        Self::AfterTurnEnd,
+        Self::AfterDiedToDoom,
+        Self::AfterCardDiscarded,
+        Self::ShouldClearBlock,
+        Self::AfterHandEmptied,
+        Self::OnOrbChanneled,
+        Self::OnStarsSpent,
+        Self::AfterEnergyReset,
+        Self::AfterDeath,
+        Self::ModifyHandDraw,
+        Self::ModifyXValue,
+        Self::RelicModifyCardPlayCount,
+        Self::ModifyPowerAmountGiven,
+        Self::ModifyPowerAmountReceived,
+        Self::BeforePowerAmountChanged,
+        Self::AfterModifyingPowerAmountGiven,
+        Self::AfterModifyingPowerAmountReceived,
+        Self::CountPets,
+        Self::ModifyVulnerableMultiplier,
+        Self::BeforePlayPhaseStart,
+        Self::AfterShuffleBus,
+    ];
+
+    /// This channel's registry, type-erased.
+    #[inline]
+    fn registry(self) -> &'static dyn FreezeControl {
+        match self {
+            Self::BeforeHandDraw => registry_before_hand_draw(),
+            Self::AfterCardExhausted => registry_after_card_exhausted(),
+            Self::AfterCardEnteredCombat => registry_after_card_entered_combat(),
+            Self::AfterPotionUsed => registry_after_potion_used(),
+            Self::ShouldDieLate => registry_should_die_late(),
+            Self::AfterCombatVictory => registry_after_combat_victory(),
+            Self::AfterCombatEnd => registry_after_combat_end(),
+            Self::AfterTurnEnd => registry_after_turn_end(),
+            Self::AfterDiedToDoom => registry_after_died_to_doom(),
+            Self::AfterCardDiscarded => registry_after_card_discarded(),
+            Self::ShouldClearBlock => registry_should_clear_block(),
+            Self::AfterHandEmptied => registry_after_hand_emptied(),
+            Self::OnOrbChanneled => registry_on_orb_channeled(),
+            Self::OnStarsSpent => registry_on_stars_spent(),
+            Self::AfterEnergyReset => registry_after_energy_reset(),
+            Self::AfterDeath => registry_after_death(),
+            Self::ModifyHandDraw => registry_modify_hand_draw(),
+            Self::ModifyXValue => registry_modify_x_value(),
+            Self::RelicModifyCardPlayCount => registry_relic_modify_card_play_count(),
+            Self::ModifyPowerAmountGiven => registry_modify_power_amount_given(),
+            Self::ModifyPowerAmountReceived => registry_modify_power_amount_received(),
+            Self::BeforePowerAmountChanged => registry_before_power_amount_changed(),
+            Self::AfterModifyingPowerAmountGiven => registry_after_modifying_power_amount_given(),
+            Self::AfterModifyingPowerAmountReceived => {
+                registry_after_modifying_power_amount_received()
+            }
+            Self::CountPets => registry_count_pets(),
+            Self::ModifyVulnerableMultiplier => registry_modify_vulnerable_multiplier(),
+            Self::BeforePlayPhaseStart => registry_before_play_phase_start(),
+            Self::AfterShuffleBus => registry_after_shuffle_bus(),
+        }
+    }
+}
+
+/// Whether dispatching guarded `channel` can call any relic handler for
+/// `state` (J03). `false` only when the per-combat plan covers the channel,
+/// admits no handler on it, and the channel still serves the frozen list the
+/// plan was built against: every registered handler is then `Owned` by a kind
+/// the player does not hold, the dispatcher would call nothing, and it would
+/// return its identity (`NotImplemented`, `false` for `should_die_late`,
+/// `true` for `should_clear_block`, `0` for the sums, the unchanged value for
+/// the folds). A call site that tests this first may skip the dispatch and
+/// the construction of its context.
+///
+/// An empty store has no guarded plan, so it is live everywhere (its
+/// `Always` handlers still fire). Debug builds re-derive the plan's call bits
+/// from the declared guards whenever this answers `false`.
+#[inline]
+pub(crate) fn relic_guarded_channel_live(state: &CombatState, channel: GuardedChannel) -> bool {
+    let plan = state.relics.plan();
+    let c = channel as usize;
+    if plan.guarded_ready & (1 << c) == 0
+        || plan.guarded[c] != 0
+        || !channel.registry().serves_frozen()
+    {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    shadow_guarded_bits(channel, state, 0);
+    false
+}
+
+/// Call-site gate over guarded dispatches whose handlers take `&mut
+/// CombatState` (J03): `dispatch(state)` when `live`
+/// ([`relic_guarded_channel_live`] of the channels it fires), else
+/// `identity` without the call or the building of its context.
+///
+/// Debug builds still run a skipped `dispatch`, on a clone, with its walk
+/// running every handler it skips on that clone too (the full walk): it must
+/// answer `identity` and leave the clone equal to `state`, its event log
+/// included ([`crate::event_log::EventLog::same_contents`]: `CombatState`
+/// equality ignores the log). So the skip is checked against the ungated
+/// path, a guard declared on the wrong kind and a gate on the wrong channel
+/// included.
+#[inline]
+pub(crate) fn dispatch_if_live<R: PartialEq + std::fmt::Debug>(
+    state: &mut CombatState,
+    live: bool,
+    identity: R,
+    dispatch: impl FnOnce(&mut CombatState) -> R,
+) -> R {
+    if live {
+        return dispatch(state);
+    }
+    #[cfg(debug_assertions)]
+    if shadow_this_call() {
+        let mut probe = state.clone();
+        let outer = ON_THROWAWAY_CLONE.with(|flag| flag.replace(true));
+        let answer = dispatch(&mut probe);
+        ON_THROWAWAY_CLONE.with(|flag| flag.set(outer));
+        assert_eq!(
+            answer, identity,
+            "a dead guarded relic dispatch answered differently"
+        );
+        assert!(
+            probe == *state,
+            "a dead guarded relic dispatch changed the state"
+        );
+        assert!(
+            probe
+                .combat_log
+                .event_log
+                .same_contents(&state.combat_log.event_log),
+            "a dead guarded relic dispatch wrote the event log"
+        );
+    }
+    identity
+}
+
+/// [`dispatch_if_live`] for read-only dispatches (the folds). Debug builds
+/// run a skipped `dispatch` and assert it answers `identity`.
+#[inline]
+pub(crate) fn fold_if_live<R: PartialEq + std::fmt::Debug>(
+    state: &CombatState,
+    live: bool,
+    identity: R,
+    dispatch: impl FnOnce(&CombatState) -> R,
+) -> R {
+    if live {
+        return dispatch(state);
+    }
+    #[cfg(debug_assertions)]
+    assert_eq!(
+        dispatch(state),
+        identity,
+        "a dead guarded relic fold answered differently"
+    );
+    identity
+}
+
+/// Debug shadow: `bits` are the call bits the declared guards give for
+/// `state`'s relics (an `Owned` handler is called iff a non-melted relic of
+/// its kind is in the list, found by scanning, not through the owned set).
+#[cfg(debug_assertions)]
+fn shadow_guarded_bits(channel: GuardedChannel, state: &CombatState, bits: u32) {
+    let guards = channel
+        .registry()
+        .published_guards()
+        .expect("a planned guarded channel is frozen");
+    let mut expected = 0u32;
+    for (i, &guard) in guards.iter().enumerate() {
+        let call = match guard {
+            RelicGuard::Always => true,
+            RelicGuard::Owned(kind) => state.relics.iter().any(|r| !r.is_melted && r.kind == kind),
+        };
+        if call {
+            expected |= 1 << i;
+        }
+    }
+    assert_eq!(
+        bits, expected,
+        "relic plan for {channel:?} differs from its handlers' declared guards"
+    );
+}
+
+/// Inline capacity of an equip-order plan list. A longer list leaves the
+/// channel un-planned (generic path).
+const EQUIP_PLAN_CAP: usize = 16;
+/// Inline capacity of the obtain-order plan list (same fallback).
+const OBTAIN_PLAN_CAP: usize = 24;
+
+/// One equip-order call: the raw `state.relics` position the call is ordered
+/// (and resumed) by, and the handler's position in the frozen list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EquipSlot {
+    equip_idx: u8,
+    entry: u8,
+}
+
+/// Equip-order call list (`collect_equip_order_listeners`, resolved).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EquipPlan {
+    len: u8,
+    slots: [EquipSlot; EQUIP_PLAN_CAP],
+}
+
+impl EquipPlan {
+    const EMPTY: Self = Self {
+        len: 0,
+        slots: [EquipSlot {
+            equip_idx: 0,
+            entry: 0,
+        }; EQUIP_PLAN_CAP],
+    };
+
+    #[inline]
+    fn slots(&self) -> &[EquipSlot] {
+        &self.slots[..usize::from(self.len)]
+    }
+}
+
+/// Obtain-order call list (`for_each_obtain_order_listener`, resolved): the
+/// frozen-list position of each call, one per relic instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObtainPlan {
+    len: u8,
+    entries: [u8; OBTAIN_PLAN_CAP],
+}
+
+impl ObtainPlan {
+    const EMPTY: Self = Self {
+        len: 0,
+        entries: [0; OBTAIN_PLAN_CAP],
+    };
+
+    #[inline]
+    fn entries(&self) -> &[u8] {
+        &self.entries[..usize::from(self.len)]
+    }
+}
+
+/// Per-combat relic-channel plan, stored on [`crate::RelicStore`] and rebuilt
+/// by its mutating methods. See the section comment above.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RelicPlan {
+    /// Bit `c` (an [`OwnedChannel`] or a `READY_*` bit): that channel's list
+    /// was built against its frozen registry list and fits its capacity.
+    ready: u16,
+    /// `false` when no planned channel was frozen at build time; `apply`
+    /// then retries the build (`RelicStore::ensure_plan`).
+    built: bool,
+    /// Bit `c` (same layout as `ready`): the channel is planned and its list
+    /// is empty, so its dispatch calls nothing ([`relic_channel_live`],
+    /// J01b). Every bit of an empty store's plan is set.
+    dead: u16,
+    /// Per [`OwnedChannel`]: bit `i` set ⇔ the handler at frozen-list position
+    /// `i` belongs to an owned relic kind. Iterating the set bits low to high
+    /// is `RelicId` order.
+    owned: [u64; OWNED_CHANNELS],
+    after_side_turn_start: EquipPlan,
+    after_player_turn_start: EquipPlan,
+    before_side_turn_start: ObtainPlan,
+    /// Bit `c` (a [`GuardedChannel`]): that channel's call bits were built
+    /// against its frozen registry list (at most [`GUARDED_PLAN_CAP`]
+    /// handlers). Clear on an empty store: its dispatches walk every handler.
+    guarded_ready: u32,
+    /// Per [`GuardedChannel`] (J03): bit `i` set ⇔ the handler at frozen-list
+    /// position `i` must be called, i.e. its [`RelicGuard`] admits the owned
+    /// kinds. Iterating the set bits low to high is `RelicId` order.
+    guarded: [u32; GUARDED_CHANNELS],
+}
+
+impl RelicPlan {
+    /// Plan of an empty relic list: nothing is owned under any registry, and
+    /// every planned dispatcher returns before reading the plan when
+    /// `state.relics` is empty, so it needs no frozen list and counts as built.
+    /// The guarded channels stay un-planned: their `Always` handlers fire
+    /// with no relics, and the dispatch walks every handler.
+    pub(crate) const EMPTY_STORE: Self = Self {
+        ready: 0,
+        built: true,
+        dead: ALL_PLANNED,
+        owned: [0; OWNED_CHANNELS],
+        after_side_turn_start: EquipPlan::EMPTY,
+        after_player_turn_start: EquipPlan::EMPTY,
+        before_side_turn_start: ObtainPlan::EMPTY,
+        guarded_ready: 0,
+        guarded: [0; GUARDED_CHANNELS],
+    };
+
+    /// No plan: every planned dispatcher takes its generic path, and the next
+    /// `apply` retries the build.
+    pub(crate) const UNBUILT: Self = Self {
+        built: false,
+        dead: 0,
+        ..Self::EMPTY_STORE
+    };
+
+    /// Build the plan of `relics` (`owned` = [`crate::RelicKindSet::owned_by`]
+    /// of the same relics) against the frozen channel lists. A channel that is
+    /// not frozen yet, or whose list exceeds the plan's capacity, stays
+    /// un-planned.
+    pub(crate) fn build(relics: &[crate::Relic], owned: &crate::RelicKindSet) -> Self {
+        if relics.is_empty() {
+            return Self::EMPTY_STORE;
+        }
+        let mut plan = Self::UNBUILT;
+        let mut frozen_seen = false;
+        let owned_bits = [
+            owned_plan_bits(registry_after_card_played(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_before_card_played(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_before_turn_end(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_after_damage_given(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_after_block_gained(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_after_block_cleared(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_modify_damage_additive(), owned, &mut frozen_seen),
+            owned_plan_bits(
+                registry_modify_block_multiplicative(),
+                owned,
+                &mut frozen_seen,
+            ),
+            owned_plan_bits(
+                registry_modify_damage_multiplicative(),
+                owned,
+                &mut frozen_seen,
+            ),
+            owned_plan_bits(registry_after_damage_received(), owned, &mut frozen_seen),
+            owned_plan_bits(registry_modify_hp_lost(), owned, &mut frozen_seen),
+        ];
+        for (c, bits) in owned_bits.into_iter().enumerate() {
+            if let Some(bits) = bits {
+                plan.owned[c] = bits;
+                plan.ready |= 1 << c;
+                if bits == 0 {
+                    plan.dead |= 1 << c;
+                }
+            }
+        }
+        if let Some(p) = equip_plan(registry_after_side_turn_start(), relics, &mut frozen_seen) {
+            plan.after_side_turn_start = p;
+            plan.ready |= READY_AFTER_SIDE_TURN_START;
+            if p.len == 0 {
+                plan.dead |= READY_AFTER_SIDE_TURN_START;
+            }
+        }
+        if let Some(p) = equip_plan(registry_after_player_turn_start(), relics, &mut frozen_seen) {
+            plan.after_player_turn_start = p;
+            plan.ready |= READY_AFTER_PLAYER_TURN_START;
+            if p.len == 0 {
+                plan.dead |= READY_AFTER_PLAYER_TURN_START;
+            }
+        }
+        if let Some(p) = obtain_plan(relics, &mut frozen_seen) {
+            plan.before_side_turn_start = p;
+            plan.ready |= READY_BEFORE_SIDE_TURN_START;
+            if p.len == 0 {
+                plan.dead |= READY_BEFORE_SIDE_TURN_START;
+            }
+        }
+        for channel in GuardedChannel::ALL {
+            if let Some(bits) = guarded_plan_bits(channel.registry(), owned, &mut frozen_seen) {
+                plan.guarded[channel as usize] = bits;
+                plan.guarded_ready |= 1 << channel as u32;
+            }
+        }
+        plan.built = frozen_seen;
+        plan
+    }
+
+    /// See [`Self::built`].
+    #[inline]
+    pub(crate) fn is_built(&self) -> bool {
+        self.built
+    }
+}
+
+/// [`RelicPlan::owned`] bits of one channel, or `None` (un-planned) if its
+/// list is not frozen or has more than 64 entries.
+fn owned_plan_bits<F: Copy + 'static>(
+    registry: &ChannelRegistry<F>,
+    owned: &crate::RelicKindSet,
+    frozen_seen: &mut bool,
+) -> Option<u64> {
+    let frozen = registry.published_entries()?;
+    *frozen_seen = true;
+    if frozen.len() > 64 {
+        return None;
+    }
+    let mut bits = 0u64;
+    for (i, &(id, _)) in frozen.iter().enumerate() {
+        if id.to_relic_kind().is_some_and(|k| owned.contains(k)) {
+            bits |= 1u64 << i;
+        }
+    }
+    Some(bits)
+}
+
+/// Equip-order plan of one channel: `collect_equip_order_listeners` over the
+/// frozen list, positions resolved. `None` if the list is not frozen, or a
+/// position does not fit the plan.
+fn equip_plan<F: Copy + 'static>(
+    registry: &ChannelRegistry<F>,
+    relics: &[crate::Relic],
+    frozen_seen: &mut bool,
+) -> Option<EquipPlan> {
+    let frozen = registry.published_entries()?;
+    *frozen_seen = true;
+    let mut order: smallvec::SmallVec<[(usize, usize); EQUIP_PLAN_CAP]> = smallvec::SmallVec::new();
+    for (entry, &(id, _)) in frozen.iter().enumerate() {
+        if let Some(kind) = id.to_relic_kind() {
+            if let Some(idx) = relics.iter().position(|r| !r.is_melted && r.kind == kind) {
+                order.push((idx, entry));
+            }
+        }
+    }
+    // Stable, like the dispatch-time sort it replaces.
+    order.sort_by_key(|(idx, _)| *idx);
+    let mut plan = EquipPlan::EMPTY;
+    plan.len = u8::try_from(order.len()).ok()?;
+    for (i, &(idx, entry)) in order.iter().enumerate() {
+        *plan.slots.get_mut(i)? = EquipSlot {
+            equip_idx: u8::try_from(idx).ok()?,
+            entry: u8::try_from(entry).ok()?,
+        };
+    }
+    Some(plan)
+}
+
+/// Obtain-order plan of `before_side_turn_start`:
+/// `for_each_obtain_order_listener` over the frozen list, positions resolved.
+fn obtain_plan(relics: &[crate::Relic], frozen_seen: &mut bool) -> Option<ObtainPlan> {
+    let frozen = registry_before_side_turn_start().published_entries()?;
+    *frozen_seen = true;
+    let mut plan = ObtainPlan::EMPTY;
+    let mut len = 0usize;
+    let mut fits = true;
+    for r in relics.iter().filter(|r| !r.is_melted) {
+        let name = r.kind.python_name();
+        if let Some(entry) = frozen
+            .iter()
+            .position(|(id, _)| id.to_python_name() == name)
+        {
+            match (plan.entries.get_mut(len), u8::try_from(entry)) {
+                (Some(slot), Ok(entry)) => *slot = entry,
+                _ => fits = false,
+            }
+            len += 1;
+        }
+    }
+    if !fits {
+        return None;
+    }
+    plan.len = u8::try_from(len).ok()?;
+    Some(plan)
+}
+
+/// [`RelicPlan::guarded`] bits of one guarded channel: the frozen handlers
+/// whose declared guard admits `owned`. `None` (un-planned) if the list is
+/// not frozen or has more than [`GUARDED_PLAN_CAP`] entries.
+fn guarded_plan_bits(
+    registry: &dyn FreezeControl,
+    owned: &crate::RelicKindSet,
+    frozen_seen: &mut bool,
+) -> Option<u32> {
+    let guards = registry.published_guards()?;
+    *frozen_seen = true;
+    if guards.len() > GUARDED_PLAN_CAP {
+        return None;
+    }
+    let mut bits = 0u32;
+    for (i, guard) in guards.iter().enumerate() {
+        if guard.admits(owned) {
+            bits |= 1 << i;
+        }
+    }
+    Some(bits)
+}
+
+/// Owned handlers of one owned-collect channel, in `RelicId` order: the
+/// plan's bits over the frozen list, or the generic collect when the plan
+/// does not cover the channel.
+enum OwnedListeners<F: Copy + 'static> {
+    Planned {
+        frozen: &'static [(RelicId, F)],
+        bits: u64,
+    },
+    Collected(smallvec::IntoIter<[F; 8]>),
+}
+
+impl<F: Copy + 'static> Iterator for OwnedListeners<F> {
+    type Item = F;
+
+    #[inline]
+    fn next(&mut self) -> Option<F> {
+        match self {
+            Self::Planned { frozen, bits } => {
+                if *bits == 0 {
+                    return None;
+                }
+                let i = bits.trailing_zeros() as usize;
+                *bits &= *bits - 1;
+                Some(frozen[i].1)
+            }
+            Self::Collected(it) => it.next(),
+        }
+    }
+}
+
+/// The owned handlers `collect_owned_listeners` would collect, read from the
+/// plan when it covers `channel` and the channel still serves its frozen list.
+#[inline]
+fn owned_listeners<F: Copy + 'static>(
+    registry: &'static ChannelRegistry<F>,
+    channel: OwnedChannel,
+    state: &CombatState,
+) -> OwnedListeners<F> {
+    let plan = state.relics.plan();
+    let c = channel as usize;
+    if plan.ready & (1 << c) != 0 {
+        if let Some(frozen) = registry.frozen_view() {
+            let bits = plan.owned[c];
+            #[cfg(debug_assertions)]
+            shadow_owned(registry, state, frozen, bits, channel);
+            return OwnedListeners::Planned { frozen, bits };
+        }
+    }
+    OwnedListeners::Collected(collect_owned_listeners(registry, state).into_iter())
+}
+
+/// The planned equip-order list of one channel and its frozen list, when the
+/// plan covers it (`ready_bit`) and the channel still serves its frozen list.
+#[inline]
+fn planned_equip_order<F: Copy + 'static>(
+    registry: &'static ChannelRegistry<F>,
+    state: &CombatState,
+    ready_bit: u16,
+    plan: impl FnOnce(&RelicPlan) -> &EquipPlan,
+) -> Option<(&'static [(RelicId, F)], EquipPlan)> {
+    let relic_plan = state.relics.plan();
+    if relic_plan.ready & ready_bit == 0 {
+        return None;
+    }
+    let frozen = registry.frozen_view()?;
+    let order = *plan(relic_plan);
+    #[cfg(debug_assertions)]
+    shadow_equip_order(registry, state, frozen, &order);
+    Some((frozen, order))
+}
+
+/// Debug shadow: the planned owned handlers are exactly the generic walk's.
+#[cfg(debug_assertions)]
+fn shadow_owned<F: Copy + 'static>(
+    registry: &ChannelRegistry<F>,
+    state: &CombatState,
+    frozen: &[(RelicId, F)],
+    mut bits: u64,
+    channel: OwnedChannel,
+) {
+    let mut generic: Vec<RelicId> = Vec::new();
+    for_each_owned_listener(registry, state, |id, _| generic.push(id));
+    let mut planned: Vec<RelicId> = Vec::new();
+    while bits != 0 {
+        planned.push(frozen[bits.trailing_zeros() as usize].0);
+        bits &= bits - 1;
+    }
+    assert_eq!(
+        planned, generic,
+        "relic plan for {channel:?} differs from the generic owned walk"
+    );
+}
+
+/// Debug shadow: the planned equip-order calls are exactly the generic walk's.
+#[cfg(debug_assertions)]
+fn shadow_equip_order<F: Copy + 'static>(
+    registry: &ChannelRegistry<F>,
+    state: &CombatState,
+    frozen: &[(RelicId, F)],
+    order: &EquipPlan,
+) {
+    let generic: Vec<(usize, RelicId)> = collect_equip_order_listeners(registry, state)
+        .into_iter()
+        .map(|(idx, id, _)| (idx, id))
+        .collect();
+    let planned: Vec<(usize, RelicId)> = order
+        .slots()
+        .iter()
+        .map(|s| (usize::from(s.equip_idx), frozen[usize::from(s.entry)].0))
+        .collect();
+    assert_eq!(
+        planned, generic,
+        "relic equip-order plan differs from the generic walk"
+    );
+}
+
+/// Debug shadow: the planned obtain-order calls are exactly the generic walk's.
+#[cfg(debug_assertions)]
+fn shadow_obtain_order(
+    state: &CombatState,
+    frozen: &[(RelicId, BeforeSideTurnStartFn)],
+    order: &ObtainPlan,
+) {
+    let mut generic: Vec<RelicId> = Vec::new();
+    for_each_obtain_order_listener(frozen, &state.relics, |id, _| generic.push(id));
+    let planned: Vec<RelicId> = order
+        .entries()
+        .iter()
+        .map(|&e| frozen[usize::from(e)].0)
+        .collect();
+    assert_eq!(
+        planned, generic,
+        "relic obtain-order plan differs from the generic walk"
+    );
+}
+
+/// The call bits of guarded `channel` and the frozen list they index, when
+/// the plan covers the channel and the channel still serves that list.
+#[inline]
+fn guarded_plan<F: Copy + 'static>(
+    registry: &'static ChannelRegistry<F>,
+    channel: GuardedChannel,
+    state: &CombatState,
+) -> Option<(&'static [(RelicId, F)], u32)> {
+    let plan = state.relics.plan();
+    let c = channel as usize;
+    if plan.guarded_ready & (1 << c) == 0 {
+        return None;
+    }
+    let frozen = registry.frozen_view()?;
+    #[cfg(debug_assertions)]
+    shadow_guarded_bits(channel, state, plan.guarded[c]);
+    Some((frozen, plan.guarded[c]))
+}
+
+/// Walk guarded `channel`, whose handlers take `&mut CombatState`, folding
+/// each called handler's result into `init` (J03). On the plan only the
+/// handlers its call bits admit run, in `RelicId` order; without one (an
+/// empty store, a channel past [`GUARDED_PLAN_CAP`], a registration after the
+/// freeze) every registered handler runs, as before.
+///
+/// Debug builds also run each skipped handler, at its place in the walk, on a
+/// clone of the state: the clone must come back unchanged, and folding the
+/// skipped results in as well (the full walk) must give the same answer.
+#[inline]
+fn walk_guarded_mut<F: Copy + 'static, R: Copy, A: Copy + PartialEq + std::fmt::Debug>(
+    registry: &'static ChannelRegistry<F>,
+    channel: GuardedChannel,
+    state: &mut CombatState,
+    init: A,
+    call: impl Fn(F, &mut CombatState) -> R,
+    fold: impl Fn(A, R) -> A,
+) -> A {
+    let mut acc = init;
+    let Some((frozen, mut bits)) = guarded_plan(registry, channel, state) else {
+        for (_id, f) in registry.listeners() {
+            acc = fold(acc, call(f, state));
+        }
+        return acc;
+    };
+    // Debug shadow: whether this walk is shadowed (it skips a handler, and
+    // runs inside a shadowing call-site gate or is sampled), the full walk's
+    // accumulator, and the next frozen position to shadow.
+    #[cfg(debug_assertions)]
+    let shadow = (bits.count_ones() as usize) < frozen.len()
+        && (ON_THROWAWAY_CLONE.with(std::cell::Cell::get) || shadow_this_call());
+    #[cfg(debug_assertions)]
+    let (mut full, mut next) = (init, 0usize);
+    while bits != 0 {
+        let i = bits.trailing_zeros() as usize;
+        bits &= bits - 1;
+        #[cfg(debug_assertions)]
+        if shadow {
+            full = shadow_skipped(channel, &frozen[next..i], state, full, &call, &fold);
+            next = i + 1;
+        }
+        let r = call(frozen[i].1, state);
+        acc = fold(acc, r);
+        #[cfg(debug_assertions)]
+        {
+            full = fold(full, r);
+        }
+    }
+    #[cfg(debug_assertions)]
+    if shadow {
+        full = shadow_skipped(channel, &frozen[next..], state, full, &call, &fold);
+        assert_eq!(
+            acc, full,
+            "narrowed {channel:?} walk answers differently from the full walk"
+        );
+    }
+    acc
+}
+
+/// [`walk_guarded_mut`] for an event channel: `Resolved` iff a called
+/// handler returned `Resolved`.
+#[inline]
+fn walk_guarded_event<F: Copy + 'static>(
+    registry: &'static ChannelRegistry<F>,
+    channel: GuardedChannel,
+    state: &mut CombatState,
+    call: impl Fn(F, &mut CombatState) -> EffectResult,
+) -> EffectResult {
+    let any_resolved = walk_guarded_mut(registry, channel, state, false, call, |any, r| {
+        any || r == EffectResult::Resolved
+    });
+    if any_resolved {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
+}
+
+/// Walk guarded `channel`, whose handlers read `&CombatState`, as the fold
+/// `acc = step(handler, acc)` from `init` (J03). Narrowing as in
+/// [`walk_guarded_mut`]. Debug builds assert that each skipped handler,
+/// stepped at its place in the walk, leaves `acc` unchanged.
+#[inline]
+fn walk_guarded<F: Copy + 'static, A: Copy + PartialEq + std::fmt::Debug>(
+    registry: &'static ChannelRegistry<F>,
+    channel: GuardedChannel,
+    state: &CombatState,
+    init: A,
+    step: impl Fn(F, A) -> A,
+) -> A {
+    let mut acc = init;
+    let Some((frozen, mut bits)) = guarded_plan(registry, channel, state) else {
+        for (_id, f) in registry.listeners() {
+            acc = step(f, acc);
+        }
+        return acc;
+    };
+    #[cfg(debug_assertions)]
+    let mut next = 0usize;
+    while bits != 0 {
+        let i = bits.trailing_zeros() as usize;
+        bits &= bits - 1;
+        #[cfg(debug_assertions)]
+        {
+            shadow_skipped_steps(channel, &frozen[next..i], acc, &step);
+            next = i + 1;
+        }
+        acc = step(frozen[i].1, acc);
+    }
+    #[cfg(debug_assertions)]
+    shadow_skipped_steps(channel, &frozen[next..], acc, &step);
+    acc
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Debug builds: a call-site gate is running a dead dispatch on a
+    /// throwaway clone, which it compares with the real state afterwards
+    /// ([`dispatch_if_live`]).
+    static ON_THROWAWAY_CLONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this skipped `&mut` dispatch gets its clone-based debug shadow
+/// (a `CombatState` clone and compare). Optimized checked builds
+/// (`--profile release-checked`) shadow every call. Unoptimized ones (the
+/// dev and test profiles, `cfg(sts2_unoptimized)` from the build script),
+/// where the clone and compare cost far more than the dispatch, shadow each
+/// thread's first 4096 calls and every 16th after: every shadow path still
+/// runs in the test suite, which stays inside its timeouts. The hook-liveness
+/// shadow (`hooks::shadow_dead_power_hook`) samples through it too.
+#[cfg(debug_assertions)]
+pub(crate) fn shadow_this_call() -> bool {
+    #[cfg(sts2_unoptimized)]
+    {
+        thread_local! {
+            static CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        }
+        let n = CALLS.with(|calls| calls.replace(calls.get() + 1));
+        n < 4096 || n % 16 == 0
+    }
+    #[cfg(not(sts2_unoptimized))]
+    true
+}
+
+/// Debug shadow of a run of consecutive handlers a guarded `&mut` walk
+/// skips: run them, in order, on one clone of `state`, fold their results
+/// into the full walk's accumulator `full`, and assert the clone still equals
+/// `state`: RNG cursors and counters through `CombatState` equality, and the
+/// event log through [`crate::event_log::EventLog::same_contents`], since
+/// that equality ignores the log. Inside a dead call-site gate `state` is
+/// itself a throwaway clone that the gate compares afterwards (log
+/// included), so they run on it directly.
+#[cfg(debug_assertions)]
+fn shadow_skipped<F: Copy + 'static, R, A>(
+    channel: GuardedChannel,
+    skipped: &[(RelicId, F)],
+    state: &mut CombatState,
+    mut full: A,
+    call: &impl Fn(F, &mut CombatState) -> R,
+    fold: &impl Fn(A, R) -> A,
+) -> A {
+    if skipped.is_empty() {
+        return full;
+    }
+    if ON_THROWAWAY_CLONE.with(std::cell::Cell::get) {
+        for &(_, f) in skipped {
+            full = fold(full, call(f, state));
+        }
+        return full;
+    }
+    let mut probe = state.clone();
+    for &(_, f) in skipped {
+        full = fold(full, call(f, &mut probe));
+    }
+    assert!(
+        probe == *state,
+        "{channel:?} skipped {:?} (relics not owned), but a handler changed the state",
+        skipped.iter().map(|&(id, _)| id).collect::<Vec<_>>()
+    );
+    assert!(
+        probe
+            .combat_log
+            .event_log
+            .same_contents(&state.combat_log.event_log),
+        "{channel:?} skipped {:?} (relics not owned), but a handler wrote the event log",
+        skipped.iter().map(|&(id, _)| id).collect::<Vec<_>>()
+    );
+    full
+}
+
+/// Debug shadow of the handlers a guarded `&` walk skips: each must step
+/// `acc` to itself.
+#[cfg(debug_assertions)]
+fn shadow_skipped_steps<F: Copy, A: Copy + PartialEq + std::fmt::Debug>(
+    channel: GuardedChannel,
+    skipped: &[(RelicId, F)],
+    acc: A,
+    step: &impl Fn(F, A) -> A,
+) {
+    for &(id, f) in skipped {
+        assert_eq!(
+            step(f, acc),
+            acc,
+            "{channel:?} skipped {id:?} (relic not owned), but its handler is not the identity"
+        );
+    }
 }
 
 /// Dispatch `before_combat_start` to every registered listener.
@@ -1029,18 +2443,12 @@ pub fn dispatch_before_hand_draw(state: &mut CombatState) -> EffectResult {
     if is_empty_before_hand_draw() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_before_hand_draw();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_before_hand_draw(),
+        GuardedChannel::BeforeHandDraw,
+        state,
+        |f, state| f(state),
+    )
 }
 
 /// Dispatch `after_side_turn_start` to every OWNED relic's listener, in
@@ -1067,29 +2475,29 @@ pub fn dispatch_after_side_turn_start(state: &mut CombatState, side: Side) -> Ef
     // unequipped relics are never collected; they previously self-no-op'd on
     // their `player_owns_relic` guard, so omitting them is bit-identical. See
     // `dispatch_before_side_turn_start` (m4jaj) for the owned-iteration
-    // precedent. Bead `sts2-rs-b8z17`.
-    let mut owned: smallvec::SmallVec<[(usize, AfterSideTurnStartFn); 8]> =
-        smallvec::SmallVec::new();
+    // precedent. Bead `sts2-rs-b8z17`. M01: that collect-and-sort is now done
+    // once per combat (`RelicPlan`); the walk below is the fallback.
     // Same empty-relics registry-walk skip as `collect_owned_listeners`.
     if state.relics.is_empty() {
         return EffectResult::NotImplemented;
     }
-    registry_after_side_turn_start().for_each_listener(|id, f| {
-        if let Some(kind) = id.to_relic_kind() {
-            if let Some(idx) = state
-                .relics
-                .iter()
-                .position(|r| !r.is_melted && r.kind == kind)
-            {
-                owned.push((idx, f));
+    let mut any_resolved = false;
+    if let Some((frozen, order)) = planned_equip_order(
+        registry_after_side_turn_start(),
+        state,
+        READY_AFTER_SIDE_TURN_START,
+        |p| &p.after_side_turn_start,
+    ) {
+        for slot in order.slots() {
+            if (frozen[usize::from(slot.entry)].1)(state, side) == EffectResult::Resolved {
+                any_resolved = true;
             }
         }
-    });
-    owned.sort_by_key(|(idx, _)| *idx);
-    let mut any_resolved = false;
-    for (_, f) in owned {
-        if f(state, side) == EffectResult::Resolved {
-            any_resolved = true;
+    } else {
+        for (_, _, f) in collect_equip_order_listeners(registry_after_side_turn_start(), state) {
+            if f(state, side) == EffectResult::Resolved {
+                any_resolved = true;
+            }
         }
     }
     if any_resolved {
@@ -1135,20 +2543,40 @@ pub fn dispatch_after_player_turn_start_from(state: &mut CombatState, from: u8) 
     if state.relics.is_empty() {
         return None;
     }
-    let mut owned: smallvec::SmallVec<[(usize, AfterPlayerTurnStartFn); 8]> =
-        smallvec::SmallVec::new();
-    registry_after_player_turn_start().for_each_listener(|id, f| {
-        if let Some(kind) = id.to_relic_kind() {
-            if let Some(idx) = state
-                .relics
+    // M01: the equip-order list comes from the per-combat `RelicPlan` when it
+    // covers this channel; positions are raw `state.relics` indices either way.
+    if let Some((frozen, order)) = planned_equip_order(
+        registry_after_player_turn_start(),
+        state,
+        READY_AFTER_PLAYER_TURN_START,
+        |p| &p.after_player_turn_start,
+    ) {
+        return run_after_player_turn_start(
+            state,
+            from,
+            order
+                .slots()
                 .iter()
-                .position(|r| !r.is_melted && r.kind == kind)
-            {
-                owned.push((idx, f));
-            }
-        }
-    });
-    owned.sort_by_key(|(idx, _)| *idx);
+                .map(|s| (usize::from(s.equip_idx), frozen[usize::from(s.entry)].1)),
+        );
+    }
+    run_after_player_turn_start(
+        state,
+        from,
+        collect_equip_order_listeners(registry_after_player_turn_start(), state)
+            .into_iter()
+            .map(|(idx, _, f)| (idx, f)),
+    )
+}
+
+/// The `after_player_turn_start` walk over an equip-ordered `(equip_idx,
+/// handler)` list, resuming at `from` and suspending when a listener opens a
+/// choice (see [`dispatch_after_player_turn_start_from`]).
+fn run_after_player_turn_start(
+    state: &mut CombatState,
+    from: u8,
+    owned: impl Iterator<Item = (usize, AfterPlayerTurnStartFn)>,
+) -> Option<u8> {
     for (idx, f) in owned {
         if idx < usize::from(from) {
             continue;
@@ -1194,16 +2622,32 @@ pub fn dispatch_before_side_turn_start(state: &mut CombatState, side: Side) -> E
     // so no RelicKind→RelicId bridge is needed.
     // Melted relics (ToyBox wax) are filtered out of the C# listener list at
     // `CombatState.cs:130-137`, so they never reach this obtain-order walk.
-    let owned: smallvec::SmallVec<[&'static str; 8]> = state
-        .relics
-        .iter()
-        .filter(|r| !r.is_melted)
-        .map(|r| r.kind.python_name())
-        .collect();
-    let listeners = listeners_before_side_turn_start();
+    //
+    // M01: that per-relic name search over the whole registry (9% of boss
+    // instructions) is resolved once per combat into the `RelicPlan`'s
+    // obtain-order list; the walk below is the fallback.
     let mut any_resolved = false;
-    for name in owned {
-        if let Some((_, f)) = listeners.iter().find(|(id, _)| id.to_python_name() == name) {
+    let relic_plan = state.relics.plan();
+    let planned = if relic_plan.ready & READY_BEFORE_SIDE_TURN_START == 0 {
+        None
+    } else {
+        registry_before_side_turn_start()
+            .frozen_view()
+            .map(|frozen| (frozen, relic_plan.before_side_turn_start))
+    };
+    if let Some((frozen, order)) = planned {
+        #[cfg(debug_assertions)]
+        shadow_obtain_order(state, frozen, &order);
+        for &entry in order.entries() {
+            if (frozen[usize::from(entry)].1)(state, side) == EffectResult::Resolved {
+                any_resolved = true;
+            }
+        }
+    } else {
+        let listeners = listeners_before_side_turn_start();
+        let mut owned: smallvec::SmallVec<[BeforeSideTurnStartFn; 8]> = smallvec::SmallVec::new();
+        for_each_obtain_order_listener(&listeners, &state.relics, |_, f| owned.push(f));
+        for f in owned {
             if f(state, side) == EffectResult::Resolved {
                 any_resolved = true;
             }
@@ -1228,7 +2672,11 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardEventCtx) -
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_after_card_played(), state) {
+    for f in owned_listeners(
+        registry_after_card_played(),
+        OwnedChannel::AfterCardPlayed,
+        state,
+    ) {
         if f(state, ctx) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1254,7 +2702,11 @@ pub fn dispatch_before_card_played(state: &mut CombatState, ctx: &CardEventCtx) 
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_before_card_played(), state) {
+    for f in owned_listeners(
+        registry_before_card_played(),
+        OwnedChannel::BeforeCardPlayed,
+        state,
+    ) {
         if f(state, ctx) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1271,18 +2723,12 @@ pub fn dispatch_after_card_exhausted(state: &mut CombatState, ctx: &CardEventCtx
     if is_empty_after_card_exhausted() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_card_exhausted();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_card_exhausted(),
+        GuardedChannel::AfterCardExhausted,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `after_room_entered` to every registered listener.
@@ -1316,18 +2762,12 @@ pub fn dispatch_after_card_entered_combat(
     if is_empty_after_card_entered_combat() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_card_entered_combat();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, card_uid, added_by_player) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_card_entered_combat(),
+        GuardedChannel::AfterCardEnteredCombat,
+        state,
+        |f, state| f(state, card_uid, added_by_player),
+    )
 }
 
 /// Dispatch `after_potion_used` to every registered listener. Fired by
@@ -1341,37 +2781,31 @@ pub fn dispatch_after_potion_used(
     if is_empty_after_potion_used() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_potion_used();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, kind, target) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_potion_used(),
+        GuardedChannel::AfterPotionUsed,
+        state,
+        |f, state| f(state, kind, target),
+    )
 }
 
 /// Dispatch `after_combat_end` to every registered listener.
+///
+/// J03: every `Owned` reset here (Kunai, Shuriken, ArtOfWar, …) answers
+/// `NotImplemented` without its relic, like any other `Owned` handler, so
+/// skipping it cannot change the answer. `JossPaper`'s reset is registered
+/// `Always` (it writes `combat_log` whatever the relics) and resolves on
+/// every dispatch, and every production caller discards the answer anyway.
 pub fn dispatch_after_combat_end(state: &mut CombatState) -> EffectResult {
     if is_empty_after_combat_end() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_combat_end();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_combat_end(),
+        GuardedChannel::AfterCombatEnd,
+        state,
+        |f, state| f(state),
+    )
 }
 
 /// Dispatch the `should_die_late` veto channel. Returns `true` (the
@@ -1393,14 +2827,12 @@ pub fn dispatch_should_die_late(state: &mut CombatState) -> bool {
     if is_empty_should_die_late() {
         return false;
     }
-    let listeners = listeners_should_die_late();
-    let mut prevent = false;
-    for (_id, f) in listeners {
-        if f(state) == EffectResult::Resolved {
-            prevent = true;
-        }
-    }
-    prevent
+    walk_guarded_event(
+        registry_should_die_late(),
+        GuardedChannel::ShouldDieLate,
+        state,
+        |f, state| f(state),
+    ) == EffectResult::Resolved
 }
 
 /// Dispatch `after_combat_victory` to every registered listener.
@@ -1408,18 +2840,12 @@ pub fn dispatch_after_combat_victory(state: &mut CombatState) -> EffectResult {
     if is_empty_after_combat_victory() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_combat_victory();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_combat_victory(),
+        GuardedChannel::AfterCombatVictory,
+        state,
+        |f, state| f(state),
+    )
 }
 
 /// Dispatch `before_turn_end` to every registered listener.
@@ -1432,7 +2858,11 @@ pub fn dispatch_before_turn_end(state: &mut CombatState, side: Side) -> EffectRe
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_before_turn_end(), state) {
+    for f in owned_listeners(
+        registry_before_turn_end(),
+        OwnedChannel::BeforeTurnEnd,
+        state,
+    ) {
         if f(state, side) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1449,18 +2879,12 @@ pub fn dispatch_after_turn_end(state: &mut CombatState, side: Side) -> EffectRes
     if is_empty_after_turn_end() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_turn_end();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, side) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_turn_end(),
+        GuardedChannel::AfterTurnEnd,
+        state,
+        |f, state| f(state, side),
+    )
 }
 
 /// Dispatch `after_damage_given` to every registered listener.
@@ -1474,7 +2898,11 @@ pub fn dispatch_after_damage_given(state: &mut CombatState, ctx: &DamageGivenCtx
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_after_damage_given(), state) {
+    for f in owned_listeners(
+        registry_after_damage_given(),
+        OwnedChannel::AfterDamageGiven,
+        state,
+    ) {
         if f(state, ctx) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1493,18 +2921,12 @@ pub fn dispatch_after_died_to_doom(state: &mut CombatState, ctx: &DiedToDoomCtx)
     if is_empty_after_died_to_doom() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_died_to_doom();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_died_to_doom(),
+        GuardedChannel::AfterDiedToDoom,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `after_block_gained` to every registered relic listener.
@@ -1524,7 +2946,11 @@ pub fn dispatch_after_block_gained(
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_after_block_gained(), state) {
+    for f in owned_listeners(
+        registry_after_block_gained(),
+        OwnedChannel::AfterBlockGained,
+        state,
+    ) {
         if f(state, ctx) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1548,18 +2974,12 @@ pub fn dispatch_after_card_discarded(
     if is_empty_after_card_discarded() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_card_discarded();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_card_discarded(),
+        GuardedChannel::AfterCardDiscarded,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `after_block_cleared` to every registered relic listener.
@@ -1581,7 +3001,11 @@ pub fn dispatch_after_block_cleared(
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_after_block_cleared(), state) {
+    for f in owned_listeners(
+        registry_after_block_cleared(),
+        OwnedChannel::AfterBlockCleared,
+        state,
+    ) {
         if f(state, ctx) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1610,12 +3034,15 @@ pub fn dispatch_should_clear_block(
     if is_empty_should_clear_block() {
         return true;
     }
-    for (_id, f) in listeners_should_clear_block() {
-        if !f(state, ctx) {
-            return false;
-        }
-    }
-    true
+    // `keep && …` stops calling at the first `false`, like the early return
+    // it replaces (the handlers only read the state).
+    walk_guarded(
+        registry_should_clear_block(),
+        GuardedChannel::ShouldClearBlock,
+        state,
+        true,
+        |f, keep| keep && f(state, ctx),
+    )
 }
 
 /// Dispatch `after_hand_emptied` to every registered relic listener.
@@ -1630,18 +3057,12 @@ pub fn dispatch_after_hand_emptied(
     if is_empty_after_hand_emptied() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_hand_emptied();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_hand_emptied(),
+        GuardedChannel::AfterHandEmptied,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `on_orb_channeled` to every registered relic listener.
@@ -1656,18 +3077,12 @@ pub fn dispatch_on_orb_channeled(
     if is_empty_on_orb_channeled() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_on_orb_channeled();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_on_orb_channeled(),
+        GuardedChannel::OnOrbChanneled,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `on_stars_spent` to every registered relic listener.
@@ -1682,18 +3097,12 @@ pub fn dispatch_on_stars_spent(
     if is_empty_on_stars_spent() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_on_stars_spent();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_on_stars_spent(),
+        GuardedChannel::OnStarsSpent,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `after_energy_reset` to every registered listener.
@@ -1701,18 +3110,12 @@ pub fn dispatch_after_energy_reset(state: &mut CombatState) -> EffectResult {
     if is_empty_after_energy_reset() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_energy_reset();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_energy_reset(),
+        GuardedChannel::AfterEnergyReset,
+        state,
+        |f, state| f(state),
+    )
 }
 
 /// Dispatch `after_obtained` to every registered listener.
@@ -1780,7 +3183,11 @@ pub fn dispatch_modify_damage_additive(state: &CombatState, ctx: &ModifyDamageCt
         return 0;
     }
     let mut total: i32 = 0;
-    for f in collect_owned_listeners(registry_modify_damage_additive(), state) {
+    for f in owned_listeners(
+        registry_modify_damage_additive(),
+        OwnedChannel::ModifyDamageAdditive,
+        state,
+    ) {
         total = total.saturating_add(f(state, ctx));
     }
     total
@@ -1817,7 +3224,11 @@ pub fn dispatch_modify_block_multiplicative(
         return crate::hooks::DamageMul::ONE;
     }
     let mut acc = crate::hooks::DamageMul::ONE;
-    for f in collect_owned_listeners(registry_modify_block_multiplicative(), state) {
+    for f in owned_listeners(
+        registry_modify_block_multiplicative(),
+        OwnedChannel::ModifyBlockMultiplicative,
+        state,
+    ) {
         acc = acc.compose(f(state, ctx));
     }
     acc
@@ -1847,7 +3258,11 @@ pub fn dispatch_modify_damage_multiplicative(
         return crate::hooks::DamageMul::ONE;
     }
     let mut acc = crate::hooks::DamageMul::ONE;
-    for f in collect_owned_listeners(registry_modify_damage_multiplicative(), state) {
+    for f in owned_listeners(
+        registry_modify_damage_multiplicative(),
+        OwnedChannel::ModifyDamageMultiplicative,
+        state,
+    ) {
         acc = acc.compose(f(state, ctx));
     }
     acc
@@ -1876,7 +3291,11 @@ pub fn dispatch_after_damage_received(
         return EffectResult::NotImplemented;
     }
     let mut any_resolved = false;
-    for f in collect_owned_listeners(registry_after_damage_received(), state) {
+    for f in owned_listeners(
+        registry_after_damage_received(),
+        OwnedChannel::AfterDamageReceived,
+        state,
+    ) {
         if f(state, ctx, damage) == EffectResult::Resolved {
             any_resolved = true;
         }
@@ -1910,18 +3329,12 @@ pub fn dispatch_after_death(
     if is_empty_after_death() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_death();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_death(),
+        GuardedChannel::AfterDeath,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `modify_hp_lost` as a left-to-right fold over registered
@@ -1944,7 +3357,7 @@ pub fn dispatch_modify_hp_lost(
         return base_amount;
     }
     let mut current = base_amount;
-    for f in collect_owned_listeners(registry_modify_hp_lost(), state) {
+    for f in owned_listeners(registry_modify_hp_lost(), OwnedChannel::ModifyHpLost, state) {
         current = f(state, ctx, current);
     }
     current
@@ -1957,12 +3370,13 @@ pub fn dispatch_modify_hand_draw(state: &CombatState, base_draw: i32) -> i32 {
     if is_empty_modify_hand_draw() {
         return base_draw;
     }
-    let listeners = listeners_modify_hand_draw();
-    let mut current = base_draw;
-    for (_id, f) in listeners {
-        current = f(state, current);
-    }
-    current
+    walk_guarded(
+        registry_modify_hand_draw(),
+        GuardedChannel::ModifyHandDraw,
+        state,
+        base_draw,
+        |f, current| f(state, current),
+    )
 }
 
 /// Dispatch `modify_x_value` as a left-to-right fold over registered
@@ -1974,12 +3388,13 @@ pub fn dispatch_modify_x_value(state: &CombatState, base_x: i32) -> i32 {
     if is_empty_modify_x_value() {
         return base_x;
     }
-    let listeners = listeners_modify_x_value();
-    let mut current = base_x;
-    for (_id, f) in listeners {
-        current = f(state, current);
-    }
-    current
+    walk_guarded(
+        registry_modify_x_value(),
+        GuardedChannel::ModifyXValue,
+        state,
+        base_x,
+        |f, current| f(state, current),
+    )
 }
 
 /// Dispatch the relic-side `modify_card_play_count` channel as a
@@ -1998,12 +3413,14 @@ pub fn dispatch_relic_modify_card_play_count(
     if is_empty_relic_modify_card_play_count() {
         return 0;
     }
-    let listeners = listeners_relic_modify_card_play_count();
-    let mut acc = 0i32;
-    for (_id, f) in listeners {
-        acc = acc.saturating_add(f(state, ctx));
-    }
-    acc
+    walk_guarded_mut(
+        registry_relic_modify_card_play_count(),
+        GuardedChannel::RelicModifyCardPlayCount,
+        state,
+        0i32,
+        |f, state| f(state, ctx),
+        i32::saturating_add,
+    )
 }
 
 /// Dispatch `modify_power_amount_given` as a left-to-right fold over
@@ -2019,14 +3436,21 @@ pub fn dispatch_modify_power_amount_given(
     if is_empty_modify_power_amount_given() {
         return ctx.amount;
     }
-    let listeners = listeners_modify_power_amount_given();
-    let mut current = ctx.amount;
-    let mut working = *ctx;
-    for (_id, f) in listeners {
-        working.amount = current;
-        current = f(state, &working);
-    }
-    current
+    walk_guarded(
+        registry_modify_power_amount_given(),
+        GuardedChannel::ModifyPowerAmountGiven,
+        state,
+        ctx.amount,
+        |f, current| {
+            f(
+                state,
+                &crate::hooks::PowerAmountCtx {
+                    amount: current,
+                    ..*ctx
+                },
+            )
+        },
+    )
 }
 
 /// Dispatch `modify_power_amount_received` as a left-to-right fold —
@@ -2039,14 +3463,21 @@ pub fn dispatch_modify_power_amount_received(
     if is_empty_modify_power_amount_received() {
         return ctx.amount;
     }
-    let listeners = listeners_modify_power_amount_received();
-    let mut current = ctx.amount;
-    let mut working = *ctx;
-    for (_id, f) in listeners {
-        working.amount = current;
-        current = f(state, &working);
-    }
-    current
+    walk_guarded(
+        registry_modify_power_amount_received(),
+        GuardedChannel::ModifyPowerAmountReceived,
+        state,
+        ctx.amount,
+        |f, current| {
+            f(
+                state,
+                &crate::hooks::PowerAmountCtx {
+                    amount: current,
+                    ..*ctx
+                },
+            )
+        },
+    )
 }
 
 /// Dispatch `before_power_amount_changed` to every registered relic
@@ -2061,18 +3492,12 @@ pub fn dispatch_before_power_amount_changed(
     if is_empty_before_power_amount_changed() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_before_power_amount_changed();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_before_power_amount_changed(),
+        GuardedChannel::BeforePowerAmountChanged,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `after_modifying_power_amount_given` to every registered
@@ -2086,18 +3511,12 @@ pub fn dispatch_after_modifying_power_amount_given(
     if is_empty_after_modifying_power_amount_given() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_modifying_power_amount_given();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_modifying_power_amount_given(),
+        GuardedChannel::AfterModifyingPowerAmountGiven,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Receiver-side analogue of
@@ -2109,18 +3528,12 @@ pub fn dispatch_after_modifying_power_amount_received(
     if is_empty_after_modifying_power_amount_received() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_modifying_power_amount_received();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_after_modifying_power_amount_received(),
+        GuardedChannel::AfterModifyingPowerAmountReceived,
+        state,
+        |f, state| f(state, ctx),
+    )
 }
 
 /// Dispatch `modify_rewards` — every listener is a mutate-in-place
@@ -2307,7 +3720,9 @@ relic_hook_channel!(
     lookup_count_pets,
     listeners_count_pets,
     is_empty_count_pets,
-    fn(&CombatState) -> i32
+    fn(&CombatState) -> i32;
+    guarded: register_owned_count_pets,
+        listener_guards_count_pets
 );
 
 /// Dispatch `count_pets` as a sum across every registered listener.
@@ -2315,12 +3730,14 @@ relic_hook_channel!(
 /// contributions are clamped at the end so the final count is `>= 0`.
 #[must_use]
 pub fn dispatch_count_pets(state: &CombatState) -> i32 {
-    let listeners = listeners_count_pets();
-    let mut total: i32 = 0;
-    for (_id, f) in listeners {
-        total = total.saturating_add(f(state));
-    }
-    total.max(0)
+    walk_guarded(
+        registry_count_pets(),
+        GuardedChannel::CountPets,
+        state,
+        0i32,
+        |f, total| total.saturating_add(f(state)),
+    )
+    .max(0)
 }
 
 relic_hook_channel!(
@@ -2332,7 +3749,9 @@ relic_hook_channel!(
     lookup_modify_vulnerable_multiplier,
     listeners_modify_vulnerable_multiplier,
     is_empty_modify_vulnerable_multiplier,
-    fn(&CombatState, ctx: &hooks::DamageCtx) -> i32
+    fn(&CombatState, ctx: &hooks::DamageCtx) -> i32;
+    guarded: register_owned_modify_vulnerable_multiplier,
+        listener_guards_modify_vulnerable_multiplier
 );
 
 /// Dispatch `modify_vulnerable_multiplier` — sum of each relic's additive
@@ -2348,12 +3767,13 @@ pub fn dispatch_modify_vulnerable_multiplier(state: &CombatState, ctx: &hooks::D
     if is_empty_modify_vulnerable_multiplier() {
         return 0;
     }
-    let listeners = listeners_modify_vulnerable_multiplier();
-    let mut total: i32 = 0;
-    for (_id, f) in listeners {
-        total = total.saturating_add(f(state, ctx));
-    }
-    total
+    walk_guarded(
+        registry_modify_vulnerable_multiplier(),
+        GuardedChannel::ModifyVulnerableMultiplier,
+        state,
+        0i32,
+        |f, total| total.saturating_add(f(state, ctx)),
+    )
 }
 
 relic_hook_channel!(
@@ -2365,7 +3785,9 @@ relic_hook_channel!(
     lookup_before_play_phase_start,
     listeners_before_play_phase_start,
     is_empty_before_play_phase_start,
-    fn(&mut CombatState) -> EffectResult
+    fn(&mut CombatState) -> EffectResult;
+    guarded: register_owned_before_play_phase_start,
+        listener_guards_before_play_phase_start
 );
 
 /// Dispatch `before_play_phase_start` to every registered listener.
@@ -2378,18 +3800,12 @@ pub fn dispatch_before_play_phase_start(state: &mut CombatState) -> EffectResult
     if is_empty_before_play_phase_start() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_before_play_phase_start();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state) == EffectResult::Resolved {
-            any_resolved = true;
-        }
-    }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
-    }
+    walk_guarded_event(
+        registry_before_play_phase_start(),
+        GuardedChannel::BeforePlayPhaseStart,
+        state,
+        |f, state| f(state),
+    )
 }
 
 /// Origin of a deck-add event. Listeners may branch on this; the bus
@@ -2546,7 +3962,9 @@ relic_hook_channel!(
     lookup_after_shuffle_bus,
     listeners_after_shuffle_bus,
     is_empty_after_shuffle_bus,
-    fn(&mut CombatState, ctx: &ShuffleCtx) -> EffectResult
+    fn(&mut CombatState, ctx: &ShuffleCtx) -> EffectResult;
+    guarded: register_owned_after_shuffle_bus,
+        listener_guards_after_shuffle_bus
 );
 
 /// Dispatch `after_shuffle` to every registered listener.
@@ -2559,83 +3977,1171 @@ pub fn dispatch_after_shuffle_bus(state: &mut CombatState, ctx: &ShuffleCtx) -> 
     if is_empty_after_shuffle_bus() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_after_shuffle_bus();
-    let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
-        }
+    walk_guarded_event(
+        registry_after_shuffle_bus(),
+        GuardedChannel::AfterShuffleBus,
+        state,
+        |f, state| f(state, ctx),
+    )
+}
+
+/// Freeze controls for one channel, object-safe so the single
+/// [`all_channels`] list drives both [`freeze_all_channels`] and
+/// [`all_channels_frozen`].
+trait FreezeControl {
+    /// [`ChannelRegistry::freeze`].
+    fn publish_frozen(&self);
+    /// Whether the dispatch read path takes the frozen `&'static` view.
+    fn serves_frozen(&self) -> bool;
+    /// [`ChannelRegistry::published_guards`] (the guarded channels' plan
+    /// build reads it through the type-erased registry).
+    fn published_guards(&self) -> Option<&[RelicGuard]>;
+}
+
+impl<F: Copy + 'static> FreezeControl for ChannelRegistry<F> {
+    fn publish_frozen(&self) {
+        self.freeze();
     }
-    if any_resolved {
-        EffectResult::Resolved
-    } else {
-        EffectResult::NotImplemented
+
+    #[inline]
+    fn serves_frozen(&self) -> bool {
+        self.frozen_view().is_some()
+    }
+
+    #[inline]
+    fn published_guards(&self) -> Option<&[RelicGuard]> {
+        ChannelRegistry::published_guards(self)
     }
 }
 
-/// Freeze every relic hook channel's read view, called once at the tail of
-/// `relic_effects::install_default_registry`'s `INSTALL_ONCE` after all
-/// `register_*` have run. After this, the dispatch read path is a cheap
-/// `OnceLock::get` (`&'static` slice) instead of an `ArcSwap::load` debt-slot
-/// dance — see [`ChannelRegistry`]'s `frozen` field and
-/// `docs/perf/2026-06-14-dispatch-registry-freeze-design.md`.
-///
-/// MUST list every `relic_hook_channel!` channel. A missing entry is not a
-/// correctness bug — that channel simply stays on the slower `ArcSwap` read
-/// path — but `channels_all_frozen_after_install` (tests) guards against the
-/// perf drift. Keep alphabetical, mirroring the macro invocations above.
+/// Every `relic_hook_channel!` channel. MUST list each one. A missing entry is
+/// not a correctness bug — that channel simply stays on the slower `ArcSwap`
+/// read path — but it is also invisible to [`all_channels_frozen`], so the
+/// `freeze_guard` hot-channel test pins the per-dispatch hot set by name. Keep
+/// alphabetical, mirroring the macro invocations above.
+fn all_channels() -> [&'static dyn FreezeControl; 53] {
+    [
+        registry_after_block_cleared(),
+        registry_after_block_gained(),
+        registry_after_card_discarded(),
+        registry_after_card_entered_combat(),
+        registry_after_card_exhausted(),
+        registry_after_card_played(),
+        registry_after_combat_end(),
+        registry_after_combat_victory(),
+        registry_after_damage_given(),
+        registry_after_damage_received(),
+        registry_after_death(),
+        registry_after_died_to_doom(),
+        registry_after_energy_reset(),
+        registry_after_hand_emptied(),
+        registry_after_max_hp_changed(),
+        registry_after_max_hp_gained(),
+        registry_after_modifying_power_amount_given(),
+        registry_after_modifying_power_amount_received(),
+        registry_after_obtained(),
+        registry_after_player_turn_start(),
+        registry_after_potion_used(),
+        registry_after_room_entered(),
+        registry_after_shuffle_bus(),
+        registry_after_side_turn_start(),
+        registry_after_turn_end(),
+        registry_before_card_played(),
+        registry_before_combat_start(),
+        registry_before_hand_draw(),
+        registry_before_play_phase_start(),
+        registry_before_power_amount_changed(),
+        registry_before_side_turn_start(),
+        registry_before_turn_end(),
+        registry_count_pets(),
+        registry_modify_block_multiplicative(),
+        registry_modify_card_reward_options_late(),
+        registry_modify_damage_additive(),
+        registry_modify_damage_multiplicative(),
+        registry_modify_hand_draw(),
+        registry_modify_hp_lost(),
+        registry_modify_power_amount_given(),
+        registry_modify_power_amount_received(),
+        registry_modify_rest_site_heal_rewards(),
+        registry_modify_rewards(),
+        registry_modify_shop_price(),
+        registry_modify_vulnerable_multiplier(),
+        registry_modify_x_value(),
+        registry_on_card_added_to_deck(),
+        registry_on_orb_channeled(),
+        registry_on_pet_summoned(),
+        registry_on_stars_spent(),
+        registry_relic_modify_card_play_count(),
+        registry_should_clear_block(),
+        registry_should_die_late(),
+    ]
+}
+
+/// Freeze every relic hook channel's read view. Called once, at the tail of
+/// the CONTENT installer's install-once (`sts2_content::relics::dispatch::
+/// install_default_registry`), after the core handlers AND every content pool
+/// have registered: a registration after the freeze sends that channel back to
+/// the `ArcSwap` path for good (`mutated_after_freeze`), which is what the old
+/// freeze at the end of the core installer did to 25 of the 53 channels (M02,
+/// `docs/perf/2026-10-13-engine-speed-exact-design.md`). After this, the
+/// dispatch read path is a cheap `OnceLock::get` (`&'static` slice) instead of
+/// an `ArcSwap::load` debt-slot dance — see `ChannelRegistry`'s `frozen`
+/// field and `docs/perf/2026-06-14-dispatch-registry-freeze-design.md`.
 pub fn freeze_all_channels() {
-    registry_after_block_cleared().freeze();
-    registry_after_block_gained().freeze();
-    registry_after_card_discarded().freeze();
-    registry_after_card_entered_combat().freeze();
-    registry_after_card_exhausted().freeze();
-    registry_after_card_played().freeze();
-    registry_after_combat_end().freeze();
-    registry_after_combat_victory().freeze();
-    registry_after_damage_given().freeze();
-    registry_after_damage_received().freeze();
-    registry_after_death().freeze();
-    registry_after_died_to_doom().freeze();
-    registry_after_energy_reset().freeze();
-    registry_after_hand_emptied().freeze();
-    registry_after_max_hp_changed().freeze();
-    registry_after_max_hp_gained().freeze();
-    registry_after_modifying_power_amount_given().freeze();
-    registry_after_modifying_power_amount_received().freeze();
-    registry_after_obtained().freeze();
-    registry_after_player_turn_start().freeze();
-    registry_after_potion_used().freeze();
-    registry_after_room_entered().freeze();
-    registry_after_shuffle_bus().freeze();
-    registry_after_side_turn_start().freeze();
-    registry_after_turn_end().freeze();
-    registry_before_card_played().freeze();
-    registry_before_combat_start().freeze();
-    registry_before_hand_draw().freeze();
-    registry_before_play_phase_start().freeze();
-    registry_before_power_amount_changed().freeze();
-    registry_before_side_turn_start().freeze();
-    registry_before_turn_end().freeze();
-    registry_count_pets().freeze();
-    registry_modify_block_multiplicative().freeze();
-    registry_modify_card_reward_options_late().freeze();
-    registry_modify_damage_additive().freeze();
-    registry_modify_damage_multiplicative().freeze();
-    registry_modify_hand_draw().freeze();
-    registry_modify_hp_lost().freeze();
-    registry_modify_power_amount_given().freeze();
-    registry_modify_power_amount_received().freeze();
-    registry_modify_rest_site_heal_rewards().freeze();
-    registry_modify_rewards().freeze();
-    registry_modify_shop_price().freeze();
-    registry_modify_vulnerable_multiplier().freeze();
-    registry_modify_x_value().freeze();
-    registry_on_card_added_to_deck().freeze();
-    registry_on_orb_channeled().freeze();
-    registry_on_pet_summoned().freeze();
-    registry_on_stars_spent().freeze();
-    registry_relic_modify_card_play_count().freeze();
-    registry_should_clear_block().freeze();
-    registry_should_die_late().freeze();
+    for channel in all_channels() {
+        channel.publish_frozen();
+    }
+}
+
+/// `true` iff every relic hook channel serves its frozen `&'static` read view:
+/// [`freeze_all_channels`] ran and no registration has landed since. The
+/// content crate's install test pins this, so a registration that sneaks in
+/// after the freeze (silently un-freezing a channel) fails a test instead of
+/// only costing speed.
+#[must_use]
+pub fn all_channels_frozen() -> bool {
+    all_channels().iter().all(|channel| channel.serves_frozen())
+}
+
+/// M01 relic-plan fixtures. The core installer alone does not freeze (M02),
+/// so each test freezes explicitly; nextest runs every test in its own
+/// process, so the freeze and the post-freeze registrations stay local.
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use crate::{Relic, RelicKind, Side};
+    use std::num::NonZeroU32;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Every planned channel's `ready` bit.
+    const ALL_READY: u16 = ALL_PLANNED;
+
+    fn install_and_freeze() {
+        super::super::ensure_installed();
+        freeze_all_channels();
+    }
+
+    fn state_with(relics: &[(RelicKind, bool)]) -> CombatState {
+        let mut state = CombatState::default();
+        state.player.max_hp = 80;
+        state.player.current_hp = 80;
+        state.init_player_creature();
+        state.round = 1;
+        state.relics = relics
+            .iter()
+            .enumerate()
+            .map(|(i, &(kind, melted))| Relic {
+                id: NonZeroU32::new(u32::try_from(i + 1).unwrap()).unwrap(),
+                kind,
+                counter: 0,
+                is_wax: melted,
+                is_melted: melted,
+            })
+            .collect();
+        state
+    }
+
+    fn push_enemy(state: &mut CombatState, id_raw: u32, hp: i32) -> crate::CreatureUid {
+        let id = NonZeroU32::new(id_raw).expect("non-zero");
+        state.creatures.push(crate::Creature {
+            id,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: Some(crate::MonsterKind::Nibbit),
+            intent: None,
+            intent_history: crate::IntentHistory::default(),
+            monster_id: crate::MonsterId("Nibbit"),
+            ai: None,
+        });
+        let uid = crate::CreatureUid(id);
+        state.enemy_uids.push(uid);
+        uid
+    }
+
+    fn enemy_power_amount(state: &CombatState, enemy: crate::CreatureUid, kind: PowerKind) -> i32 {
+        let Some(c) = state.creatures.iter().find(|c| c.id == enemy.0) else {
+            return 0;
+        };
+        c.powers
+            .iter()
+            .filter_map(|puid| state.powers.get_by_id(puid.0))
+            .find(|p| p.kind == kind)
+            .map_or(0, |p| p.amount)
+    }
+
+    fn enemy_hp(state: &CombatState, enemy: crate::CreatureUid) -> i32 {
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == enemy.0)
+            .map_or(0, |c| c.current_hp)
+    }
+
+    /// Small deterministic LCG for the layout battery.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(self.0 >> 33).unwrap() % n
+        }
+    }
+
+    /// A store built before the freeze has no plan; `ensure_plan` (run at
+    /// every `apply` entry) builds it once the channels are frozen, and it
+    /// equals the plan of a store built after the freeze.
+    #[test]
+    fn plan_is_built_once_the_channels_freeze() {
+        super::super::ensure_installed();
+        let layout = [
+            (RelicKind::GamblingChip, false),
+            (RelicKind::Kunai, false),
+            (RelicKind::BagOfMarbles, true),
+        ];
+        let mut early = state_with(&layout);
+        assert!(!early.relics.plan().is_built(), "no frozen list yet");
+        assert_eq!(early.relics.plan().ready, 0);
+        assert!(
+            CombatState::default().relics.plan().is_built(),
+            "an empty store owns nothing under any registry"
+        );
+        freeze_all_channels();
+        early.relics.ensure_plan();
+        assert!(early.relics.plan().is_built());
+        assert_eq!(early.relics.plan().ready, ALL_READY);
+        assert_eq!(early.relics.plan(), state_with(&layout).relics.plan());
+    }
+
+    /// Every planned walk equals the generic walk it replaces, over random
+    /// relic layouts with melted relics and duplicated kinds: the owned
+    /// channels (`RelicId` order, once per registered id), the equip-order
+    /// channels (raw positions with melted slots counted, stable-sorted) and
+    /// the obtain-order channel (one call per instance).
+    #[test]
+    fn planned_walks_match_the_generic_walks() {
+        install_and_freeze();
+        macro_rules! check_owned {
+            ($state:expr, $covered:expr, $registry:ident, $channel:ident) => {{
+                let c = OwnedChannel::$channel as usize;
+                let mut generic: Vec<RelicId> = Vec::new();
+                for_each_owned_listener($registry(), &$state, |id, _| generic.push(id));
+                let OwnedListeners::Planned { frozen, mut bits } =
+                    owned_listeners($registry(), OwnedChannel::$channel, &$state)
+                else {
+                    panic!("{} is not planned", stringify!($channel));
+                };
+                let mut planned: Vec<RelicId> = Vec::new();
+                while bits != 0 {
+                    planned.push(frozen[bits.trailing_zeros() as usize].0);
+                    bits &= bits - 1;
+                }
+                assert_eq!(planned, generic, "{}", stringify!($channel));
+                if !generic.is_empty() {
+                    $covered[c] += 1;
+                }
+            }};
+        }
+        macro_rules! check_equip {
+            ($state:expr, $covered:expr, $registry:ident, $ready:ident, $field:ident) => {{
+                let generic: Vec<(usize, RelicId)> =
+                    collect_equip_order_listeners($registry(), &$state)
+                        .into_iter()
+                        .map(|(idx, id, _)| (idx, id))
+                        .collect();
+                if $state.relics.plan().ready & $ready == 0 {
+                    assert!(
+                        generic.len() > EQUIP_PLAN_CAP,
+                        "un-planned only past capacity"
+                    );
+                } else {
+                    let (frozen, order) =
+                        planned_equip_order($registry(), &$state, $ready, |p| &p.$field)
+                            .expect("planned");
+                    let planned: Vec<(usize, RelicId)> = order
+                        .slots()
+                        .iter()
+                        .map(|s| (usize::from(s.equip_idx), frozen[usize::from(s.entry)].0))
+                        .collect();
+                    assert_eq!(planned, generic, "{}", stringify!($field));
+                    // A planned call sitting behind a melted slot: the raw
+                    // position (what GamblingChip's resume compares) differs
+                    // from the position among unmelted relics.
+                    if planned
+                        .iter()
+                        .any(|&(idx, _)| $state.relics[..idx].iter().any(|r| r.is_melted))
+                    {
+                        $covered[OWNED_CHANNELS] += 1;
+                    }
+                }
+            }};
+        }
+
+        let mut rng = Lcg(0x9E37_79B9_7F4A_7C15);
+        let all = RelicKind::ALL;
+        // [owned channels…, equip behind a melted slot, obtain duplicate].
+        let mut covered = [0usize; OWNED_CHANNELS + 2];
+        for _ in 0..4000 {
+            let len = 1 + rng.below(22);
+            let mut layout: Vec<(RelicKind, bool)> = Vec::new();
+            for _ in 0..len {
+                let kind = if !layout.is_empty() && rng.below(5) == 0 {
+                    layout[rng.below(layout.len())].0
+                } else {
+                    all[rng.below(all.len())]
+                };
+                layout.push((kind, rng.below(5) == 0));
+            }
+            let state = state_with(&layout);
+            assert!(state.relics.plan().is_built());
+
+            check_owned!(state, covered, registry_after_card_played, AfterCardPlayed);
+            check_owned!(
+                state,
+                covered,
+                registry_before_card_played,
+                BeforeCardPlayed
+            );
+            check_owned!(state, covered, registry_before_turn_end, BeforeTurnEnd);
+            check_owned!(
+                state,
+                covered,
+                registry_after_damage_given,
+                AfterDamageGiven
+            );
+            check_owned!(
+                state,
+                covered,
+                registry_after_block_gained,
+                AfterBlockGained
+            );
+            check_owned!(
+                state,
+                covered,
+                registry_after_block_cleared,
+                AfterBlockCleared
+            );
+            check_owned!(
+                state,
+                covered,
+                registry_modify_damage_additive,
+                ModifyDamageAdditive
+            );
+            check_owned!(
+                state,
+                covered,
+                registry_modify_block_multiplicative,
+                ModifyBlockMultiplicative
+            );
+            check_owned!(
+                state,
+                covered,
+                registry_modify_damage_multiplicative,
+                ModifyDamageMultiplicative
+            );
+            check_owned!(
+                state,
+                covered,
+                registry_after_damage_received,
+                AfterDamageReceived
+            );
+            check_owned!(state, covered, registry_modify_hp_lost, ModifyHpLost);
+            check_equip!(
+                state,
+                covered,
+                registry_after_side_turn_start,
+                READY_AFTER_SIDE_TURN_START,
+                after_side_turn_start
+            );
+            check_equip!(
+                state,
+                covered,
+                registry_after_player_turn_start,
+                READY_AFTER_PLAYER_TURN_START,
+                after_player_turn_start
+            );
+
+            let listeners = listeners_before_side_turn_start();
+            let mut generic: Vec<RelicId> = Vec::new();
+            for_each_obtain_order_listener(&listeners, &state.relics, |id, _| generic.push(id));
+            if state.relics.plan().ready & READY_BEFORE_SIDE_TURN_START == 0 {
+                assert!(
+                    generic.len() > OBTAIN_PLAN_CAP,
+                    "un-planned only past capacity"
+                );
+            } else {
+                let frozen = registry_before_side_turn_start()
+                    .frozen_view()
+                    .expect("frozen");
+                let planned: Vec<RelicId> = state
+                    .relics
+                    .plan()
+                    .before_side_turn_start
+                    .entries()
+                    .iter()
+                    .map(|&e| frozen[usize::from(e)].0)
+                    .collect();
+                assert_eq!(planned, generic, "before_side_turn_start");
+                if (1..planned.len()).any(|i| planned[..i].contains(&planned[i])) {
+                    covered[OWNED_CHANNELS + 1] += 1;
+                }
+            }
+        }
+        // Non-vacuous: every channel with a core handler planned a non-empty
+        // list somewhere (`modify_damage_multiplicative`'s handlers are all
+        // content-side; the content suite's shadow checks cover it), an
+        // equip-order call sat behind a melted slot, and a duplicated kind
+        // fired twice on the obtain-order channel.
+        let registered = [
+            registry_after_card_played().frozen_view().map(<[_]>::len),
+            registry_before_card_played().frozen_view().map(<[_]>::len),
+            registry_before_turn_end().frozen_view().map(<[_]>::len),
+            registry_after_damage_given().frozen_view().map(<[_]>::len),
+            registry_after_block_gained().frozen_view().map(<[_]>::len),
+            registry_after_block_cleared().frozen_view().map(<[_]>::len),
+            registry_modify_damage_additive()
+                .frozen_view()
+                .map(<[_]>::len),
+            registry_modify_block_multiplicative()
+                .frozen_view()
+                .map(<[_]>::len),
+            registry_modify_damage_multiplicative()
+                .frozen_view()
+                .map(<[_]>::len),
+            registry_after_damage_received()
+                .frozen_view()
+                .map(<[_]>::len),
+            registry_modify_hp_lost().frozen_view().map(<[_]>::len),
+        ];
+        for (c, n) in covered.iter().enumerate() {
+            if registered.get(c).is_some_and(|len| *len == Some(0)) {
+                continue;
+            }
+            assert!(*n > 0, "case {c} never exercised");
+        }
+    }
+
+    /// GamblingChip's resume index is a RAW `state.relics` position: a melted
+    /// relic before it still counts (sts2-py's `arm_turn_start_resume` hands
+    /// back `position + 1` without a melt filter). The planned walk must
+    /// return and honour the same index as the generic one.
+    #[test]
+    fn gambling_chip_resume_counts_melted_slots() {
+        install_and_freeze();
+        let mut planned = state_with(&[
+            (RelicKind::MercuryHourglass, true),
+            (RelicKind::GamblingChip, false),
+            (RelicKind::MercuryHourglass, false),
+        ]);
+        let enemy = push_enemy(&mut planned, 900, 40);
+        for uid_val in 9001..=9003 {
+            let uid = crate::CardUid(NonZeroU32::new(uid_val).expect("non-zero"));
+            let mut card = crate::cards::Card::pod_defaults();
+            card.uid = uid;
+            card.card_id = crate::cards::CardId::StrikeIronclad;
+            card.card_type = crate::cards::CardType::Attack;
+            planned.cards.push(card);
+            planned.player.hand.push(uid);
+        }
+        let plan = *planned.relics.plan();
+        assert_ne!(plan.ready & READY_AFTER_PLAYER_TURN_START, 0);
+        assert_eq!(
+            plan.after_player_turn_start
+                .slots()
+                .iter()
+                .map(|s| s.equip_idx)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "raw positions, melted slot 0 included"
+        );
+        let mut generic = planned.clone();
+        generic.relics.drop_plan();
+
+        for state in [&mut planned, &mut generic] {
+            assert_eq!(
+                dispatch_after_player_turn_start(state),
+                Some(2),
+                "suspends behind GamblingChip at raw slot 1"
+            );
+            assert!(state.pending_choice.is_some());
+            assert_eq!(
+                enemy_hp(state, enemy),
+                40,
+                "the hourglass waits for the pick"
+            );
+            state.pending_choice = None;
+            assert_eq!(dispatch_after_player_turn_start_from(state, 2), None);
+            assert_eq!(
+                enemy_hp(state, enemy),
+                37,
+                "the hourglass fires once on resume"
+            );
+            assert!(
+                state.pending_choice.is_none(),
+                "GamblingChip did not re-fire"
+            );
+        }
+        assert!(planned == generic, "planned and generic walks diverged");
+    }
+
+    /// `before_side_turn_start` fires once per relic INSTANCE in obtain
+    /// order, melted instances skipped. Against an Artifact enemy only the
+    /// first debuff is negated, so the order is observable (parity seed
+    /// 1686 shape): the first BagOfMarbles is eaten, RedMask's Weak and the
+    /// duplicate BagOfMarbles' Vulnerable land.
+    #[test]
+    fn before_side_turn_start_fires_each_instance_in_obtain_order() {
+        install_and_freeze();
+        let mut planned = state_with(&[
+            (RelicKind::RedMask, true),
+            (RelicKind::BagOfMarbles, false),
+            (RelicKind::RedMask, false),
+            (RelicKind::BagOfMarbles, false),
+        ]);
+        let enemy = push_enemy(&mut planned, 900, 40);
+        crate::card_effects::apply_power_to_enemy(&mut planned, enemy, PowerKind::Artifact, 1);
+        let plan = *planned.relics.plan();
+        assert_ne!(plan.ready & READY_BEFORE_SIDE_TURN_START, 0);
+        assert_eq!(plan.before_side_turn_start.entries().len(), 3);
+        let mut generic = planned.clone();
+        generic.relics.drop_plan();
+
+        for state in [&mut planned, &mut generic] {
+            assert_eq!(
+                dispatch_before_side_turn_start(state, Side::Player),
+                EffectResult::Resolved
+            );
+            assert_eq!(enemy_power_amount(state, enemy, PowerKind::Artifact), 0);
+            assert_eq!(enemy_power_amount(state, enemy, PowerKind::Weak), 1);
+            assert_eq!(enemy_power_amount(state, enemy, PowerKind::Vulnerable), 1);
+        }
+        assert!(planned == generic, "planned and generic walks diverged");
+    }
+
+    /// A melt written through `&mut [Relic]` instead of
+    /// `RelicStore::set_melted` leaves the plan stale; the debug drift assert
+    /// at `apply` entry catches it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "owned-kind set drifted")]
+    fn melt_written_around_the_store_trips_the_drift_assert() {
+        install_and_freeze();
+        let mut state = state_with(&[(RelicKind::Kunai, false), (RelicKind::Vajra, false)]);
+        state.relics[0].is_melted = true;
+        let _ = crate::apply(&mut state, crate::Action::EndTurn);
+    }
+
+    static REPLACED_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_after_card_played(_: &mut CombatState, _: &CardEventCtx) -> EffectResult {
+        REPLACED_CALLS.fetch_add(1, Ordering::Relaxed);
+        EffectResult::Resolved
+    }
+
+    fn counting_after_player_turn_start(_: &mut CombatState) -> EffectResult {
+        REPLACED_CALLS.fetch_add(100, Ordering::Relaxed);
+        EffectResult::Resolved
+    }
+
+    fn counting_before_side_turn_start(_: &mut CombatState, _: Side) -> EffectResult {
+        REPLACED_CALLS.fetch_add(10_000, Ordering::Relaxed);
+        EffectResult::Resolved
+    }
+
+    /// A handler (re-)registered AFTER a store built its plan reaches the
+    /// dispatch: the registration flags the channel's frozen list stale, and
+    /// the planned dispatchers fall back to the live registry. Replacing an
+    /// owned relic's handler is the hazard (the plan's position still points
+    /// at the old handler); the tests re-register real `RelicId`s this way.
+    #[test]
+    fn registration_after_the_plan_is_built_reaches_dispatch() {
+        install_and_freeze();
+        let mut state = state_with(&[
+            (RelicKind::Kunai, false),
+            (RelicKind::GamblingChip, false),
+            (RelicKind::BagOfMarbles, false),
+        ]);
+        assert_eq!(state.relics.plan().ready, ALL_READY);
+        assert!(lookup_after_card_played(RelicId::Kunai).is_some());
+
+        register_after_card_played(RelicId::Kunai, counting_after_card_played);
+        register_after_player_turn_start(RelicId::GamblingChip, counting_after_player_turn_start);
+        register_before_side_turn_start(RelicId::BagOfMarbles, counting_before_side_turn_start);
+        assert_eq!(
+            state.relics.plan().ready,
+            ALL_READY,
+            "the stored plan is unchanged"
+        );
+
+        let ctx = CardEventCtx {
+            card_id: crate::cards::CardId::StrikeIronclad,
+            card_uid: None,
+            target: None,
+            card_tags: crate::cards::CardTags::default(),
+            energy_spent: 0,
+        };
+        let _ = dispatch_after_card_played(&mut state, &ctx);
+        let _ = dispatch_after_player_turn_start(&mut state);
+        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
+        assert_eq!(REPLACED_CALLS.load(Ordering::Relaxed), 10_101);
+    }
+
+    /// Every [`PlannedChannel`].
+    const PLANNED_CHANNELS: [PlannedChannel; 14] = [
+        PlannedChannel::AfterCardPlayed,
+        PlannedChannel::BeforeCardPlayed,
+        PlannedChannel::BeforeTurnEnd,
+        PlannedChannel::AfterDamageGiven,
+        PlannedChannel::AfterBlockGained,
+        PlannedChannel::AfterBlockCleared,
+        PlannedChannel::ModifyDamageAdditive,
+        PlannedChannel::ModifyBlockMultiplicative,
+        PlannedChannel::ModifyDamageMultiplicative,
+        PlannedChannel::AfterDamageReceived,
+        PlannedChannel::ModifyHpLost,
+        PlannedChannel::AfterSideTurnStart,
+        PlannedChannel::AfterPlayerTurnStart,
+        PlannedChannel::BeforeSideTurnStart,
+    ];
+
+    /// J01b live bits: over random layouts (empty, melted relics, duplicated
+    /// kinds, kinds with no handler on a channel), a planned channel answers
+    /// "dead" exactly when its generic walk calls nothing, an empty store is
+    /// dead on every channel, and a store whose plan was dropped is live on
+    /// every channel (its dispatchers take the generic walk).
+    #[test]
+    fn live_bits_match_the_generic_walks() {
+        install_and_freeze();
+        let bits: Vec<u16> = PLANNED_CHANNELS.iter().map(|c| c.bit()).collect();
+        assert_eq!(bits.iter().fold(0, |a, b| a | b), ALL_PLANNED);
+        assert_eq!(
+            bits.len(),
+            usize::try_from(ALL_PLANNED.count_ones()).unwrap(),
+            "one distinct bit per channel"
+        );
+
+        let mut rng = Lcg(0xD1B5_4A32_D192_ED03);
+        let all = RelicKind::ALL;
+        let mut dead_seen = [0usize; 14];
+        let mut live_seen = [0usize; 14];
+        let mut melted_only_dead = 0usize;
+        for _ in 0..4000 {
+            let len = rng.below(23);
+            let mut layout: Vec<(RelicKind, bool)> = Vec::new();
+            for _ in 0..len {
+                let kind = if !layout.is_empty() && rng.below(5) == 0 {
+                    layout[rng.below(layout.len())].0
+                } else {
+                    all[rng.below(all.len())]
+                };
+                layout.push((kind, rng.below(4) == 0));
+            }
+            let mut state = state_with(&layout);
+            for (i, &channel) in PLANNED_CHANNELS.iter().enumerate() {
+                let live = relic_channel_live(&state, channel);
+                let calls = channel.generic_call_count(&state);
+                if !state.relics.is_empty() && state.relics.plan().ready & channel.bit() == 0 {
+                    assert!(live, "an un-planned {channel:?} is live");
+                } else {
+                    assert_eq!(live, calls > 0, "{channel:?} on {layout:?}");
+                }
+                if live {
+                    live_seen[i] += 1;
+                } else {
+                    dead_seen[i] += 1;
+                    // Dead only because the owning relic is melted: the same
+                    // layout with every melt undone calls a handler.
+                    if layout.iter().any(|&(_, melted)| melted) {
+                        let unmelted: Vec<(RelicKind, bool)> =
+                            layout.iter().map(|&(k, _)| (k, false)).collect();
+                        if channel.generic_call_count(&state_with(&unmelted)) > 0 {
+                            melted_only_dead += 1;
+                        }
+                    }
+                }
+            }
+            state.relics.drop_plan();
+            for &channel in &PLANNED_CHANNELS {
+                assert!(
+                    relic_channel_live(&state, channel),
+                    "without a plan every channel is live ({channel:?})"
+                );
+            }
+        }
+        // Non-vacuous: every channel answered both ways (except
+        // `modify_damage_multiplicative`, whose handlers are all content-side,
+        // so it is never live under the core install), and melting alone
+        // killed a channel somewhere.
+        for (i, channel) in PLANNED_CHANNELS.iter().enumerate() {
+            assert!(dead_seen[i] > 0, "{channel:?} never dead");
+            if *channel != PlannedChannel::ModifyDamageMultiplicative {
+                assert!(live_seen[i] > 0, "{channel:?} never live");
+            }
+        }
+        assert!(melted_only_dead > 0, "no channel was dead by melting alone");
+    }
+
+    /// A melted relic leaves every channel its kind serves dead; the same
+    /// relic unmelted makes them live and the dispatch calls its handler.
+    #[test]
+    fn a_melted_relic_keeps_its_channels_dead() {
+        install_and_freeze();
+        assert!(lookup_after_card_played(RelicId::Kunai).is_some());
+        let melted = state_with(&[(RelicKind::Vajra, false), (RelicKind::Kunai, true)]);
+        assert!(!melted.relics.owns(RelicKind::Kunai));
+        assert!(!relic_channel_live(
+            &melted,
+            PlannedChannel::AfterCardPlayed
+        ));
+        let unmelted = state_with(&[(RelicKind::Vajra, false), (RelicKind::Kunai, false)]);
+        assert!(unmelted.relics.owns(RelicKind::Kunai));
+        assert!(relic_channel_live(
+            &unmelted,
+            PlannedChannel::AfterCardPlayed
+        ));
+    }
+
+    static REVIVED_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_revived_after_card_played(_: &mut CombatState, _: &CardEventCtx) -> EffectResult {
+        REVIVED_CALLS.fetch_add(1, Ordering::Relaxed);
+        EffectResult::Resolved
+    }
+
+    /// A channel that is dead for a stored plan turns live once a handler for
+    /// an owned kind is registered after the plan was built: the registration
+    /// flags the frozen list stale, so the call site dispatches and the new
+    /// handler runs.
+    #[test]
+    fn registration_after_the_plan_is_built_revives_a_dead_channel() {
+        install_and_freeze();
+        let mut state = state_with(&[(RelicKind::Vajra, false)]);
+        assert!(lookup_after_card_played(RelicId::Vajra).is_none());
+        assert!(!relic_channel_live(&state, PlannedChannel::AfterCardPlayed));
+
+        register_after_card_played(RelicId::Vajra, counting_revived_after_card_played);
+        assert!(relic_channel_live(&state, PlannedChannel::AfterCardPlayed));
+        let ctx = CardEventCtx {
+            card_id: crate::cards::CardId::StrikeIronclad,
+            card_uid: None,
+            target: None,
+            card_tags: crate::cards::CardTags::default(),
+            energy_spent: 0,
+        };
+        let _ = dispatch_after_card_played(&mut state, &ctx);
+        assert_eq!(REVIVED_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    /// `RelicStore::owns` is the `!is_melted && kind == K` scan: a melted
+    /// copy does not own, an unmelted duplicate beside it does, and a kind
+    /// that no `RelicId` maps to (none today: `to_relic_kind` is total) is
+    /// owned like any other kind. Every `RelicKind` is checked against the
+    /// scan on random layouts.
+    #[test]
+    fn owns_matches_the_ownership_scan() {
+        let state = state_with(&[
+            (RelicKind::Kunai, true),
+            (RelicKind::Vajra, false),
+            (RelicKind::Vajra, true),
+        ]);
+        assert!(!state.relics.owns(RelicKind::Kunai));
+        assert!(state.relics.owns(RelicKind::Vajra));
+        assert!(!state.relics.owns(RelicKind::Anchor));
+
+        let unmapped: Vec<RelicKind> = RelicKind::ALL
+            .iter()
+            .copied()
+            .filter(|&k| {
+                !RelicId::all()
+                    .iter()
+                    .any(|id| id.to_relic_kind() == Some(k))
+            })
+            .collect();
+        let mut rng = Lcg(0x2545_F491_4F6C_DD1D);
+        let all = RelicKind::ALL;
+        for round in 0..500 {
+            let len = rng.below(20);
+            let mut layout: Vec<(RelicKind, bool)> = (0..len)
+                .map(|_| (all[rng.below(all.len())], rng.below(3) == 0))
+                .collect();
+            if let Some(&k) = unmapped.get(round % unmapped.len().max(1)) {
+                layout.push((k, rng.below(2) == 0));
+            }
+            let state = state_with(&layout);
+            for &kind in all {
+                assert_eq!(
+                    state.relics.owns(kind),
+                    layout.iter().any(|&(k, melted)| !melted && k == kind),
+                    "{kind:?} on {layout:?}"
+                );
+            }
+        }
+    }
+
+    /// A `kind` written through `&mut [Relic]` leaves the owned-kind set
+    /// stale; `owns` asserts against the scan in debug builds.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "disagrees with the relic scan")]
+    fn kind_written_around_the_store_trips_the_owns_assert() {
+        let mut state = state_with(&[(RelicKind::Kunai, false)]);
+        state.relics[0].kind = RelicKind::Vajra;
+        let _ = state.relics.owns(RelicKind::Vajra);
+    }
+
+    /// Random `(kind, melted)` layout of up to `max - 1` relics, a fifth of
+    /// them repeating an earlier kind.
+    fn random_layout(rng: &mut Lcg, max: usize, melt_one_in: usize) -> Vec<(RelicKind, bool)> {
+        let all = RelicKind::ALL;
+        let len = rng.below(max);
+        let mut layout: Vec<(RelicKind, bool)> = Vec::new();
+        for _ in 0..len {
+            let kind = if !layout.is_empty() && rng.below(5) == 0 {
+                layout[rng.below(layout.len())].0
+            } else {
+                all[rng.below(all.len())]
+            };
+            layout.push((kind, rng.below(melt_one_in) == 0));
+        }
+        layout
+    }
+
+    /// J03: on every guarded channel the plan calls exactly the handlers
+    /// whose declared guard admits the relics (`Owned(K)` only with a
+    /// non-melted `K` in the list, found here by scanning the layout), an
+    /// empty store has no guarded plan (every handler runs, `Always` ones
+    /// included), and the live answer is "some call bit set".
+    #[test]
+    fn guarded_bits_follow_the_declared_guards() {
+        install_and_freeze();
+        let mut rng = Lcg(0x5851_F42D_4C95_7F2D);
+        let mut dead_seen = [0usize; GUARDED_CHANNELS];
+        let mut live_seen = [0usize; GUARDED_CHANNELS];
+        let mut melted_only_dead = 0usize;
+        for _ in 0..3000 {
+            let layout = random_layout(&mut rng, 23, 4);
+            let mut state = state_with(&layout);
+            if layout.is_empty() {
+                assert_eq!(state.relics.plan().guarded_ready, 0, "empty store");
+                for channel in GuardedChannel::ALL {
+                    assert!(relic_guarded_channel_live(&state, channel));
+                }
+                continue;
+            }
+            for channel in GuardedChannel::ALL {
+                let c = channel as usize;
+                let guards = channel.registry().published_guards().expect("frozen");
+                assert_ne!(
+                    state.relics.plan().guarded_ready & (1 << c),
+                    0,
+                    "{channel:?} is planned"
+                );
+                let admits = |layout: &[(RelicKind, bool)], guard: RelicGuard| match guard {
+                    RelicGuard::Always => true,
+                    RelicGuard::Owned(kind) => layout.iter().any(|&(k, m)| !m && k == kind),
+                };
+                let mut expected = 0u32;
+                for (i, &guard) in guards.iter().enumerate() {
+                    if admits(&layout, guard) {
+                        expected |= 1 << i;
+                    }
+                }
+                assert_eq!(
+                    state.relics.plan().guarded[c],
+                    expected,
+                    "{channel:?} on {layout:?}"
+                );
+                let live = relic_guarded_channel_live(&state, channel);
+                assert_eq!(live, expected != 0, "{channel:?} on {layout:?}");
+                if live {
+                    live_seen[c] += 1;
+                } else {
+                    dead_seen[c] += 1;
+                    let unmelted: Vec<(RelicKind, bool)> =
+                        layout.iter().map(|&(k, _)| (k, false)).collect();
+                    if guards.iter().any(|&g| admits(&unmelted, g)) {
+                        melted_only_dead += 1;
+                    }
+                }
+            }
+            state.relics.drop_plan();
+            for channel in GuardedChannel::ALL {
+                assert!(
+                    relic_guarded_channel_live(&state, channel),
+                    "without a plan every guarded channel is live ({channel:?})"
+                );
+            }
+        }
+        // Non-vacuous: a channel with an `Always` handler is never dead
+        // (`after_combat_end`, JossPaper's reset); one with only `Owned`
+        // handlers answered both ways; one with no core handler (content
+        // registers them) is always dead; melting alone killed a channel.
+        for channel in GuardedChannel::ALL {
+            let c = channel as usize;
+            let guards = channel.registry().published_guards().expect("frozen");
+            if guards.contains(&RelicGuard::Always) {
+                assert_eq!(dead_seen[c], 0, "{channel:?} has an Always handler");
+            } else if guards.is_empty() {
+                assert_eq!(live_seen[c], 0, "{channel:?} has no core handler");
+            } else {
+                assert!(dead_seen[c] > 0, "{channel:?} never dead");
+                assert!(live_seen[c] > 0, "{channel:?} never live");
+            }
+        }
+        assert!(
+            registry_after_combat_end()
+                .published_guards()
+                .is_some_and(|g| g.contains(&RelicGuard::Always)),
+            "JossPaper's after_combat_end reset is registered Always"
+        );
+        assert!(melted_only_dead > 0, "no channel was dead by melting alone");
+    }
+
+    /// The narrowed walks answer like the full walks (a store without a
+    /// plan), state and result, over random layouts with melted relics, on
+    /// the guarded channels with core handlers. Debug builds also shadow
+    /// every skipped handler as it is passed.
+    #[test]
+    fn guarded_dispatch_matches_the_full_walk() {
+        install_and_freeze();
+        let mut rng = Lcg(0x1405_7B7E_F767_814F);
+        let mut narrowed_calls = 0usize;
+        for round in 0..600 {
+            let layout = random_layout(&mut rng, 30, 5);
+            let mut planned = state_with(&layout);
+            planned.round = u16::try_from(1 + round % 3).unwrap();
+            planned.player.current_hp = 30;
+            let enemy = push_enemy(&mut planned, 900, 60);
+            for (i, uid_val) in (9001..=9004).enumerate() {
+                let uid = crate::CardUid(NonZeroU32::new(uid_val).expect("non-zero"));
+                let mut card = crate::cards::Card::pod_defaults();
+                card.uid = uid;
+                card.card_id = crate::cards::CardId::StrikeIronclad;
+                card.card_type = crate::cards::CardType::Attack;
+                card.cost = 1;
+                planned.cards.push(card);
+                if i < 2 {
+                    planned.player.hand.push(uid);
+                } else {
+                    planned.player.draw.push(uid);
+                }
+            }
+            planned.combat_log.block_before_late_turn_end = 12;
+            planned.combat_log.joss_paper_ethereal_count = 2;
+            let mut full = planned.clone();
+            full.relics.drop_plan();
+            if !layout.is_empty()
+                && GuardedChannel::ALL.iter().any(|&c| {
+                    let bits = planned.relics.plan().guarded[c as usize];
+                    let len = c.registry().published_guards().map_or(0, <[_]>::len);
+                    bits.count_ones() < u32::try_from(len).unwrap()
+                })
+            {
+                narrowed_calls += 1;
+            }
+
+            let doom = DiedToDoomCtx { victim: enemy };
+            let death = crate::hooks::AfterDeathCtx {
+                dead: enemy,
+                dead_side: Side::Enemy,
+            };
+            let power = crate::hooks::PowerAmountCtx {
+                source_card: Some(crate::CardUid(NonZeroU32::new(9001).unwrap())),
+                ..crate::hooks::PowerAmountCtx::new(
+                    Some(crate::hooks::CreatureRef::Player),
+                    crate::hooks::CreatureRef::Enemy(enemy),
+                    PowerKind::Weak,
+                    2,
+                )
+            };
+            let strength = crate::hooks::PowerAmountCtx::new(
+                None,
+                crate::hooks::CreatureRef::Player,
+                PowerKind::Strength,
+                2,
+            );
+            let cleared = crate::hooks::BlockClearedCtx {
+                cleared: Some(crate::hooks::CreatureRef::Player),
+            };
+            let mut answers: Vec<Vec<String>> = Vec::new();
+            for state in [&mut planned, &mut full] {
+                answers.push(vec![
+                    format!("{:?}", dispatch_modify_hand_draw(state, 5)),
+                    format!("{:?}", dispatch_modify_power_amount_given(state, &power)),
+                    format!(
+                        "{:?}",
+                        dispatch_modify_power_amount_received(state, &strength)
+                    ),
+                    format!("{:?}", dispatch_should_clear_block(state, &cleared)),
+                    format!("{:?}", dispatch_count_pets(state)),
+                    format!("{:?}", dispatch_before_power_amount_changed(state, &power)),
+                    format!(
+                        "{:?}",
+                        dispatch_after_modifying_power_amount_received(state, &strength)
+                    ),
+                    format!("{:?}", dispatch_after_turn_end(state, Side::Player)),
+                    format!("{:?}", dispatch_after_energy_reset(state)),
+                    format!("{:?}", dispatch_after_died_to_doom(state, &doom)),
+                    format!("{:?}", dispatch_after_death(state, &death)),
+                    format!("{:?}", dispatch_should_die_late(state)),
+                    format!("{:?}", dispatch_after_combat_victory(state)),
+                    format!("{:?}", dispatch_after_combat_end(state)),
+                ]);
+            }
+            assert_eq!(answers[0], answers[1], "answers on {layout:?}");
+            assert!(planned == full, "states diverged on {layout:?}");
+        }
+        assert!(narrowed_calls > 100, "the plan skipped handlers");
+    }
+
+    /// An empty store has no guarded plan, and a store without JossPaper
+    /// still runs JossPaper's `Always` reset of the ethereal-exhaust count.
+    #[test]
+    fn always_handlers_fire_without_their_relic() {
+        install_and_freeze();
+        for layout in [
+            &[][..],
+            &[(RelicKind::Vajra, false), (RelicKind::JossPaper, true)][..],
+        ] {
+            let mut state = state_with(layout);
+            state.combat_log.joss_paper_ethereal_count = 3;
+            assert_eq!(
+                dispatch_after_combat_end(&mut state),
+                EffectResult::Resolved
+            );
+            assert_eq!(state.combat_log.joss_paper_ethereal_count, 0, "{layout:?}");
+        }
+    }
+
+    static GUARD_REPLACED_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_after_turn_end(_: &mut CombatState, _: Side) -> EffectResult {
+        GUARD_REPLACED_CALLS.fetch_add(1, Ordering::Relaxed);
+        EffectResult::Resolved
+    }
+
+    /// Re-registering a `RelicId` replaces its guard with the handler: a plain
+    /// `register_*` over a `register_owned_*` entry leaves an `Always` entry,
+    /// which the plan calls without the relic.
+    #[test]
+    fn replacing_a_handler_replaces_its_guard() {
+        super::super::ensure_installed();
+        let bookmark = |guards: Vec<(RelicId, RelicGuard)>| {
+            guards
+                .into_iter()
+                .find(|&(id, _)| id == RelicId::Bookmark)
+                .map(|(_, guard)| guard)
+        };
+        assert_eq!(
+            bookmark(listener_guards_after_turn_end()),
+            Some(RelicGuard::Owned(RelicKind::Bookmark))
+        );
+        register_after_turn_end(RelicId::Bookmark, counting_after_turn_end);
+        assert_eq!(
+            bookmark(listener_guards_after_turn_end()),
+            Some(RelicGuard::Always)
+        );
+        freeze_all_channels();
+        let mut state = state_with(&[(RelicKind::Vajra, false)]);
+        assert!(relic_guarded_channel_live(
+            &state,
+            GuardedChannel::AfterTurnEnd
+        ));
+        let _ = dispatch_after_turn_end(&mut state, Side::Player);
+        assert_eq!(GUARD_REPLACED_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    fn plus_one_hand_draw(_: &CombatState, draw: i32) -> i32 {
+        draw + 1
+    }
+
+    /// A guarded channel that is dead for a stored plan turns live once a
+    /// handler is registered after the plan was built: the registration
+    /// flags the frozen list stale, and the dispatch walks the live registry.
+    #[test]
+    fn registration_after_the_plan_is_built_revives_a_dead_guarded_channel() {
+        install_and_freeze();
+        let state = state_with(&[(RelicKind::Vajra, false)]);
+        assert!(!relic_guarded_channel_live(
+            &state,
+            GuardedChannel::ModifyHandDraw
+        ));
+        assert_eq!(dispatch_modify_hand_draw(&state, 5), 5);
+        register_modify_hand_draw(RelicId::Vajra, plus_one_hand_draw);
+        assert!(relic_guarded_channel_live(
+            &state,
+            GuardedChannel::ModifyHandDraw
+        ));
+        assert_eq!(dispatch_modify_hand_draw(&state, 5), 6);
+    }
+
+    #[cfg(debug_assertions)]
+    fn lying_after_turn_end(state: &mut CombatState, _: Side) -> EffectResult {
+        state.player.block += 1;
+        EffectResult::Resolved
+    }
+
+    /// The debug shadow catches an `Owned` declaration whose handler acts
+    /// without its relic: the skipped call, replayed on a clone, changes it.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "but a handler changed the state")]
+    fn shadow_catches_a_handler_that_acts_without_its_relic() {
+        super::super::ensure_installed();
+        register_owned_after_turn_end(RelicId::Vajra, RelicKind::Vajra, lying_after_turn_end);
+        freeze_all_channels();
+        let mut state = state_with(&[(RelicKind::Anchor, false)]);
+        let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    }
+
+    /// Writes only an event-log row, as a power flash does, and answers the
+    /// identity: `CombatState` equality cannot see what it did.
+    #[cfg(debug_assertions)]
+    fn logging_after_turn_end(state: &mut CombatState, _: Side) -> EffectResult {
+        crate::event_log::flash_player_power(state, crate::PowerKind::Strength);
+        EffectResult::NotImplemented
+    }
+
+    /// The shadow also sees a skipped handler whose only effect is an
+    /// event-log row.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "but a handler wrote the event log")]
+    fn shadow_catches_a_handler_that_only_writes_the_event_log() {
+        super::super::ensure_installed();
+        register_owned_after_turn_end(RelicId::Vajra, RelicKind::Vajra, logging_after_turn_end);
+        freeze_all_channels();
+        let mut state = state_with(&[(RelicKind::Anchor, false)]);
+        state.combat_log.event_log.set_recording(true);
+        let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    }
+
+    /// Control for the test above: with the log off the same handler writes
+    /// nothing, so its skip passes the shadow.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_log_only_handler_is_inert_while_the_log_is_off() {
+        super::super::ensure_installed();
+        register_owned_after_turn_end(RelicId::Vajra, RelicKind::Vajra, logging_after_turn_end);
+        freeze_all_channels();
+        let mut state = state_with(&[(RelicKind::Anchor, false)]);
+        let _ = dispatch_after_turn_end(&mut state, Side::Player);
+    }
+
+    /// The same for a read-only fold: a skipped handler must return the
+    /// running value.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "its handler is not the identity")]
+    fn shadow_catches_a_fold_handler_that_moves_without_its_relic() {
+        super::super::ensure_installed();
+        register_owned_modify_hand_draw(RelicId::Vajra, RelicKind::Vajra, plus_one_hand_draw);
+        freeze_all_channels();
+        let state = state_with(&[(RelicKind::Anchor, false)]);
+        let _ = dispatch_modify_hand_draw(&state, 5);
+    }
 }

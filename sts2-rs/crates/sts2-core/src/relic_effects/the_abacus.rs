@@ -27,8 +27,9 @@ pub(crate) fn on_after_shuffle_the_abacus(
 }
 
 pub(crate) fn install() {
-    register_after_shuffle_bus(
+    register_owned_after_shuffle_bus(
         RelicId::TheAbacus,
+        crate::RelicKind::TheAbacus,
         on_after_shuffle_the_abacus as AfterShuffleFn,
     );
 }

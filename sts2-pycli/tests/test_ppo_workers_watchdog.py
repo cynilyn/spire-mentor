@@ -106,6 +106,7 @@ def test_watchdog_abandons_hung_run_and_keeps_the_rest(monkeypatch):
         policy="random",
         procs=4,
         run_timeout_s=2.0,  # short stall window for the test
+        game_timeout_s=1.0,  # and a short per-game budget
         mp_context="fork",
     )
     elapsed = time.time() - t0
@@ -116,6 +117,7 @@ def test_watchdog_abandons_hung_run_and_keeps_the_rest(monkeypatch):
     by_seed = {r["seed"]: r for r in rows}
     assert by_seed[1]["outcome"] == "timeout"
     assert by_seed[1]["won"] is False
+    assert by_seed[1]["age_s"] >= 2.0
     for s in (0, 2, 3):
         assert by_seed[s]["outcome"] == "won"
 
@@ -131,5 +133,26 @@ def test_healthy_batch_never_trips_watchdog(monkeypatch):
     monkeypatch.setattr(workers, "play_one", _fake_play_one)
     seeds = [0, 2, 3, 4, 5]  # none hang
     rows = workers.play_batch(seeds, policy="random", procs=2, run_timeout_s=1.0, mp_context="fork")
+    assert [r["seed"] for r in rows] == seeds
+    assert all(r["outcome"] == "won" for r in rows)
+
+
+def _slow_play_one(seed, policy="random", **kwargs):
+    """Seed 1 is slow but finishes (a long boss fight inside one env.step)."""
+    if seed == 1:
+        time.sleep(4.0)
+    return {**_fake_play_one(0, policy), "seed": seed}  # _fake_play_one hangs on seed 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fork context unavailable on Windows")
+def test_slow_progressing_game_outliving_the_rest_is_not_dropped(monkeypatch):
+    """GH #763: the old watchdog fired on 'no completion for run_timeout_s'
+    alone, so a slow game that outlived every other one by that window was
+    dropped. It must now run to its own `game_timeout_s` budget."""
+    monkeypatch.setattr(workers, "play_one", _slow_play_one)
+    seeds = [0, 1, 2, 3]
+    rows = workers.play_batch(
+        seeds, policy="random", procs=4, run_timeout_s=1.0, game_timeout_s=30.0, mp_context="fork"
+    )
     assert [r["seed"] for r in rows] == seeds
     assert all(r["outcome"] == "won" for r in rows)

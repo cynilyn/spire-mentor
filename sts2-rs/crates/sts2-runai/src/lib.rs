@@ -41,6 +41,12 @@
 //! env,encoder}.py` function-for-function and gated by exact
 //! featurization + forward parity fixtures.
 
+/// Content hash of THIS crate's build inputs, stamped at build time by
+/// `build.rs`. Compiled INTO the crate so a stale `sts2-runai` rlib carries its
+/// old hash; one of the parts of `sts2_rs.src_hash()`. See
+/// `sts2_core::SRC_HASH`.
+pub const SRC_HASH: &str = env!("STS2_RUNAI_SRC_HASH");
+
 #[cfg(feature = "sweeps")]
 pub mod arena;
 #[cfg(feature = "sweeps")]

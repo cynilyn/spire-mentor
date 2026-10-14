@@ -1498,9 +1498,9 @@ mod vthin1_setup_only {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: Vec::new(),
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),
@@ -1717,9 +1717,9 @@ mod vthin2_vulnerable_damage {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: vec![cultist],
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: vec![power].into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),
@@ -2012,9 +2012,9 @@ mod wave_a_fixtures {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: Vec::new(),
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player: PlayerCombatState {
                 current_hp: player_current_hp,
@@ -2862,9 +2862,9 @@ mod zizk_relic_install {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: Vec::new(),
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),
@@ -3069,9 +3069,9 @@ mod s16y_starter_relics {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: Vec::new(),
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),
@@ -3273,9 +3273,9 @@ mod vmko_heavenly_drill {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: Vec::new(),
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player: PlayerCombatState {
                 current_hp: 50,
@@ -3625,9 +3625,9 @@ mod rggx_act2_tunneler {
 
             run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
             creatures: vec![tunneler],
-            cards: Vec::new(),
+            cards: Vec::new().into(),
             powers: Vec::new().into(),
-            relics: Vec::new(),
+            relics: Vec::new().into(),
             potions: Vec::new(),
             player,
             allies: SmallVec::new(),

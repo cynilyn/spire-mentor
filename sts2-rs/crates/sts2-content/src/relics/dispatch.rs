@@ -23,33 +23,51 @@
 
 use sts2_core::relic_effects;
 
-/// Install every relic handler in the content library. Idempotent.
+/// Install every relic handler in the content library, then freeze the relic
+/// hook channels. Idempotent (guarded by its own `Once`).
 ///
-/// Today this is just the core/starter handlers (`CrackedCore`,
-/// `RingOfTheSnake`, `DivineRight`), which live in
-/// [`sts2_core::relic_effects`] so the core crate's own test suite
-/// can install them without a workspace cycle. Downstream beads
-/// (P7-2..P7-5) add their per-pool installer calls here.
+/// The core handlers (the starters `CrackedCore`, `RingOfTheSnake`,
+/// `DivineRight` and the rest of [`sts2_core::relic_effects`]) live in core so
+/// the core crate's own test suite can install them without a workspace
+/// cycle; the per-pool installers below register the content relics on top.
+///
+/// The `Once` is load-bearing for speed, not just tidiness: production calls
+/// this twice (the PyO3 module init and `sts2_runai::rollout::
+/// ensure_content_installed`), and a second run would re-register every
+/// handler AFTER the freeze, un-freezing those channels for the rest of the
+/// process (M02).
 pub fn install_default_registry() {
-    relic_effects::install_default_registry();
-    // Register the card-pod factory so `sts2-core`'s
-    // `ChoiceKind::AddGeneratedToHand` resolver can build cards from
-    // `(CardId, upgraded)` without a workspace cycle. Used by Toolbox /
-    // ChoicesParadox listeners that store synthetic options on
-    // `PendingChoice`.
-    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
-    crate::relics::starter::install_pool();
-    crate::relics::common::install_pool();
-    // P7-3 (sts2-rs-l22): registered below.
-    crate::relics::uncommon::install_pool();
-    // P7-4 (sts2-rs-ge1): registered below.
-    crate::relics::rare::install_pool();
-    // P7-5 (sts2-rs-yyw): registered below.
-    crate::relics::shop_event::install_pool();
-    // P7-5b (sts2-rs-7ez): registered below.
-    crate::relics::event_reward::install_pool();
-    // W9 (sts2-rs-4rwv4): Neow-pool Ancient relics not in the Python sim.
-    crate::relics::neow_relics::install_pool();
+    static INSTALL_ONCE: std::sync::Once = std::sync::Once::new();
+    INSTALL_ONCE.call_once(|| {
+        relic_effects::install_default_registry();
+        // Register the card-pod factory so `sts2-core`'s
+        // `ChoiceKind::AddGeneratedToHand` resolver can build cards from
+        // `(CardId, upgraded)` without a workspace cycle. Used by Toolbox /
+        // ChoicesParadox listeners that store synthetic options on
+        // `PendingChoice`.
+        sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+        crate::relics::starter::install_pool();
+        crate::relics::common::install_pool();
+        // P7-3 (sts2-rs-l22): registered below.
+        crate::relics::uncommon::install_pool();
+        // P7-4 (sts2-rs-ge1): registered below.
+        crate::relics::rare::install_pool();
+        // P7-5 (sts2-rs-yyw): registered below.
+        crate::relics::shop_event::install_pool();
+        // P7-5b (sts2-rs-7ez): registered below.
+        crate::relics::event_reward::install_pool();
+        // W9 (sts2-rs-4rwv4): Neow-pool Ancient relics not in the Python sim.
+        crate::relics::neow_relics::install_pool();
+        // Every relic hook channel is now fully populated and never mutated
+        // again in production: publish each channel's immutable `&'static`
+        // read view so dispatch is a cheap `OnceLock::get` instead of an
+        // `ArcSwap::load` (bead sts2-rs-05mjm). This must be the LAST
+        // registration step — the core installer used to freeze before the
+        // pools above ran, which left 25 of the 53 channels (most of the hot
+        // ones) on the `ArcSwap` fallback (M02,
+        // `docs/perf/2026-10-13-engine-speed-exact-design.md`).
+        relic_effects::freeze_all_channels();
+    });
 }
 
 /// Idempotent alias for [`install_default_registry`]. Convenient for
@@ -93,5 +111,19 @@ mod tests {
         ensure_installed();
         // No panic + the listener still resolves after repeated installs.
         assert!(relic_effects::lookup_before_side_turn_start(RelicId::CrackedCore).is_some());
+    }
+
+    /// After the content install EVERY relic hook channel serves its frozen
+    /// `&'static` read view, and a second install (production runs two: the
+    /// PyO3 module init and `ensure_content_installed`) leaves it that way.
+    /// Fails on the pre-M02 ordering (the core installer froze, then the
+    /// content pools registered on top and un-froze 25 channels) and if
+    /// the install-once guard is dropped (the re-registration un-freezes).
+    #[test]
+    fn every_channel_frozen_after_content_install() {
+        ensure_installed();
+        assert!(relic_effects::all_channels_frozen());
+        ensure_installed();
+        assert!(relic_effects::all_channels_frozen());
     }
 }

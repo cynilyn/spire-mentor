@@ -30,11 +30,11 @@ use sts2_core::card_effects::{
 use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
-    register_after_card_entered_combat, register_after_card_played,
-    register_after_player_turn_start, register_after_potion_used, register_after_side_turn_start,
-    register_before_combat_start, register_before_hand_draw, register_before_turn_end,
-    register_modify_damage_additive, register_modify_damage_multiplicative,
-    register_modify_vulnerable_multiplier, AfterCardEnteredCombatFn, AfterCardPlayedFn,
+    register_after_card_played, register_after_player_turn_start, register_after_side_turn_start,
+    register_before_combat_start, register_before_turn_end, register_modify_damage_additive,
+    register_modify_damage_multiplicative, register_owned_after_card_entered_combat,
+    register_owned_after_potion_used, register_owned_before_hand_draw,
+    register_owned_modify_vulnerable_multiplier, AfterCardEnteredCombatFn, AfterCardPlayedFn,
     AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn, BeforeCombatStartFn,
     BeforeHandDrawFn, BeforeTurnEndFn, CardEventCtx, ModifyDamageAdditiveFn, ModifyDamageCtx,
     ModifyDamageMultiplicativeFn, ModifyVulnerableMultiplierFn,
@@ -220,8 +220,9 @@ pub fn install_pool() {
     // (DRAW_ORDER, 86/87 IC init divergences). Same move as ToastyMittens
     // (`sts2-rs-70anj.1`). Combat-side `on_trigger_funerary_mask` stays a
     // `resolved_marker`.
-    register_before_hand_draw(
+    register_owned_before_hand_draw(
         RelicId::FuneraryMask,
+        RelicKind::FuneraryMask,
         listener_funerary_mask as BeforeHandDrawFn,
     );
     // Bead `sts2-rs-uo8t`: real listener for Bellows. C# `Bellows.cs`
@@ -267,8 +268,9 @@ pub fn install_pool() {
     // implicit (only player spawns route through that path at the
     // current pin). Combat-side `on_trigger_regalite` stays a
     // `resolved_marker`.
-    register_after_card_entered_combat(
+    register_owned_after_card_entered_combat(
         RelicId::Regalite,
+        RelicKind::Regalite,
         listener_regalite as AfterCardEnteredCombatFn,
     );
     // EternalFeather — rest-site heal `HEAL_PER * (deck // CARDS_PER)`
@@ -315,8 +317,9 @@ pub fn install_pool() {
     // gates on `potion.Owner == Owner && CombatManager.IsInProgress`.
     // The owner-side turn-end revert is wired in
     // `sts2-core::hooks::after_turn_end`. Bead `sts2-rs-ji7m7`.
-    register_after_potion_used(
+    register_owned_after_potion_used(
         RelicId::ReptileTrinket,
+        RelicKind::ReptileTrinket,
         listener_reptile_trinket as AfterPotionUsedFn,
     );
     // PaperPhrog — +PAPER_PHROG_EXTRA_VULNERABLE_PCT (25) to the Vulnerable
@@ -325,8 +328,9 @@ pub fn install_pool() {
     // from `VulnerablePower.ModifyDamageMultiplicative`, so the bonus only
     // lands when the target is actually Vulnerable (1.5 → 1.75). Combat-side
     // `on_trigger_paper_phrog` stays a `resolved_marker`. Bead `sts2-rs-0om8p`.
-    register_modify_vulnerable_multiplier(
+    register_owned_modify_vulnerable_multiplier(
         RelicId::PaperPhrog,
+        RelicKind::PaperPhrog,
         listener_paper_phrog_vulnerable_multiplier as ModifyVulnerableMultiplierFn,
     );
 }
@@ -341,11 +345,7 @@ pub fn install_pool() {
 /// powered player attack against a Vulnerable enemy goes 1.5× → 1.75×.
 /// Returns `0` (no contribution) when any gate fails. Bead `sts2-rs-0om8p`.
 fn listener_paper_phrog_vulnerable_multiplier(state: &CombatState, ctx: &hooks::DamageCtx) -> i32 {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::PaperPhrog)
-    {
+    if !state.relics.owns(RelicKind::PaperPhrog) {
         return 0;
     }
     if !ctx.props.is_powered() {
@@ -381,11 +381,7 @@ fn listener_reptile_trinket(
     _potion: sts2_core::potions::PotionKind,
     _target: Option<u8>,
 ) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::ReptileTrinket)
-    {
+    if !state.relics.owns(RelicKind::ReptileTrinket) {
         return EffectResult::NotImplemented;
     }
     let Some(uid) = state.player.creature_uid else {
@@ -419,11 +415,7 @@ fn listener_symbiotic_virus(state: &mut CombatState, side: Side) -> EffectResult
     if state.round != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::SymbioticVirus)
-    {
+    if !state.relics.owns(RelicKind::SymbioticVirus) {
         return EffectResult::NotImplemented;
     }
     for _ in 0..SYMBIOTIC_VIRUS_DARK_ORBS {
@@ -442,11 +434,7 @@ fn listener_symbiotic_virus(state: &mut CombatState, side: Side) -> EffectResult
 /// Bead `sts2-rs-lr0y`.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_miniature_cannon(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::MiniatureCannon)
-    {
+    if !state.relics.owns(RelicKind::MiniatureCannon) {
         return 0;
     }
     let Some(player_uid) = state.player.creature_uid else {
@@ -486,11 +474,7 @@ fn listener_miniature_cannon(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 
 /// Beads `sts2-rs-g4ti` (original) / `sts2-rs-axdgh` (hook correction: moved
 /// off `after_side_turn_start` so it precedes the Rampart block grant).
 fn listener_mercury_hourglass(state: &mut CombatState) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::MercuryHourglass)
-    {
+    if !state.relics.owns(RelicKind::MercuryHourglass) {
         return EffectResult::NotImplemented;
     }
     let _ = deal_damage_to_all_alive_enemies(
@@ -527,11 +511,7 @@ fn listener_funerary_mask(state: &mut CombatState) -> EffectResult {
     if state.round != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::FuneraryMask)
-    {
+    if !state.relics.owns(RelicKind::FuneraryMask) {
         return EffectResult::NotImplemented;
     }
     let cards = usize::try_from(FUNERARY_MASK_CARDS).unwrap_or(0);
@@ -554,11 +534,7 @@ fn listener_bellows(state: &mut CombatState) -> EffectResult {
     if state.round != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::Bellows)
-    {
+    if !state.relics.owns(RelicKind::Bellows) {
         return EffectResult::NotImplemented;
     }
     let hand: Vec<sts2_core::CardUid> = state.player.hand.iter().copied().collect();
@@ -1109,10 +1085,7 @@ fn listener_pen_nib_after_card_played(state: &mut CombatState, ctx: &CardEventCt
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_attack = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_attack = sts2_core::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == sts2_core::cards::CardType::Attack);
     if !is_attack {
         return EffectResult::NotImplemented;
@@ -1161,11 +1134,7 @@ fn listener_regalite(
     card_uid: CardUid,
     added_by_player: bool,
 ) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::Regalite)
-    {
+    if !state.relics.owns(RelicKind::Regalite) {
         return EffectResult::NotImplemented;
     }
     // C# `Regalite.AfterCardGeneratedForCombat(card, Player? creator)`
@@ -1236,11 +1205,7 @@ fn gain_block_player_unpowered(state: &mut CombatState, base: i32) {
 fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
     use sts2_core::card_effects::upgrade_card_uid;
 
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::StoneCracker)
-    {
+    if !state.relics.owns(RelicKind::StoneCracker) {
         return EffectResult::NotImplemented;
     }
     let mut candidates: Vec<CardUid> = state
@@ -1325,11 +1290,7 @@ fn listener_gold_plated_cables_after_side_turn_start(
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::GoldPlatedCables)
-    {
+    if !state.relics.owns(RelicKind::GoldPlatedCables) {
         return EffectResult::NotImplemented;
     }
     let Some(idx) = state.player.orbs.slots.iter().position(|o| !o.is_empty()) else {
@@ -1355,11 +1316,7 @@ fn listener_gold_plated_cables_before_turn_end(
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::GoldPlatedCables)
-    {
+    if !state.relics.owns(RelicKind::GoldPlatedCables) {
         return EffectResult::NotImplemented;
     }
     let Some(idx) = state.player.orbs.slots.iter().position(|o| !o.is_empty()) else {

@@ -756,12 +756,24 @@ impl KeywordOverride {
     }
 }
 
+// The "may be nonzero" mask has 24 bits. VarKey has 26 variants, so the two
+// last share a bit with the first two (WireCostStable with RampageDamage,
+// Generic with ClawBuff): a superset filter, so that only costs a false
+// "maybe". No key a sweep gates on aliases.
 impl crate::inline_kv::InlineKvKey for VarKey {
     const FILL: Self = VarKey::RampageDamage;
+    #[inline]
+    fn nz_index(self) -> usize {
+        self as usize % crate::inline_kv::NZ_BITS
+    }
 }
 
 impl crate::inline_kv::InlineKvKey for EnchantmentId {
     const FILL: Self = EnchantmentId::RoyallyApproved;
+    #[inline]
+    fn nz_index(self) -> usize {
+        self as usize % crate::inline_kv::NZ_BITS
+    }
 }
 
 /// `Card::combat_vars` storage: fixed-capacity `Copy` map (was
@@ -974,33 +986,26 @@ impl Card {
         )
     }
 
-    /// Look up a `combat_vars` slot, returning the current amount or 0.
+    /// Look up a `combat_vars` slot, returning the current amount or 0. One
+    /// bit test when the key has never held a nonzero value on this card
+    /// ([`crate::inline_kv::InlineKv::get`]).
+    #[inline]
     #[must_use]
     pub fn combat_var(&self, key: VarKey) -> i32 {
-        self.combat_vars
-            .iter()
-            .find_map(|(k, v)| (*k == key).then_some(*v))
-            .unwrap_or(0)
+        self.combat_vars.get(key)
     }
 
     /// Set / overwrite a `combat_vars` slot. Inserts a new entry if absent.
+    #[inline]
     pub fn set_combat_var(&mut self, key: VarKey, value: i32) {
-        for (k, v) in &mut self.combat_vars {
-            if *k == key {
-                *v = value;
-                return;
-            }
-        }
-        self.combat_vars.push((key, value));
+        self.combat_vars.set(key, value);
     }
 
     /// Look up an enchantment stack, returning the current amount or 0.
+    #[inline]
     #[must_use]
     pub fn enchantment(&self, id: EnchantmentId) -> i32 {
-        self.enchantments
-            .iter()
-            .find_map(|(k, v)| (*k == id).then_some(*v))
-            .unwrap_or(0)
+        self.enchantments.get(id)
     }
 
     /// `true` iff this card has at least one stack of `id`.
@@ -1012,25 +1017,13 @@ impl Card {
     /// Set / overwrite an enchantment stack. Inserts a new entry if absent.
     /// Mirrors `card.enchantments[name] = amount` from `enchantments.py`.
     pub fn set_enchantment(&mut self, id: EnchantmentId, amount: i32) {
-        for (k, v) in &mut self.enchantments {
-            if *k == id {
-                *v = amount;
-                return;
-            }
-        }
-        self.enchantments.push((id, amount));
+        self.enchantments.set(id, amount);
     }
 
     /// Add `delta` to an enchantment stack (creating if absent).
     /// Mirrors `card.add_enchantment(name, amount)` in Python's run state.
     pub fn add_enchantment(&mut self, id: EnchantmentId, delta: i32) {
-        for (k, v) in &mut self.enchantments {
-            if *k == id {
-                *v = v.saturating_add(delta);
-                return;
-            }
-        }
-        self.enchantments.push((id, delta));
+        self.enchantments.add(id, delta);
     }
 
     /// `true` iff `tag` is set on this card. Mirrors Python
@@ -1327,10 +1320,233 @@ impl CardId {
     }
 }
 
+/// The card ids [`CardStore`] tracks presence of (J02), one bit each. Every
+/// one gates an O(cards) sweep that acts only on cards with that id: the
+/// Stomp / Pinpoint discounts and their turn-start restores, Melancholy's
+/// on-death discount, and the Bolas / ThrummingHatchet return-to-hand scan.
+const fn card_gate_bit(id: CardId) -> u8 {
+    match id {
+        CardId::Stomp => 1,
+        CardId::Pinpoint => 1 << 1,
+        CardId::Melancholy => 1 << 2,
+        CardId::Bolas => 1 << 3,
+        CardId::ThrummingHatchet => 1 << 4,
+        _ => 0,
+    }
+}
+
+/// The OR of [`card_gate_bit`] over `cards`.
+fn card_gate_bits_of(cards: &[Card]) -> u8 {
+    cards
+        .iter()
+        .fold(0, |acc, c| acc | card_gate_bit(c.card_id))
+}
+
 /// Vector-backed arena over [`Card`]. Indexed by [`CardUid`] in pile
 /// commands; UIDs are 1-based so `cards[uid.get() as usize - 1]` is the
 /// canonical lookup pattern (formalised in bead P1-2).
-pub type CardStore = Vec<Card>;
+///
+/// Replaces the former `type CardStore = Vec<Card>` (J02) to carry one view
+/// derived from the arena: which of the gate ids (`card_gate_bit`) some
+/// card holds, so [`CardStore::holds_id`] answers "is there a Stomp anywhere
+/// in this combat" with one bit test instead of an arena scan. The arena is
+/// append-only during a combat, and a transform allocates a fresh row rather
+/// than rewriting `card_id`, so every structural write goes through a method
+/// here that keeps the bits (`push`, `extend`, `clear`, `From<Vec<Card>>`, …)
+/// and the read side derefs to `[Card]`, not `Vec`. `card_id` is still a
+/// public field, so `&mut [Card]` could rewrite it in place; nothing in
+/// production does, and debug builds recompute the bits at every
+/// [`crate::apply`] entry and on every [`CardStore::holds_id`] and assert
+/// they match ([`CardStore::debug_assert_gate_bits`]).
+///
+/// [`PartialEq`] and [`Debug`](std::fmt::Debug) look at the cards only (the
+/// bits are derived), so equality and the printed form are those of the old
+/// `Vec<Card>`.
+#[derive(Clone, Default)]
+pub struct CardStore {
+    cards: Vec<Card>,
+    gate_bits: u8,
+}
+
+impl PartialEq for CardStore {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.cards == other.cards
+    }
+}
+impl Eq for CardStore {}
+
+impl std::fmt::Debug for CardStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.cards, f)
+    }
+}
+
+impl core::ops::Deref for CardStore {
+    type Target = [Card];
+    #[inline]
+    fn deref(&self) -> &[Card] {
+        &self.cards
+    }
+}
+impl core::ops::DerefMut for CardStore {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [Card] {
+        // Element mutation only. No structural op is reachable through a
+        // slice; a `card_id` write through it is caught by the debug drift
+        // assert at `apply` entry.
+        &mut self.cards
+    }
+}
+
+impl CardStore {
+    /// Empty store.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            cards: Vec::new(),
+            gate_bits: 0,
+        }
+    }
+
+    /// Empty store with arena capacity reserved.
+    #[inline]
+    #[must_use]
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            cards: Vec::with_capacity(cap),
+            gate_bits: 0,
+        }
+    }
+
+    /// Append a card (the next arena row).
+    #[inline]
+    pub fn push(&mut self, card: Card) {
+        self.gate_bits |= card_gate_bit(card.card_id);
+        self.cards.push(card);
+    }
+
+    /// Drop every card.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.cards.clear();
+        self.gate_bits = 0;
+    }
+
+    /// Shorten the arena to `len` cards (no-op if it is not longer).
+    pub fn truncate(&mut self, len: usize) {
+        self.cards.truncate(len);
+        self.gate_bits = card_gate_bits_of(&self.cards);
+    }
+
+    /// True iff some card in the arena has `card_id == id`, answered by one
+    /// bit test. `id` must be a tracked gate id (`card_gate_bit`).
+    ///
+    /// # Panics
+    /// In debug builds, if `id` is not tracked, or if the stored bits
+    /// disagree with an arena scan (a `card_id` write bypassed the store).
+    #[inline]
+    #[must_use]
+    pub fn holds_id(&self, id: CardId) -> bool {
+        let bit = card_gate_bit(id);
+        debug_assert!(bit != 0, "CardStore does not track {id:?}");
+        let held = self.gate_bits & bit != 0;
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            held,
+            self.cards.iter().any(|c| c.card_id == id),
+            "CardStore gate bit for {id:?} disagrees with the arena scan"
+        );
+        held
+    }
+
+    /// Debug drift guard: the gate bits still equal a recompute from the
+    /// arena. Fires if a `card_id` write bypassed the store's methods
+    /// through `&mut [Card]`.
+    ///
+    /// # Panics
+    /// If the bits drifted.
+    #[cfg(debug_assertions)]
+    pub fn debug_assert_gate_bits(&self) {
+        assert_eq!(
+            self.gate_bits,
+            card_gate_bits_of(&self.cards),
+            "CardStore gate bits drifted from the arena: a `card_id` write went \
+             through `&mut [Card]` instead of a CardStore method"
+        );
+    }
+
+    /// Borrow the arena as a slice (explicit form of the `Deref`).
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[Card] {
+        &self.cards
+    }
+
+    /// Unwrap into the card `Vec`.
+    #[inline]
+    #[must_use]
+    pub fn into_vec(self) -> Vec<Card> {
+        self.cards
+    }
+}
+
+impl From<Vec<Card>> for CardStore {
+    #[inline]
+    fn from(cards: Vec<Card>) -> Self {
+        let gate_bits = card_gate_bits_of(&cards);
+        Self { cards, gate_bits }
+    }
+}
+
+impl<const N: usize> From<[Card; N]> for CardStore {
+    #[inline]
+    fn from(cards: [Card; N]) -> Self {
+        Self::from(Vec::from(cards))
+    }
+}
+
+impl FromIterator<Card> for CardStore {
+    fn from_iter<I: IntoIterator<Item = Card>>(iter: I) -> Self {
+        Self::from(iter.into_iter().collect::<Vec<Card>>())
+    }
+}
+
+impl Extend<Card> for CardStore {
+    fn extend<I: IntoIterator<Item = Card>>(&mut self, iter: I) {
+        for card in iter {
+            self.push(card);
+        }
+    }
+}
+
+impl IntoIterator for CardStore {
+    type Item = Card;
+    type IntoIter = std::vec::IntoIter<Card>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.cards.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a CardStore {
+    type Item = &'a Card;
+    type IntoIter = core::slice::Iter<'a, Card>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.cards.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut CardStore {
+    type Item = &'a mut Card;
+    type IntoIter = core::slice::IterMut<'a, Card>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.cards.iter_mut()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pile primitives
@@ -2410,11 +2626,7 @@ pub(crate) fn card_effect_draw_blocked(state: &crate::CombatState) -> bool {
     // C# allows the draw when the owner's side is NOT the acting side
     // (`player.Creature.Side != CombatState.CurrentSide`), so the veto is
     // scoped to the player's own turn.
-    state.side == crate::Side::Player
-        && state
-            .relics
-            .iter()
-            .any(|r| !r.is_melted && r.kind == crate::RelicKind::Fiddle)
+    state.side == crate::Side::Player && state.relics.owns(crate::RelicKind::Fiddle)
 }
 
 /// State-aware wrapper over [`draw`] that gates on the player-owned
@@ -4710,14 +4922,14 @@ mod tests {
 
     #[test]
     fn segment_homogeneous_when_all_cards_equal() {
-        let cards: CardStore = vec![sample_card(1), sample_card(2), sample_card(3)];
+        let cards: CardStore = vec![sample_card(1), sample_card(2), sample_card(3)].into();
         let segment = [uid(1), uid(2), uid(3)];
         assert!(segment_is_observationally_homogeneous(&segment, &cards));
     }
 
     #[test]
     fn segment_heterogeneous_when_one_card_differs() {
-        let mut cards: CardStore = vec![sample_card(1), sample_card(2), sample_card(3)];
+        let mut cards: CardStore = vec![sample_card(1), sample_card(2), sample_card(3)].into();
         cards[2].card_id = CardId::Bash;
         let segment = [uid(1), uid(2), uid(3)];
         assert!(!segment_is_observationally_homogeneous(&segment, &cards));
@@ -4729,14 +4941,14 @@ mod tests {
         // "equal to everything" — that would silently widen the
         // homogeneous case to cover a lookup bug. It should read as
         // heterogeneous (the safe, tree-widening direction).
-        let cards: CardStore = vec![sample_card(1)];
+        let cards: CardStore = vec![sample_card(1)].into();
         let segment = [uid(1), uid(404)];
         assert!(!segment_is_observationally_homogeneous(&segment, &cards));
     }
 
     #[test]
     fn segment_homogeneous_single_card_trivially_true() {
-        let cards: CardStore = vec![sample_card(1)];
+        let cards: CardStore = vec![sample_card(1)].into();
         let segment = [uid(1)];
         assert!(segment_is_observationally_homogeneous(&segment, &cards));
     }
@@ -5067,5 +5279,112 @@ mod tests {
             Some(EnchantmentId::Nimble)
         );
         assert_eq!(EnchantmentId::from_wire_name("NoSuchThing.title"), None);
+    }
+
+    // -----------------------------------------------------------------
+    // J02: CardStore gate-id presence bits
+    // -----------------------------------------------------------------
+
+    const GATE_IDS: [CardId; 5] = [
+        CardId::Stomp,
+        CardId::Pinpoint,
+        CardId::Melancholy,
+        CardId::Bolas,
+        CardId::ThrummingHatchet,
+    ];
+
+    /// `holds_id` answers the arena scan for every gate id.
+    fn assert_holds_match_scan(store: &CardStore) {
+        for id in GATE_IDS {
+            assert_eq!(
+                store.holds_id(id),
+                store.iter().any(|c| c.card_id == id),
+                "{id:?}"
+            );
+        }
+    }
+
+    /// Every structural writer keeps the bits: `push`, `From<Vec>`, `collect`,
+    /// `extend`, `truncate`, `clear`.
+    #[test]
+    fn card_store_gate_bits_follow_every_structural_write() {
+        let mut store = CardStore::new();
+        assert_holds_match_scan(&store);
+        for (i, id) in [CardId::StrikeIronclad, CardId::Stomp, CardId::Bolas]
+            .into_iter()
+            .enumerate()
+        {
+            store.push(Card {
+                uid: uid(u32::try_from(i + 1).expect("fits")),
+                card_id: id,
+                ..Card::pod_defaults()
+            });
+            assert_holds_match_scan(&store);
+        }
+        assert!(store.holds_id(CardId::Stomp) && store.holds_id(CardId::Bolas));
+        assert!(!store.holds_id(CardId::Pinpoint));
+
+        let collected = store_with_ids(&[CardId::Melancholy, CardId::DefendIronclad]);
+        assert_holds_match_scan(&collected);
+        assert!(collected.holds_id(CardId::Melancholy));
+
+        let from_vec = CardStore::from(collected.clone().into_vec());
+        assert_holds_match_scan(&from_vec);
+
+        store.extend(collected.iter().copied());
+        assert_holds_match_scan(&store);
+        assert!(store.holds_id(CardId::Melancholy));
+
+        store.truncate(2);
+        assert_holds_match_scan(&store);
+        assert!(
+            !store.holds_id(CardId::Bolas),
+            "truncate drops the Bolas row"
+        );
+
+        store.clear();
+        assert_holds_match_scan(&store);
+        assert!(store.is_empty());
+        #[cfg(debug_assertions)]
+        store.debug_assert_gate_bits();
+    }
+
+    /// The bits are derived: equality and the printed form are the old
+    /// `Vec<Card>`'s.
+    #[test]
+    fn card_store_eq_and_debug_are_the_vec_ones() {
+        let cards = vec![sample_card(1), sample_card(2)];
+        let store = CardStore::from(cards.clone());
+        assert_eq!(format!("{store:?}"), format!("{cards:?}"));
+        assert_eq!(format!("{store:#?}"), format!("{cards:#?}"));
+        let mut pushed = CardStore::new();
+        for c in &cards {
+            pushed.push(*c);
+        }
+        assert_eq!(store, pushed);
+        assert_ne!(store, CardStore::from(vec![sample_card(1)]));
+    }
+
+    /// `card_id` is a public field, so `&mut [Card]` can rewrite it in place;
+    /// the debug drift guard (run at every `apply` entry) catches a rewrite
+    /// TO a gate id that the bits would otherwise miss.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "gate bits drifted")]
+    fn card_store_drift_guard_catches_an_in_place_card_id_write() {
+        let mut store = store_with_ids(&[CardId::StrikeIronclad]);
+        store[0].card_id = CardId::Stomp;
+        store.debug_assert_gate_bits();
+    }
+
+    /// `holds_id` cross-checks the scan in debug builds, so a stale bit
+    /// can never silently close a gate there.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "disagrees with the arena scan")]
+    fn card_store_holds_id_cross_checks_the_scan_in_debug() {
+        let mut store = store_with_ids(&[CardId::StrikeIronclad]);
+        store[0].card_id = CardId::Pinpoint;
+        let _ = store.holds_id(CardId::Pinpoint);
     }
 }

@@ -1183,7 +1183,9 @@ export default function Board({
   // this position (`showScores`). Replay (no `onPlayCard`) is review of a
   // recorded run, not a drill, so its recorded scores stay visible.
   const shownScores = !onPlayCard || showScores || hints.on ? scores : undefined;
-  const endScore = shownScores?.find((sc) => sc.stable_idx === -1);
+  // A zero-visit row was never searched (the run-AI skips a forced move), so it
+  // has no win-prob to overlay.
+  const endScore = shownScores?.find((sc) => sc.stable_idx === -1 && sc.visits !== 0);
 
   const action = step.chosen_action as { action?: string; args?: { card_index?: number; target_index?: number } } | null;
   const playedIndex = action?.action === "play_card" ? action.args?.card_index : undefined;

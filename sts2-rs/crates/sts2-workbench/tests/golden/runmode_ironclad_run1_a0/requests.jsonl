@@ -4,11 +4,11 @@
 {"i": 3, "method": "POST", "route": "/api/live/action", "body": {"action": "select_map_node", "args": {"col": 1, "row": 1}}, "status": 200, "sha256": "415ea76b99c71fa572aff456eed0ebdad740af9bb6ac53c771e8c1a670d4830a", "decision": "combat_play"}
 {"i": 4, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "a67a9c119040ccd82d2baf2a88fb42bccc61ed1794e8fa7d31e73a0ff5836b59", "decision": "combat_play"}
 {"i": 5, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0, "target_index": 0}}, "status": 200, "sha256": "e01e8a3a3497035fe7c5faddcafa9625e4d3785ee49987caa7204e9332c60ae9", "decision": "combat_play"}
-{"i": 6, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "3f10ce527ebfb24c45bdf9b09de4689d5ab85ec55189cebf830c6640f18b5ccf", "decision": "combat_play"}
+{"i": 6, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "7e36a159378a0268bd54efeb8c3d5dffa9d79d0d87a80c53a80e6b0f525b570c", "decision": "combat_play"}
 {"i": 7, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0}}, "status": 200, "sha256": "e21cc215c7440b599bb9dbf33169e7a75df0c5265fbe0221b2a05a3760da6c8f", "decision": "combat_play"}
 {"i": 8, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "62a8f2834a963a104ef1b68107f0dba2c664f89bf53fec33ce41913cbfe373cc", "decision": "combat_play"}
 {"i": 9, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0}}, "status": 200, "sha256": "6a2b89a602ef0d97ca380c2439cd76e1acd66536204351033493cb55221e0f5c", "decision": "combat_play"}
-{"i": 10, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "1a69be7e42c390c98f416230d948e4eb1f0acca4a0778b2517f124e93aa11671", "decision": "combat_play"}
+{"i": 10, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "61d6072f1fc635ccc8126b8e03010bd97c8284c8745e666fe13888d7df5e4445", "decision": "combat_play"}
 {"i": 11, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0, "target_index": 0}}, "status": 200, "sha256": "4cfbbc8d850ced6062195e7bae0a2d1b2a5d0e436a4430fc1b143d15135d8376", "decision": "combat_play"}
 {"i": 12, "method": "POST", "route": "/api/live/run-mode-step", "body": null, "status": 200, "sha256": "84961e96ab2f418e555fbf010fbe54b828f3ace179a81a9a41ec1637122de7ae", "decision": "combat_play"}
 {"i": 13, "method": "POST", "route": "/api/live/action", "body": {"action": "end_turn", "args": {}}, "status": 200, "sha256": "5722ce7bf11b2d332eed9399857ffbaaa0c5b23ad672023023134621d54db6a4", "decision": "combat_play"}
@@ -68,7 +68,7 @@
 {"i": 67, "method": "POST", "route": "/api/live/seek", "body": {"node_id": 55}, "status": 200, "sha256": "b654db0c555666cc0512d1cb36bc8c54d5b085d2277aceed9eca76d26b938540", "decision": "combat_play"}
 {"i": 68, "method": "POST", "route": "/api/live/autobattle/step", "body": null, "status": 200, "sha256": "2c5ecd85cffb3afa06e504e7fb7fa7c97faabdae7c6a07610370d6905e80a7b0", "decision": "combat_play"}
 {"i": 69, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0, "target_index": 0}}, "status": 200, "sha256": "bd40fd21722576b4200dc2f6f7556c483a9635ca2b46ecaa78db90e602ebe370", "decision": "combat_play"}
-{"i": 70, "method": "POST", "route": "/api/live/autobattle/step", "body": null, "status": 200, "sha256": "f61525744250794e071032a530d469ae307a971a9f3f0382446eba7e6db8fdb5", "decision": "combat_play"}
+{"i": 70, "method": "POST", "route": "/api/live/autobattle/step", "body": null, "status": 200, "sha256": "5a9dec916022dbe5e16dfd68a9e821318b1c801860e3105a1fc0a0716c504bf2", "decision": "combat_play"}
 {"i": 71, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0}}, "status": 200, "sha256": "399bbb2b0b7daa5407e03e44f8b723e46e2dc6ce3ae4366ca4b8e0cf2bae3bb2", "decision": "combat_play"}
 {"i": 72, "method": "GET", "route": "/api/live/autobattle/verdict", "body": null, "status": 200, "sha256": "36bc96a4c0a3e134c493c0673ba4d4804a8e40d67344544e9db64c849d28fae7", "decision": null}
 {"i": 73, "method": "POST", "route": "/api/live/action", "body": {"action": "play_card", "args": {"card_index": 0}}, "status": 200, "sha256": "9a191678fb41e9f4502212ffd7f467978769aff313bc773948328a45ebf254fa", "decision": "combat_play"}
@@ -102,7 +102,7 @@
 {"i": 101, "method": "POST", "route": "/api/live/wpa-review", "body": {"config": {"top_k": 3}}, "status": 200, "sha256": "ee48b0486f3ef2288988d4d4fc8177bdac4a523ae08c5a112bce421853c5dace", "decision": null}
 {"i": 102, "method": "POST", "route": "/api/live/quit", "body": null, "status": 200, "sha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "decision": null}
 {"i": 103, "method": "GET", "route": "/api/runs", "body": null, "status": 200, "sha256": "d6110096a127b7eee10f51590e33666659472a30efc9508f9e97d3e679002b0a", "decision": null}
-{"i": 104, "method": "GET", "route": "/api/runs/stat?path=<work>/logs/20260101_000000_Ironclad_1.jsonl", "body": null, "status": 200, "sha256": "e9ab1599fd8ff9b77d2f8139c462c3d745abf4add08212d9609f4e7550151524", "decision": null}
+{"i": 104, "method": "GET", "route": "/api/runs/stat?path=<work>/logs/20260101_000000_Ironclad_1.jsonl", "body": null, "status": 200, "sha256": "bbfa6f469fc39a1f8616517f624e099f8c1f4e4aa232a187e4ced03141c37068", "decision": null}
 {"i": 105, "method": "POST", "route": "/api/load", "body": {"path": "<work>/logs/20260101_000000_Ironclad_1.jsonl"}, "status": 200, "sha256": "dd48fcea623b4b81c3ceff363d169d96248bd619f736c61d5c5c4574c6db87aa", "decision": null}
 {"i": 106, "method": "GET", "route": "/api/timeline", "body": null, "status": 200, "sha256": "08fbcb3cb20ccfff385f4d79c196fc5fff758b5fdd1ce163ea1520dbec6ae4ed", "decision": null}
 {"i": 107, "method": "GET", "route": "/api/map", "body": null, "status": 200, "sha256": "18c8018ae95ed872ae18dc7c25131d6f32e8d26d2abb5c293db5473479118e8e", "decision": null}

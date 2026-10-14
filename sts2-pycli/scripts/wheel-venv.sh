@@ -57,9 +57,28 @@
 # python/parity_audit.py --coverage` Just Works from any worktree against that
 # worktree's engine.
 #
+# PGO WHEELS. `STS2_WHEEL_PGO=1` (`just sim-engine-pgo`) builds the PGO wheel
+# into the same venv via sts2-rs/scripts/pgo_wheel.sh; the PPO trainer refuses
+# anything else. A plain `build` / `run` KEEPS an installed PGO .so whose
+# `src_hash` matches the current source instead of reinstalling the plain one
+# over it (maturin develop reinstalls even when nothing changed), and a PGO
+# build is a no-op when such a wheel is already installed. A PGO .so that is
+# stale for the source is rebuilt as usual (plain unless STS2_WHEEL_PGO=1).
+# `src_hash` covers every workspace crate linked into sts2_rs, the workspace
+# Cargo.toml, Cargo.lock and the toolchain pin. The PGO install also writes
+# uv's freshness key, taken before that build started, into the dist-info
+# (scripts/uv_stamp_wheel.py), so `uv run` / `uv sync` keep the PGO wheel until
+# a file uv's cache-keys name changes after that point. Keeping a wheel here
+# does not re-key uv. Plain builds are not stamped: uv still swaps them for its
+# own cached plain build (harmless, same source).
+#
 # ENV
 #   STS2_RS_SRC        override the source checkout (same as the SRC arg)
 #   WHEEL_VENV_NO_BUILD=1  `run` skips the implicit build (use the venv as-is)
+#   STS2_WHEEL_PGO=1   build the PGO wheel (sts2-rs/scripts/pgo_wheel.sh)
+#   WHEEL_VENV_REPLACE_PGO=1  rebuild even over a fresh installed PGO .so
+#                      (plain build, or a new PGO build with STS2_WHEEL_PGO=1)
+#   WHEEL_VENV_NO_GC=1  skip the `.venv-h/<hash>` GC after a worktree build
 set -euo pipefail
 
 PYCLI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -196,19 +215,50 @@ verify_fresh() {
     -c "import sys, parity_audit; parity_audit.assert_wheel_fresh(sys.argv[1])" "$src" 2>&1
 }
 
+# 0 iff the venv's installed sts2_rs is a PGO build (`build_info()["pgo"]`)
+# compiled from SRC's current source (`src_hash` == `recompute_src_hash`).
+# Not verify_fresh: keeping a .so is only safe when it is PROVEN fresh, so
+# STS2_SKIP_WHEEL_CHECK does not apply here, and any error (no venv, a wheel
+# that predates build_info) means "no".
+installed_pgo_fresh() {
+  local venv="$1" src="$2"
+  [ -x "$venv/bin/python" ] || return 1
+  "$venv/bin/python" -I - "$src" >/dev/null 2>&1 <<'PY'
+import sys
+
+import sts2_rs
+
+info = sts2_rs.build_info()
+fresh = info["pgo"] and sts2_rs.src_hash() == sts2_rs.recompute_src_hash(sys.argv[1])
+sys.exit(0 if fresh else 1)
+PY
+}
+
 build_into() {
   local src="$1" venv="$2"
   ensure_venv "$venv"
-  # Opt-in PGO+v3 wheel (STS2_WHEEL_PGO=1): delegate the whole build to
-  # scripts/pgo_wheel.sh, which runs the two-phase PGO recipe into this same
-  # venv (plain baseline build, instrumented build + profile workload,
-  # optimized rebuild, freshness gate, decision-identity check). It calls back
-  # into THIS script with STS2_WHEEL_PGO unset for the plain phase, so there is
-  # no recursion. Not the default: ~2 extra cold LTO compiles per build and a
-  # host-narrowed (-Ctarget-cpu=x86-64-v3) .so — meant for the training venv,
-  # never the Dockerfile wheel.
-  if [ "${STS2_WHEEL_PGO:-0}" = "1" ] && [ -x "$src/scripts/pgo_wheel.sh" ]; then
-    echo "wheel-venv: STS2_WHEEL_PGO=1 → PGO+v3 wheel via $src/scripts/pgo_wheel.sh" >&2
+  # Keep a PGO wheel that is fresh for this source. `maturin develop`
+  # reinstalls its plain .so even when nothing changed, so without this every
+  # `just sim*` / `workbench` call (via `_sim-engine-fresh`) silently swapped a
+  # `just sim-engine-pgo` wheel for a plain one. A stale PGO .so falls through
+  # to the rebuild below (plain unless STS2_WHEEL_PGO=1), and the PPO trainer
+  # then refuses the plain wheel until `just sim-engine-pgo` is re-run.
+  if [ "${WHEEL_VENV_REPLACE_PGO:-0}" != "1" ] && installed_pgo_fresh "$venv" "$src"; then
+    echo "wheel-venv: keeping the installed PGO wheel — fresh for $src (WHEEL_VENV_REPLACE_PGO=1 rebuilds)" >&2
+    return 0
+  fi
+  # PGO wheel (STS2_WHEEL_PGO=1, `just sim-engine-pgo`): delegate the whole
+  # build to scripts/pgo_wheel.sh, which runs the two-phase PGO recipe into
+  # this same venv (plain baseline build, instrumented build + profile
+  # workload, optimized rebuild, freshness + build_info stamp gates,
+  # decision-identity check). It calls back into THIS script with
+  # STS2_WHEEL_PGO unset for the plain phase, so there is no recursion. Not the
+  # default: ~2 extra cold LTO compiles per build plus the profile and identity
+  # workloads. PPO training requires it (python/ppo/wheel_guard.py). The .so
+  # stays portable (no -Ctarget-cpu unless pgo_wheel.sh gets --v3).
+  if [ "${STS2_WHEEL_PGO:-0}" = "1" ]; then
+    [ -x "$src/scripts/pgo_wheel.sh" ] || die "STS2_WHEEL_PGO=1 but $src/scripts/pgo_wheel.sh is missing"
+    echo "wheel-venv: STS2_WHEEL_PGO=1 → PGO wheel via $src/scripts/pgo_wheel.sh" >&2
     STS2_WHEEL_PGO= "$src/scripts/pgo_wheel.sh" --src "$src" >/dev/null
     return 0
   fi
@@ -222,9 +272,12 @@ build_into() {
   local mutex="$src/scripts/build-mutex.sh"
   local -a prefix=()
   [ -x "$mutex" ] && prefix=("$mutex")
+  # The `build_info()` PGO stamps are pgo_wheel.sh's alone: strip any that
+  # leaked into the caller's env so a plain build can never claim PGO.
   run_maturin() {
     echo "wheel-venv: maturin develop --release ($src) -> $venv" >&2
-    VIRTUAL_ENV="$venv" PATH="$venv/bin:$PATH" \
+    env -u STS2_WHEEL_PGO_PROFDATA_SHA256 -u STS2_WHEEL_PGO_INSTRUMENTED -u STS2_WHEEL_TARGET_CPU \
+      VIRTUAL_ENV="$venv" PATH="$venv/bin:$PATH" \
       "${prefix[@]}" maturin develop --release -m "$manifest" >&2
   }
   run_maturin
@@ -252,8 +305,9 @@ build_into() {
   # PREVIOUS hash (if its source moved) is now orphaned — collect it and any
   # other `.venv-h/<H>` no live checkout needs. Only after a worktree build
   # (main lives at `.venv`, outside `.venv-h`). Never fail a good build over GC.
+  # WHEEL_VENV_NO_GC=1 keeps them (GC also hashes every other live checkout).
   case "$venv" in
-    "$PYCLI_DIR/.venv-h/"*) reachable_prune || true ;;
+    "$PYCLI_DIR/.venv-h/"*) [ "${WHEEL_VENV_NO_GC:-0}" = "1" ] || reachable_prune || true ;;
   esac
 }
 
@@ -355,10 +409,11 @@ guard_ambiguous_run() {
 # verifiable at a glance (stdout stays reserved for `run`'s exec / `build`'s
 # venv-path contract).
 binding_banner() {
-  local src="$1" venv="$2" so so_mtime=""
+  local src="$1" venv="$2" so so_mtime="" build=""
   so="$(ls "$venv"/lib/python*/site-packages/sts2_rs/*.so 2>/dev/null | head -1)"
   if [ -n "$so" ] && [ -e "$so" ]; then
     so_mtime="$(date -r "$so" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || true)"
+    build="$("$venv/bin/python" -I -c 'import sts2_rs; f = getattr(sts2_rs, "build_info", None); i = f() if f else {}; print("PGO, profdata sha256 " + i["profdata_sha256"][:12] if i.get("pgo") else "plain")' 2>/dev/null || true)"
   else
     so="(not built yet)"
   fi
@@ -367,6 +422,7 @@ binding_banner() {
     echo "wheel-venv:   checkout = $src"
     echo "wheel-venv:   venv     = $venv"
     echo "wheel-venv:   .so      = $so${so_mtime:+  (built $so_mtime)}"
+    [ -z "$build" ] || echo "wheel-venv:   build    = $build"
   } >&2
 }
 

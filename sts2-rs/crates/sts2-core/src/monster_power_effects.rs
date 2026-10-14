@@ -341,10 +341,22 @@ fn registry_after_damage_received_power(
 }
 
 /// Register a handler on the `after_damage_received_power` channel.
+///
+/// `kind` must be in the after-damage-received hook's trigger set
+/// (`hooks::AFTER_DAMAGE_RECEIVED_TRIGGERS`): the dispatcher skips this
+/// channel when no trigger kind is live, so an unlisted key's handler would
+/// never run. Debug builds assert it here, where the keys become known.
 pub fn register_after_damage_received_for_power(
     kind: PowerKind,
     handler: AfterDamageReceivedPowerFn,
 ) {
+    debug_assert!(
+        crate::hooks::PowerHook::AfterDamageReceivedEnemyTarget
+            .triggers()
+            .contains(kind),
+        "PowerKind::{kind:?} has an after_damage_received handler but is not in \
+         hooks::AFTER_DAMAGE_RECEIVED_TRIGGERS, so the dispatcher would skip it"
+    );
     registry_after_damage_received_power()
         .write()
         .expect("monster-power hook registry poisoned")

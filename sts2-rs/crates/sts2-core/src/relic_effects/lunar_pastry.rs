@@ -21,8 +21,9 @@ pub(crate) fn on_after_turn_end_lunar_pastry(state: &mut CombatState, side: Side
 }
 
 pub(crate) fn install() {
-    register_after_turn_end(
+    register_owned_after_turn_end(
         RelicId::LunarPastry,
+        crate::RelicKind::LunarPastry,
         on_after_turn_end_lunar_pastry as AfterTurnEndFn,
     );
 }

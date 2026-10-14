@@ -19,8 +19,9 @@ pub(crate) fn on_modify_hand_draw_bag_of_preparation(
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::BagOfPreparation,
+        crate::RelicKind::BagOfPreparation,
         on_modify_hand_draw_bag_of_preparation as ModifyHandDrawFn,
     );
 }

@@ -30,6 +30,7 @@
 
 use crate::cards::CardId;
 use crate::hooks::{self, CreatureRef, DamageCtx, HpLostCtx, ValueProps};
+use crate::relic_effects::channels::{relic_channel_live, PlannedChannel};
 use crate::{CombatState, CreatureUid};
 
 // Hot-path presence gates (perf). `PowerStore::present_kinds()` is a
@@ -569,22 +570,27 @@ pub fn compute_modified_damage(
     // single delta consumed by the multi-stage pipeline. Hooks-family relic
     // listeners (legacy `iter_relic_listeners` arms) still run inside
     // `hooks::modify_damage`; the two registries compose left-to-right.
-    let relic_additive_md_ctx = crate::relic_effects::ModifyDamageCtx {
-        dealer: dealer.to_creature_uid(state),
-        target,
-        base_damage: raw_damage,
-        props,
-        // Bead sts2-rs-4nh5: threaded from caller — `Some(card_id)` on
-        // card-sourced damage, `None` on non-card paths (Thorns/FlameBarrier
-        // reflection, recursive listener calls).
-        card,
-        // Bead sts2-rs-nwz1n: the played instance uid — the top-of-`Play`
-        // card when its id matches `card`. Lets MiniatureCannon read the
-        // SPECIFIC instance's upgrade flag instead of the first same-id copy.
-        card_uid: originating_card_uid(state, card),
+    // J01b: a dead channel (no owned handler) folds to the additive identity
+    // `0` without building the context.
+    let relic_additive = if relic_channel_live(state, PlannedChannel::ModifyDamageAdditive) {
+        let relic_additive_md_ctx = crate::relic_effects::ModifyDamageCtx {
+            dealer: dealer.to_creature_uid(state),
+            target,
+            base_damage: raw_damage,
+            props,
+            // Bead sts2-rs-4nh5: threaded from caller — `Some(card_id)` on
+            // card-sourced damage, `None` on non-card paths (Thorns/FlameBarrier
+            // reflection, recursive listener calls).
+            card,
+            // Bead sts2-rs-nwz1n: the played instance uid — the top-of-`Play`
+            // card when its id matches `card`. Lets MiniatureCannon read the
+            // SPECIFIC instance's upgrade flag instead of the first same-id copy.
+            card_uid: originating_card_uid(state, card),
+        };
+        crate::relic_effects::dispatch_modify_damage_additive(state, &relic_additive_md_ctx)
+    } else {
+        0
     };
-    let relic_additive =
-        crate::relic_effects::dispatch_modify_damage_additive(state, &relic_additive_md_ctx);
     let raw_damage_with_relic_additive = raw_damage.saturating_add(relic_additive);
     hooks::modify_damage(state, raw_damage_with_relic_additive, &ctx)
 }
@@ -822,13 +828,17 @@ fn apply_damage_with_final_impl(
             // listeners see the post-cap/post-clamp amount and transform it
             // left-to-right. `relic_effects::dispatch_modify_hp_lost` is a fold
             // returning the new amount; the BTreeMap walk order is deterministic
-            // by `RelicId`.
-            let ml_ctx = crate::relic_effects::ModifyHpLostCtx {
-                target,
-                dealer: dealer.to_creature_uid(state),
-                props,
-            };
-            crate::relic_effects::dispatch_modify_hp_lost(state, &ml_ctx, after_hooks)
+            // by `RelicId`. J01b: a dead channel leaves the amount unchanged.
+            if relic_channel_live(state, PlannedChannel::ModifyHpLost) {
+                let ml_ctx = crate::relic_effects::ModifyHpLostCtx {
+                    target,
+                    dealer: dealer.to_creature_uid(state),
+                    props,
+                };
+                crate::relic_effects::dispatch_modify_hp_lost(state, &ml_ctx, after_hooks)
+            } else {
+                after_hooks
+            }
         }
     } else {
         0
@@ -1115,7 +1125,10 @@ fn apply_damage_with_final_impl(
     // on the faithful flag (a 0-damage attack on a 0-block enemy is NOT fully
     // blocked).
     let was_fully_blocked = target_fully_blocked_arm && modified_hp_loss == 0;
-    hooks::dispatch_after_damage_received(state, &ctx, hp_loss);
+    // `target_ref` is always `CreatureRef::Enemy`, so the enemy-target
+    // dispatches skip the player-target lanes' kinds in their liveness test
+    // (J06).
+    hooks::dispatch_after_damage_received_enemy_target(state, &ctx, hp_loss);
     // Bead `sts2-rs-ybtmu`: pass the post-block `unblocked` residual (not
     // pre-block `final_damage`) so the Envenom / PaperCuts arms gate on C#'s
     // `UnblockedDamage > 0` — a fully-blocked powered hit triggers neither.
@@ -1132,7 +1145,7 @@ fn apply_damage_with_final_impl(
     // seed 782). Pass the same `blocked + hp_loss` the returned
     // `DamageResult.total_damage` carries; ReaperForm is its only consumer
     // (bead `sts2-rs-4wppb`).
-    hooks::dispatch_after_damage_given(
+    hooks::dispatch_after_damage_given_enemy_target(
         state,
         &ctx,
         unblocked,
@@ -1143,19 +1156,22 @@ fn apply_damage_with_final_impl(
     // Bead `sts2-rs-6jk` (j87-a): parallel relic_effects channel. The
     // `DamageGivenCtx` payload uses non-optional `CreatureUid` for both
     // slots, so we skip the dispatch entirely if either ref can't resolve
-    // (e.g. an ally dealer at this pin — no ally→uid bridge yet).
-    if let (Some(dealer_uid), Some(target_uid)) = (
-        dealer.to_creature_uid(state),
-        target_ref.to_creature_uid(state),
-    ) {
-        let dg_ctx = crate::relic_effects::DamageGivenCtx {
-            dealer: dealer_uid,
-            target: target_uid,
-            damage: final_damage,
-            props,
-            was_block_broken,
-        };
-        let _ = crate::relic_effects::dispatch_after_damage_given(state, &dg_ctx);
+    // (e.g. an ally dealer at this pin — no ally→uid bridge yet). J01b: and
+    // when the channel is dead (no owned handler).
+    if relic_channel_live(state, PlannedChannel::AfterDamageGiven) {
+        if let (Some(dealer_uid), Some(target_uid)) = (
+            dealer.to_creature_uid(state),
+            target_ref.to_creature_uid(state),
+        ) {
+            let dg_ctx = crate::relic_effects::DamageGivenCtx {
+                dealer: dealer_uid,
+                target: target_uid,
+                damage: final_damage,
+                props,
+                was_block_broken,
+            };
+            let _ = crate::relic_effects::dispatch_after_damage_given(state, &dg_ctx);
+        }
     }
 
     // Bead `sts2-rs-rmrzx`: relic-side `AfterDeath` bus. C# fires
@@ -1246,16 +1262,19 @@ pub fn compute_modified_damage_frac(
     // Relic-additive (MiniatureCannon &c.) reads the integer base; fold it into
     // the rational numerator over the same denominator before the pipeline.
     let int_base = i32::try_from(base_num.div_euclid(base_den)).unwrap_or(i32::MAX);
-    let relic_additive_md_ctx = crate::relic_effects::ModifyDamageCtx {
-        dealer: dealer.to_creature_uid(state),
-        target,
-        base_damage: int_base,
-        props,
-        card,
-        card_uid: originating_card_uid(state, card),
+    let relic_additive = if relic_channel_live(state, PlannedChannel::ModifyDamageAdditive) {
+        let relic_additive_md_ctx = crate::relic_effects::ModifyDamageCtx {
+            dealer: dealer.to_creature_uid(state),
+            target,
+            base_damage: int_base,
+            props,
+            card,
+            card_uid: originating_card_uid(state, card),
+        };
+        crate::relic_effects::dispatch_modify_damage_additive(state, &relic_additive_md_ctx)
+    } else {
+        0
     };
-    let relic_additive =
-        crate::relic_effects::dispatch_modify_damage_additive(state, &relic_additive_md_ctx);
     let base_num = base_num.saturating_add(i64::from(relic_additive).saturating_mul(base_den));
     hooks::modify_damage_frac(state, base_num, base_den, &ctx)
 }
@@ -1417,10 +1436,7 @@ fn flash_hp_lost_cap_power_on_target(
 /// the `id` and the index agree. Once enemies can be added/removed mid-
 /// combat (P4-3), the arena will need a separate id→index map.
 fn creature_index_for(state: &CombatState, target: CreatureUid) -> usize {
-    state
-        .creatures
-        .iter()
-        .position(|c| c.id == target.0)
+    crate::creature_pos(&state.creatures, target.0)
         .unwrap_or_else(|| panic!("apply_damage: creature uid {} not found", target.get()))
 }
 

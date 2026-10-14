@@ -15,6 +15,10 @@ use std::sync::{OnceLock, RwLock};
 use crate::cards::{Card, CardId, KeywordOverride, VarKey};
 use crate::damage;
 use crate::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
+use crate::relic_effects::channels::{
+    dispatch_if_live, fold_if_live, relic_channel_live, relic_guarded_channel_live, GuardedChannel,
+    PlannedChannel,
+};
 use crate::{CardUid, CombatState, CreatureUid, Power, PowerKind, PowerUid};
 
 // ---------------------------------------------------------------------------
@@ -502,7 +506,9 @@ pub fn gain_block_player_with_props(state: &mut CombatState, base: i32, props: V
         // Bead `sts2-rs-fopk` (6z05.3) — relic-side mirror of
         // `after_block_gained`. Empty-bus early-out keeps the no-
         // listener fast path lock-free.
-        let _ = crate::relic_effects::dispatch_after_block_gained(state, &gained_ctx);
+        if relic_channel_live(state, PlannedChannel::AfterBlockGained) {
+            let _ = crate::relic_effects::dispatch_after_block_gained(state, &gained_ctx);
+        }
     }
     // Return the actual post-modifier block gained (C#
     // `CreatureCmd.GainBlock` returns the granted amount). DodgeAndRoll
@@ -951,10 +957,8 @@ fn apply_power_to_creature_inner(
     if state.is_over {
         return;
     }
-    let Some(creature_idx) = state
-        .creatures
-        .iter()
-        .position(|c| c.id == target_uid.0 && (allow_dead || c.current_hp > 0))
+    let Some(creature_idx) = crate::creature_pos(&state.creatures, target_uid.0)
+        .filter(|&i| allow_dead || state.creatures[i].current_hp > 0)
     else {
         return;
     };
@@ -1262,15 +1266,21 @@ fn pipe_power_amount_through_modify_chain(
     kind: PowerKind,
     amount: i32,
 ) -> i32 {
-    let target_ref = creature_ref_for(state, target_uid);
-    let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
-    let ctx = hooks::PowerAmountCtx {
-        source_card: resolving_card(state),
-        ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
-    };
-    let amt = crate::relic_effects::dispatch_modify_power_amount_given(state, &ctx);
-    let ctx = hooks::PowerAmountCtx { amount: amt, ..ctx };
-    crate::relic_effects::dispatch_modify_power_amount_received(state, &ctx)
+    // J03: with both relic folds dead (no owned handler) both return
+    // `amount`; skip building their context.
+    let live = relic_guarded_channel_live(state, GuardedChannel::ModifyPowerAmountGiven)
+        || relic_guarded_channel_live(state, GuardedChannel::ModifyPowerAmountReceived);
+    fold_if_live(state, live, amount, |state| {
+        let target_ref = creature_ref_for(state, target_uid);
+        let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
+        let ctx = hooks::PowerAmountCtx {
+            source_card: resolving_card(state),
+            ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
+        };
+        let amt = crate::relic_effects::dispatch_modify_power_amount_given(state, &ctx);
+        let ctx = hooks::PowerAmountCtx { amount: amt, ..ctx };
+        crate::relic_effects::dispatch_modify_power_amount_received(state, &ctx)
+    })
 }
 
 /// The card this power application is coming from, if any — C#'s
@@ -1304,22 +1314,40 @@ fn fire_power_amount_observer_channels(
     amount: i32,
     when: PowerAmountObserverPhase,
 ) {
-    let target_ref = creature_ref_for(state, target_uid);
-    let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
-    let ctx = hooks::PowerAmountCtx {
-        source_card: resolving_card(state),
-        ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
-    };
-    match when {
+    // J03: the observers' answers are discarded, so channels with no owned
+    // handler need neither the context nor the dispatch.
+    let live = match when {
         PowerAmountObserverPhase::Before => {
-            let _ = crate::relic_effects::dispatch_before_power_amount_changed(state, &ctx);
+            relic_guarded_channel_live(state, GuardedChannel::BeforePowerAmountChanged)
         }
         PowerAmountObserverPhase::After => {
-            let _ = crate::relic_effects::dispatch_after_modifying_power_amount_given(state, &ctx);
-            let _ =
-                crate::relic_effects::dispatch_after_modifying_power_amount_received(state, &ctx);
+            relic_guarded_channel_live(state, GuardedChannel::AfterModifyingPowerAmountGiven)
+                || relic_guarded_channel_live(
+                    state,
+                    GuardedChannel::AfterModifyingPowerAmountReceived,
+                )
         }
-    }
+    };
+    dispatch_if_live(state, live, (), |state| {
+        let target_ref = creature_ref_for(state, target_uid);
+        let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
+        let ctx = hooks::PowerAmountCtx {
+            source_card: resolving_card(state),
+            ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
+        };
+        match when {
+            PowerAmountObserverPhase::Before => {
+                let _ = crate::relic_effects::dispatch_before_power_amount_changed(state, &ctx);
+            }
+            PowerAmountObserverPhase::After => {
+                let _ =
+                    crate::relic_effects::dispatch_after_modifying_power_amount_given(state, &ctx);
+                let _ = crate::relic_effects::dispatch_after_modifying_power_amount_received(
+                    state, &ctx,
+                );
+            }
+        }
+    });
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3339,16 +3367,19 @@ pub type PlayCardFn = fn(&mut CombatState, target: Option<CreatureUid>) -> Effec
 
 static REGISTRY: OnceLock<RwLock<BTreeMap<CardId, PlayCardFn>>> = OnceLock::new();
 
+/// Dense frozen copy of [`REGISTRY`], read by [`lookup`] once
+/// [`freeze_card_tables`] has published it.
+static PLAY_TABLE: FrozenCardTable<PlayCardFn> = FrozenCardTable::new();
+
 fn registry() -> &'static RwLock<BTreeMap<CardId, PlayCardFn>> {
     REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
 
 /// Register a single handler. Overwrites any previous entry for `card_id`.
 pub fn register(card_id: CardId, handler: PlayCardFn) {
-    registry()
-        .write()
-        .expect("dispatch registry poisoned")
-        .insert(card_id, handler);
+    let mut guard = registry().write().expect("dispatch registry poisoned");
+    guard.insert(card_id, handler);
+    PLAY_TABLE.invalidate();
 }
 
 /// Register many handlers in one go. Downstream beads use this per-pool.
@@ -3357,11 +3388,19 @@ pub fn register_many(entries: &[(CardId, PlayCardFn)]) {
     for &(id, f) in entries {
         guard.insert(id, f);
     }
+    PLAY_TABLE.invalidate();
 }
 
 /// Look up the registered handler for `card_id`, or `None` if absent.
+///
+/// Runs on every card play. After [`freeze_card_tables`] it is one indexed
+/// load from the dense frozen table; before the freeze, or after a
+/// registration the freeze has not re-checked, it reads the locked registry.
 #[must_use]
 pub fn lookup(card_id: CardId) -> Option<PlayCardFn> {
+    if let Some(table) = PLAY_TABLE.get() {
+        return FrozenCardTable::entry(table, card_id);
+    }
     registry()
         .read()
         .expect("dispatch registry poisoned")
@@ -3467,6 +3506,93 @@ pub fn resolving_card_upgraded(state: &CombatState) -> bool {
 #[must_use]
 pub fn registered_count() -> usize {
     registry().read().expect("dispatch registry poisoned").len()
+}
+
+// ---------------------------------------------------------------------------
+// Frozen dense card tables (M06)
+// ---------------------------------------------------------------------------
+//
+// The `CardId`-keyed fn-pointer registries (on-play handlers above, late
+// effects below) are filled at content install and then only read, once per
+// card play. Reading them through the `RwLock<BTreeMap>` cost two atomic RMWs
+// plus a B-tree walk per lookup, and the late-effect sweep walked every pile
+// on every play even in a deck that holds no late-effect card. The content
+// installer therefore publishes a dense `CardId`-indexed copy of each map as
+// its last step ([`freeze_card_tables`]), the same freeze-after-install
+// ordering the relic channels use (M02,
+// `docs/perf/2026-10-13-engine-speed-exact-design.md`).
+//
+// Any registration clears the copy's `valid` flag, so readers fall back to the
+// locked map until the next freeze re-checks it. A re-install that registers
+// the same handlers again (production installs twice) is re-validated by the
+// installer's own closing freeze; a different handler keeps the copy invalid
+// for as long as the map differs from it. The copy can therefore never answer
+// differently from the map.
+
+/// A `CardId`-indexed copy of one fn-pointer registry. See the section note.
+struct FrozenCardTable<F: Copy + 'static> {
+    table: OnceLock<Box<[Option<F>]>>,
+    /// `true` iff `table` matches the registry. Cleared by every
+    /// registration; set by [`Self::freeze`] after it compares.
+    valid: std::sync::atomic::AtomicBool,
+}
+
+impl<F: Copy + 'static> FrozenCardTable<F> {
+    const fn new() -> Self {
+        Self {
+            table: OnceLock::new(),
+            valid: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The frozen table while it is valid; `None` sends the caller to the
+    /// locked registry.
+    #[inline]
+    fn get(&self) -> Option<&[Option<F>]> {
+        if self.valid.load(std::sync::atomic::Ordering::Acquire) {
+            self.table.get().map(|t| &**t)
+        } else {
+            None
+        }
+    }
+
+    /// `card_id`'s entry in a table returned by [`Self::get`]. Ids past the
+    /// end have no registered handler (the table spans the largest key).
+    #[inline]
+    fn entry(table: &[Option<F>], card_id: CardId) -> Option<F> {
+        table.get(card_id as usize).copied().flatten()
+    }
+
+    /// Called by every registration, under the registry's write lock.
+    fn invalidate(&self) {
+        self.valid
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Publish `map` as the frozen table, or, when a table is already
+    /// published, mark it valid only if `map` still matches it entry for
+    /// entry (`addr` gives a handler's address). Call under the registry's
+    /// read lock so no registration interleaves.
+    fn freeze(&self, map: &BTreeMap<CardId, F>, addr: fn(F) -> usize) {
+        let len = map.keys().next_back().map_or(0, |&id| id as usize + 1);
+        let mut dense = vec![None; len].into_boxed_slice();
+        for (&id, &f) in map {
+            dense[id as usize] = Some(f);
+        }
+        let matches = match self.table.set(dense) {
+            Ok(()) => true,
+            Err(dense) => self.table.get().is_some_and(|frozen| {
+                frozen.len() == dense.len()
+                    && frozen.iter().zip(dense.iter()).all(|(a, b)| match (a, b) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => addr(*a) == addr(*b),
+                        _ => false,
+                    })
+            }),
+        };
+        self.valid
+            .store(matches, std::sync::atomic::Ordering::Release);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3953,6 +4079,10 @@ static LATE_REGISTRY: OnceLock<RwLock<BTreeMap<CardId, LateEffectFn>>> = OnceLoc
 static LATE_EFFECTS_NONEMPTY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Dense frozen copy of [`LATE_REGISTRY`], read by [`fire_late_effects`] once
+/// [`freeze_card_tables`] has published it.
+static LATE_TABLE: FrozenCardTable<LateEffectFn> = FrozenCardTable::new();
+
 fn late_registry() -> &'static RwLock<BTreeMap<CardId, LateEffectFn>> {
     LATE_REGISTRY.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
@@ -3960,10 +4090,12 @@ fn late_registry() -> &'static RwLock<BTreeMap<CardId, LateEffectFn>> {
 /// Register a single late-effect handler. Overwrites any previous
 /// entry for `card_id`.
 pub fn register_late_effect(card_id: CardId, handler: LateEffectFn) {
-    late_registry()
+    let mut guard = late_registry()
         .write()
-        .expect("late-effect registry poisoned")
-        .insert(card_id, handler);
+        .expect("late-effect registry poisoned");
+    guard.insert(card_id, handler);
+    LATE_TABLE.invalidate();
+    drop(guard);
     LATE_EFFECTS_NONEMPTY.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -3975,6 +4107,7 @@ pub fn register_many_late_effects(entries: &[(CardId, LateEffectFn)]) {
     for &(id, f) in entries {
         guard.insert(id, f);
     }
+    LATE_TABLE.invalidate();
     drop(guard);
     if !entries.is_empty() {
         LATE_EFFECTS_NONEMPTY.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -4011,6 +4144,10 @@ pub fn late_effects_empty() -> bool {
 /// and we already deduplicate on uid).
 pub fn fire_late_effects(state: &mut CombatState, played_ctx: &hooks::CardCtx) {
     if late_effects_empty() {
+        return;
+    }
+    if let Some(table) = LATE_TABLE.get() {
+        fire_late_effects_frozen(state, played_ctx, table);
         return;
     }
 
@@ -4091,6 +4228,75 @@ pub fn fire_late_effects(state: &mut CombatState, played_ctx: &hooks::CardCtx) {
     for (watched_uid, handler) in to_fire {
         handler(state, watched_uid, played_ctx);
     }
+}
+
+/// [`fire_late_effects`] over the frozen late-effect table: the same sweep
+/// (pile order, uid dedup, handlers collected before any runs), with no lock
+/// and one indexed load per card.
+///
+/// It first checks the combat's card arena. Every pile uid indexes that
+/// arena, so if no arena card has a late effect the sweep would collect
+/// nothing; that check costs one pass over the arena and skips the pile walk
+/// on every play in a deck without MakeItSo / RightHandHand.
+fn fire_late_effects_frozen(
+    state: &mut CombatState,
+    played_ctx: &hooks::CardCtx,
+    table: &[Option<LateEffectFn>],
+) {
+    if !state
+        .cards
+        .iter()
+        .any(|card| FrozenCardTable::entry(table, card.card_id).is_some())
+    {
+        return;
+    }
+    let mut to_fire: smallvec::SmallVec<[(CardUid, LateEffectFn); 8]> = smallvec::SmallVec::new();
+    for pile in [
+        crate::cards::PileKind::Hand,
+        crate::cards::PileKind::Draw,
+        crate::cards::PileKind::Discard,
+        crate::cards::PileKind::Exhaust,
+        crate::cards::PileKind::Play,
+    ] {
+        for uid in crate::cards::pile_iter(&state.player, pile) {
+            let idx = uid.0.get() as usize - 1;
+            let Some(card) = state.cards.get(idx) else {
+                continue;
+            };
+            let Some(handler) = FrozenCardTable::entry(table, card.card_id) else {
+                continue;
+            };
+            if !to_fire.iter().any(|&(seen, _)| seen == uid) {
+                to_fire.push((uid, handler));
+            }
+        }
+    }
+    for (watched_uid, handler) in to_fire {
+        handler(state, watched_uid, played_ctx);
+    }
+}
+
+/// Publish the dense frozen copies of the on-play and late-effect
+/// registries, or re-validate them against the registries after a
+/// re-install. `sts2-content`'s card installer calls this as its last step;
+/// until then (and after any later registration) both tables read the
+/// locked registries. See the "Frozen dense card tables" section note.
+pub fn freeze_card_tables() {
+    {
+        let guard = registry().read().expect("dispatch registry poisoned");
+        PLAY_TABLE.freeze(&guard, |f| f as usize);
+    }
+    let guard = late_registry()
+        .read()
+        .expect("late-effect registry poisoned");
+    LATE_TABLE.freeze(&guard, |f| f as usize);
+}
+
+/// `true` iff [`lookup`] and [`fire_late_effects`] are both reading their
+/// frozen tables (test probe for the install ordering).
+#[must_use]
+pub fn card_tables_frozen() -> bool {
+    PLAY_TABLE.get().is_some() && LATE_TABLE.get().is_some()
 }
 
 /// Number of currently-registered late-effect handlers.
@@ -6707,6 +6913,116 @@ mod tests {
 
         fn noop(_s: &mut CombatState, _w: CardUid, _c: &hooks::CardCtx) {}
         register_late_effect(crate::cards::CardId::Burn, noop as LateEffectFn);
+    }
+
+    /// M06: the frozen-table sweep fires the same watched cards, in the same
+    /// order and with the same uid dedup, as the locked-registry sweep it
+    /// replaces. That includes a uid listed in two piles, and an arena with
+    /// no late-effect card, which the frozen gate skips.
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn frozen_late_sweep_matches_locked_sweep() {
+        use std::sync::Mutex;
+
+        static FIRED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        fn probe(_s: &mut CombatState, w: CardUid, _c: &hooks::CardCtx) {
+            FIRED.lock().expect("probe log").push(w.0.get());
+        }
+        fn sweep(state: &CombatState) -> Vec<u32> {
+            FIRED.lock().expect("probe log").clear();
+            fire_late_effects(&mut state.clone(), &hooks::CardCtx::default());
+            FIRED.lock().expect("probe log").clone()
+        }
+        register_late_effect(crate::cards::CardId::Burn, probe as LateEffectFn);
+
+        let mut state = CombatState {
+            rng: crate::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        let _ = state.init_player_creature();
+        let mut burns = Vec::new();
+        for pile in [
+            crate::cards::PileKind::Play,
+            crate::cards::PileKind::Exhaust,
+            crate::cards::PileKind::Discard,
+            crate::cards::PileKind::Draw,
+            crate::cards::PileKind::Hand,
+        ] {
+            for card_id in [crate::cards::CardId::Anger, crate::cards::CardId::Burn] {
+                let uid =
+                    spawn_card_into_pile(&mut state, placeholder_card(card_id), PileKind::Hand);
+                crate::cards::move_card(&mut state.player, uid, crate::cards::PileKind::Hand, pile)
+                    .expect("spawned into hand");
+                if card_id == crate::cards::CardId::Burn {
+                    burns.push(uid);
+                }
+            }
+        }
+        // The Play-pile Burn also listed in discard: one fire, at its first
+        // (discard) position.
+        state.player.discard.push(burns[0]);
+        let mut no_burns = state.clone();
+        for card in &mut no_burns.cards {
+            card.card_id = crate::cards::CardId::Anger;
+        }
+
+        assert!(!card_tables_frozen());
+        let locked = sweep(&state);
+        let locked_none = sweep(&no_burns);
+        freeze_card_tables();
+        assert!(card_tables_frozen());
+        let frozen = sweep(&state);
+        let frozen_none = sweep(&no_burns);
+
+        // burns = [Play, Exhaust, Discard, Draw, Hand]; sweep order is Hand,
+        // Draw, Discard (its own Burn, then the Play Burn), Exhaust.
+        let expected: Vec<u32> = [4, 3, 2, 0, 1].map(|i| burns[i].0.get()).to_vec();
+        assert_eq!(locked, expected);
+        assert_eq!(frozen, expected);
+        assert!(locked_none.is_empty());
+        assert!(frozen_none.is_empty());
+
+        fn noop(_s: &mut CombatState, _w: CardUid, _c: &hooks::CardCtx) {}
+        register_late_effect(crate::cards::CardId::Burn, noop as LateEffectFn);
+    }
+
+    /// M06: the frozen tables answer exactly as the registries do. Any
+    /// registration suspends them; a freeze re-validates a registry that
+    /// still matches (the production re-install) and keeps a changed one on
+    /// the locked path.
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn frozen_card_tables_track_the_registries() {
+        fn other_strike(_s: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+            EffectResult::NotImplemented
+        }
+        let addr = |f: Option<PlayCardFn>| f.map(|f| f as usize);
+        let strike = crate::cards::CardId::StrikeIronclad;
+
+        install_default_registry();
+        let installed = lookup(strike);
+        assert!(installed.is_some());
+        freeze_card_tables();
+        assert!(card_tables_frozen());
+        assert_eq!(addr(lookup(strike)), addr(installed));
+        assert_eq!(addr(lookup(crate::cards::CardId::Whirlwind)), None);
+
+        // Same handler again (a re-install): suspended until the next freeze,
+        // which finds the registry unchanged.
+        register(strike, installed.expect("installed"));
+        assert!(!card_tables_frozen());
+        assert_eq!(addr(lookup(strike)), addr(installed));
+        freeze_card_tables();
+        assert!(card_tables_frozen());
+
+        // A different handler: the locked registry serves it, and a freeze
+        // cannot re-validate the table while the registry differs from it.
+        register(strike, other_strike as PlayCardFn);
+        freeze_card_tables();
+        assert!(!card_tables_frozen());
+        assert_eq!(addr(lookup(strike)), addr(Some(other_strike as PlayCardFn)));
+
+        register(strike, installed.expect("installed"));
     }
 
     /// Bead `sts2-rs-st9tl`: applying Vulnerable / Weak / Frail to the

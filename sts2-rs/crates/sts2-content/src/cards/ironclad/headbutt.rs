@@ -45,16 +45,9 @@ pub(crate) fn play_headbutt(state: &mut CombatState, target: Option<CreatureUid>
     }
     let mut options: Vec<sts2_core::ChoiceOption> = Vec::with_capacity(state.player.discard.len());
     for uid in state.player.discard.iter().copied() {
-        let card_id = state
-            .cards
-            .iter()
-            .find(|c| c.uid == uid)
-            .map_or(CardId::AscendersBane, |c| c.card_id);
-        let upgraded = state
-            .cards
-            .iter()
-            .find(|c| c.uid == uid)
-            .is_some_and(|c| c.upgraded);
+        let card_id =
+            sts2_core::card_by_uid(&state.cards, uid).map_or(CardId::AscendersBane, |c| c.card_id);
+        let upgraded = sts2_core::card_by_uid(&state.cards, uid).is_some_and(|c| c.upgraded);
         options.push(sts2_core::ChoiceOption {
             card_id,
             upgraded,

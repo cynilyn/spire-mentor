@@ -469,7 +469,7 @@ mod tests {
             side: Side::Player,
             rng: sts2_core::dotnet_rng::Rng::new(0_i32),
             creatures,
-            cards,
+            cards: cards.into(),
             enemy_uids,
             player,
             ..CombatState::default()

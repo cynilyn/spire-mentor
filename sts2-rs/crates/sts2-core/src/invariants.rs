@@ -57,10 +57,9 @@ pub const BLOCK_RETENTION_RELICS: &[RelicKind] = &[
 
 #[must_use]
 pub fn has_block_retention(state: &CombatState) -> bool {
-    state
-        .relics
+    BLOCK_RETENTION_RELICS
         .iter()
-        .any(|r| !r.is_melted && BLOCK_RETENTION_RELICS.contains(&r.kind))
+        .any(|&kind| state.relics.owns(kind))
 }
 
 /// Reduce the assert-heavy port to mechanical `Err`-returns.
@@ -181,6 +180,24 @@ pub fn check_combat_invariants(state: &CombatState, ctx: &str) -> Result<(), Str
             c.max_hp
         );
         ensure!(c.block >= 0, "creature {} block negative ({ctx})", c.id);
+    }
+
+    // 1b'. Creature ids and card uids are unique. The dense id lookups
+    // (`crate::creature_by_id`, `crate::card_by_uid`, J07) return the same
+    // element as a first-match scan only under that invariant.
+    for (i, c) in state.creatures.iter().enumerate() {
+        ensure!(
+            !state.creatures[..i].iter().any(|d| d.id == c.id),
+            "duplicate creature id {} ({ctx})",
+            c.id
+        );
+    }
+    for (i, c) in state.cards.iter().enumerate() {
+        ensure!(
+            !state.cards[..i].iter().any(|d| d.uid == c.uid),
+            "duplicate card uid {:?} ({ctx})",
+            c.uid
+        );
     }
 
     // 1c. PowerStore O(1) index ⇔ arena agreement (D1). The `uid -> slot`

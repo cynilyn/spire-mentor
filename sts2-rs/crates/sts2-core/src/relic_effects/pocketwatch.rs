@@ -47,9 +47,10 @@ pub(crate) fn on_modify_hand_draw_pocketwatch(state: &CombatState, current_draw:
 }
 
 pub(crate) fn on_after_combat_end_pocketwatch(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = pocketwatch_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = pocketwatch_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -62,12 +63,14 @@ pub(crate) fn install() {
         RelicId::Pocketwatch,
         on_before_side_turn_start_pocketwatch as BeforeSideTurnStartFn,
     );
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::Pocketwatch,
+        crate::RelicKind::Pocketwatch,
         on_modify_hand_draw_pocketwatch as ModifyHandDrawFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::Pocketwatch,
+        crate::RelicKind::Pocketwatch,
         on_after_combat_end_pocketwatch as AfterCombatEndFn,
     );
 }

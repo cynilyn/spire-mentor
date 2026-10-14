@@ -87,8 +87,9 @@ fn emit_git_build_stamp() {
 
 /// Stamp this crate's source-content hash (`STS2_PY_SRC_HASH`, INCLUDING the
 /// `include_bytes!` value/policy-net weights that live outside `src`) and the
-/// workspace inputs (`STS2_WORKSPACE_HASH` = Cargo.lock + rust-toolchain.toml)
-/// for the content-addressed engine-identity check (issue #15, bead
+/// workspace inputs (`STS2_WORKSPACE_HASH` = the workspace Cargo.toml +
+/// Cargo.lock + rust-toolchain.toml) for the content-addressed engine-identity
+/// check (issue #15, bead
 /// `sts2-rs-cg5ci`). Unlike sts2-core/content/mcts, this build script already
 /// opts out of cargo's default file tracking (it emits git `rerun-if-changed`),
 /// so it must name its own inputs explicitly to keep the stamp fresh.
@@ -119,6 +120,7 @@ fn emit_src_hash_stamp() {
     let mut watched = vec![
         crate_dir.join("src"),
         crate_dir.join("Cargo.toml"),
+        rs_root.join("Cargo.toml"),
         rs_root.join("Cargo.lock"),
         rs_root.join("rust-toolchain.toml"),
     ];

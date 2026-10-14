@@ -121,7 +121,7 @@ fn stampede_state() -> CombatState {
         rng: sts2_core::dotnet_rng::Rng::new(7),
         run_rng: sts2_core::run_rng_set::RunRngSet::new(7),
         creatures,
-        cards,
+        cards: cards.into(),
         player,
         enemy_uids: SmallVec::from_slice(&[enemy_uid]),
         ..CombatState::default()

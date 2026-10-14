@@ -23,7 +23,6 @@ dispatch_before_turn_end
 dispatch_modify_card_play_count
 dispatch_modify_hand_draw
 dispatch_modify_max_energy
-dispatch_on_turn_start_own_side
 dispatch_should_flush
 dispatch_should_reset_energy
 dispatch_should_take_extra_turn

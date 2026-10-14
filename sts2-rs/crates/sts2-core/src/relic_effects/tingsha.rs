@@ -26,8 +26,9 @@ pub(crate) fn on_after_card_discarded_tingsha(
 }
 
 pub(crate) fn install() {
-    register_after_card_discarded(
+    register_owned_after_card_discarded(
         RelicId::Tingsha,
+        crate::RelicKind::Tingsha,
         on_after_card_discarded_tingsha as AfterCardDiscardedFn,
     );
 }

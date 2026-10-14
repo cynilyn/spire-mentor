@@ -64,6 +64,28 @@ fn a_captured_dict_rebuilds_a_combat_state() {
     assert_eq!(state.player.discard.len(), 1);
 }
 
+/// A wire `combat_vars` value lands behind the card's "may be nonzero" mask
+/// (J02). `Card::combat_var` answers 0 from the mask alone when the key's bit
+/// is clear, so a reconstruction path that wrote a value without going
+/// through the mask-maintaining writers would read the fixture's
+/// `free_this_turn: 1` back as 0, and the card would stop being free.
+#[test]
+fn wire_combat_vars_read_back_through_the_mask() {
+    use sts2_core::cards::{CardId, VarKey};
+
+    let state = state_from_json_str(&fixture()).expect("fixture must rebuild");
+    let strike = state
+        .player
+        .hand
+        .iter()
+        .map(|uid| &state.cards[uid.get() as usize - 1])
+        .find(|c| c.card_id == CardId::StrikeIronclad)
+        .expect("the hand Strike came across");
+    assert!(strike.combat_vars.maybe_nonzero(VarKey::FreeThisTurn));
+    assert_eq!(strike.combat_var(VarKey::FreeThisTurn), 1);
+    assert!(sts2_core::hooks::card_cost_locally_zeroed(&state, strike));
+}
+
 /// The synthetic `status:` / `curse:` ids resolve to their real cards rather
 /// than degrading to the AscendersBane placeholder — the single largest
 /// reconstruction gap the DLL path ever had, and worth pinning on the

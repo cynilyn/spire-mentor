@@ -11,8 +11,7 @@
 //! energy via `should_reset_energy` + `modify_max_energy`, draws the
 //! base hand (mediated by `modify_hand_draw` + opening-innate sort
 //! on round 1), fires `after_energy_reset`, fires
-//! `after_side_turn_start(PLAYER)` plus the synthetic
-//! `on_turn_start_own_side` walk, then advances
+//! `after_side_turn_start(PLAYER)`, then advances
 //! `PlayerTurnStart` -> `PlayerPlayPhase`.
 //!
 //! Subsequent P3-3..P3-8 beads extend this module with the end-turn
@@ -24,6 +23,10 @@ use crate::hooks::{
     MaxEnergyCtx, TurnSideCtx, ValueProps,
 };
 use crate::monsters::Intent;
+use crate::relic_effects::channels::{
+    dispatch_if_live, fold_if_live, relic_channel_live, relic_guarded_channel_live, GuardedChannel,
+    PlannedChannel,
+};
 use crate::{CombatPhase, CombatState, CreatureUid, DotNetRng, Side, StepResult};
 
 /// Append a play to the combat-scoped UI play-log when recording is enabled.
@@ -510,11 +513,8 @@ pub fn start_combat(state: &mut CombatState) -> StepResult {
 ///      `on_turn_start_own_side` for every power on a creature whose
 ///      `side == PLAYER` whose listener overrides
 ///      `on_turn_start_own_side` but NOT `after_side_turn_start`.
-///      The Rust port handles this via a separate
-///      [`hooks::dispatch_on_turn_start_own_side`] call — at this
-///      pin no `PowerKind` overrides either listener arm so the two
-///      dispatchers' walks are no-ops, but the call ordering
-///      preserves Python's hook-firing semantics for Phase 6+.
+///      No power or relic has an `on_turn_start_own_side` arm (C# has
+///      no such hook), so Rust no longer walks it.
 ///  10. Combat-end check (combat.py:721). P3-8 (sts2-rs-qct) lands
 ///      the full `check_combat_end` helper; until then the cheap
 ///      `is_over` guard is sufficient.
@@ -669,7 +669,9 @@ pub fn start_player_turn(state: &mut CombatState) -> StepResult {
     // discriminates on side so the no-op default is correct.
     hooks::dispatch_before_side_turn_start(state, &hooks::TurnSideCtx::default());
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-    let _ = crate::relic_effects::dispatch_before_side_turn_start(state, Side::Player);
+    if relic_channel_live(state, PlannedChannel::BeforeSideTurnStart) {
+        let _ = crate::relic_effects::dispatch_before_side_turn_start(state, Side::Player);
+    }
 
     // NOTE (bead `sts2-rs-ybtmu`, retimed): a KnowledgeDemon
     // CURSE_OF_KNOWLEDGE used to defer its player card-select to HERE, on the
@@ -710,8 +712,8 @@ pub fn start_player_turn(state: &mut CombatState) -> StepResult {
 ///
 /// Steps 5-11 of the original `start_player_turn` pipeline: clear
 /// block (round > 1) + `after_block_cleared`, energy reset, hand
-/// draw, `after_energy_reset`, `after_side_turn_start` /
-/// `on_turn_start_own_side`, combat-end re-check, advance phase.
+/// draw, `after_energy_reset`, `after_side_turn_start`, combat-end
+/// re-check, advance phase.
 ///
 /// Bead `sts2-rs-l2nz`: extracted so the resume path triggered from
 /// `apply(Action::ResolveChoice)` runs the same body.
@@ -738,7 +740,10 @@ pub(crate) fn continue_player_turn_setup(state: &mut CombatState) -> StepResult 
         // returns false on player-owned). Empty-bus early-out keeps
         // the no-listener fast path lock-free.
         let power_preventer = hooks::block_clear_preventer(state, &ctx);
-        let relic_permit = crate::relic_effects::dispatch_should_clear_block(state, &ctx);
+        let live = relic_guarded_channel_live(state, GuardedChannel::ShouldClearBlock);
+        let relic_permit = fold_if_live(state, live, true, |state| {
+            crate::relic_effects::dispatch_should_clear_block(state, &ctx)
+        });
         if let Some(preventer) = power_preventer {
             // C# `Creature.ClearBlock` else-arm: `Hook.AfterPreventingBlockClear`
             // fires on the PREVENTER alone, at the moment of prevention. On the
@@ -771,7 +776,9 @@ pub(crate) fn continue_player_turn_setup(state: &mut CombatState) -> StepResult 
         // Bead `sts2-rs-1h8q` ch.2: relic-bus mirror. Empty-bus early-out
         // in the dispatcher keeps the no-listener fast path lock-free.
         // SturdyClamp's listener caps block to MAX_RETAINED_BLOCK here.
-        let _ = crate::relic_effects::dispatch_after_block_cleared(state, &ctx);
+        if relic_channel_live(state, PlannedChannel::AfterBlockCleared) {
+            let _ = crate::relic_effects::dispatch_after_block_cleared(state, &ctx);
+        }
     }
 
     // Step 6: energy reset. C# splits base vs effective max energy:
@@ -834,10 +841,11 @@ pub(crate) fn continue_player_turn_setup(state: &mut CombatState) -> StepResult 
     // registers on this channel, `dispatch_modify_hand_draw` returns
     // the input unchanged, so the combined delta equals the
     // hooks-only delta (current behaviour).
-    let relic_folded_draw = crate::relic_effects::dispatch_modify_hand_draw(
-        state,
-        BASE_DRAW.saturating_add(hooks_draw_delta),
-    );
+    let hooks_folded_draw = BASE_DRAW.saturating_add(hooks_draw_delta);
+    let live = relic_guarded_channel_live(state, GuardedChannel::ModifyHandDraw);
+    let relic_folded_draw = fold_if_live(state, live, hooks_folded_draw, |state| {
+        crate::relic_effects::dispatch_modify_hand_draw(state, hooks_folded_draw)
+    });
     // C# `CombatManager.SetupPlayerTurn` runs the round-1 Innate-to-top
     // reorder + draw-count adjustment AFTER `Hook.BeforeHandDraw` and right
     // BEFORE the actual draw (`CombatManager.cs:654` BeforeHandDraw →
@@ -907,7 +915,13 @@ pub(crate) fn resume_after_foregone_select(state: &mut CombatState, draw_count: 
     // `before_hand_draw` invocation site in `_start_player_turn` —
     // fires AFTER `modify_hand_draw` folding and BEFORE the actual
     // draw. Toolbox opens a `request_card_choice` here.
-    let _ = crate::relic_effects::dispatch_before_hand_draw(state);
+    let live = relic_guarded_channel_live(state, GuardedChannel::BeforeHandDraw);
+    let _ = dispatch_if_live(
+        state,
+        live,
+        crate::EffectResult::NotImplemented,
+        crate::relic_effects::dispatch_before_hand_draw,
+    );
     // GH #369: a relic that opens a select here SUSPENDS the rest of turn
     // setup, exactly as the ForegoneConclusion power leg above does. C#
     // `Toolbox.BeforeHandDraw` (`Toolbox.cs:22-33`) `await`s
@@ -932,6 +946,45 @@ pub(crate) fn resume_after_foregone_select(state: &mut CombatState, draw_count: 
         return StepResult::PendingChoice;
     }
     resume_after_relic_hand_draw_select(state, draw_count)
+}
+
+/// The Bolas / ThrummingHatchet copies that return to hand at this turn
+/// start: those in a non-hand pile whose `ReturnIfPlayedRound` stamp is
+/// `prev_round` (see [`resume_after_relic_hand_draw_select`]).
+fn bolas_hatchet_returning(
+    state: &CombatState,
+    prev_round: i32,
+) -> smallvec::SmallVec<[crate::CardUid; 4]> {
+    // C# `Bolas`/`ThrummingHatchet.BeforeHandDraw` returns the card from
+    // ANY non-Hand pile (`pile == null || pile.Type != PileType.Hand`),
+    // not just discard/draw — a copy that was exhausted (DrumOfBattle,
+    // Corruption, …) or still resting in the play pile must also come
+    // back. Scan all non-hand piles to match (sts2-rs-219ds follow-up).
+    // Scan order follows C# `PlayerCombatState.AllPiles` = [Hand,
+    // Draw, Discard, Exhaust, Play] (`PlayerCombatState.cs:42-52`) —
+    // the hook walk visits the DRAW-pile copy before the discard one,
+    // so when both a base and an upgraded copy return the same turn,
+    // hand order (and thus which copy a low-index play picks) matches
+    // C# (sweep seed 2954: Rust returned the discarded +1 first and
+    // played 14 dmg where C# played the draw-pile base 11).
+    state
+        .player
+        .draw
+        .iter()
+        .chain(state.player.discard.iter())
+        .chain(state.player.exhaust.iter())
+        .chain(state.player.play.iter())
+        .copied()
+        .filter(|uid| {
+            let idx = uid.0.get() as usize - 1;
+            state.cards.get(idx).is_some_and(|card| {
+                matches!(
+                    card.card_id,
+                    cards::CardId::Bolas | cards::CardId::ThrummingHatchet
+                ) && card.combat_var(VarKey::ReturnIfPlayedRound) == prev_round
+            })
+        })
+        .collect()
 }
 
 /// The post-relic-`before_hand_draw` tail of [`resume_after_foregone_select`]
@@ -967,48 +1020,22 @@ pub(crate) fn resume_after_relic_hand_draw_select(
     // The card arena is append-only for the whole combat and no in-combat
     // path mutates `card_id` in place, so "neither id anywhere in the arena"
     // proves the four-pile filter walk collects nothing — skipping it is
-    // bit-identical (no RNG, no hooks fire from an empty collect).
-    let bolas_or_hatchet_present = || {
-        state.cards.iter().any(|c| {
-            matches!(
-                c.card_id,
-                cards::CardId::Bolas | cards::CardId::ThrummingHatchet
-            )
-        })
-    };
-    if prev_round >= 1 && bolas_or_hatchet_present() {
-        // C# `Bolas`/`ThrummingHatchet.BeforeHandDraw` returns the card from
-        // ANY non-Hand pile (`pile == null || pile.Type != PileType.Hand`),
-        // not just discard/draw — a copy that was exhausted (DrumOfBattle,
-        // Corruption, …) or still resting in the play pile must also come
-        // back. Scan all non-hand piles to match (sts2-rs-219ds follow-up).
-        // Scan order follows C# `PlayerCombatState.AllPiles` = [Hand,
-        // Draw, Discard, Exhaust, Play] (`PlayerCombatState.cs:42-52`) —
-        // the hook walk visits the DRAW-pile copy before the discard one,
-        // so when both a base and an upgraded copy return the same turn,
-        // hand order (and thus which copy a low-index play picks) matches
-        // C# (sweep seed 2954: Rust returned the discarded +1 first and
-        // played 14 dmg where C# played the draw-pile base 11).
-        let returning: smallvec::SmallVec<[crate::CardUid; 4]> = state
-            .player
-            .draw
-            .iter()
-            .chain(state.player.discard.iter())
-            .chain(state.player.exhaust.iter())
-            .chain(state.player.play.iter())
-            .copied()
-            .filter(|uid| {
-                let idx = uid.0.get() as usize - 1;
-                state.cards.get(idx).is_some_and(|card| {
-                    matches!(
-                        card.card_id,
-                        cards::CardId::Bolas | cards::CardId::ThrummingHatchet
-                    ) && card.combat_var(VarKey::ReturnIfPlayedRound) == prev_round
-                })
-            })
-            .collect();
-        for uid in returning {
-            state.move_card_to_hand(uid);
+    // bit-identical (no RNG, no hooks fire from an empty collect). The
+    // arena answers it from its presence bits (J02).
+    if prev_round >= 1 {
+        if state.cards.holds_id(cards::CardId::Bolas)
+            || state.cards.holds_id(cards::CardId::ThrummingHatchet)
+        {
+            for uid in bolas_hatchet_returning(state, prev_round) {
+                state.move_card_to_hand(uid);
+            }
+        } else {
+            // Debug shadow: the skipped collect really is empty.
+            debug_assert!(
+                bolas_hatchet_returning(state, prev_round).is_empty(),
+                "J02 presence gate skipped the Bolas / ThrummingHatchet return, \
+                 but a copy would return"
+            );
         }
     }
     // NOTE: Bombardment's start-of-turn exhaust-pile auto-play is NOT fired here.
@@ -1101,16 +1128,22 @@ pub(crate) fn finish_player_turn_setup(state: &mut CombatState) -> StepResult {
     // Step 8: fire after_energy_reset.
     hooks::dispatch_after_energy_reset(state, &CombatLifecycleCtx::default());
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-    let _ = crate::relic_effects::dispatch_after_energy_reset(state);
+    let live = relic_guarded_channel_live(state, GuardedChannel::AfterEnergyReset);
+    let _ = dispatch_if_live(
+        state,
+        live,
+        crate::EffectResult::NotImplemented,
+        crate::relic_effects::dispatch_after_energy_reset,
+    );
     // NOTE: `StarNextTurnPower` / `GenesisPower` `AfterEnergyReset` star grants
     // are already wired via the `after_energy_reset` hooks bus
     // (`hooks::after_energy_reset` → `Effect::GainStars` → `gain_stars`); that
     // path now fires `BlackHolePower` because `CombatState::gain_stars` calls
     // `apply_black_hole_on_stars_event`. No grant is duplicated here.
 
-    // Step 9 (`after_side_turn_start` / `on_turn_start_own_side`) is fired
-    // BELOW, AFTER the `AfterPlayerTurnStart` auto-play cluster (enchantment /
-    // RollingBoulder / Entropy / Tyranny / Tools / folded powers). This mirrors
+    // Step 9 (`after_side_turn_start`) is fired BELOW, AFTER the
+    // `AfterPlayerTurnStart` auto-play cluster (enchantment / RollingBoulder /
+    // Entropy / Tyranny / Tools / folded powers). This mirrors
     // C# `CombatManager` turn-start ordering (`CombatManager.cs`):
     // `SetupPlayerTurn` runs `AfterPlayerTurnStart` (line 516 — RollingBoulder
     // damage, Entropy transform, …) and only THEN does the outer loop fire
@@ -1275,15 +1308,15 @@ fn auto_play_collect_suspending(
     None
 }
 
-/// Fire the player-side `after_side_turn_start` walk (power + relic buses) +
-/// the synthetic `on_turn_start_own_side` walk. C# outer-loop
-/// `Hook.AfterSideTurnStart` (`CombatManager.cs:437` — Rampart / DemonForm /
-/// PrepTime / CreativeAi). Skips the folded `AfterPlayerTurnStart` kinds (those
-/// are dispatched in the cluster). Bead `sts2-rs-o0rz3`.
+/// Fire the player-side `after_side_turn_start` walk (power + relic buses).
+/// C# outer-loop `Hook.AfterSideTurnStart` (`CombatManager.cs:437` — Rampart /
+/// DemonForm / PrepTime / CreativeAi). Skips the folded `AfterPlayerTurnStart`
+/// kinds (those are dispatched in the cluster). Bead `sts2-rs-o0rz3`.
 fn fire_after_side_turn_start(state: &mut CombatState) {
     hooks::dispatch_after_side_turn_start(state, &hooks::TurnSideCtx::default());
-    hooks::dispatch_on_turn_start_own_side(state, &hooks::TurnSelfCtx::default());
-    let _ = crate::relic_effects::dispatch_after_side_turn_start(state, Side::Player);
+    if relic_channel_live(state, PlannedChannel::AfterSideTurnStart) {
+        let _ = crate::relic_effects::dispatch_after_side_turn_start(state, Side::Player);
+    }
 }
 
 /// The `AfterPlayerTurnStart` auto-play cluster (RollingBoulder / Entropy /
@@ -1617,7 +1650,7 @@ pub(crate) fn run_turn_start_relic_tail(
     // function — later `AfterPlayerTurnStart` relics, Plasma,
     // `after_side_turn_start` (Akabeko / Lantern / BloodVial), Bombardment,
     // Mayhem, the phase advance — must not run until the pick resolves.
-    if !state.is_over {
+    if !state.is_over && relic_channel_live(state, PlannedChannel::AfterPlayerTurnStart) {
         if let Some(next) =
             crate::relic_effects::dispatch_after_player_turn_start_from(state, relic_start)
         {
@@ -1655,9 +1688,9 @@ pub(crate) fn run_turn_start_relic_tail(
         }
     }
 
-    // Step 9: fire `after_side_turn_start(PLAYER)` + the synthetic
-    // `on_turn_start_own_side` walk — after the `AfterPlayerTurnStart` cluster
-    // above and BEFORE Mayhem's AutoPrePlay auto-play below, mirroring C#
+    // Step 9: fire `after_side_turn_start(PLAYER)` — after the
+    // `AfterPlayerTurnStart` cluster above and BEFORE Mayhem's AutoPrePlay
+    // auto-play below, mirroring C#
     // `CombatManager` (`AfterPlayerTurnStart` inside `SetupPlayerTurn` at
     // `CombatManager.cs:516`, then `Hook.AfterSideTurnStart` at `:524`, then
     // `RunAutoPrePlayPhase` → `AfterAutoPrePlayPhaseEntered` at `:570`).
@@ -1669,12 +1702,10 @@ pub(crate) fn run_turn_start_relic_tail(
     // auto-play below then consumes via its powered attack), and CreativeAiPower
     // (spawns Power cards to hand).
     //
-    // Python's `fire_after_side_turn_start` (hooks.py:413-425) also iterates
-    // power listeners and conditionally fires `on_turn_start_own_side` when a
-    // power overrides ONLY that arm AND `owner.side == side`. Rust exposes the
-    // two arms as separate dispatchers (per-listener fns are statically
-    // resolved), so both are called; calling both unconditionally matches
-    // Python's semantics for any power overriding exactly one arm.
+    // Python's `fire_after_side_turn_start` (hooks.py:413-425) also fires
+    // `on_turn_start_own_side` for powers overriding only that arm. No power
+    // or relic has such an arm (and C# has no such hook), so the separate
+    // no-op walk Rust used to call here was deleted.
     //
     // Guarded on `!is_over`: now that this dispatch runs after the
     // `AfterPlayerTurnStart` cluster, RollingBoulder (or an auto-played card)
@@ -1853,7 +1884,13 @@ fn finish_turn_start_tail(state: &mut CombatState) -> StepResult {
     // Mayhem auto-play above) are correctly excluded, matching C#'s
     // `RoundNumber == round - 1` scan. Empty-bus early-out makes this free
     // when no play-phase-start relic is registered.
-    let _ = crate::relic_effects::dispatch_before_play_phase_start(state);
+    let live = relic_guarded_channel_live(state, GuardedChannel::BeforePlayPhaseStart);
+    let _ = dispatch_if_live(
+        state,
+        live,
+        crate::EffectResult::NotImplemented,
+        crate::relic_effects::dispatch_before_play_phase_start,
+    );
 
     // Bead `sts2-rs-fogmog-playphase-collapse`: the `before_play_phase_start`
     // dispatch above can AUTO-PLAY a card — HISTORY_COURSE re-plays last round's
@@ -1966,13 +2003,13 @@ pub(crate) fn run_stampede_auto_post_play(state: &mut CombatState) -> bool {
         .find_map(|puid| {
             state
                 .powers
-                .iter()
-                .find(|p| p.id == puid.0 && p.kind == crate::PowerKind::Stampede)
+                .get_by_id(puid.0)
+                .filter(|p| p.kind == crate::PowerKind::Stampede)
                 .map(|p| p.amount)
         })
         .or_else(|| {
             state.player.creature_uid.and_then(|cu| {
-                state.creatures.iter().find(|c| c.id == cu.0).and_then(|c| {
+                crate::creature_by_id(&state.creatures, cu.0).and_then(|c| {
                     c.powers.iter().find_map(|pu| {
                         state
                             .powers
@@ -2123,7 +2160,9 @@ fn end_player_turn_phase_one_after_auto_post_play_stampede(state: &mut CombatSta
     // turn, and Phase 7 enemy-side analogues will pass `Side::Enemy`.
     hooks::dispatch_before_turn_end(state, &TurnSideCtx { side: Side::Player });
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-    let _ = crate::relic_effects::dispatch_before_turn_end(state, Side::Player);
+    if relic_channel_live(state, PlannedChannel::BeforeTurnEnd) {
+        let _ = crate::relic_effects::dispatch_before_turn_end(state, Side::Player);
+    }
 
     // Step 3: combat-end re-check after listener walk. C# `EndPlayerTurn`
     // runs `if (await CheckWinCondition()) return;` here — the FULL
@@ -2691,12 +2730,10 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
         // union once the d03 mirror is up. Scan creature.powers only
         // when the mirror is set — chaining both surfaces would
         // double-count any pre-init power present in both lists.
-        let scan_uids: smallvec::SmallVec<[crate::PowerUid; 8]> = state
-            .creatures
-            .iter()
-            .find(|c| c.id == player_uid.0)
-            .map(|c| c.powers.clone())
-            .unwrap_or_default();
+        let scan_uids: smallvec::SmallVec<[crate::PowerUid; 8]> =
+            crate::creature_by_id(&state.creatures, player_uid.0)
+                .map(|c| c.powers.clone())
+                .unwrap_or_default();
         for power_uid in scan_uids {
             if let Some(power) = state.powers.get_by_id(power_uid.0) {
                 // q6bix F-G: only WellLaidPlans is a count-budget retain
@@ -2974,7 +3011,10 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     state.combat_log.block_before_late_turn_end = state.player.block;
     hooks::dispatch_after_turn_end(state, &TurnSideCtx { side: Side::Player });
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-    let _ = crate::relic_effects::dispatch_after_turn_end(state, Side::Player);
+    let live = relic_guarded_channel_live(state, GuardedChannel::AfterTurnEnd);
+    let _ = dispatch_if_live(state, live, crate::EffectResult::NotImplemented, |state| {
+        crate::relic_effects::dispatch_after_turn_end(state, Side::Player)
+    });
 
     // C# `SmoggyPower.AfterSideTurnEnd` (`SmoggyPower.cs:47-62`): the owner
     // (always the player at this pin) participates in this side turn, so every
@@ -3339,18 +3379,11 @@ fn execute_turn_end_in_hand_effect(
 ///      meaning enemy-side Poison fires on the enemy turn boundary.
 ///      The Effect queue inside the dispatcher (see bead sts2-rs-3to)
 ///      handles the actual `current_hp -= amount` + `amount -= 1` ticks.
-///   6. The synthetic `on_turn_start_own_side` walk (combat.py's
+///   6. (Python's synthetic `on_turn_start_own_side` walk: combat.py's
 ///      `fire_after_side_turn_start` introspects every power's method
 ///      table to ALSO fire `on_turn_start_own_side` for any power that
-///      overrides only that arm). The Rust port exposes the two
-///      listener arms as separate dispatchers because Rust per-listener
-///      fns are statically resolved (no method-table introspection);
-///      [`start_player_turn`] (P3-2) calls both unconditionally to
-///      mirror Python's semantics for any power that overrides exactly
-///      one arm. Mirrored here for symmetry — at this pin no
-///      `PowerKind` overrides either arm so the walk is a no-op, but
-///      the explicit double-dispatch locks the firing order for
-///      Phase 6+ listener additions.
+///      overrides only that arm. No power or relic has that arm, and
+///      C# has no such hook, so Rust no longer walks it.)
 ///   7. Combat-end check (combat.py:1070-1072). A hook fired in steps
 ///      3-6 may have flipped `is_over` (e.g., a thorns-on-block-cleared
 ///      listener inflicting damage that downs the player). Re-check
@@ -3385,7 +3418,9 @@ pub fn enemy_turn_start(state: &mut CombatState) -> StepResult {
     // `owner.side == ctx.side` check) firing for enemy-side powers.
     hooks::dispatch_before_side_turn_start(state, &TurnSideCtx { side: Side::Enemy });
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-    let _ = crate::relic_effects::dispatch_before_side_turn_start(state, Side::Enemy);
+    if relic_channel_live(state, PlannedChannel::BeforeSideTurnStart) {
+        let _ = crate::relic_effects::dispatch_before_side_turn_start(state, Side::Enemy);
+    }
 
     // Step 4: per alive enemy, clear block + fire after_block_cleared.
     // Python's `self.alive_enemies` filter is `current_hp > 0`. We
@@ -3397,10 +3432,8 @@ pub fn enemy_turn_start(state: &mut CombatState) -> StepResult {
         .enemy_uids
         .iter()
         .filter_map(|uid| {
-            state
-                .creatures
-                .iter()
-                .position(|c| c.id == uid.0 && c.current_hp > 0)
+            crate::creature_pos(&state.creatures, uid.0)
+                .filter(|&i| state.creatures[i].current_hp > 0)
         })
         .collect();
     for idx in alive_enemy_indices {
@@ -3439,18 +3472,19 @@ pub fn enemy_turn_start(state: &mut CombatState) -> StepResult {
         }
         hooks::dispatch_after_block_cleared(state, &ctx);
         // Bead `sts2-rs-1h8q` ch.2: relic-bus mirror.
-        let _ = crate::relic_effects::dispatch_after_block_cleared(state, &ctx);
+        if relic_channel_live(state, PlannedChannel::AfterBlockCleared) {
+            let _ = crate::relic_effects::dispatch_after_block_cleared(state, &ctx);
+        }
     }
 
-    // Step 5: fire after_side_turn_start(ENEMY) + the synthetic
-    // on_turn_start_own_side walk. See the matching comment in
-    // [`start_player_turn`] for the rationale on calling both
-    // dispatchers unconditionally to mirror Python's method-table
-    // introspection.
+    // Step 5: fire after_side_turn_start(ENEMY). (The synthetic
+    // `on_turn_start_own_side` walk is gone — see the matching comment in
+    // [`start_player_turn`].)
     hooks::dispatch_after_side_turn_start(state, &TurnSideCtx { side: Side::Enemy });
-    hooks::dispatch_on_turn_start_own_side(state, &hooks::TurnSelfCtx::default());
     // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-    let _ = crate::relic_effects::dispatch_after_side_turn_start(state, Side::Enemy);
+    if relic_channel_live(state, PlannedChannel::AfterSideTurnStart) {
+        let _ = crate::relic_effects::dispatch_after_side_turn_start(state, Side::Enemy);
+    }
 
     // Step 6: combat-end check after listener walk.
     if state.is_over {
@@ -3613,12 +3647,8 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
         .enemy_uids
         .iter()
         .filter_map(|uid| {
-            state
-                .creatures
-                .iter()
-                .find(|c| {
-                    c.id == uid.0 && (c.current_hp > 0 || is_acting_reattach_corpse(state, c))
-                })
+            crate::creature_by_id(&state.creatures, uid.0)
+                .filter(|c| c.current_hp > 0 || is_acting_reattach_corpse(state, c))
                 .and_then(|c| match c.intent {
                     Some(i) => Some((*uid, Some(i))),
                     // A move can legitimately telegraph nothing: C# `MoveState`
@@ -3822,10 +3852,8 @@ fn run_enemy_perform_walk(
         // we guard defensively). Looking up by uid mirrors how step 4
         // re-resolves; the enemy's perform_intent call already used
         // `&mut state` so we re-find here without a borrow conflict.
-        if let Some(idx) = state
-            .creatures
-            .iter()
-            .position(|c| c.id == enemy_uid.0 && c.current_hp > 0)
+        if let Some(idx) = crate::creature_pos(&state.creatures, enemy_uid.0)
+            .filter(|&i| state.creatures[i].current_hp > 0)
         {
             if let Some(i) = intent {
                 state.creatures[idx].intent_history.record(i);
@@ -3881,10 +3909,9 @@ fn run_enemy_perform_walk(
     let ai_indices: smallvec::SmallVec<[usize; 8]> = acting_enemies
         .iter()
         .filter_map(|(uid, _)| {
-            state.creatures.iter().position(|c| {
-                c.id == uid.0
-                    && (c.current_hp > 0 || is_acting_reattach_corpse(state, c))
-                    && c.ai.is_some()
+            crate::creature_pos(&state.creatures, uid.0).filter(|&i| {
+                let c = &state.creatures[i];
+                (c.current_hp > 0 || is_acting_reattach_corpse(state, c)) && c.ai.is_some()
             })
         })
         .collect();
@@ -4137,10 +4164,8 @@ fn perform_intent(
         intent,
         Some(Intent::Attack { .. } | Intent::MultiAttack { .. } | Intent::DeathBlow { .. })
     ) {
-        state
-            .creatures
-            .iter()
-            .find(|c| c.id == enemy_uid.0 && c.current_hp > 0)
+        crate::creature_by_id(&state.creatures, enemy_uid.0)
+            .filter(|c| c.current_hp > 0)
             .and_then(|c| {
                 c.ai.as_ref()
                     .map(|ai| (Some(ai.current_move().effect), Some(ai.current_state_id())))
@@ -4407,13 +4432,8 @@ fn perform_intent(
             // PERSONAL_HIVE or STRENGTH to self). A 0-HP Reattach corpse
             // still resolves its move body — its REATTACH heal is exactly
             // the effect that brings it back (bead `sts2-rs-8lwnq`).
-            let effect_fn = state
-                .creatures
-                .iter()
-                .find(|c| {
-                    c.id == enemy_uid.0
-                        && (c.current_hp > 0 || is_acting_reattach_corpse(state, c))
-                })
+            let effect_fn = crate::creature_by_id(&state.creatures, enemy_uid.0)
+                .filter(|c| c.current_hp > 0 || is_acting_reattach_corpse(state, c))
                 .and_then(|c| c.ai.as_ref().map(|ai| ai.current_move().effect));
             if let Some(effect) = effect_fn {
                 effect(state, enemy_uid);
@@ -4789,6 +4809,10 @@ fn player_damage_base_after_relic_additive(
     let Some(target_uid) = CreatureRef::Player.to_creature_uid(state) else {
         return raw_damage;
     };
+    // J01b: a dead channel adds the additive identity `0`.
+    if !relic_channel_live(state, PlannedChannel::ModifyDamageAdditive) {
+        return raw_damage;
+    }
     let md_ctx = crate::relic_effects::ModifyDamageCtx {
         dealer: dealer.to_creature_uid(state),
         target: target_uid,
@@ -5034,7 +5058,7 @@ pub fn apply_damage_to_player(
     // the Osty absorbed (`CreatureCmd.cs:149/163`). Skipped when the player
     // target slot can't resolve to a `CreatureUid` (pre-d03 fixtures). TheBoot,
     // also on this channel, is a no-op on the player path (target==player).
-    if modified_hp_loss > 0 {
+    if modified_hp_loss > 0 && relic_channel_live(state, PlannedChannel::ModifyHpLost) {
         if let Some(target_uid) = target_ref.to_creature_uid(state) {
             let ml_ctx = crate::relic_effects::ModifyHpLostCtx {
                 target: target_uid,
@@ -5220,21 +5244,24 @@ pub fn apply_damage_to_player(
 
     // Bead `sts2-rs-6jk` (j87-a): parallel relic_effects channel. The
     // `DamageGivenCtx` payload requires non-optional `CreatureUid` for both
-    // slots; we skip when either dealer or player target can't resolve.
-    if let (Some(dealer_uid), Some(target_uid)) = (
-        dealer.to_creature_uid(state),
-        target_ref.to_creature_uid(state),
-    ) {
-        let dg_ctx = crate::relic_effects::DamageGivenCtx {
-            dealer: dealer_uid,
-            target: target_uid,
-            damage: final_damage,
-            props,
-            // Player-received path: HandDrill must never fire when the
-            // target is the player (C# guards on `!target.IsPlayer`).
-            was_block_broken: false,
-        };
-        let _ = crate::relic_effects::dispatch_after_damage_given(state, &dg_ctx);
+    // slots; we skip when either dealer or player target can't resolve, and
+    // (J01b) when the channel is dead (no owned handler).
+    if relic_channel_live(state, PlannedChannel::AfterDamageGiven) {
+        if let (Some(dealer_uid), Some(target_uid)) = (
+            dealer.to_creature_uid(state),
+            target_ref.to_creature_uid(state),
+        ) {
+            let dg_ctx = crate::relic_effects::DamageGivenCtx {
+                dealer: dealer_uid,
+                target: target_uid,
+                damage: final_damage,
+                props,
+                // Player-received path: HandDrill must never fire when the
+                // target is the player (C# guards on `!target.IsPlayer`).
+                was_block_broken: false,
+            };
+            let _ = crate::relic_effects::dispatch_after_damage_given(state, &dg_ctx);
+        }
     }
 
     // Combat-end check: player at 0 HP → CombatLost. Mirrors Python's
@@ -5372,8 +5399,9 @@ pub(crate) fn roll_next_enemy_intents(state: &mut CombatState) {
         .enemy_uids
         .iter()
         .filter_map(|uid| {
-            state.creatures.iter().position(|c| {
-                c.id == uid.0 && (c.current_hp > 0 || is_acting_reattach_corpse(state, c))
+            crate::creature_pos(&state.creatures, uid.0).filter(|&i| {
+                let c = &state.creatures[i];
+                c.current_hp > 0 || is_acting_reattach_corpse(state, c)
             })
         })
         .collect();
@@ -5707,7 +5735,7 @@ pub fn combat_is_ending(state: &CombatState) -> bool {
         .present_kinds()
         .contains(crate::PowerKind::Adaptable);
     for uid in &state.enemy_uids {
-        let Some(c) = state.creatures.iter().find(|c| c.id == uid.0) else {
+        let Some(c) = crate::creature_by_id(&state.creatures, uid.0) else {
             continue;
         };
         let is_minion = minion_possible
@@ -5815,7 +5843,7 @@ pub fn check_combat_end(state: &mut CombatState) -> StepResult {
             let mut alive_primary = 0usize;
             let mut alive_minions: smallvec::SmallVec<[CreatureUid; 4]> = smallvec::SmallVec::new();
             for uid in &state.enemy_uids {
-                let Some(c) = state.creatures.iter().find(|c| c.id == uid.0) else {
+                let Some(c) = crate::creature_by_id(&state.creatures, uid.0) else {
                     continue;
                 };
                 if is_minion(state, c) {
@@ -5853,11 +5881,10 @@ pub fn check_combat_end(state: &mut CombatState) -> StepResult {
     // `Creature::current_hp` is positive (short-circuiting `any` — only the
     // zero/non-zero distinction is consumed). An empty `enemy_uids`
     // (degenerate / fixture state) trivially satisfies "none alive".
+    // Creature ids are unique, so the dense lookup answers what the old
+    // `creatures.iter().any(id == uid && alive)` scan did (J07).
     let any_enemy_alive = state.enemy_uids.iter().any(|uid| {
-        state
-            .creatures
-            .iter()
-            .any(|c| c.id == uid.0 && c.current_hp > 0)
+        crate::creature_by_id(&state.creatures, uid.0).is_some_and(|c| c.current_hp > 0)
     });
     if !any_enemy_alive {
         // C# `AdaptablePower.ShouldStopCombatFromEnding()` → true: a
@@ -5897,10 +5924,7 @@ pub fn check_combat_end(state: &mut CombatState) -> StepResult {
         // resolving as a win.
         if crate::enemy_death_effects::fire_pending(state) {
             let any_alive_after = state.enemy_uids.iter().any(|uid| {
-                state
-                    .creatures
-                    .iter()
-                    .any(|c| c.id == uid.0 && c.current_hp > 0)
+                crate::creature_by_id(&state.creatures, uid.0).is_some_and(|c| c.current_hp > 0)
             });
             if any_alive_after {
                 return StepResult::Advanced;
@@ -5999,28 +6023,65 @@ pub fn check_combat_end(state: &mut CombatState) -> StepResult {
 ///     it correctly when Phase 6 lands the choice-yielding card
 ///     effects.
 pub fn end_turn_dispatch(state: &mut CombatState) -> StepResult {
-    // Each fn handles its own combat-end short-circuit + phase advance,
-    // so we just chain them in Python's tail-call order and propagate
-    // the first non-Advanced return up.
-    type PhaseFn = fn(&mut CombatState) -> StepResult;
-    const CHAIN: &[PhaseFn] = &[
-        end_player_turn_phase_one,
-        end_player_turn_phase_two,
-        enemy_turn_start,
-        enemy_turn_exec,
-        enemy_turn_end,
-        // start_player_turn closes the loop — the next Action::PlayCard
-        // expects state.phase == PlayerPlayPhase.
-        start_player_turn,
-    ];
+    end_turn_dispatch_from(state, 0)
+}
 
-    for step in CHAIN {
+/// Number of phases in the [`end_turn_dispatch`] chain.
+pub const END_TURN_PHASE_COUNT: usize = END_TURN_CHAIN.len();
+
+// Each fn handles its own combat-end short-circuit + phase advance, so
+// `end_turn_dispatch` just chains them in Python's tail-call order and
+// propagates the first non-Advanced return up.
+const END_TURN_CHAIN: [fn(&mut CombatState) -> StepResult; 6] = [
+    end_player_turn_phase_one,
+    end_player_turn_phase_two,
+    enemy_turn_start,
+    enemy_turn_exec,
+    enemy_turn_end,
+    // start_player_turn closes the loop — the next Action::PlayCard
+    // expects state.phase == PlayerPlayPhase.
+    start_player_turn,
+];
+
+/// Run phase `phase` (`0..END_TURN_PHASE_COUNT`) of the
+/// [`end_turn_dispatch`] chain alone. Running phases `0..k` one at a time,
+/// stopping at the first non-`Advanced` return, and then
+/// [`end_turn_dispatch_from`]`(state, k)` is exactly `end_turn_dispatch`.
+///
+/// MCTS uses the split to cache the RNG-free prefix of an `EndTurn`
+/// re-application across chance-node widens (perf item M12).
+pub fn end_turn_phase(state: &mut CombatState, phase: usize) -> StepResult {
+    END_TURN_CHAIN[phase](state)
+}
+
+/// The [`end_turn_dispatch`] chain from phase `first` on (`first ==
+/// END_TURN_PHASE_COUNT` runs nothing), with the same first-non-`Advanced`
+/// short-circuit. `first == 0` is `end_turn_dispatch`.
+pub fn end_turn_dispatch_from(state: &mut CombatState, first: usize) -> StepResult {
+    for step in &END_TURN_CHAIN[first..] {
         let result = step(state);
         if !matches!(result, StepResult::Advanced) {
             return result;
         }
     }
     StepResult::Advanced
+}
+
+/// Is a diagnostic armed that records OUTSIDE `state` while a combat step
+/// runs: the thread-local [`crate::damage_trace`], the `STS2_TRACE_RNG` /
+/// `STS2_TRACE_PILES` stderr traces, or `state`'s event log (whose rows ride
+/// the state but whose `STS2_COMBAT_LOG` echo goes to stderr)?
+///
+/// A caller that replays a cached slice of a step instead of re-running it
+/// (MCTS's `EndTurn` prefix cache, perf item M12) produces the same state but
+/// fires these recorders once instead of once per replay, so it must take
+/// the plain path while this is `true`.
+#[must_use]
+pub fn side_channel_recorders_armed(state: &CombatState) -> bool {
+    crate::damage_trace::armed()
+        || crate::event_log::armed(state)
+        || cards::pile_trace_enabled()
+        || crate::dotnet_rng::rng_trace_enabled()
 }
 
 // ---------------------------------------------------------------------------
@@ -6107,6 +6168,19 @@ pub fn consume_free_card_power(
         CardType::Power => PowerKind::FreePower,
         CardType::Curse | CardType::Status => return None,
     };
+    // J07: this runs on every card play and almost never finds a Free*
+    // power. `present_kinds` is a superset of every live kind, so with no
+    // `want` in the arena the walk below matches nothing and changes nothing.
+    if !state.powers.present_kinds().contains(want) {
+        debug_assert!(
+            !state
+                .player_power_uids()
+                .iter()
+                .any(|u| state.powers.get_by_id(u.0).is_some_and(|p| p.kind == want)),
+            "consume_free_card_power gated out a live {want:?}"
+        );
+        return None;
+    }
 
     // Walk the player's power UIDs; find the first matching kind
     // with amount > 0, decrement, and drop the stack if it hits 0.
@@ -6356,10 +6430,8 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
             // Reject targeting a dead enemy. Python's `_resolve_target`
             // returns None for dead/missing creatures and `play_card`
             // returns False (combat.py:812-813).
-            let alive = state
-                .creatures
-                .iter()
-                .any(|c| c.id == uid.0 && c.current_hp > 0);
+            let alive =
+                crate::creature_by_id(&state.creatures, uid.0).is_some_and(|c| c.current_hp > 0);
             if !alive {
                 return StepResult::InvalidTarget;
             }
@@ -6641,7 +6713,9 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
         // cost). IntimidatingHelmet's `before_card_played` gate reads this.
         energy_spent: energy_spent_for_hook,
     };
-    let _ = crate::relic_effects::dispatch_before_card_played(state, &before_played_ctx);
+    if relic_channel_live(state, PlannedChannel::BeforeCardPlayed) {
+        let _ = crate::relic_effects::dispatch_before_card_played(state, &before_played_ctx);
+    }
 
     // Necrobinder non-Osty powers: power-side `before_card_played` reactive
     // (DanseMacabrePower). The hooks-bus channel is read-only, so this mutating
@@ -6745,8 +6819,10 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     // increment in a follow-up.
     let base_replay = card.base_replay_count;
     let power_extra = hooks::dispatch_modify_card_play_count(state, &count_ctx);
-    let relic_extra =
-        crate::relic_effects::dispatch_relic_modify_card_play_count(state, &count_ctx);
+    let live = relic_guarded_channel_live(state, GuardedChannel::RelicModifyCardPlayCount);
+    let relic_extra = dispatch_if_live(state, live, 0, |state| {
+        crate::relic_effects::dispatch_relic_modify_card_play_count(state, &count_ctx)
+    });
     let extra_plays = power_extra + base_replay + relic_extra;
     let after_count_ctx = hooks::CardCtx {
         card_id: Some(card.card_id),
@@ -7159,7 +7235,9 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         card_tags: card.tags,
         energy_spent: 0,
     };
-    let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+    if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
+        let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+    }
 
     // Bead `sts2-rs-zlx.3`: also fire the hooks-family
     // `after_card_played` bus so player-side power listeners
@@ -7275,7 +7353,9 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         if state.pending_choice.is_some() {
             resolve_inline_auto_play_choices(state);
         }
-        let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+        if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
+            let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+        }
         hooks::dispatch_after_card_played(state, &hook_played_ctx);
         // Bead `sts2-rs-wvpjv`: C# `OnPlayWrapper` (CardModel.cs:1472-1523)
         // calls `History.CardPlayFinished` once PER replay iteration, so each
@@ -7405,7 +7485,9 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
             // Re-fire both after_card_played buses so Rage / Afterimage /
             // PhantomBlades / Storm / SerpentForm (hooks) and event-reward
             // relics (relic_effects) tick once per replay.
-            let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+            if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
+                let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+            }
             hooks::dispatch_after_card_played(state, &hook_played_ctx);
             // Bead `sts2-rs-22ttw`: flush RupturePower's deferred Strength per
             // Echo replay (each replay is its own C# `AfterCardPlayed`).
@@ -8935,8 +9017,10 @@ pub(crate) fn resolve_auto_played_card_at_target(
             target: target_uid,
         };
         let power_extra = hooks::dispatch_modify_card_play_count(state, &count_ctx);
-        let relic_extra =
-            crate::relic_effects::dispatch_relic_modify_card_play_count(state, &count_ctx);
+        let live = relic_guarded_channel_live(state, GuardedChannel::RelicModifyCardPlayCount);
+        let relic_extra = dispatch_if_live(state, live, 0, |state| {
+            crate::relic_effects::dispatch_relic_modify_card_play_count(state, &count_ctx)
+        });
         let after_count_ctx = hooks::CardCtx {
             card_id: Some(top_card_id),
             card_uid: Some(top_uid),
@@ -9318,7 +9402,9 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
         card_tags: top_card_tags,
         energy_spent: 0,
     };
-    let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+    if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
+        let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+    }
     let hook_played_ctx = CardCtx {
         card_id: Some(top_card_id),
         card_uid: Some(top_uid),
@@ -9421,7 +9507,9 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
                 .combat_log
                 .card_plays_finished_this_turn
                 .saturating_add(1);
-            let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+            if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
+                let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+            }
             hooks::dispatch_after_card_played(state, &hook_played_ctx);
             // Bead `sts2-rs-50un1`: each auto-play replay is its own C#
             // `AfterCardPlayed`, so flush RupturePower's deferred Strength per
@@ -9682,12 +9770,11 @@ fn clear_per_turn_card_vars(state: &mut CombatState) {
         // (perf 2026-07-04): both `combat_var` and `set_combat_var` operate on
         // the FIRST slot matching the key, so zeroing that slot directly is
         // state-identical (writing 0 over an already-0 slot included) while
-        // walking the SmallVec once instead of twice.
-        for slot in &mut card.combat_vars {
-            if slot.0 == VarKey::FreeThisTurn {
-                slot.1 = 0;
-                break;
-            }
+        // walking the slots once instead of twice. A card whose
+        // "may be nonzero" bit is clear holds 0 in every FreeThisTurn slot,
+        // so the write would be a no-op and the card is skipped (J02).
+        if card.combat_vars.maybe_nonzero(VarKey::FreeThisTurn) {
+            card.combat_vars.zero(VarKey::FreeThisTurn);
         }
     }
 }

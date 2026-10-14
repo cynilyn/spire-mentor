@@ -9,20 +9,21 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kreon:wght@500;700&display=swap">
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 <script>try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="index.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>spire-mentor</span></a>
+  <a class="brand" href="index.html" aria-label="spire-mentor home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 9v14l12 7 12-7V9z" fill="currentColor" opacity=".18"/><path d="M16 2 4 9v14l12 7 12-7V9zm0 4.6 8 4.7v9.4l-8 4.7-8-4.7v-9.4z" fill="oklch(0.78 0.13 76)"/></svg><span>spire-mentor</span></a>
   <nav class="toplinks" aria-label="Site">
     <a href="index.html">Docs</a>
     <a href="ai.html"><span class="l">How the AI plays</span><span class="s">AI</span></a>
     <a href="training.html" aria-current="page"><span class="l">How it's trained</span><span class="s">Training</span></a>
+    <a href="benchmarks.html"><span class="l">Benchmarks</span><span class="s">Speed</span></a>
     <a class="gh" href="https://github.com/tfriedel/spire-mentor"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
   </nav>
   <button class="iconbtn theme" type="button" aria-label="Switch colour theme" title="Switch colour theme"><svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></svg></button>
-  <button class="menu" type="button" aria-controls="toc" aria-expanded="false">Contents</button>
+  <button class="menu" type="button" aria-controls="toc" aria-expanded="false" aria-label="Contents"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></svg><span class="lbl">Contents</span></button>
 </header>
 
 <div class="layout">
@@ -55,8 +56,8 @@
   <code>sts2-pycli/python/ppo/</code>; every shipped net has a provenance
   file next to it in <code>sts2-pycli/data/ppo/</code>.</p>
   <figure class="fig">
-    <div class="canvas"><svg viewBox="0 0 760 316" role="img" aria-label="The training loop: CPU workers play full runs, a batch of 256 or 960 runs is collected, PPO updates the net on a GPU, and the new weights go back to the workers"><defs><marker id="ah-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker><marker id="aa-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead-acc"/></marker></defs><rect x="30" y="40" width="300" height="104" rx="10" class="box2"/><text x="46" y="66" class="h" text-anchor="start">Play full runs</text><text x="46" y="90" class="s" text-anchor="start">CPU workers in parallel, each a whole run:</text><text x="46" y="108" class="s" text-anchor="start">Rust engine · MCTS for fights (250 / 1,000 sims)</text><text x="46" y="126" class="s" text-anchor="start">policy in PyTorch, one thread per worker</text><rect x="440" y="40" width="290" height="104" rx="10" class="box2"/><text x="456" y="66" class="h" text-anchor="start">Collect a batch</text><text x="456" y="90" class="s" text-anchor="start">256 or 960 runs per iteration</text><text x="456" y="108" class="s" text-anchor="start">every multi-option decision is a step</text><text x="456" y="126" class="s" text-anchor="start">reward: progress + shaping</text><rect x="440" y="196" width="290" height="104" rx="10" class="box2"/><text x="456" y="222" class="h" text-anchor="start">Update</text><text x="456" y="246" class="s" text-anchor="start">GAE: λ 0.97, γ 1</text><text x="456" y="264" class="s" text-anchor="start">PPO clip 0.2 · 2 epochs · minibatch 192</text><text x="456" y="282" class="s" text-anchor="start">about 30 s on one GPU</text><rect x="30" y="196" width="300" height="104" rx="10" class="box2"/><text x="46" y="222" class="h" text-anchor="start">Ship weights back</text><text x="46" y="246" class="s" text-anchor="start">every worker plays the next</text><text x="46" y="264" class="s" text-anchor="start">iteration with the new net</text><text x="46" y="282" class="s" text-anchor="start">typically 150 iterations per leg</text><path d="M334,92 L434,92" class="path" marker-end="url(#aa-loop)"/><path d="M585,148 L585,190" class="path" marker-end="url(#aa-loop)"/><path d="M436,248 L336,248" class="path" marker-end="url(#aa-loop)"/><path d="M180,192 L180,150" class="path" marker-end="url(#aa-loop)"/><text x="384" y="80" class="s" text-anchor="middle">trajectories</text><text x="384" y="238" class="s" text-anchor="middle">new weights</text><text x="384" y="172" class="m" text-anchor="middle">collection ≈ 87% of wall-clock</text></svg></div>
-    <figcaption>One PPO iteration. The recent 150-iteration legs took 34 to 63 hours each, collecting on 46 CPU cores.</figcaption>
+    <div class="canvas"><svg viewBox="0 0 760 316" role="img" aria-label="The training loop: CPU workers play full runs, a batch of 256 or 960 runs is collected, PPO updates the net on a GPU, and the new weights go back to the workers"><defs><marker id="ah-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker><marker id="aa-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead-acc"/></marker></defs><rect x="30" y="40" width="300" height="104" rx="10" class="box2"/><text x="46" y="66" class="h" text-anchor="start">Play full runs</text><text x="46" y="90" class="s" text-anchor="start">CPU workers in parallel, each a whole run:</text><text x="46" y="108" class="s" text-anchor="start">Rust engine · MCTS for fights (250 / 1,000 sims)</text><text x="46" y="126" class="s" text-anchor="start">policy in PyTorch, one thread per worker</text><rect x="440" y="40" width="290" height="104" rx="10" class="box2"/><text x="456" y="66" class="h" text-anchor="start">Collect a batch</text><text x="456" y="90" class="s" text-anchor="start">256 or 960 runs per iteration</text><text x="456" y="108" class="s" text-anchor="start">every multi-option decision is a step</text><text x="456" y="126" class="s" text-anchor="start">reward: progress + shaping</text><rect x="440" y="196" width="290" height="104" rx="10" class="box2"/><text x="456" y="222" class="h" text-anchor="start">Update</text><text x="456" y="246" class="s" text-anchor="start">GAE: λ 0.97, γ 1</text><text x="456" y="264" class="s" text-anchor="start">PPO clip 0.2 · 2 epochs · minibatch 192</text><text x="456" y="282" class="s" text-anchor="start">about 34 s on one GPU (960 games)</text><rect x="30" y="196" width="300" height="104" rx="10" class="box2"/><text x="46" y="222" class="h" text-anchor="start">Ship weights back</text><text x="46" y="246" class="s" text-anchor="start">every worker plays the next</text><text x="46" y="264" class="s" text-anchor="start">iteration with the new net</text><text x="46" y="282" class="s" text-anchor="start">typically 150 iterations per leg</text><path d="M334,92 L434,92" class="path" marker-end="url(#aa-loop)"/><path d="M585,148 L585,190" class="path" marker-end="url(#aa-loop)"/><path d="M436,248 L336,248" class="path" marker-end="url(#aa-loop)"/><path d="M180,192 L180,150" class="path" marker-end="url(#aa-loop)"/><text x="384" y="80" class="s" text-anchor="middle">trajectories</text><text x="384" y="238" class="s" text-anchor="middle">new weights</text><text x="384" y="172" class="m" text-anchor="middle">collection: most of the wall-clock</text></svg></div>
+    <figcaption>One PPO iteration. On the engine of August–September 2026 the 150-iteration legs in the table below took 36 to 63 hours each, with 46 worker processes on a 24-core CPU. On the October 2026 engine a typical Ironclad iteration of the current recipe (960 games at 250/1,000 simulations) takes 208 s instead of 609 s on the previous (12 October) engine, so 150 iterations take about 9 hours instead of 25 (<a href="benchmarks.html#training">benchmarks</a>).</figcaption>
   </figure>
 
 </section>
@@ -125,10 +126,20 @@ shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_card
 
 <section id="compute">
   <h2>Collection &amp; compute</h2>
-  <p>Collection dominates: about 87% of wall-clock time. A pool of CPU
-  worker processes each plays whole runs through the Rust engine, with the
-  policy evaluated in PyTorch on one thread per worker. A PPO update takes
-  about half a minute on one GPU.</p>
+  <p>Collection dominates. A pool of CPU worker processes each plays whole
+  runs through the Rust engine, with the policy evaluated in PyTorch on one
+  thread per worker, and most of that time is combat search. In the leg
+  behind the current Silent champion (250/1,000 simulations, 960 games per
+  iteration) collection took 97% of the wall-clock, and a PPO update about
+  half a minute on one GPU. On one worker on one core, the October 2026
+  engine and search play the same six Ironclad runs 2.46× faster with
+  identical decisions, and 3.16× faster with the profile-guided build
+  training now uses. On the whole machine (46 workers, the update on one RTX
+  3090) a typical 960-game iteration takes 208 s instead of 609 s (2.93×),
+  of which the update is 34 s. Part of the gain is not the engine: the new
+  code skips the search when a decision has only one legal move. The hours
+  below were measured before these changes. Details:
+  <a href="benchmarks.html#training">Benchmarks</a>.</p>
   <p>Fights during training use a cheaper search than at evaluation: 250
   simulations per decision and 1,000 at bosses, against 1,000 and 4,000 in
   the gate. Moving to cheap searches with more games per iteration, at equal
@@ -139,15 +150,20 @@ shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_card
     <thead><tr><th>Leg</th><th class="num">Games</th><th class="num">Hours</th></tr></thead>
     <tbody>
       <tr><td>Necrobinder <code>deckmut_it150</code></td><td class="num">38,400</td><td class="num">38</td></tr>
-      <tr><td>Regent <code>deckmut_it150</code></td><td class="num">38,400</td><td class="num">34–36</td></tr>
+      <tr><td>Regent <code>deckmut_it150</code></td><td class="num">38,400</td><td class="num">36</td></tr>
       <tr><td>Defect <code>deckmut_it150</code></td><td class="num">38,400</td><td class="num">62.5</td></tr>
-      <tr><td>Silent <code>cont_it300</code></td><td class="num">146,880</td><td class="num">41</td></tr>
+      <tr><td>Silent <code>cont_it300</code></td><td class="num">144,000</td><td class="num">41</td></tr>
     </tbody>
   </table>
   </div>
   <p class="note">One leg is a single training run continuing from the
-  previous champion. A champion is the product of several legs; most took
-  between 31 and 82 hours.</p>
+  previous champion. Necrobinder, Regent and Defect used the earlier recipe
+  (1,000/4,000 simulations, 256 games per iteration, the PPO update on the
+  CPU), and
+  Defect ran its last ~90 iterations on half the machine; Silent's 41 hours
+  include three iterations re-collected after a restart. A champion is the
+  product of several legs; most took between 31 and 82 hours on the engine
+  of the time.</p>
 </section>
 
 <section id="start">
@@ -264,6 +280,6 @@ shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_card
 </div>
 
 <footer class="foot"><span>spire-mentor · MIT licence</span><span>Not affiliated with Mega Crit</span><a href="https://github.com/tfriedel/spire-mentor">Source on GitHub</a></footer>
-<script src="site.js?v=3"></script>
+<script src="site.js?v=4"></script>
 </body>
 </html>

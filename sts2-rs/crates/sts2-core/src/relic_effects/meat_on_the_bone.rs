@@ -26,8 +26,9 @@ pub(crate) fn on_after_combat_victory_meat_on_the_bone(state: &mut CombatState) 
 }
 
 pub(crate) fn install() {
-    register_after_combat_victory(
+    register_owned_after_combat_victory(
         RelicId::MeatOnTheBone,
+        crate::RelicKind::MeatOnTheBone,
         on_after_combat_victory_meat_on_the_bone as AfterCombatVictoryFn,
     );
 }

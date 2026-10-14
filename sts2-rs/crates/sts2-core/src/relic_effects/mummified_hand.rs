@@ -33,10 +33,7 @@ pub(crate) fn on_after_card_played_mummified_hand(
     let Some(played_uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_power = state
-        .cards
-        .iter()
-        .find(|c| c.uid == played_uid)
+    let is_power = crate::card_by_uid(&state.cards, played_uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Power);
     if !is_power {
         return EffectResult::NotImplemented;
@@ -45,7 +42,7 @@ pub(crate) fn on_after_card_played_mummified_hand(
     // `favorable` = base energy cost > 0 OR base star cost > 0
     // (`CostModifiers.None` — intrinsic cost, ignoring local discounts).
     let is_favorable = |uid: &crate::CardUid| {
-        state.cards.iter().find(|c| c.uid == *uid).is_some_and(|c| {
+        crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
             (c.cost > 0 && !c.is_x_cost()) || crate::card_base_star_cost(c.card_id) > 0
         })
     };
@@ -54,7 +51,7 @@ pub(crate) fn on_after_card_played_mummified_hand(
     // FreeUntilPlayed zero the energy side; `effective_star_cost` folds the
     // free markers on the star side).
     let costs_now = |uid: &crate::CardUid| {
-        state.cards.iter().find(|c| c.uid == *uid).is_some_and(|c| {
+        crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
             let energy_now = c.cost > 0
                 && !c.is_x_cost()
                 && c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0

@@ -164,9 +164,9 @@ fn make_combat(seed: u64, idx: u8) -> CombatState {
 
         run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
         creatures,
-        cards: cards_arena,
+        cards: cards_arena.into(),
         powers: Vec::new().into(),
-        relics: Vec::new(),
+        relics: Vec::new().into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),

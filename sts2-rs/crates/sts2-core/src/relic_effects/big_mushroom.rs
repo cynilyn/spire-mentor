@@ -12,8 +12,9 @@ pub(crate) fn on_modify_hand_draw_big_mushroom(state: &CombatState, current_draw
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::BigMushroom,
+        crate::RelicKind::BigMushroom,
         on_modify_hand_draw_big_mushroom as ModifyHandDrawFn,
     );
 }

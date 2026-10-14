@@ -8,6 +8,12 @@
 //! Deliberately emits NO `rerun-if-changed`: with no rerun directives cargo
 //! falls back to re-running this script whenever ANY file in the package
 //! changes, so the stamp tracks every source edit without per-file directives.
+//!
+//! Also sets `cfg(sts2_unoptimized)` when this crate is built at opt-level 0
+//! (the dev and test profiles): debug-assertion checks too slow to run on
+//! every call there sample instead (the J03 relic-dispatch shadows,
+//! `relic_effects::channels::shadow_this_call`), while optimized checked
+//! builds (`--profile release-checked`) run them on every call.
 
 fn main() {
     let crate_dir = std::path::PathBuf::from(
@@ -15,4 +21,8 @@ fn main() {
     );
     let hash = sts2_srchash::hash_crate(&crate_dir, &[]);
     println!("cargo:rustc-env=STS2_CORE_SRC_HASH={hash}");
+    println!("cargo:rustc-check-cfg=cfg(sts2_unoptimized)");
+    if std::env::var("OPT_LEVEL").is_ok_and(|level| level == "0") {
+        println!("cargo:rustc-cfg=sts2_unoptimized");
+    }
 }

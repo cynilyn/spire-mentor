@@ -17,8 +17,9 @@ pub(crate) fn on_after_hand_emptied_unceasing_top(
 }
 
 pub(crate) fn install() {
-    register_after_hand_emptied(
+    register_owned_after_hand_emptied(
         RelicId::UnceasingTop,
+        crate::RelicKind::UnceasingTop,
         on_after_hand_emptied_unceasing_top as AfterHandEmptiedFn,
     );
 }

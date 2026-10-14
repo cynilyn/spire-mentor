@@ -13,7 +13,10 @@ workspace = true
 [features]
 # Bead sts2-rs-ung (P8-4): opt-in mimalloc global allocator. Default OFF
 # so library consumers don't have a transitive opinion on allocators.
-# Benches and the Python module turn it on; see `docs/perf-notes-2026-05-12.md`.
+# Only sts2-bench opts in (`--features mimalloc`, default off). The sts2_rs
+# Python module (sts2-py, `src/allocator.rs`) and the sts2-cli binaries
+# register mimalloc themselves through the workspace dependency, not this
+# feature. See `docs/perf-notes-2026-05-12.md`.
 mimalloc = ["dep:mimalloc"]
 # Bead sts2-rs-1a6: enable the `parity_shrinker` integration test. Default
 # OFF — the shrinker is only invoked manually against captured raw fuzz
@@ -34,7 +37,7 @@ arc-swap = { workspace = true }
 # cheaper per byte on the per-node-expansion hash path.
 ahash = { workspace = true }
 # Optional global allocator. Set as `#[global_allocator]` via the
-# `sts2_core::alloc::MIMALLOC` reexport when the `mimalloc` feature is on.
+# `sts2_core::alloc::MiMalloc` reexport when the `mimalloc` feature is on.
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
 # Issue #15 / bead sts2-rs-cg5ci: build.rs stamps a content hash of this crate's

@@ -14,8 +14,9 @@ pub(crate) fn on_modify_hand_draw_paels_blood(state: &CombatState, current_draw:
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::PaelsBlood,
+        crate::RelicKind::PaelsBlood,
         on_modify_hand_draw_paels_blood as ModifyHandDrawFn,
     );
 }

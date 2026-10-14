@@ -46,12 +46,13 @@ use sts2_core::hooks::CardPlayCountCtx;
 use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
-    register_after_block_gained, register_after_card_exhausted, register_after_card_played,
-    register_after_potion_used, register_after_shuffle_bus, register_after_side_turn_start,
-    register_before_combat_start, register_before_hand_draw, register_before_side_turn_start,
-    register_before_turn_end, register_modify_block_multiplicative,
-    register_modify_damage_additive, register_modify_hand_draw, register_modify_x_value,
-    register_relic_modify_card_play_count, AfterBlockGainedFn, AfterCardExhaustedFn,
+    register_after_block_gained, register_after_card_played, register_after_side_turn_start,
+    register_before_combat_start, register_before_side_turn_start, register_before_turn_end,
+    register_modify_block_multiplicative, register_modify_damage_additive,
+    register_owned_after_card_exhausted, register_owned_after_potion_used,
+    register_owned_after_shuffle_bus, register_owned_before_hand_draw,
+    register_owned_modify_hand_draw, register_owned_modify_x_value,
+    register_owned_relic_modify_card_play_count, AfterBlockGainedFn, AfterCardExhaustedFn,
     AfterCardPlayedFn, AfterPotionUsedFn, AfterShuffleFn, AfterSideTurnStartFn,
     BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx,
     ModifyBlockMultiplicativeFn, ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyHandDrawFn,
@@ -397,8 +398,9 @@ pub fn install_pool() {
         RelicId::BiiigHug,
         listener_biiig_hug_remove as AfterObtainedRunFn,
     );
-    register_after_shuffle_bus(
+    register_owned_after_shuffle_bus(
         RelicId::BiiigHug,
+        RelicKind::BiiigHug,
         listener_biiig_hug_shuffle as AfterShuffleFn,
     );
     // Bead `sts2-rs-70anj.4` — NinjaScroll: round-1 player side-turn
@@ -595,8 +597,9 @@ pub fn install_pool() {
     // card (round 1) / top card (later), then gain 1 Strength. Registered on
     // `before_hand_draw` — NOT `after_side_turn_start`, which fired after the
     // opening draw and exhausted the wrong card (see `listener_toasty_mittens`).
-    register_before_hand_draw(
+    register_owned_before_hand_draw(
         RelicId::ToastyMittens,
+        RelicKind::ToastyMittens,
         listener_toasty_mittens as BeforeHandDrawFn,
     );
     // Bead `sts2-rs-70anj.1` (hook corrected 2026-07-17): `before_hand_draw`
@@ -606,8 +609,9 @@ pub fn install_pool() {
     // and move it to hand. Registered on `before_hand_draw` — NOT
     // `after_side_turn_start`, which fired after the opening draw (see
     // `listener_jeweled_mask` and the ToastyMittens note above).
-    register_before_hand_draw(
+    register_owned_before_hand_draw(
         RelicId::JeweledMask,
+        RelicKind::JeweledMask,
         listener_jeweled_mask as BeforeHandDrawFn,
     );
     // Bead `sts2-rs-h450h` (70anj.5.runic_capacitor): real
@@ -623,8 +627,9 @@ pub fn install_pool() {
     // `BurningSticks` (Python `shop_event.py::BurningSticks`). First
     // Skill exhausted per combat: clone it into hand. Per-combat latch
     // via `Relic.counter` (`0` = available, `1` = consumed).
-    register_after_card_exhausted(
+    register_owned_after_card_exhausted(
         RelicId::BurningSticks,
+        RelicKind::BurningSticks,
         listener_burning_sticks as AfterCardExhaustedFn,
     );
     // Bead `sts2-rs-70anj.1`: real `modify_damage_additive` listener
@@ -646,15 +651,17 @@ pub fn install_pool() {
         RelicId::SneckoEye,
         listener_snecko_eye_combat_start as BeforeCombatStartFn,
     );
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::SneckoEye,
+        RelicKind::SneckoEye,
         listener_snecko_eye_hand_draw as ModifyHandDrawFn,
     );
     // Bead `sts2-rs-70anj.3.7`: ChemicalX adds +2 to every X-cost play's
     // effective `x` value. Fires from combat_loop::play_card just before
     // `card.energy_spent` is recorded.
-    register_modify_x_value(
+    register_owned_modify_x_value(
         RelicId::ChemicalX,
+        RelicKind::ChemicalX,
         listener_chemical_x_modify_x_value as ModifyXValueFn,
     );
     // Bead `sts2-rs-70anj.3.3`: ThrowingAxe — first card each combat is
@@ -662,8 +669,9 @@ pub fn install_pool() {
     // 1 = fired). The companion `before_combat_start` listener resets the
     // latch so the next combat re-arms (Python's `before_combat_start` +
     // `after_combat_end` both clear `self._used_this_combat`).
-    register_relic_modify_card_play_count(
+    register_owned_relic_modify_card_play_count(
         RelicId::ThrowingAxe,
+        RelicKind::ThrowingAxe,
         listener_throwing_axe_play_count as RelicModifyCardPlayCountFn,
     );
     register_before_combat_start(
@@ -692,8 +700,9 @@ pub fn install_pool() {
     // colorless cards via AddGeneratedToHand choice. Per-combat latch
     // on Relic.counter resets at combat start. Mirrors Python
     // `shop_event.py::Toolbox.before_hand_draw` + `before_combat_start`.
-    register_before_hand_draw(
+    register_owned_before_hand_draw(
         RelicId::Toolbox,
+        RelicKind::Toolbox,
         listener_toolbox_before_hand_draw as BeforeHandDrawFn,
     );
     register_before_combat_start(
@@ -742,8 +751,9 @@ pub fn install_pool() {
     // `modify_max_energy: +1` leg is deferred — no `modify_max_energy`
     // register channel exists yet (the noop_hook in `hooks.rs` would need a
     // RelicKind match-arm). Beads `sts2-rs-70anj.1`, `sts2-rs-lfdaa`.
-    register_before_hand_draw(
+    register_owned_before_hand_draw(
         RelicId::BlessedAntler,
+        RelicKind::BlessedAntler,
         listener_blessed_antler as BeforeHandDrawFn,
     );
     // Bead `sts2-rs-vfzgs`: `PaelsEye` listeners. Python
@@ -1157,8 +1167,9 @@ pub fn install_pool() {
         RelicId::BeltBuckle,
         listener_belt_buckle_before_combat_start as BeforeCombatStartFn,
     );
-    register_after_potion_used(
+    register_owned_after_potion_used(
         RelicId::BeltBuckle,
+        RelicKind::BeltBuckle,
         listener_belt_buckle_after_potion_used as AfterPotionUsedFn,
     );
     // PaelsLegion (sts2-rs-ppabi) — boss/pet relic: "the first time you
@@ -1235,10 +1246,7 @@ fn listener_paels_legion_modify_block(state: &CombatState, ctx: &BlockCtx) -> ho
         .iter()
         .find(|r| !r.is_melted && r.kind == RelicKind::PaelsLegion)
         .is_some_and(|r| r.counter > 0);
-    let owned = state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::PaelsLegion);
+    let owned = state.relics.owns(RelicKind::PaelsLegion);
     if owned && !on_cooldown {
         hooks::DamageMul::new(2, 1)
     } else {
@@ -1600,11 +1608,7 @@ fn listener_sai(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::Sai)
-    {
+    if !state.relics.owns(RelicKind::Sai) {
         return EffectResult::NotImplemented;
     }
     // C# `Sai.cs` declares `BlockVar(7m, ValueProp.Unpowered)` —
@@ -1646,11 +1650,7 @@ fn listener_very_hot_cocoa(state: &mut CombatState, side: Side) -> EffectResult 
     if state.round_no() != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::VeryHotCocoa)
-    {
+    if !state.relics.owns(RelicKind::VeryHotCocoa) {
         return EffectResult::NotImplemented;
     }
     state.gain_energy(VERY_HOT_COCOA_ENERGY);
@@ -1667,11 +1667,7 @@ fn listener_paels_flesh(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::PaelsFlesh)
-    {
+    if !state.relics.owns(RelicKind::PaelsFlesh) {
         return EffectResult::NotImplemented;
     }
     if state.round_no() < PAELS_FLESH_ROUND_MIN {
@@ -1718,11 +1714,7 @@ fn listener_iron_club(state: &mut CombatState, _ctx: &CardEventCtx) -> EffectRes
 /// `exhaust_from_draw_pile(1)`) and applies +1 Strength to the player.
 /// Bead `sts2-rs-70anj.1`.
 fn listener_toasty_mittens(state: &mut CombatState) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::ToastyMittens)
-    {
+    if !state.relics.owns(RelicKind::ToastyMittens) {
         return EffectResult::NotImplemented;
     }
     // C# `ToastyMittens.BeforeHandDraw` (`ToastyMittens.cs`): every player
@@ -1774,11 +1766,7 @@ fn listener_jeweled_mask(state: &mut CombatState) -> EffectResult {
     if state.round != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::JeweledMask)
-    {
+    if !state.relics.owns(RelicKind::JeweledMask) {
         return EffectResult::NotImplemented;
     }
     // Pool = Power cards in the (pre-draw) draw pile, in pile order —
@@ -1862,11 +1850,7 @@ fn listener_burning_sticks(state: &mut CombatState, ctx: &CardEventCtx) -> Effec
 /// int]` non-empty). Bead `sts2-rs-70anj.1`.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_mystic_lighter(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::MysticLighter)
-    {
+    if !state.relics.owns(RelicKind::MysticLighter) {
         return 0;
     }
     let Some(player_uid) = state.player.creature_uid else {
@@ -1898,11 +1882,7 @@ fn listener_mystic_lighter(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 {
 /// SneckoEye`). Applies a single stack of `PowerKind::Confused` to
 /// the player at combat start. Bead `sts2-rs-70anj.1`.
 fn listener_snecko_eye_combat_start(state: &mut CombatState) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::SneckoEye)
-    {
+    if !state.relics.owns(RelicKind::SneckoEye) {
         return EffectResult::NotImplemented;
     }
     let Some(player_uid) = state.player.creature_uid else {
@@ -1930,11 +1910,7 @@ fn listener_snecko_eye_combat_start(state: &mut CombatState) -> EffectResult {
 /// flag (bead `sts2-rs-ad53n`). Bead `sts2-rs-sei89`.
 fn listener_ghost_seed_combat_start(state: &mut CombatState) -> EffectResult {
     use sts2_core::cards::CardId;
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::GhostSeed)
-    {
+    if !state.relics.owns(RelicKind::GhostSeed) {
         return EffectResult::NotImplemented;
     }
     // Closed set: every Python `CardRarity.BASIC` card whose name
@@ -1977,11 +1953,7 @@ fn listener_ghost_seed_combat_start(state: &mut CombatState) -> EffectResult {
 /// `sts2-rs-70anj.1`.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_snecko_eye_hand_draw(state: &CombatState, current_draw: i32) -> i32 {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::SneckoEye)
-    {
+    if !state.relics.owns(RelicKind::SneckoEye) {
         return current_draw;
     }
     current_draw + SNECKO_EYE_EXTRA_DRAW
@@ -2053,11 +2025,7 @@ fn listener_delicate_frond_combat_start(state: &mut CombatState) -> EffectResult
     // would be filled in *every* combat (even for players who don't carry
     // DelicateFrond) — surfacing phantom drinkable potions. Mirrors the
     // implicit ownership scoping every other per-relic listener applies.
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::DelicateFrond)
-    {
+    if !state.relics.owns(RelicKind::DelicateFrond) {
         return EffectResult::NotImplemented;
     }
     let _ = state.fill_empty_potion_slots();
@@ -2070,11 +2038,7 @@ fn listener_delicate_frond_combat_start(state: &mut CombatState) -> EffectResult
 /// while owned. Bead `sts2-rs-70anj.3.7`.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_chemical_x_modify_x_value(state: &CombatState, current_x: i32) -> i32 {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::ChemicalX)
-    {
+    if !state.relics.owns(RelicKind::ChemicalX) {
         return current_x;
     }
     current_x + CHEMICAL_X_INCREASE
@@ -2151,11 +2115,7 @@ fn listener_blessed_antler(state: &mut CombatState) -> EffectResult {
     if state.round_no() != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::BlessedAntler)
-    {
+    if !state.relics.owns(RelicKind::BlessedAntler) {
         return EffectResult::NotImplemented;
     }
     #[allow(clippy::cast_sign_loss)]
@@ -2306,11 +2266,7 @@ fn listener_crossbow(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::Crossbow)
-    {
+    if !state.relics.owns(RelicKind::Crossbow) {
         return EffectResult::NotImplemented;
     }
     generate_free_attack_in_hand(state);
@@ -2336,11 +2292,7 @@ fn listener_seal_of_gold(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::SealOfGold)
-    {
+    if !state.relics.owns(RelicKind::SealOfGold) {
         return EffectResult::NotImplemented;
     }
     // C# `SealOfGold.AfterSideTurnStart`: while gold ≥ 5, spend 5 for +1 energy.
@@ -2374,11 +2326,7 @@ fn listener_bread(state: &mut CombatState, side: Side) -> EffectResult {
     if state.round != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::Bread)
-    {
+    if !state.relics.owns(RelicKind::Bread) {
         return EffectResult::NotImplemented;
     }
     let new_energy = (i32::from(state.player.energy) - BREAD_LOSE_ENERGY).max(0);
@@ -3270,11 +3218,7 @@ fn listener_radiant_pearl(state: &mut CombatState, side: Side) -> EffectResult {
     if state.round_no() != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::RadiantPearl)
-    {
+    if !state.relics.owns(RelicKind::RadiantPearl) {
         return EffectResult::NotImplemented;
     }
     let mut card = sts2_core::cards::Card::pod_defaults();
@@ -3370,11 +3314,7 @@ fn listener_diamond_diadem_before_turn_end(state: &mut CombatState, side: Side) 
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::DiamondDiadem)
-    {
+    if !state.relics.owns(RelicKind::DiamondDiadem) {
         return EffectResult::NotImplemented;
     }
     const CARD_THRESHOLD: u32 = 2;
@@ -3916,11 +3856,7 @@ fn listener_biiig_hug_remove(rs: &mut RunState) -> EffectResult {
 /// `sts2-content::cards::status_specs_generated::soot`. Beads
 /// `sts2-rs-70anj.4`, `sts2-rs-lfdaa`.
 fn listener_biiig_hug_shuffle(state: &mut CombatState, _ctx: &ShuffleCtx) -> EffectResult {
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::BiiigHug)
-    {
+    if !state.relics.owns(RelicKind::BiiigHug) {
         return EffectResult::NotImplemented;
     }
     let soot = crate::cards::status::card_from_spec(&crate::cards::status_specs_generated::soot());
@@ -3945,11 +3881,7 @@ fn listener_ninja_scroll(state: &mut CombatState, side: Side) -> EffectResult {
     if state.round_no() != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::NinjaScroll)
-    {
+    if !state.relics.owns(RelicKind::NinjaScroll) {
         return EffectResult::NotImplemented;
     }
     for _ in 0..NINJA_SCROLL_SHIVS {
@@ -5246,11 +5178,7 @@ fn listener_runic_capacitor(state: &mut CombatState, side: Side) -> EffectResult
     if state.round_no() != 1 {
         return EffectResult::NotImplemented;
     }
-    if !state
-        .relics
-        .iter()
-        .any(|r| !r.is_melted && r.kind == RelicKind::RunicCapacitor)
-    {
+    if !state.relics.owns(RelicKind::RunicCapacitor) {
         return EffectResult::NotImplemented;
     }
     let slots = usize::try_from(RUNIC_CAPACITOR_ORB_SLOTS).unwrap_or(0);

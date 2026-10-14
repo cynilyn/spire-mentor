@@ -17,10 +17,7 @@ pub(crate) fn on_after_card_played_permafrost(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
-    let is_power = state
-        .cards
-        .iter()
-        .find(|c| c.uid == uid)
+    let is_power = crate::card_by_uid(&state.cards, uid)
         .is_some_and(|c| c.card_type == crate::cards::CardType::Power);
     if !is_power {
         return EffectResult::NotImplemented;
@@ -41,9 +38,10 @@ pub(crate) fn on_after_card_played_permafrost(
 /// `Permafrost.after_combat_end` — `_activated_this_combat = False`.
 /// Re-arms the first-power-per-combat flag for the next encounter.
 pub(crate) fn on_after_combat_end_permafrost(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = permafrost_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = permafrost_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -52,8 +50,9 @@ pub(crate) fn install() {
         RelicId::Permafrost,
         on_after_card_played_permafrost as AfterCardPlayedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::Permafrost,
+        crate::RelicKind::Permafrost,
         on_after_combat_end_permafrost as AfterCombatEndFn,
     );
 }

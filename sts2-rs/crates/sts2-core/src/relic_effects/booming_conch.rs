@@ -47,8 +47,9 @@ pub(crate) fn on_after_side_turn_start_booming_conch(
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::BoomingConch,
+        crate::RelicKind::BoomingConch,
         on_modify_hand_draw_booming_conch as ModifyHandDrawFn,
     );
     register_after_side_turn_start(

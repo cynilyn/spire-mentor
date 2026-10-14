@@ -572,6 +572,21 @@ impl EventLog {
         self.dropped
     }
 
+    /// Field-wise equality: the rows, the drop count, the open-source stack
+    /// and the recording flag.
+    ///
+    /// `==` is always `true` (see the `PartialEq` impl), so a check that must
+    /// see a log write uses this beside the state comparison: the debug
+    /// shadows of a skipped dispatch, which replay it on a clone and require
+    /// the clone to equal the state.
+    #[must_use]
+    pub fn same_contents(&self, other: &Self) -> bool {
+        self.rows == other.rows
+            && self.dropped == other.dropped
+            && self.open == other.open
+            && self.recording == other.recording
+    }
+
     /// Drop every row and reset the open-source stack, keeping the flag.
     pub fn clear(&mut self) {
         self.rows.clear();

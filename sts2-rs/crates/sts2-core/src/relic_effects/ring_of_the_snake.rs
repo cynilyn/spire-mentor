@@ -16,8 +16,9 @@ pub(crate) fn on_modify_hand_draw_ring_of_the_snake(state: &CombatState, current
 }
 
 pub(crate) fn install() {
-    register_modify_hand_draw(
+    register_owned_modify_hand_draw(
         RelicId::RingOfTheSnake,
+        crate::RelicKind::RingOfTheSnake,
         on_modify_hand_draw_ring_of_the_snake as ModifyHandDrawFn,
     );
 }

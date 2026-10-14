@@ -47,7 +47,7 @@ use sts2_core::monsters::Intent;
 use sts2_core::powers::PowerKind;
 use sts2_core::{CombatState, CreatureUid};
 
-use super::dsl::{always_true, br, cb, mv, mv_eff, noop_effect};
+use super::dsl::{always_true, br, cb, mv, mv_eff, noop_effect, proto_ai, proto_ais, ProtoAis};
 use super::{apply_power_to_player_via_legacy_surface, apply_signed_power_to_player};
 
 /// `Noisebot` NOISE_MOVE (`NoiseMove`, `Noisebot.cs:45,51-64`):
@@ -837,7 +837,19 @@ pub fn create_turret_operator_ai() -> MonsterAi {
 /// Per the decomp, a normal Axebot (no stock override) opens on
 /// HAMMER_UPPERCUT; only a stock-overridden / respawned Axebot opens on
 /// BOOT_UP. `start_with_boot_up` selects the BOOT_UP opener.
+///
+/// A StockPower respawn builds one mid-combat, so each is a clone of a
+/// per-thread prototype (`proto_ai`).
 pub fn create_axebot_ai(start_with_boot_up: bool) -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<2> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, usize::from(start_with_boot_up), || {
+        build_axebot_ai(start_with_boot_up)
+    })
+}
+
+pub(crate) fn build_axebot_ai(start_with_boot_up: bool) -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert(
         "BOOT_UP",
@@ -1096,14 +1108,21 @@ fn fabricator_spawn_bot(
 /// Resolve a bot kind to its moveset ctor — the summon-site AI
 /// attachment (`sts2-rs-cuocf` contract: AI attachment is the spawn
 /// caller's responsibility). Bead `sts2-rs-z4jsg`.
-fn create_bot_ai(kind: sts2_core::MonsterKind) -> MonsterAi {
+///
+/// The Fabricator summons inside the search, so each bot is a clone of a
+/// per-thread prototype ([`proto_ai`]).
+pub(crate) fn create_bot_ai(kind: sts2_core::MonsterKind) -> MonsterAi {
     use sts2_core::MonsterKind::{Guardbot, Noisebot, Stabbot};
-    match kind {
-        Stabbot => create_stabbot_ai(),
-        Guardbot => create_guardbot_ai(),
-        Noisebot => create_noisebot_ai(),
-        _ => create_zapbot_ai(),
+    thread_local! {
+        static PROTO: ProtoAis<4> = const { proto_ais() };
     }
+    let (variant, build): (usize, fn() -> MonsterAi) = match kind {
+        Stabbot => (0, create_stabbot_ai),
+        Guardbot => (1, create_guardbot_ai),
+        Noisebot => (2, create_noisebot_ai),
+        _ => (3, create_zapbot_ai),
+    };
+    proto_ai(&PROTO, variant, build)
 }
 
 /// FABRICATE: spawn one defensive bot then one aggro bot, each a Minion.

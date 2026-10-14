@@ -75,7 +75,7 @@ use sts2_core::powers::PowerKind;
 use sts2_core::{CombatState, CreatureKind, CreatureUid, MonsterKind};
 
 use super::apply_power_to_player_via_legacy_surface;
-use super::dsl::{always_true, br, cb, mv, mv_eff};
+use super::dsl::{always_true, br, cb, mv, mv_eff, proto_ai, proto_ais, ProtoAis};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Telegraph-only Buff/Debuff power-apply effects (bead sts2-rs-pdsdl).
@@ -1646,8 +1646,16 @@ pub fn create_myte_ai(slot: MyteSlot) -> MonsterAi {
 /// - NIBBLE_MOVE → `SingleAttackIntent(NibbleDamage=4)` self-loop.
 /// The machine STARTS at HATCH_MOVE: an egg laid mid-enemy-turn rolls
 /// it as its first telegraph at that turn's end and hatches on its
-/// first acting turn. Spawned by Ovicopter LAY_EGGS.
+/// first acting turn. Spawned by Ovicopter LAY_EGGS, so a clone of a
+/// per-thread prototype (`proto_ai`).
 pub fn create_tough_egg_ai() -> MonsterAi {
+    thread_local! {
+        static PROTO: ProtoAis<1> = const { proto_ais() };
+    }
+    proto_ai(&PROTO, 0, build_tough_egg_ai)
+}
+
+pub(crate) fn build_tough_egg_ai() -> MonsterAi {
     let mut s = BTreeMap::new();
     s.insert(
         "HATCH_MOVE",
@@ -4361,9 +4369,12 @@ mod tests {
 
     use sts2_core::{Creature, CreatureUid as Cuid, IntentHistory, MonsterId, MonsterKind as MK};
 
-    /// Spawn a minimal monster Creature at uid 1 and return its uid.
+    /// Spawn a minimal monster Creature at the next free uid (`creatures.len()
+    /// + 1`, as the engine mints them — uid 1 unless the player's mirror was
+    /// pushed first) and return its uid.
     fn spawn_monster(state: &mut CombatState, species: MK) -> Cuid {
-        let uid = Cuid::new(1).expect("nonzero");
+        let uid =
+            Cuid::new(u32::try_from(state.creatures.len() + 1).expect("fits")).expect("nonzero");
         state.creatures.push(Creature {
             id: uid.0,
             current_hp: 100,

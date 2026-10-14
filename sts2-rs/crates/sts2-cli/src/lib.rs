@@ -22,6 +22,12 @@
 //! `CombatState` from a `.run-source` fixture without going
 //! through `argv`.
 
+/// Content hash of THIS crate's build inputs, stamped at build time by
+/// `build.rs`. Compiled INTO the crate so a stale `sts2-cli` rlib carries its
+/// old hash; one of the parts of `sts2_rs.src_hash()`. See
+/// `sts2_core::SRC_HASH`.
+pub const SRC_HASH: &str = env!("STS2_CLI_SRC_HASH");
+
 pub mod agent;
 pub mod cli;
 pub mod replay;

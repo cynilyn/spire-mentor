@@ -42,9 +42,10 @@ pub(crate) fn on_after_damage_received_centennial_puzzle(
 /// `CentennialPuzzle.after_combat_end` — `_used_this_combat = False`.
 /// Re-arms the per-combat flag.
 pub(crate) fn on_after_combat_end_centennial_puzzle(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = centennial_puzzle_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = centennial_puzzle_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -53,8 +54,9 @@ pub(crate) fn install() {
         RelicId::CentennialPuzzle,
         on_after_damage_received_centennial_puzzle as AfterDamageReceivedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::CentennialPuzzle,
+        crate::RelicKind::CentennialPuzzle,
         on_after_combat_end_centennial_puzzle as AfterCombatEndFn,
     );
 }

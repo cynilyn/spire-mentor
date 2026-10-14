@@ -58,12 +58,14 @@ pub(crate) fn install() {
         RelicId::BoundPhylactery,
         on_before_combat_start_bound_phylactery as BeforeCombatStartFn,
     );
-    register_after_energy_reset(
+    register_owned_after_energy_reset(
         RelicId::BoundPhylactery,
+        crate::RelicKind::BoundPhylactery,
         on_after_energy_reset_bound_phylactery as AfterEnergyResetFn,
     );
-    register_count_pets(
+    register_owned_count_pets(
         RelicId::BoundPhylactery,
+        crate::RelicKind::BoundPhylactery,
         on_count_pets_bound_phylactery as CountPetsFn,
     );
 }

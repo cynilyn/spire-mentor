@@ -3476,15 +3476,11 @@ impl RunManager {
         };
         let entry = self.run_state.pending_deck_enchants.remove(0);
         let card = &mut self.run_state.master_deck[deck_idx];
-        if let Some(slot) = card
-            .enchantments
-            .iter_mut()
-            .find(|(id, _)| *id == entry.enchantment)
-        {
-            slot.1 += entry.amount;
-        } else {
-            card.enchantments.push((entry.enchantment, entry.amount));
-        }
+        // Add to the first existing stack, else append `(id, amount)` (an
+        // absent id reads 0). Plain `+`, not the saturating `add_enchantment`.
+        let stacks = card.enchantment(entry.enchantment);
+        card.enchantments
+            .set(entry.enchantment, stacks + entry.amount);
         self.settle_after_deck_pick();
         ActionResult::Advanced
     }

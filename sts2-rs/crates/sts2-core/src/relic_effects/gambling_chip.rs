@@ -47,7 +47,7 @@ pub(crate) fn on_after_player_turn_start_gambling_chip(state: &mut CombatState) 
         .hand
         .iter()
         .filter_map(|&uid| {
-            let card = state.cards.iter().find(|c| c.uid == uid)?;
+            let card = crate::card_by_uid(&state.cards, uid)?;
             Some(crate::ChoiceOption {
                 card_id: card.card_id,
                 upgraded: card.upgraded,

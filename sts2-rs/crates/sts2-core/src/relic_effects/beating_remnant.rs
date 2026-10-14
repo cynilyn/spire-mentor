@@ -60,9 +60,10 @@ pub(crate) fn on_before_side_turn_start_beating_remnant(
 }
 
 pub(crate) fn on_after_combat_end_beating_remnant(state: &mut CombatState) -> EffectResult {
-    if let Some(r) = beating_remnant_relic_mut(state) {
-        r.counter = 0;
-    }
+    let Some(r) = beating_remnant_relic_mut(state) else {
+        return EffectResult::NotImplemented;
+    };
+    r.counter = 0;
     EffectResult::Resolved
 }
 
@@ -79,8 +80,9 @@ pub(crate) fn install() {
         RelicId::BeatingRemnant,
         on_before_side_turn_start_beating_remnant as BeforeSideTurnStartFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::BeatingRemnant,
+        crate::RelicKind::BeatingRemnant,
         on_after_combat_end_beating_remnant as AfterCombatEndFn,
     );
 }

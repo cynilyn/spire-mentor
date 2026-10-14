@@ -59,7 +59,7 @@ fn lone_fat_enemy() -> (Vec<Creature>, CreatureUid) {
     (creatures, enemy_uid)
 }
 
-fn push_card(cards: &mut Vec<Card>, card_id: CardId, card_type: CardType) -> CardUid {
+fn push_card(cards: &mut sts2_core::CardStore, card_id: CardId, card_type: CardType) -> CardUid {
     let uid = CardUid::new(u32::try_from(cards.len() + 1).expect("fits")).expect("non-zero");
     cards.push(Card {
         uid,
@@ -83,7 +83,7 @@ fn state_with_draw_tail(tail: &[CardId], relics: Vec<Relic>) -> (CombatState, Ve
     sts2_content::cards::dispatch::ensure_installed();
     sts2_content::relics::dispatch::ensure_installed();
 
-    let mut cards: Vec<Card> = Vec::new();
+    let mut cards = sts2_core::CardStore::new();
     let filler: Vec<CardUid> = (0..5)
         .map(|_| push_card(&mut cards, CardId::DefendIronclad, CardType::Skill))
         .collect();
@@ -105,7 +105,7 @@ fn state_with_draw_tail(tail: &[CardId], relics: Vec<Relic>) -> (CombatState, Ve
         run_rng: sts2_core::run_rng_set::RunRngSet::new(7),
         creatures,
         cards,
-        relics,
+        relics: relics.into(),
         player,
         enemy_uids: SmallVec::from_slice(&[enemy_uid]),
         ..CombatState::default()

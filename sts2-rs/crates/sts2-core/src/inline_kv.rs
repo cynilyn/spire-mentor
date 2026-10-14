@@ -22,7 +22,7 @@
 //!   `format!("{card:?}")`) the transposition/dedup hashes. Equality is
 //!   therefore **insertion-order-sensitive over the live entries** —
 //!   exactly `SmallVec`'s slice equality. Canonical zeroed tail slots
-//!   (see below) make the derived array compare equivalent to a live-
+//!   (see below) make the whole-array compare equivalent to a live-
 //!   prefix compare.
 //! * `Debug` must format **byte-identically** to `SmallVec`'s (a plain
 //!   slice-style list of the live entries), so the Debug-string hashes
@@ -32,10 +32,24 @@
 //!
 //! Slots at index `>= len` are ALWAYS `(K::FILL, 0)`. Every constructor
 //! and mutator preserves this ([`InlineKv::new`] fills, [`InlineKv::push`]
-//! writes at `len`, [`InlineKv::clear`] re-fills, and mutation of existing
-//! entries goes through [`InlineKv::iter_mut`], which only exposes the
-//! live prefix). This is what lets `PartialEq`/`Eq` be derived over the
-//! whole fixed array without comparing garbage.
+//! writes at `len`, [`InlineKv::clear`] re-fills, and the in-place writers
+//! [`InlineKv::set`] / [`InlineKv::add`] / [`InlineKv::zero`] only touch the
+//! live prefix). This is what lets `PartialEq`/`Eq` compare the whole fixed
+//! array without comparing garbage.
+//!
+//! # "May be nonzero" mask (J02)
+//!
+//! `nz` is a 24-bit derived view: bit [`InlineKvKey::nz_index`] is set
+//! whenever a nonzero value is written under that key, and only
+//! [`InlineKv::clear`] resets it. So a clear bit PROVES every live entry for
+//! the key holds 0 (a superset filter: writing 0 keeps the bit, and keys may
+//! share a bit). [`InlineKv::get`] answers 0 from the bit alone, and the
+//! per-turn card sweeps skip cards whose bit is clear. The invariant is
+//! enforced by the type: the fields are private and every value writer is a
+//! method here (there is deliberately no `iter_mut`). `nz` lives in what was
+//! tail padding after `len`, so the struct size is unchanged, and it is left
+//! out of `PartialEq`, `Hash` and `Debug` (it depends on write history, not
+//! only on content).
 //!
 //! # Capacity overflow
 //!
@@ -49,6 +63,16 @@
 //! (nextest, parity, fuzz, full random-run sweeps) runs against these caps,
 //! so an overflow shows up as a panic at the offending site, never as
 //! silent state loss.
+//!
+//! [`InlineKv`]: crate::inline_kv::InlineKv
+//! [`InlineKv::new`]: crate::inline_kv::InlineKv::new
+//! [`InlineKv::push`]: crate::inline_kv::InlineKv::push
+//! [`InlineKv::clear`]: crate::inline_kv::InlineKv::clear
+//! [`InlineKv::set`]: crate::inline_kv::InlineKv::set
+//! [`InlineKv::add`]: crate::inline_kv::InlineKv::add
+//! [`InlineKv::zero`]: crate::inline_kv::InlineKv::zero
+//! [`InlineKvKey::nz_index`]: crate::inline_kv::InlineKvKey::nz_index
+//! [`InlineKv::get`]: crate::inline_kv::InlineKv::get
 
 use core::fmt;
 
@@ -59,15 +83,37 @@ use core::fmt;
 pub trait InlineKvKey: Copy + Eq + fmt::Debug {
     /// Variant used to fill unused tail slots (paired with amount `0`).
     const FILL: Self;
+
+    /// This key's bit in the derived "may be nonzero" mask; must be
+    /// `< NZ_BITS`. Keys may share a bit (the mask is a superset filter, so
+    /// aliasing only costs a false "maybe").
+    fn nz_index(self) -> usize;
 }
+
+/// Width of [`InlineKv`]'s "may be nonzero" mask: the three bytes of tail
+/// padding after `len`.
+pub const NZ_BITS: usize = 24;
 
 /// Fixed-capacity insertion-ordered `(K, i32)` map. `Copy`. See the
 /// module docs for the equality / Debug / tail-canonicalization contract.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct InlineKv<K: InlineKvKey, const N: usize> {
     len: u8,
+    /// Derived "may be nonzero" mask (see the module docs); excluded from
+    /// `PartialEq`, `Hash` and `Debug`.
+    nz: [u8; 3],
     slots: [(K, i32); N],
 }
+
+/// Equality over the live content only (`len` + the canonical slot array),
+/// exactly the derived comparison before `nz` existed.
+impl<K: InlineKvKey, const N: usize> PartialEq for InlineKv<K, N> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.slots == other.slots
+    }
+}
+impl<K: InlineKvKey, const N: usize> Eq for InlineKv<K, N> {}
 
 impl<K: InlineKvKey, const N: usize> InlineKv<K, N> {
     /// Empty map (all slots canonical `(K::FILL, 0)`).
@@ -75,6 +121,7 @@ impl<K: InlineKvKey, const N: usize> InlineKv<K, N> {
     pub const fn new() -> Self {
         Self {
             len: 0,
+            nz: [0; 3],
             slots: [(K::FILL, 0); N],
         }
     }
@@ -97,15 +144,6 @@ impl<K: InlineKvKey, const N: usize> InlineKv<K, N> {
 
     pub fn iter(&self) -> core::slice::Iter<'_, (K, i32)> {
         self.as_slice().iter()
-    }
-
-    /// Mutable iteration over the live entries ONLY — the canonical tail
-    /// is never exposed, so in-place value updates cannot break the tail
-    /// invariant. (Callers can corrupt a live KEY to `FILL`; that is the
-    /// same freedom `SmallVec` gave and no caller does it.)
-    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, (K, i32)> {
-        let len = self.len as usize;
-        self.slots[..len].iter_mut()
     }
 
     #[must_use]
@@ -131,11 +169,103 @@ impl<K: InlineKvKey, const N: usize> InlineKv<K, N> {
         );
         self.slots[i] = kv;
         self.len += 1;
+        self.note_value(kv.0, kv.1);
     }
 
-    /// Remove all entries (restores every slot to the canonical tail).
+    /// Remove all entries (restores every slot to the canonical tail and
+    /// clears the "may be nonzero" mask).
     pub fn clear(&mut self) {
         *self = Self::new();
+    }
+
+    /// `false` proves every live entry for `key` holds 0 (or there is none);
+    /// `true` means one may be nonzero. One bit test.
+    ///
+    /// # Panics
+    /// In debug builds, if it answers `false` while a live entry for `key`
+    /// is nonzero (the superset invariant broke).
+    #[inline]
+    #[must_use]
+    pub fn maybe_nonzero(&self, key: K) -> bool {
+        let i = key.nz_index();
+        debug_assert!(i < NZ_BITS, "nz_index {i} of {key:?} out of range");
+        let maybe = self.nz[i / 8] & (1 << (i % 8)) != 0;
+        debug_assert!(
+            maybe || self.iter().all(|(k, v)| *k != key || *v == 0),
+            "InlineKv mask says {key:?} is zero but the entries are {:?}",
+            self.as_slice()
+        );
+        maybe
+    }
+
+    /// Value of the FIRST live entry for `key`, or 0 when there is none.
+    /// Answered from the mask alone when `key`'s bit is clear (every entry
+    /// for it is then 0).
+    #[inline]
+    #[must_use]
+    pub fn get(&self, key: K) -> i32 {
+        if !self.maybe_nonzero(key) {
+            return 0;
+        }
+        self.iter()
+            .find_map(|(k, v)| (*k == key).then_some(*v))
+            .unwrap_or(0)
+    }
+
+    /// Overwrite the first live entry for `key` with `value`, or append
+    /// `(key, value)` when there is none.
+    ///
+    /// # Panics
+    /// When appending past the fixed capacity (see [`Self::push`]).
+    #[inline]
+    pub fn set(&mut self, key: K, value: i32) {
+        if let Some(slot) = self.first_slot_mut(key) {
+            slot.1 = value;
+            self.note_value(key, value);
+        } else {
+            self.push((key, value));
+        }
+    }
+
+    /// Add `delta` (saturating) to the first live entry for `key`, or append
+    /// `(key, delta)` when there is none.
+    ///
+    /// # Panics
+    /// When appending past the fixed capacity (see [`Self::push`]).
+    #[inline]
+    pub fn add(&mut self, key: K, delta: i32) {
+        if let Some(slot) = self.first_slot_mut(key) {
+            slot.1 = slot.1.saturating_add(delta);
+            let value = slot.1;
+            self.note_value(key, value);
+        } else {
+            self.push((key, delta));
+        }
+    }
+
+    /// Write 0 over the first live entry for `key`, if any. Never appends.
+    /// Writing 0 keeps the mask a superset, so it is left as is.
+    #[inline]
+    pub fn zero(&mut self, key: K) {
+        if let Some(slot) = self.first_slot_mut(key) {
+            slot.1 = 0;
+        }
+    }
+
+    #[inline]
+    fn first_slot_mut(&mut self, key: K) -> Option<&mut (K, i32)> {
+        let len = self.len as usize;
+        self.slots[..len].iter_mut().find(|(k, _)| *k == key)
+    }
+
+    /// Record a write of `value` under `key` in the mask.
+    #[inline]
+    fn note_value(&mut self, key: K, value: i32) {
+        if value != 0 {
+            let i = key.nz_index();
+            debug_assert!(i < NZ_BITS, "nz_index {i} of {key:?} out of range");
+            self.nz[i / 8] |= 1 << (i % 8);
+        }
     }
 }
 
@@ -186,14 +316,6 @@ impl<'a, K: InlineKvKey, const N: usize> IntoIterator for &'a InlineKv<K, N> {
     }
 }
 
-impl<'a, K: InlineKvKey, const N: usize> IntoIterator for &'a mut InlineKv<K, N> {
-    type Item = &'a mut (K, i32);
-    type IntoIter = core::slice::IterMut<'a, (K, i32)>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +328,9 @@ mod tests {
     }
     impl InlineKvKey for K {
         const FILL: Self = K::A;
+        fn nz_index(self) -> usize {
+            self as usize
+        }
     }
 
     type M = InlineKv<K, 3>;
@@ -235,15 +360,52 @@ mod tests {
     }
 
     #[test]
-    fn iter_mut_updates_in_place_and_preserves_eq() {
+    fn set_updates_in_place_and_preserves_eq() {
         let mut m: M = [(K::B, 1)].into_iter().collect();
-        for (k, v) in &mut m {
-            if *k == K::B {
-                *v = 7;
-            }
-        }
+        m.set(K::B, 7);
         let want: M = [(K::B, 7)].into_iter().collect();
         assert_eq!(m, want);
+        // Absent key: appended at the end, like the old find-or-push.
+        m.set(K::C, 2);
+        assert_eq!(m.as_slice(), &[(K::B, 7), (K::C, 2)]);
+    }
+
+    #[test]
+    fn add_saturates_and_zero_never_appends() {
+        let mut m = M::new();
+        m.add(K::B, 3);
+        m.add(K::B, i32::MAX);
+        assert_eq!(m.as_slice(), &[(K::B, i32::MAX)]);
+        m.zero(K::C);
+        assert_eq!(m.len(), 1, "zero must not append an absent key");
+        m.zero(K::B);
+        assert_eq!(m.as_slice(), &[(K::B, 0)]);
+    }
+
+    /// The mask is history, not content: two maps with the same live entries
+    /// but different write histories are equal, hash alike and print alike,
+    /// and `get` answers the same on both.
+    #[test]
+    fn nz_mask_is_invisible_to_eq_hash_debug() {
+        use core::hash::{Hash, Hasher};
+        fn h(x: &impl Hash) -> u64 {
+            let mut s = std::collections::hash_map::DefaultHasher::new();
+            x.hash(&mut s);
+            s.finish()
+        }
+        let mut a = M::new();
+        a.set(K::B, 5);
+        a.set(K::B, 0);
+        let b: M = [(K::B, 0)].into_iter().collect();
+        assert!(a.maybe_nonzero(K::B));
+        assert!(!b.maybe_nonzero(K::B));
+        assert_eq!(a, b);
+        assert_eq!(h(&a), h(&b));
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        assert_eq!(a.get(K::B), 0);
+        assert_eq!(b.get(K::B), 0);
+        a.clear();
+        assert!(!a.maybe_nonzero(K::B), "clear resets the mask");
     }
 
     #[test]

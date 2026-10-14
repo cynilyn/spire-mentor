@@ -84,3 +84,7 @@ wandb/
 # champions that ARE committed. Ignored so a `git add -A` in a shared checkout
 # cannot sweep a live campaign into a commit.
 data/runs/
+# The private sts2_rs copy a training run or screen pins itself to
+# (python/ppo/wheel_guard.py), created next to wherever it saves: with the
+# default --save-path that is sts2-pycli/ itself, and data/ppo/ is tracked.
+sts2_rs-pin/

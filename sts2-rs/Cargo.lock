@@ -1948,6 +1948,7 @@ dependencies = [
  "sts2-core",
  "sts2-mcts",
  "sts2-runai",
+ "sts2-srchash",
  "toml",
 ]
 
@@ -2006,6 +2007,7 @@ dependencies = [
 name = "sts2-py"
 version = "0.0.1"
 dependencies = [
+ "mimalloc",
  "pyo3",
  "pythonize",
  "rand 0.8.6",
@@ -2019,6 +2021,7 @@ dependencies = [
  "sts2-mcts",
  "sts2-runai",
  "sts2-srchash",
+ "sts2-vocab",
  "sts2-wire",
 ]
 
@@ -2042,6 +2045,7 @@ dependencies = [
  "sts2-content",
  "sts2-core",
  "sts2-mcts",
+ "sts2-srchash",
  "sts2-vocab",
  "thiserror 1.0.69",
  "toml",
@@ -2057,6 +2061,7 @@ name = "sts2-vocab"
 version = "0.0.1"
 dependencies = [
  "sts2-core",
+ "sts2-srchash",
 ]
 
 [[package]]
@@ -2069,6 +2074,7 @@ dependencies = [
  "sts2-content",
  "sts2-core",
  "sts2-mcts",
+ "sts2-srchash",
  "sts2-vocab",
 ]
 

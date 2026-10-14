@@ -38,12 +38,14 @@ pub(crate) fn on_after_combat_end_metronome(state: &mut CombatState) -> EffectRe
 }
 
 pub(crate) fn install() {
-    register_on_orb_channeled(
+    register_owned_on_orb_channeled(
         RelicId::Metronome,
+        crate::RelicKind::Metronome,
         on_on_orb_channeled_metronome as OnOrbChanneledFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::Metronome,
+        crate::RelicKind::Metronome,
         on_after_combat_end_metronome as AfterCombatEndFn,
     );
 }

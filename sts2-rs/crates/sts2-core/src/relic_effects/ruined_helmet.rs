@@ -93,17 +93,20 @@ pub(crate) fn on_after_combat_end_ruined_helmet(state: &mut CombatState) -> Effe
 }
 
 pub(crate) fn install() {
-    register_modify_power_amount_received(
+    register_owned_modify_power_amount_received(
         RelicId::RuinedHelmet,
+        crate::RelicKind::RuinedHelmet,
         on_modify_power_amount_received_ruined_helmet as ModifyPowerAmountReceivedFn,
     );
-    register_after_modifying_power_amount_received(
+    register_owned_after_modifying_power_amount_received(
         RelicId::RuinedHelmet,
+        crate::RelicKind::RuinedHelmet,
         on_after_modifying_power_amount_received_ruined_helmet
             as AfterModifyingPowerAmountReceivedFn,
     );
-    register_after_combat_end(
+    register_owned_after_combat_end(
         RelicId::RuinedHelmet,
+        crate::RelicKind::RuinedHelmet,
         on_after_combat_end_ruined_helmet as AfterCombatEndFn,
     );
 }

@@ -163,7 +163,7 @@ fn ironclad_vs_nibbit(seed: u64) -> CombatState {
         rng: DotNetRng::new(seed as i32),
         run_rng: RunRngSet::new(seed as i32),
         creatures: vec![enemy],
-        cards: arena,
+        cards: arena.into(),
         player,
         enemy_uids,
         ..CombatState::default()
@@ -404,6 +404,26 @@ fn duplicate_power_id_breaks_the_store_index() {
     .into();
     let err = check_combat_invariants(&s, "t").unwrap_err();
     assert!(err.contains("PowerStore index/arena disagree"), "{err}");
+}
+
+#[test]
+fn duplicate_creature_id_fails() {
+    let mut s = valid_state();
+    let twin = s.creatures[0].clone();
+    s.creatures.push(twin);
+    let err = check_combat_invariants(&s, "t").unwrap_err();
+    assert!(err.contains("duplicate creature id 1"), "{err}");
+}
+
+#[test]
+fn duplicate_card_uid_fails() {
+    let mut s = valid_state();
+    s.cards
+        .push(make_card(1, CardId::StrikeIronclad, 1, CardType::Attack));
+    s.cards
+        .push(make_card(1, CardId::DefendIronclad, 1, CardType::Skill));
+    let err = check_combat_invariants(&s, "t").unwrap_err();
+    assert!(err.contains("duplicate card uid"), "{err}");
 }
 
 // ── check_combat_invariants: pile partition ────────────────────────────
