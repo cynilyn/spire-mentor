@@ -140,6 +140,26 @@ Web Worker; saves live in IndexedDB, and it installs as an offline PWA.
   *state import* — paste a position copied from the live game and analyse
   it here.
 
+### Workbench quickstart
+
+From a fresh clone you need `rustup`, `just` 1.38+, `uv`, Node 20+ and a
+`wasm-bindgen` CLI matching the crate
+(`cargo install wasm-bindgen-cli --version 0.2.120 --locked`); the pinned
+toolchain brings Rust 1.96 and the `wasm32-unknown-unknown` target, and the
+first build runs `npm install`. On Windows, `.\install-windows-deps.ps1`
+installs all of it except `rustup`, `uv`, git and VS Build Tools (see
+[Windows](#windows)).
+
+```sh
+just import-game          # optional: real art and sound from your copy of the game
+just workbench-local      # build + serve on http://127.0.0.1:4173
+```
+
+Skip `import-game` and the workbench still runs with the real card text and
+placeholder art. With it, add `ilspycmd`, `cwebp` and `ffmpeg` — details in
+[Quickstart](#quickstart) and
+[docs/bring-your-own-game.md](docs/bring-your-own-game.md).
+
 ## Spire Mentor — the AI inside the real game
 
 ![Route advice from the run policy on the real game's map](docs/site/img/mod-hud-map.webp)
