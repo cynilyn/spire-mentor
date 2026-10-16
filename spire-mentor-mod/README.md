@@ -103,6 +103,19 @@ To assemble a self-contained mod zip for another machine (bundling BaseLib
 and the packaged advisor backend), see `package.ps1` and
 `packaging/README-dist.txt` — and note the D5 distribution caveat above.
 
+For the Steam Workshop, `workshop.ps1` stages the same files (without
+BaseLib, which the item lists as a required Workshop item) into
+`workshop-workspace/` for Mega Crit's
+[uploader](https://github.com/megacrit/sts2-mod-uploader); `-Upload` runs
+it. The item's title, tags and dependencies are in
+`packaging/workshop/workshop.json`, its page text in
+`packaging/workshop/description.bbcode`, its preview image in
+`packaging/workshop/image.png` (Steam needs it under 1 MB), and its id in
+`packaging/workshop/mod_id.txt` once the first upload has created it. To
+test the subscribed copy, remove `<game>/mods/SpireMentor/` first: the
+game disables a Workshop mod whose id is also in the local mods folder
+(`ModManager.cs:296`).
+
 ## Configuration (`SpireMentor.conf`)
 
 On first run the mod copies `SpireMentor.conf.template` to `SpireMentor.conf`
