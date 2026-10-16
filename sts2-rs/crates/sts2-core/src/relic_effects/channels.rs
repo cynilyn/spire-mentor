@@ -2689,9 +2689,9 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardEventCtx) -
 }
 
 /// Dispatch `before_card_played` to every registered listener. Bead
-/// `sts2-rs-ff3hr`: relic-side `&mut state` channel for cost-charging
-/// listeners (SpikedGauntlets +1 energy on Power plays). Fired from
-/// `combat_loop::play_card` between energy spend and Hand→Play move.
+/// `sts2-rs-ff3hr`: relic-side `&mut state` channel (IntimidatingHelmet).
+/// Fired from `combat_loop::play_card` after the energy spend and the
+/// Hand→Play move.
 pub fn dispatch_before_card_played(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
     if is_empty_before_card_played() {
         return EffectResult::NotImplemented;
@@ -3381,9 +3381,10 @@ pub fn dispatch_modify_hand_draw(state: &CombatState, base_draw: i32) -> i32 {
 
 /// Dispatch `modify_x_value` as a left-to-right fold over registered
 /// relic listeners — each handler receives the running `x` value and
-/// returns the new value. Fired from
-/// [`crate::combat_loop::play_card`] for X-cost cards just before
-/// `card.energy_spent` is recorded. Bead `sts2-rs-70anj.3.7`.
+/// returns the new value. Read by
+/// [`crate::card_effects::resolving_card_x_value`] (C#
+/// `CardModel.ResolveEnergyXValue`) when an X-cost card resolves its X; the
+/// card's `energy_spent` keeps the raw energy. Bead `sts2-rs-70anj.3.7`.
 pub fn dispatch_modify_x_value(state: &CombatState, base_x: i32) -> i32 {
     if is_empty_modify_x_value() {
         return base_x;

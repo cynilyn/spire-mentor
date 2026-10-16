@@ -14,8 +14,9 @@
 use rand::SeedableRng;
 use serde_json::{json, Value};
 use sts2_core::{apply, legal_actions, terminal_value, Action, CombatState};
-use sts2_mcts::{HiddenInfoMode, Mcts, MctsConfig, RolloutPolicyKind, SharedPolicy};
+use sts2_mcts::{Mcts, SharedPolicy};
 use sts2_wire::emit::combat_action_to_value;
+use sts2_wire::emit::mcts::RecommendParams;
 
 /// `mcts_recommend`'s default `c_puct` for a NON-honest mode (`sqrt(2)`).
 ///
@@ -33,24 +34,18 @@ pub fn recommend(state: &CombatState, sims: u32, seed: u64) -> Value {
     if sims == 0 || legal.is_empty() {
         return json!({"scores": [], "pv": [], "sims": sims});
     }
-    // Mirrors `mcts_recommend`'s pinned config, which is the whole point of
-    // this module — including its DEFAULT honest triple (beliefdraw, the
-    // budget's `belief_draw_c_puct`, draw widening 2.0). It tracked the old
-    // clairvoyant default before; leaving it there would have made the
-    // phone-speed number measure a search the app no longer runs.
-    let cfg = MctsConfig {
-        c_puct: sts2_mcts::belief_draw_c_puct(sims),
-        max_simulations: sims,
-        max_rollout_depth: 200,
-        seed,
-        rollout_policy: RolloutPolicyKind::Heuristic,
-        use_transposition_table: false,
-        regularized_pi_temperature: 0.1,
-        use_puct_prior: false,
-        hidden_info: HiddenInfoMode::BeliefDraw,
-        draw_widening_c: 2.0,
-        ..MctsConfig::default()
-    };
+    // `mcts_recommend`'s config BY CONSTRUCTION — the same
+    // `RecommendParams::mcts_config` the hint endpoint builds, so its DEFAULT
+    // honest dialect (beliefdraw, the budget's `belief_draw_c_puct`, draw
+    // widening 2.0, the run agent's EndTurn widening — GH #758). This module
+    // used to restate that config field by field and so silently stopped
+    // measuring the hint's search whenever the dialect moved.
+    // `from_config`, not a struct update over `default()`: the default's
+    // `c_puct` is already resolved for ITS 300-sim budget.
+    let cfg =
+        RecommendParams::from_config(&json!({"sims": sims, "depth": 200, "seed": seed}), "bench")
+            .expect("a numeric config always parses")
+            .mcts_config();
     let mut m = Mcts::with_policy(state.clone(), cfg, SharedPolicy::uniform());
     let _ = m.search();
     let scores: Vec<Value> = m

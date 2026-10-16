@@ -212,8 +212,8 @@ pub enum EventLogEntry {
         card: CardId,
         /// Upgrade level of the played instance.
         upgraded: bool,
-        /// Energy actually paid (the X value for X-cost cards; 0 for free
-        /// auto-plays).
+        /// The X value for an X-cost card; 0 for any other card, manual or
+        /// auto-played (see `cards::observational_energy_spent`).
         energy_spent: i32,
         /// `true` for engine auto-plays (Cascade / Havoc / Stampede / Mayhem /
         /// DistilledChaos); `false` for a manual play.

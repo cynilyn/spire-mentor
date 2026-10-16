@@ -178,6 +178,8 @@ def score_native(
             # draw order the human can't.
             hidden_info=cfg.hidden_info,
             draw_widening_c=cfg.resolved_draw_widening_c(),
+            endturn_widening_c=cfg.endturn_widening_c,
+            endturn_widening_alpha=cfg.endturn_widening_alpha,
         )
     except Exception as exc:
         return {"error": str(exc), "scores": [], "pv": None, "config": config}
@@ -217,6 +219,8 @@ def rank_choice_native(cs: Any, config: dict[str, Any] | None = None) -> dict[st
             rollout_policy=cfg.rollout_policy,
             hidden_info=cfg.hidden_info,
             draw_widening_c=cfg.resolved_draw_widening_c(),
+            endturn_widening_c=cfg.endturn_widening_c,
+            endturn_widening_alpha=cfg.endturn_widening_alpha,
         )
     except Exception as exc:
         return {"error": str(exc), "by_key": {}, "config": config}
@@ -274,6 +278,8 @@ def search_tree_native(cs: Any, config: dict[str, Any] | None = None) -> dict[st
             # reconcile them.
             hidden_info=cfg.hidden_info,
             draw_widening_c=cfg.resolved_draw_widening_c(),
+            endturn_widening_c=cfg.endturn_widening_c,
+            endturn_widening_alpha=cfg.endturn_widening_alpha,
         )
     except Exception as exc:
         return {"error": str(exc), "nodes": [], "root": None, "pv": [], "config": config}

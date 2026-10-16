@@ -6,21 +6,16 @@ use smallvec::SmallVec;
 use sts2_content::cards::ironclad_basic::ironclad_starter_deck;
 use sts2_content::cards::silent::silent_starter_deck;
 use sts2_core::cards::Card;
-use sts2_core::{
-    CardUid, CombatPhase, CombatState, Creature, CreatureUid, IntentHistory, MonsterId, OrbSlots,
-    PlayerCombatState, Side, TurnEvents,
-};
+use sts2_core::{CardUid, CombatPhase, CombatState, OrbSlots, PlayerCombatState, Side, TurnEvents};
 
-use super::encounter::monster_ai_with_ascension;
 use super::Scenario;
 use crate::sim::PlayerClass;
 
 /// Build a [`CombatState`] ready for `combat_loop::start_combat`.
 ///
-/// Iterates `scenario.monsters` and spawns one `Creature` per spec,
-/// attaching the DSL `MonsterAi` returned by
-/// [`super::encounter::monster_ai_with_ascension`]. Each creature gets
-/// a unique `CreatureUid` starting at 1.
+/// Spawns `scenario.monsters` the way a real run does
+/// ([`sts2_content::run_bridge::spawn_roster`]): monster `i` gets
+/// `CreatureUid` `i + 1`, and the player's mirror creature the next one.
 ///
 /// Delegates to [`build_state_with_ascension`] at ascension 0 — kept
 /// byte-stable for existing books/harnesses that don't model ascension.
@@ -107,34 +102,6 @@ pub fn build_state_with_ascension(
         draw_uids.push(uid);
     }
 
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
-    let mut creatures: Vec<Creature> = Vec::new();
-    let mut enemy_uids: SmallVec<[CreatureUid; 8]> = SmallVec::new();
-
-    for (idx, m_spec) in scenario.monsters.iter().enumerate() {
-        let raw = u32::try_from(idx + 1).expect("monster count fits u32");
-        let uid = CreatureUid::new(raw).expect("non-zero");
-        let kind = m_spec.kind;
-        let hp = m_spec.hp_override.map_or_else(
-            || kind.starting_hp(&mut rng, ascension),
-            |h| i32::try_from(h).expect("hp fits i32"),
-        );
-        let ai = monster_ai_with_ascension(kind, &m_spec.ai_args, ascension);
-        creatures.push(Creature {
-            id: uid.0,
-            current_hp: hp,
-            max_hp: hp,
-            block: 0,
-            powers: SmallVec::new(),
-            species: Some(kind),
-            intent: None,
-            intent_history: IntentHistory::default(),
-            monster_id: MonsterId(kind.python_name()),
-            ai,
-        });
-        enemy_uids.push(uid);
-    }
-
     let player_state = PlayerCombatState {
         current_hp,
         max_hp,
@@ -181,16 +148,16 @@ pub fn build_state_with_ascension(
         phase: CombatPhase::Setup,
         round: 0,
         side: Side::Player,
-        rng,
+        rng: sts2_core::dotnet_rng::Rng::new(seed as i32),
         run_rng: sts2_core::run_rng_set::RunRngSet::new(seed as i32),
-        creatures,
+        creatures: Vec::new(),
         cards: cards_arena.into(),
         powers: Vec::new().into(),
         relics: Vec::new().into(),
         potions: Vec::new(),
         player: player_state,
         allies: SmallVec::new(),
-        enemy_uids,
+        enemy_uids: SmallVec::new(),
         pending_choice: None,
         resolving_card: None,
         pending_play: None,
@@ -241,19 +208,32 @@ pub fn build_state_with_ascension(
         last_drawn_card: None,
     };
 
-    // Bead `sts2-rs-r8x8h`: scenario loader was pushing creatures
-    // directly without firing `apply_creature_spawn_buffs`, so monsters
-    // with on-spawn buffs (Vantom's Slippery 9, VineShambler's Thorns 3,
-    // SnappingJaxfruit's Strength 2, PhrogParasite's CurlUp 10, Myte's
-    // CurlUp 6, SlitheringStrangler's Constrict 3) entered combat
-    // unbuffed. The canonical run-side path (`sts2-content::run_bridge`)
-    // already calls this; the scenario / corpus-replay path didn't.
-    // Apply now over the already-populated enemy_uids snapshot so each
-    // monster gets its spawn-time-buff parity with Python / C#.
-    let uids: SmallVec<[CreatureUid; 8]> = state.enemy_uids.clone();
-    for uid in uids {
-        state.apply_creature_spawn_buffs(uid);
-    }
+    // Monsters are spawned exactly as a real run spawns them (GH #762):
+    // `run_bridge::spawn_roster` builds each AI from the monster's roster
+    // position and spawn args, wires the player's mirror creature, then applies
+    // the on-spawn powers (including the ones a monster lands on the player,
+    // e.g. Rocket's Surrounded). HP is rolled the run's way too: every monster
+    // reads the combat's `niche` stream with C#'s uniqueness rule
+    // (`roll_unique_max_hps`, `SetUniqueMonsterHpValue`), so HP is independent
+    // of whatever stream drew the roster and no two enemies share a value when
+    // their ranges allow it. A spec's `hp_override` replaces its rolled value
+    // afterwards; the roll still happens, so `niche` sits where a run leaves it
+    // for a mid-fight summon.
+    let kinds: Vec<sts2_core::MonsterKind> = scenario.monsters.iter().map(|m| m.kind).collect();
+    let rolled =
+        sts2_core::monsters::roll_unique_max_hps(&kinds, &mut state.run_rng.niche, ascension);
+    let roster: Vec<_> = scenario
+        .monsters
+        .iter()
+        .zip(rolled)
+        .map(|(m, hp)| {
+            let hp = m
+                .hp_override
+                .map_or(hp, |h| i32::try_from(h).expect("hp fits i32"));
+            (m.kind, m.spawn_args(), hp)
+        })
+        .collect();
+    let uids = sts2_content::run_bridge::spawn_roster(&mut state, &roster);
 
     // GH #552: stamp each member's encounter slot. `resolve_encounter` returns
     // a bare `Vec<MonsterSpec>` — no `EncounterDef` survives to here — so the
@@ -264,14 +244,10 @@ pub fn build_state_with_ascension(
     // Without this a mid-combat summon in a slotted encounter would append
     // rather than take its slot, so books and corpora built through the CLI
     // would order a summon differently from the game.
-    let member_slots: Vec<(CreatureUid, u8)> = state
-        .enemy_uids
-        .iter()
-        .zip(scenario.monsters.iter())
-        .filter_map(|(uid, m)| m.slot.map(|s| (*uid, s)))
-        .collect();
-    for (uid, slot) in member_slots {
-        state.set_enemy_slot(uid, slot);
+    for (uid, m) in uids.iter().zip(&scenario.monsters) {
+        if let Some(slot) = m.slot {
+            state.set_enemy_slot(*uid, slot);
+        }
     }
     state
 }

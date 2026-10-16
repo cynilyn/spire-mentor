@@ -2739,7 +2739,7 @@ pub fn resolve_search_constants(
             std::f32::consts::SQRT_2
         }
     });
-    let dw = draw_widening_c.or(if honest { Some(2.0) } else { None });
+    let dw = draw_widening_c.or(honest.then_some(sts2_mcts::BELIEF_DRAW_DRAW_WIDENING_C));
     (c, dw)
 }
 
@@ -2988,6 +2988,8 @@ pub(crate) fn action_score_pydict<'py>(
     hidden_info = "beliefdraw",
     draw_widening_c = None,
     common_random_numbers = false,
+    endturn_widening_c = None,
+    endturn_widening_alpha = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn mcts_recommend<'py>(
@@ -3003,6 +3005,8 @@ fn mcts_recommend<'py>(
     hidden_info: &str,
     draw_widening_c: Option<f32>,
     common_random_numbers: bool,
+    endturn_widening_c: Option<f32>,
+    endturn_widening_alpha: Option<f32>,
 ) -> PyResult<Bound<'py, PyDict>> {
     // The search config, the ranking and the dict shape all live in
     // `sts2_wire::emit::mcts` — the same code the browser workbench runs, so
@@ -3016,6 +3020,10 @@ fn mcts_recommend<'py>(
     // default is exactly how omitting the argument shipped leaky advice: the
     // workbench recorder dropped the keyword and searched every recorded
     // decision with a root that could see the draw order.
+    //
+    // `endturn_widening_c` / `endturn_widening_alpha` are ablation knobs:
+    // `None` keeps what the mode deploys (`MctsConfig::apply_mode_dialect`,
+    // the run agent's PR #467 values under beliefdraw — GH #758).
     let hidden_info = parse_hidden_info(hidden_info, "mcts_recommend")?;
     let (c_puct, draw_widening_c) =
         resolve_search_constants(hidden_info, c_puct, draw_widening_c, sims);
@@ -3033,6 +3041,8 @@ fn mcts_recommend<'py>(
         .map_err(pyo3::exceptions::PyValueError::new_err)?,
         hidden_info,
         draw_widening_c,
+        endturn_widening_c,
+        endturn_widening_alpha,
         common_random_numbers,
     };
     let root_state = state.inner.clone();
@@ -3058,8 +3068,9 @@ fn mcts_recommend<'py>(
 /// hints shown elsewhere; `hidden_info` / `draw_widening_c` are plumbed for
 /// the same reason `mcts_recommend` plumbs them (without them the inspector
 /// silently ran the leaky `Clairvoyant` default while the hint panel beside
-/// it ran the deployed honest `beliefdraw` search). Defaults stay at
-/// `mcts_recommend`'s, which are now the deployed honest ones.
+/// it ran the deployed honest `beliefdraw` search), and so are the
+/// `endturn_widening_*` ablation knobs. Defaults stay at `mcts_recommend`'s,
+/// which are now the deployed honest ones.
 #[pyfunction]
 #[pyo3(signature = (
     state,
@@ -3071,6 +3082,8 @@ fn mcts_recommend<'py>(
     rollout_policy = "heuristic",
     hidden_info = "beliefdraw",
     draw_widening_c = None,
+    endturn_widening_c = None,
+    endturn_widening_alpha = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn mcts_search_tree<'py>(
@@ -3083,6 +3096,8 @@ fn mcts_search_tree<'py>(
     rollout_policy: &str,
     hidden_info: &str,
     draw_widening_c: Option<f32>,
+    endturn_widening_c: Option<f32>,
+    endturn_widening_alpha: Option<f32>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let hidden_info = parse_hidden_info(hidden_info, "mcts_search_tree")?;
     let (c_puct, draw_widening_c) =
@@ -3099,6 +3114,8 @@ fn mcts_search_tree<'py>(
         .map_err(pyo3::exceptions::PyValueError::new_err)?,
         hidden_info,
         draw_widening_c,
+        endturn_widening_c,
+        endturn_widening_alpha,
         ..RecommendParams::default()
     };
     let root_state = state.inner.clone();

@@ -14,8 +14,7 @@
 //!   migrated the player-Creature off the STS1 sentinel onto
 //!   `species: Option<MonsterKind>`).
 
-use sts2_content::monster_dispatch::{build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition};
-use sts2_core::monster_ai::MonsterAi;
+use sts2_content::monster_dispatch::MonsterSpawnArgs;
 use sts2_core::MonsterKind;
 
 /// Per-monster AI construction arguments. Defaults are picked so
@@ -87,54 +86,22 @@ impl MonsterSpec {
             slot: None,
         }
     }
-}
 
-/// Build the DSL `MonsterAi` for `kind`, given per-monster args.
-///
-/// Phase 1 (`sts2-rs-tgr4`) routed the body through
-/// `sts2_content::monster_dispatch::build_ai`, replacing the inline
-/// per-variant match. The `Option` return type and `MonsterAiArgs`
-/// input shape are preserved for back-compat with `starter::build_state`
-/// and the existing test suite — `build_ai` is total over today's
-/// roster, so this wrapper always returns `Some`.
-// `starter::build_state` now calls `monster_ai_with_ascension` directly
-// (ascension-aware scenario realization), so this wrapper has no
-// in-tree caller left. Kept — and `#[allow(dead_code)]`'d, matching
-// `sim::build_starter_state`'s established pattern — as the re-exported
-// (`scenario::mod.rs`) downstream API surface for cliext beads that add
-// CLI flags ascension-blind.
-#[allow(dead_code)]
-#[allow(clippy::unnecessary_wraps)] // `Option` return preserved for back-compat with starter::build_state callers
-pub fn monster_ai(kind: MonsterKind, args: &MonsterAiArgs) -> Option<MonsterAi> {
-    monster_ai_with_ascension(kind, args, 0)
-}
-
-/// Ascension-aware variant: at ascension >= 9, DeadlyEnemies attack
-/// scaling is applied via `build_ai_with_ascension` (the factories
-/// themselves stay ascension-blind — see
-/// `sts2-content::ascension_scaling`).
-#[allow(clippy::unnecessary_wraps)] // `Option` return preserved for back-compat with starter::build_state callers
-pub fn monster_ai_with_ascension(
-    kind: MonsterKind,
-    args: &MonsterAiArgs,
-    ascension: u8,
-) -> Option<MonsterAi> {
-    let spawn_args = match kind {
-        MonsterKind::Nibbit => MonsterSpawnArgs::Nibbit {
-            is_alone: args.is_alone,
-            is_front: args.is_front,
-        },
-        _ => MonsterSpawnArgs::None,
-    };
-    let position = SpawnPosition {
-        alone: args.is_alone,
-        front: args.is_front,
-        back: !args.is_front,
-        index: 0,
-    };
-    Some(build_ai_with_ascension(
-        kind, spawn_args, position, ascension,
-    ))
+    /// The spawn args this monster is built with: `args`, or, when that is
+    /// `None`, Nibbit's group position from the legacy `ai_args` (hand-written
+    /// TOML scenarios can still set `is_alone` / `is_front` there). Every
+    /// other kind takes its position from its roster index
+    /// ([`sts2_content::run_bridge::spawn_position`]).
+    #[must_use]
+    pub const fn spawn_args(&self) -> MonsterSpawnArgs {
+        match (self.args, self.kind) {
+            (MonsterSpawnArgs::None, MonsterKind::Nibbit) => MonsterSpawnArgs::Nibbit {
+                is_alone: self.ai_args.is_alone,
+                is_front: self.ai_args.is_front,
+            },
+            (args, _) => args,
+        }
+    }
 }
 
 /// Type alias for encounter-builder function pointers. The `&mut Rng`
@@ -748,9 +715,12 @@ mod tests {
         let scenario = Scenario { monsters: specs };
         let state = starter::build_state(&scenario, 0, PlayerClass::Ironclad, None, None);
 
-        assert_eq!(state.creatures.len(), 2);
+        // Two beetles plus the player's mirror creature, which the builder
+        // wires before applying spawn powers (GH #762).
+        assert_eq!(state.creatures.len(), 3);
         assert_eq!(state.enemy_uids.len(), 2);
-        for c in &state.creatures {
+        for uid in &state.enemy_uids {
+            let c = state.creatures.iter().find(|c| c.id == uid.0).unwrap();
             assert_eq!(c.species, Some(MonsterKind::ShrinkerBeetle));
             assert!(c.ai.is_some(), "every creature carries an AI");
         }

@@ -346,6 +346,11 @@ p.verdict { border-left: 3px solid var(--accent); padding: 0.2rem 0 0.2rem 1rem;
   (6.95× on the 6–17 mask). In the
   real game the advisor runs on the player's own PC, not on this server.
   Both searches keep the draw order hidden, as their deployed callers do.
+  They were timed with the search library's old default end-of-turn
+  widening (C 0.5, α 0.4). Both now use the run agent's wider one
+  (C 5.79, α 0.44), which made the hint's 2,000-simulation search about 8%
+  slower natively (28.6 → 30.9 ms, same position, interleaved runs); the
+  advisor's search has not been re-timed.
   The advisor's root statistics were identical on both engines in every
   run, and the hint picked the same first move.</p>
 

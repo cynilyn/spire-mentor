@@ -15,11 +15,11 @@
    "action": "VENERATE.title",
    "is_best": true,
    "low_confidence": false,
-   "q": 1.2322,
+   "q": 1.2311,
    "q_saturated": false,
    "stable_idx": 3,
    "target_index": null,
-   "visits": 13,
+   "visits": 12,
    "win_prob": 1.0
   },
   {
@@ -48,11 +48,11 @@
    "action": "end turn",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.163,
+   "q": 1.1688,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
-   "visits": 11,
+   "visits": 12,
    "win_prob": 1.0
   }
  ]

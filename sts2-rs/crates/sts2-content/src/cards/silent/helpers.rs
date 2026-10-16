@@ -27,8 +27,10 @@ pub(crate) fn current_card_block(state: &CombatState) -> i32 {
 /// effect_fn, so handlers must read this rather than
 /// `state.player.energy` (which is 0 by handler-entry time). Bead
 /// `sts2-rs-eiqfp`. Mirrors C# `CardModel.ResolveEnergyXValue()`.
+/// Folds the relic `modify_x_value` chain (ChemicalX +2) via
+/// [`sts2_core::card_effects::resolving_card_x_value`].
 pub(crate) fn current_card_energy_spent(state: &CombatState) -> i32 {
-    sts2_core::card_effects::resolving_card_inst(state).map_or(0, |c| c.energy_spent)
+    sts2_core::card_effects::resolving_card_x_value(state)
 }
 
 /// Deal `base` damage to every alive enemy (canonical AoE).

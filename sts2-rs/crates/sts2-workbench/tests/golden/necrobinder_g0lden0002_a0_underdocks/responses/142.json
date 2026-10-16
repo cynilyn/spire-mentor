@@ -1,19 +1,19 @@
 {
  "act": null,
  "best_label": "Defend",
- "best_win_prob": 0.5,
- "drop_pct": 50,
+ "best_win_prob": 0.3333,
+ "drop_pct": 33,
  "floor": null,
  "idx": 98,
  "is_blunder": true,
  "matched_best": false,
- "message": "Turn 2: Strike instead of Defend dropped P(win) 50%→0% (−50 pts)",
+ "message": "Turn 2: Strike instead of Defend dropped P(win) 33%→0% (−33 pts)",
  "n_actions": 4,
  "node_id": null,
  "played_label": "Strike",
  "played_win_prob": 0.0,
  "player_rank": 2,
- "regret": 0.5,
+ "regret": 0.3333,
  "turn": 2,
- "visits": 10
+ "visits": 9
 }

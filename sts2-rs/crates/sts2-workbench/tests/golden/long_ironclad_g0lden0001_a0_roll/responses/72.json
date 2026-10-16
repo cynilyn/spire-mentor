@@ -29,7 +29,7 @@
    "parent": null,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1747,
+   "q": 1.1677,
    "summary": {
     "enemies": [
      {
@@ -51,18 +51,47 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 56.3846,
+   "value_sum": 56.048,
    "visits": 48,
    "wins": 48
   },
   {
    "chance_action": "End turn",
    "chance_closed": false,
-   "chance_draws": 3,
+   "chance_draws": 41,
    "children": [
     2,
+    3,
+    4,
+    5,
+    6,
     7,
-    30
+    8,
+    9,
+    10,
+    11,
+    13,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    25,
+    26,
+    27,
+    28,
+    31,
+    32,
+    34,
+    36,
+    37,
+    39,
+    43,
+    45,
+    48
    ],
    "id": 1,
    "is_terminal": false,
@@ -70,12 +99,12 @@
    "label": "End turn",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 3,
+   "outcome_cap": 32,
    "outcome_ordinal": null,
    "parent": 0,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1747,
+   "q": 1.1677,
    "summary": {
     "enemies": [
      {
@@ -97,7 +126,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 56.3846,
+   "value_sum": 56.048,
    "visits": 48,
    "wins": 48
   },
@@ -106,13 +135,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    3,
-    4,
-    5,
-    6,
-    8,
-    9,
-    10
+    30
    ],
    "id": 2,
    "is_terminal": false,
@@ -125,7 +148,7 @@
    "parent": 1,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1748,
+   "q": 1.1766,
    "summary": {
     "enemies": [
      {
@@ -147,213 +170,18 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 45.8183,
-   "visits": 39,
-   "wins": 39
+   "value_sum": 2.3532,
+   "visits": 2,
+   "wins": 2
   },
   {
    "chance_action": null,
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    14,
-    16,
-    15,
-    13
-   ],
-   "id": 3,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Bloodletting",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.162,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 5,
-    "player_block": 0,
-    "player_hp": 65,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": 5.8098,
-   "visits": 5,
-   "wins": 5
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [
-    14,
-    21,
-    20,
-    22
-   ],
-   "id": 4,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1741,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 6,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 5.8705,
-   "visits": 5,
-   "wins": 5
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [
-    16,
-    24,
-    28,
-    27
-   ],
-   "id": 5,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1806,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 35,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 5.9028,
-   "visits": 5,
-   "wins": 5
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [
-    15,
-    21,
-    24,
-    33,
     35
    ],
-   "id": 6,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1993,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 14,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 7.1955,
-   "visits": 6,
-   "wins": 6
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [
-    12,
-    18,
-    23,
-    26,
-    29,
-    31,
-    39
-   ],
-   "id": 7,
+   "id": 3,
    "is_terminal": false,
    "kind": "outcome",
    "label": "outcome #1",
@@ -364,7 +192,7 @@
    "parent": 1,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1762,
+   "q": 1.1891,
    "summary": {
     "enemies": [
      {
@@ -386,81 +214,31 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 9.4093,
-   "visits": 8,
-   "wins": 8
+   "value_sum": 2.3782,
+   "visits": 2,
+   "wins": 2
   },
   {
    "chance_action": null,
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    13,
-    20,
-    28,
-    35,
-    38
+    14,
+    47,
+    49
    ],
-   "id": 8,
+   "id": 4,
    "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
+   "kind": "outcome",
+   "label": "outcome #2",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
+   "outcome_ordinal": 2,
+   "parent": 1,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1885,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 43,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 7.1312,
-   "visits": 6,
-   "wins": 6
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [
-    17,
-    22,
-    27,
-    34,
-    37
-   ],
-   "id": 9,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "DefendIronclad",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 2,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1945,
+   "q": 1.1676,
    "summary": {
     "enemies": [
      {
@@ -474,37 +252,247 @@
       "uid": 3
      }
     ],
-    "energy": 2,
-    "player_block": 3,
+    "energy": 3,
+    "player_block": 0,
     "player_hp": 68,
     "player_max_hp": 80,
     "round": 2
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 7.1669,
-   "visits": 6,
-   "wins": 6
+   "value_sum": 4.6706,
+   "visits": 4,
+   "wins": 4
   },
   {
-   "chance_action": "End turn",
+   "chance_action": null,
    "chance_closed": false,
-   "chance_draws": 1,
+   "chance_draws": 0,
+   "children": [],
+   "id": 5,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #3",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 3,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1677,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1677,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 6,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #4",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 4,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1891,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1891,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 7,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #5",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 5,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1534,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1534,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 8,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #6",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 6,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1712,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1712,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 9,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #7",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 7,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.2177,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.2177,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
    "children": [
-    11
+    12
    ],
    "id": 10,
    "is_terminal": false,
-   "kind": "end_turn",
-   "label": "End turn",
+   "kind": "outcome",
+   "label": "outcome #8",
    "losses": 0,
-   "node_kind": "chance",
-   "outcome_cap": 2,
-   "outcome_ordinal": null,
-   "parent": 2,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 8,
+   "parent": 1,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1055,
+   "q": 1.1605,
    "summary": {
     "enemies": [
      {
@@ -520,38 +508,33 @@
     ],
     "energy": 3,
     "player_block": 0,
-    "player_hp": 52,
+    "player_hp": 68,
     "player_max_hp": 80,
-    "round": 3
+    "round": 2
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 5.5274,
-   "visits": 5,
-   "wins": 5
+   "value_sum": 2.3211,
+   "visits": 2,
+   "wins": 2
   },
   {
    "chance_action": null,
    "chance_closed": false,
    "chance_draws": 0,
-   "children": [
-    19,
-    25,
-    32,
-    36
-   ],
+   "children": [],
    "id": 11,
    "is_terminal": false,
    "kind": "outcome",
-   "label": "outcome #0",
+   "label": "outcome #9",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": 0,
-   "parent": 10,
+   "outcome_ordinal": 9,
+   "parent": 1,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1055,
+   "q": 1.207,
    "summary": {
     "enemies": [
      {
@@ -567,15 +550,15 @@
     ],
     "energy": 3,
     "player_block": 0,
-    "player_hp": 52,
+    "player_hp": 68,
     "player_max_hp": 80,
-    "round": 3
+    "round": 2
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 5.5274,
-   "visits": 5,
-   "wins": 5
+   "value_sum": 1.207,
+   "visits": 1,
+   "wins": 1
   },
   {
    "chance_action": null,
@@ -585,12 +568,54 @@
    "id": 12,
    "is_terminal": false,
    "kind": "play",
-   "label": "Bloodletting",
+   "label": "Tremble",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 7,
+   "parent": 10,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1463,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 2,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": 0,
+   "ties": 0,
+   "value_sum": 1.1463,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 13,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #11",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 11,
+   "parent": 1,
    "proven_loss": false,
    "proven_win": false,
    "q": 1.182,
@@ -607,9 +632,9 @@
       "uid": 3
      }
     ],
-    "energy": 5,
+    "energy": 3,
     "player_block": 0,
-    "player_hp": 65,
+    "player_hp": 68,
     "player_max_hp": 80,
     "round": 2
    },
@@ -618,48 +643,6 @@
    "value_sum": 1.182,
    "visits": 1,
    "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 13,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Bloodletting",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 8,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1873,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 43,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 4,
-    "player_block": 0,
-    "player_hp": 65,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": 2.3746,
-   "visits": 2,
-   "wins": 2
   },
   {
    "chance_action": null,
@@ -677,11 +660,11 @@
    "parent": 4,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.157,
+   "q": 1.1569,
    "summary": {
     "enemies": [
      {
-      "hp": 6,
+      "hp": 20,
       "max_hp": 32,
       "uid": 2
      },
@@ -691,7 +674,7 @@
       "uid": 3
      }
     ],
-    "energy": 4,
+    "energy": 5,
     "player_block": 0,
     "player_hp": 65,
     "player_max_hp": 80,
@@ -699,9 +682,9 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 2.3139,
-   "visits": 2,
-   "wins": 2
+   "value_sum": 1.1569,
+   "visits": 1,
+   "wins": 1
   },
   {
    "chance_action": null,
@@ -710,646 +693,16 @@
    "children": [],
    "id": 15,
    "is_terminal": false,
-   "kind": "play",
-   "label": "Bloodletting",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 6,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1856,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 14,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 4,
-    "player_block": 0,
-    "player_hp": 65,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": 2.3711,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 16,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Bloodletting",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 5,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1838,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 35,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 4,
-    "player_block": 0,
-    "player_hp": 65,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": 2.3676,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 17,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Bloodletting",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 9,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.2141,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 4,
-    "player_block": 3,
-    "player_hp": 65,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": null,
-   "ties": 0,
-   "value_sum": 1.2141,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 18,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Tremble",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 7,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1712,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 1.1712,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 19,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Tremble",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 11,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.0747,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 52,
-    "player_max_hp": 80,
-    "round": 3
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 1.0747,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 20,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 8,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.157,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 6,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 43,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 2.3139,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 21,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 6,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.2034,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 0,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 2.4068,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 22,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 9,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.182,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 6,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 3,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 2.3639,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 23,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Tremble",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 7,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1391,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 1.1391,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 24,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 5,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1891,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 14,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 35,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 2.3783,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 25,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "Tremble",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 11,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.0855,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 52,
-    "player_max_hp": 80,
-    "round": 3
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 1.0855,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 26,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 7,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.207,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 6,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 1.207,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 27,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 9,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1355,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 35,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 3,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 2.271,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 28,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 8,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.1427,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 29,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 2.2854,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 29,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "UltimateStrike",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 7,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.157,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 35,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 2,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 1.157,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 30,
-   "is_terminal": false,
    "kind": "outcome",
-   "label": "outcome #2",
+   "label": "outcome #13",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": 2,
+   "outcome_ordinal": 13,
    "parent": 1,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1569,
+   "q": 1.1248,
    "summary": {
     "enemies": [
      {
@@ -1371,7 +724,93 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 1.1569,
+   "value_sum": 1.1248,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
+    29
+   ],
+   "id": 16,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #14",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 14,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1605,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 2.321,
+   "visits": 2,
+   "wins": 2
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 17,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #15",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 15,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1998,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1998,
    "visits": 1,
    "wins": 1
   },
@@ -1380,22 +819,494 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
-   "id": 31,
+   "id": 18,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #16",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 16,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1784,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1784,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
+    23
+   ],
+   "id": 19,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #17",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 17,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1444,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 2.2889,
+   "visits": 2,
+   "wins": 2
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
+    24,
+    46
+   ],
+   "id": 20,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #18",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 18,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1855,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 3.5566,
+   "visits": 3,
+   "wins": 3
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 21,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #19",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 19,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1176,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1176,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 22,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #20",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 20,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.2249,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.2249,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 23,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeIronclad",
+   "label": "Bloodletting",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 7,
+   "parent": 19,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.182,
+   "q": 1.1248,
    "summary": {
     "enemies": [
      {
-      "hp": 14,
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 5,
+    "player_block": 0,
+    "player_hp": 65,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1248,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 24,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Bloodletting",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 20,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1855,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 5,
+    "player_block": 0,
+    "player_hp": 65,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1855,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 25,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #23",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 23,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1712,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1712,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 26,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #24",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 24,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1676,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1676,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
+    33,
+    38,
+    40,
+    41
+   ],
+   "id": 27,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #25",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 25,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1434,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 5.7169,
+   "visits": 5,
+   "wins": 5
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 28,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #26",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 26,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1498,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1498,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 29,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Tremble",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 16,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1641,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
       "max_hp": 32,
       "uid": 2
      },
@@ -1413,7 +1324,91 @@
    },
    "target_index": 0,
    "ties": 0,
-   "value_sum": 1.182,
+   "value_sum": 1.1641,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 30,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Bloodletting",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 2,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1391,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 5,
+    "player_block": 0,
+    "player_hp": 65,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1391,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 31,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #29",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 29,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1248,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1248,
    "visits": 1,
    "wins": 1
   },
@@ -1424,16 +1419,354 @@
    "children": [],
    "id": 32,
    "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #30",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 30,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1498,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1498,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 33,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Tremble",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 27,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1569,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 2,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": 0,
+   "ties": 0,
+   "value_sum": 1.1569,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 34,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #32",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 32,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1748,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1748,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 35,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Bloodletting",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 3,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.207,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 5,
+    "player_block": 0,
+    "player_hp": 65,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.207,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
+    42
+   ],
+   "id": 36,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #34",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 34,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1605,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 2.321,
+   "visits": 2,
+   "wins": 2
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 37,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #35",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 35,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1605,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1605,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 38,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Tremble",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 27,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1641,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 2,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": 1,
+   "ties": 0,
+   "value_sum": 1.1641,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 39,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #36",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 36,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1426,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1426,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 40,
+   "is_terminal": false,
    "kind": "play",
    "label": "Bash",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 11,
+   "parent": 27,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1034,
+   "q": 1.1284,
    "summary": {
     "enemies": [
      {
@@ -1449,13 +1782,13 @@
     ],
     "energy": 1,
     "player_block": 0,
-    "player_hp": 52,
+    "player_hp": 68,
     "player_max_hp": 80,
-    "round": 3
+    "round": 2
    },
    "target_index": 0,
    "ties": 0,
-   "value_sum": 1.1034,
+   "value_sum": 1.1284,
    "visits": 1,
    "wins": 1
   },
@@ -1464,133 +1797,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
-   "id": 33,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 6,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.157,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 8,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 1.157,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 34,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 9,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.2141,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 14,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 49,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 3,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 1.2141,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 35,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 8,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.2195,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 14,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 43,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 0,
-    "player_hp": 68,
-    "player_max_hp": 80,
-    "round": 2
-   },
-   "target_index": 0,
-   "ties": 0,
-   "value_sum": 2.439,
-   "visits": 2,
-   "wins": 2
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 36,
+   "id": 41,
    "is_terminal": false,
    "kind": "play",
    "label": "Bash",
@@ -1598,10 +1805,10 @@
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 11,
+   "parent": 27,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1319,
+   "q": 1.1284,
    "summary": {
     "enemies": [
      {
@@ -1617,55 +1824,13 @@
     ],
     "energy": 1,
     "player_block": 0,
-    "player_hp": 52,
-    "player_max_hp": 80,
-    "round": 3
-   },
-   "target_index": 1,
-   "ties": 0,
-   "value_sum": 1.1319,
-   "visits": 1,
-   "wins": 1
-  },
-  {
-   "chance_action": null,
-   "chance_closed": false,
-   "chance_draws": 0,
-   "children": [],
-   "id": 37,
-   "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
-   "losses": 0,
-   "node_kind": "decision",
-   "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 9,
-   "proven_loss": false,
-   "proven_win": false,
-   "q": 1.2141,
-   "summary": {
-    "enemies": [
-     {
-      "hp": 20,
-      "max_hp": 32,
-      "uid": 2
-     },
-     {
-      "hp": 43,
-      "max_hp": 49,
-      "uid": 3
-     }
-    ],
-    "energy": 1,
-    "player_block": 3,
     "player_hp": 68,
     "player_max_hp": 80,
     "round": 2
    },
    "target_index": 1,
    "ties": 0,
-   "value_sum": 1.2141,
+   "value_sum": 1.1284,
    "visits": 1,
    "wins": 1
   },
@@ -1674,18 +1839,18 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
-   "id": 38,
+   "id": 42,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeIronclad",
+   "label": "Tremble",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 8,
+   "parent": 36,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1963,
+   "q": 1.1641,
    "summary": {
     "enemies": [
      {
@@ -1694,7 +1859,177 @@
       "uid": 2
      },
      {
-      "hp": 37,
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 2,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": 0,
+   "ties": 0,
+   "value_sum": 1.1641,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [
+    44
+   ],
+   "id": 43,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #38",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 38,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1891,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 2.3782,
+   "visits": 2,
+   "wins": 2
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 44,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Bloodletting",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 43,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1891,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 5,
+    "player_block": 0,
+    "player_hp": 65,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1891,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 45,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #39",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 39,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1784,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1784,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 46,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Bash",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 20,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1855,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 12,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
       "max_hp": 49,
       "uid": 3
      }
@@ -1705,9 +2040,9 @@
     "player_max_hp": 80,
     "round": 2
    },
-   "target_index": 1,
+   "target_index": 0,
    "ties": 0,
-   "value_sum": 1.1963,
+   "value_sum": 1.1855,
    "visits": 1,
    "wins": 1
   },
@@ -1716,18 +2051,18 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
-   "id": 39,
+   "id": 47,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeIronclad",
+   "label": "Tremble",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 7,
+   "parent": 4,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1748,
+   "q": 1.1676,
    "summary": {
     "enemies": [
      {
@@ -1736,7 +2071,91 @@
       "uid": 2
      },
      {
-      "hp": 43,
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 2,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": 0,
+   "ties": 0,
+   "value_sum": 1.1676,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 48,
+   "is_terminal": false,
+   "kind": "outcome",
+   "label": "outcome #40",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": 40,
+   "parent": 1,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1891,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
+      "max_hp": 49,
+      "uid": 3
+     }
+    ],
+    "energy": 3,
+    "player_block": 0,
+    "player_hp": 68,
+    "player_max_hp": 80,
+    "round": 2
+   },
+   "target_index": null,
+   "ties": 0,
+   "value_sum": 1.1891,
+   "visits": 1,
+   "wins": 1
+  },
+  {
+   "chance_action": null,
+   "chance_closed": false,
+   "chance_draws": 0,
+   "children": [],
+   "id": 49,
+   "is_terminal": false,
+   "kind": "play",
+   "label": "Tremble",
+   "losses": 0,
+   "node_kind": "decision",
+   "outcome_cap": 0,
+   "outcome_ordinal": null,
+   "parent": 4,
+   "proven_loss": false,
+   "proven_win": false,
+   "q": 1.1676,
+   "summary": {
+    "enemies": [
+     {
+      "hp": 20,
+      "max_hp": 32,
+      "uid": 2
+     },
+     {
+      "hp": 49,
       "max_hp": 49,
       "uid": 3
      }
@@ -1749,7 +2168,7 @@
    },
    "target_index": 1,
    "ties": 0,
-   "value_sum": 1.1748,
+   "value_sum": 1.1676,
    "visits": 1,
    "wins": 1
   }
@@ -1760,12 +2179,7 @@
   },
   {
    "action": "play",
-   "card_index": 0,
-   "target_index": 0
-  },
-  {
-   "action": "play",
-   "card_index": 0,
+   "card_index": 2,
    "target_index": 1
   }
  ],

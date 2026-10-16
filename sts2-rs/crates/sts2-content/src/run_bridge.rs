@@ -156,6 +156,87 @@ pub fn enter_combat(rs: &RunState, encounter: &EncounterSpec) -> CombatState {
     enter_combat_from_roster(rs, &roster, sts2_core::runstate::RoomType::Unknown)
 }
 
+/// The [`SpawnPosition`] of roster entry `index` in a roster of `len`
+/// monsters: entry 0 is the front, the last entry of a multi-monster roster is
+/// the back, and `index` is the roster index. Encounters hand C# monsters in
+/// this order (`EncounterModel.GenerateMonsters`), and per-slot openers key on
+/// it, e.g. `ToadpolesWeak` makes its first toad `IsFront` (SPIKEN) and the
+/// second the back one (WHIRL), `Toadpole.cs:79-80`.
+#[must_use]
+pub fn spawn_position(index: usize, len: usize) -> SpawnPosition {
+    SpawnPosition {
+        alone: len == 1,
+        front: index == 0,
+        back: len > 1 && index == len - 1,
+        index: u8::try_from(index).unwrap_or(u8::MAX),
+    }
+}
+
+/// Spawn a resolved `roster` of `(kind, spawn_args, max_hp)` triples into
+/// `state` as its enemies, in roster order: each monster's AI is built from
+/// its spawn args and [`spawn_position`] at `state.ascension`, then every
+/// monster's on-spawn powers are applied
+/// ([`CombatState::apply_creature_spawn_buffs`]). Returns the new enemies'
+/// uids in roster order.
+///
+/// The ONE place a fight's opening roster becomes creatures. The run path
+/// ([`enter_combat_from_roster`]), the `sts2-cli` scenario builder and the
+/// C#-oracle scenario builder (`sts2-wire`) all call it, so they cannot drift
+/// apart again: the scenario builder used to give every monster slot 0's
+/// position and drop the spawn args (GH #762).
+///
+/// Ordering follows C#. `CombatRoom.EnterInternal` adds the player before
+/// `StartCombat` creates and adds every monster, and each monster's
+/// `AfterAddedToRoom` runs only once all of them are in the room. So the
+/// on-spawn powers go on after the whole roster is pushed, and the player's
+/// mirror creature is wired first if the caller has not done it yet
+/// ([`CombatState::init_player_creature`], which reads the player's HP, block
+/// and powers at that moment): a monster that debuffs its opponents on spawn
+/// (Rocket's Surrounded, `Rocket.cs:76`) needs the player there to land on.
+///
+/// HP is NOT rolled here. Callers roll it with
+/// [`sts2_core::monsters::roll_unique_max_hps`] off the run's `niche` stream
+/// (C# `Creature.SetUniqueMonsterHpValue`), which is the stream the combat
+/// carries forward for a mid-fight summon's HP.
+pub fn spawn_roster(
+    state: &mut CombatState,
+    roster: &[(MonsterKind, MonsterSpawnArgs, i32)],
+) -> SmallVec<[CreatureUid; 8]> {
+    let n = roster.len();
+    let mut uids: SmallVec<[CreatureUid; 8]> = SmallVec::with_capacity(n);
+    for (i, &(kind, args, hp)) in roster.iter().enumerate() {
+        let raw = u32::try_from(state.creatures.len() + 1).expect("creature arena fits in u32");
+        let id = NonZeroU32::new(raw).expect("non-zero");
+        state.creatures.push(Creature {
+            id,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(kind),
+            monster_id: MonsterId(python_name(kind)),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            ai: Some(build_ai_with_ascension(
+                kind,
+                args,
+                spawn_position(i, n),
+                state.ascension,
+            )),
+        });
+        let uid = CreatureUid(id);
+        state.enemy_uids.push(uid);
+        uids.push(uid);
+    }
+    if state.player.creature_uid.is_none() {
+        let _ = state.init_player_creature();
+    }
+    for &uid in &uids {
+        state.apply_creature_spawn_buffs(uid);
+    }
+    uids
+}
+
 /// Build a fresh combat from `rs` + a resolved `roster` of
 /// `(kind, spawn_args, hp)` triples.
 ///
@@ -328,37 +409,7 @@ pub fn enter_combat_from_roster(
 
     state.act_index = rs.act_index;
 
-    let n = roster.len();
-    for (i, &(kind, args, hp)) in roster.iter().enumerate() {
-        let position = SpawnPosition {
-            alone: n == 1,
-            front: i == 0,
-            back: n > 1 && i == n - 1,
-            index: u8::try_from(i).unwrap_or(0),
-        };
-        let raw = u32::try_from(state.creatures.len() + 1).expect("creature arena fits in u32");
-        let id = NonZeroU32::new(raw).expect("non-zero");
-        state.creatures.push(Creature {
-            id,
-            current_hp: hp,
-            max_hp: hp,
-            block: 0,
-            powers: SmallVec::new(),
-            species: Some(kind),
-            monster_id: MonsterId(python_name(kind)),
-            intent: None,
-            intent_history: IntentHistory::default(),
-            ai: Some(build_ai_with_ascension(
-                kind,
-                args,
-                position,
-                rs.ascension_level,
-            )),
-        });
-        let uid = CreatureUid(id);
-        state.enemy_uids.push(uid);
-        state.apply_creature_spawn_buffs(uid);
-    }
+    spawn_roster(&mut state, roster);
 
     // Bead `sts2-rs-9i1c2`: advance through Setup → PlayerTurnStart →
     // PlayerPlayPhase so the returned state is in the resting phase the

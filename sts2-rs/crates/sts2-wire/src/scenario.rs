@@ -13,12 +13,12 @@
 use crate::state_dict;
 use smallvec::SmallVec;
 use sts2_content::cards::dispatch as card_dispatch;
-use sts2_content::monster_dispatch::{build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition};
+use sts2_content::monster_dispatch::MonsterSpawnArgs;
 use sts2_core::cards::Card;
 use sts2_core::combat_loop::{start_combat, start_player_turn};
 use sts2_core::{
-    CardUid, CombatPhase, CombatState as CoreCombatState, Creature, CreatureUid, IntentHistory,
-    MonsterId, MonsterKind, PlayerCombatState, Side, TurnEvents,
+    CardUid, CombatPhase, CombatState as CoreCombatState, MonsterKind, PlayerCombatState, Side,
+    TurnEvents,
 };
 
 fn starter_args_for_move_state(kind: MonsterKind, move_state: &str) -> Option<MonsterSpawnArgs> {
@@ -295,8 +295,6 @@ pub fn build_scenario_state(
     // Bead `sts2-rs-943w7`. The bundle is moved into `state.run_rng`
     // after the HP-roll loop completes.
     let mut run_rng = sts2_core::run_rng_set::RunRngSet::new(seed as i32);
-    let mut creatures = Vec::new();
-    let mut enemy_uids: SmallVec<[CreatureUid; 8]> = SmallVec::new();
 
     // sts2-rs-3010t: when the harness passes an explicit monster_list
     // (resolved on the C# side post-EnterRoom), use it verbatim so
@@ -354,7 +352,6 @@ pub fn build_scenario_state(
         None => roster,
     };
 
-    let roster_len = roster.len();
     // C# assigns enemy HP in TWO passes: `CombatState.CreateCreature` rolls
     // every enemy's `MaxHp` off `RunState.Rng.Niche`
     // (`Creature.SetUniqueMonsterHpValue`), excluding the RAW `MaxHp` of all
@@ -368,43 +365,13 @@ pub fn build_scenario_state(
     let roster_kinds: Vec<MonsterKind> = roster.iter().map(|(k, _)| *k).collect();
     let max_hps =
         sts2_core::monsters::roll_unique_max_hps(&roster_kinds, &mut run_rng.niche, ascension);
-    for (i, (kind, args)) in roster.iter().enumerate() {
-        let uid_val =
-            u32::try_from(i + 1).map_err(|_| "monster index overflows u32".to_string())?;
-        let uid = CreatureUid::new(uid_val).ok_or_else(|| "uid non-zero".to_string())?;
-        let mhp = max_hps[i];
-        // Bead `sts2-rs-5bbnq`: attach the per-kind AI from
-        // `sts2_content::monster_dispatch::build_ai` so DSL-driven
-        // monster moves (Fogmog ILLUSION → spawn EyeWithTeeth,
-        // Flyconid Vulnerable spores, Vantom CONSUME, etc.) actually
-        // fire during `enemy_turn_exec`. Without this attach, every
-        // enemy fell back to `MonsterKind::roll_intent` (the legacy
-        // Phase-3 hand-rolled per-species path), which discards the
-        // per-move `effect_fn` closures and silently drops
-        // monster-side side-effects (sub-bug A of sts2-rs-8ukqd:
-        // FOGMOG_NORMAL trials had `monsters[0] = Fogmog` post turn-0
-        // because the ILLUSION effect never ran).
-        let position = SpawnPosition {
-            alone: roster_len == 1,
-            front: i == 0,
-            back: i + 1 == roster_len && roster_len > 1,
-            index: u8::try_from(i).unwrap_or(u8::MAX),
-        };
-        let ai = build_ai_with_ascension(*kind, *args, position, ascension);
-        creatures.push(Creature {
-            id: uid.0,
-            current_hp: mhp,
-            max_hp: mhp,
-            block: 0,
-            powers: SmallVec::new(),
-            species: Some(*kind),
-            monster_id: MonsterId(kind.python_name()),
-            intent: None,
-            intent_history: IntentHistory::default(),
-            ai: Some(ai),
-        });
-        enemy_uids.push(uid);
-    }
+    // Spawned below by the run path's `run_bridge::spawn_roster` (position,
+    // spawn args, AI, on-spawn powers), once the state exists.
+    let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = roster
+        .into_iter()
+        .zip(max_hps)
+        .map(|((kind, args), hp)| (kind, args, hp))
+        .collect();
 
     // Build relics. We push directly into `state.relics` (matching the
     // pattern in `state_dict::state_from_dict_impl`); on-obtain hooks
@@ -471,14 +438,14 @@ pub fn build_scenario_state(
         side: Side::Player,
         rng,
         run_rng,
-        creatures,
+        creatures: Vec::new(),
         cards: cards_arena.into(),
         powers: Vec::new().into(),
         relics: relics_vec.into(),
         potions: Vec::new(),
         player,
         allies: SmallVec::new(),
-        enemy_uids,
+        enemy_uids: SmallVec::new(),
         pending_choice: None,
         resolving_card: None,
         pending_play: None,
@@ -525,26 +492,11 @@ pub fn build_scenario_state(
         last_drawn_card: None,
     };
 
-    // sts2-rs-q6bix: wire the player's mirror Creature BEFORE applying
-    // on-spawn buffs. `apply_creature_spawn_buffs` routes a monster's
-    // `on_spawn_opponent_debuffs` (currently Rocket's `SurroundedPower(1)`
-    // → the player, C# `Rocket.cs:76`) through `player.creature_uid`; if
-    // that mirror isn't wired yet the branch silently no-ops and the
-    // KaiserCrab arena's player Surrounded stack is dropped
-    // (`player.powers.len` 1-vs-0). `start_combat` below also calls this
-    // under an idempotent `is_none()` guard, so wiring early is a no-op
-    // there. Self-buffs were unaffected (they target the enemy's own uid).
-    if state.player.creature_uid.is_none() {
-        let _ = state.init_player_creature();
-    }
-
-    // sts2-rs-3010t / sts2-rs-yqdlt: the creature push loop above
-    // bypasses `CombatState::spawn_enemy`, so on-spawn self-buffs
-    // (Vantom Slippery(9), BygoneEffigy Slow(1), PhrogParasite
-    // Infested(4)) were silently dropped. Apply them now.
-    for uid in state.enemy_uids.clone() {
-        state.apply_creature_spawn_buffs(uid);
-    }
+    // Monsters 1..n first, then the player's mirror creature, then every
+    // monster's on-spawn powers (so Rocket's Surrounded lands on the player,
+    // sts2-rs-q6bix): the order `spawn_roster` shares with the run path and
+    // the `sts2-cli` scenario builder.
+    sts2_content::run_bridge::spawn_roster(&mut state, &roster);
 
     // GH #552: stamp the encounter's slot model, so a mid-combat summon lands
     // in the turn position C# gives it. Inert for the ~80% of encounters that

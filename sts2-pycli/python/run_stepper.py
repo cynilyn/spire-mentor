@@ -1,13 +1,17 @@
-"""Single source of truth for full-run self-play decisions (sts2_rs).
+"""Full-run self-play decisions for the Python drivers (sts2_rs).
 
 ``play_full_run_rust.play_run_mcts`` (the offline benchmark driver — the
-``exp_boss_sim_winrate`` 2000-seed win-rate sweep runs on it) and the
-workbench's faithful "play to end" both step a run with the *same* policy:
-MCTS in combat, ``boss_sim_card_reward`` for card rewards, the heuristic
-run-policy everywhere else. Keeping that policy in one place — :class:`RunStepper`
-— is what makes the two byte-for-byte reproducible from a shared seed, so a run
-the benchmark scored at 35-40% can be reopened in the workbench and inspected
-move-for-move.
+``exp_boss_sim_winrate`` 2000-seed win-rate sweep runs on it) and
+``play_full_run_ppo`` step a run with this policy: MCTS in combat
+(``sts2_rs.mcts_recommend``), ``boss_sim_card_reward`` for card rewards, the
+heuristic run-policy everywhere else.
+
+The workbench's faithful "play to end" no longer shares it: it drives the
+native ``sts2_rs.HeuristicRunAgent`` (``workbench/branching.py``) and imports
+only :func:`hash_seed` from here, so the two do not reproduce each other
+move-for-move. Both now search combat with the same deployed dialect
+(``MctsConfig::apply_mode_dialect``, GH #758), but the agents, budgets and
+seed schedules differ.
 
 A :class:`RunStepper` owns the run's RNG (``random.Random(seed ^ 0xC0FFEE)``,
 threaded through every out-of-combat pick) and an action counter (``steps``,

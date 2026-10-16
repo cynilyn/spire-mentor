@@ -33,8 +33,10 @@ pub(crate) fn current_upgraded(state: &CombatState) -> bool {
 /// then drains `state.player.energy` to 0 before dispatch, so
 /// handlers must NOT re-read `state.player.energy`. Bead
 /// `sts2-rs-eiqfp`.
+/// Folds the relic `modify_x_value` chain (ChemicalX +2) via
+/// [`sts2_core::card_effects::resolving_card_x_value`].
 pub(crate) fn current_energy_spent(state: &CombatState) -> i32 {
-    sts2_core::card_effects::resolving_card_inst(state).map_or(0, |c| c.energy_spent)
+    sts2_core::card_effects::resolving_card_x_value(state)
 }
 
 /// Bump the per-instance `counter` on a player-owned power of the

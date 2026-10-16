@@ -42,6 +42,10 @@ const INLINE_HANDLED: &[RelicId] = &[
     RelicId::PrismaticGem,
     RelicId::RingingTriangle,
     RelicId::RunicPyramid,
+    // GH #742: SpikedGauntlets' +1 Power-card cost is a cost modifier in
+    // `hooks::dispatch_modify_card_cost` / `effective_card_cost_inst_with_mask`
+    // and its +1 max energy is a `relic_modify_max_energy` arm.
+    RelicId::SpikedGauntlets,
     RelicId::UndyingSigil,
     RelicId::VitruvianMinion,
     RelicId::WhisperingEarring,

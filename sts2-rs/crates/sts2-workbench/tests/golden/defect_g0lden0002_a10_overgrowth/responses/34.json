@@ -21,9 +21,9 @@
    "stable_idx": 1,
    "target_index": 0,
    "ties": 0,
-   "visits": 13,
+   "visits": 12,
    "win_prob": 1.0,
-   "wins": 13
+   "wins": 12
   },
   {
    "action": "Defend",
@@ -58,14 +58,14 @@
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.1219,
+   "q": 1.1284,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
    "ties": 0,
-   "visits": 11,
+   "visits": 12,
    "win_prob": 1.0,
-   "wins": 11
+   "wins": 12
   }
  ]
 }

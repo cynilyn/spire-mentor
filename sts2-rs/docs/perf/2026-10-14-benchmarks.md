@@ -305,7 +305,10 @@ calls; 4 runs per engine, ABBA):
 
 Eight pinned threads are 6.97× one thread (6.95× on the 6–17 mask). Both searches run with the
 draw order hidden (belief-draw), as their deployed callers configure them,
-and the search library's default end-of-turn widening.
+and the search library's default end-of-turn widening (0.5 / 0.4). Since
+GH #758 both use the run agent's 5.787 / 0.436; the hint's 2,000-sim search
+measured 1.08× slower for it (`2026-10-14-site-performance.md`), the
+advisor's was not re-timed.
 
 ### Training
 
@@ -599,6 +602,13 @@ All 111 checks pass. The main ones:
   digest `b00b9c215952899c`). The aggregate W1 statistics moved by +0.04
   points of win rate and −0.005 actions per fight. W2 now runs at A10
   (`--ascension 10`, the default).
+
+  The scenario builder itself was fixed afterwards (GH #762): it now spawns
+  through `run_bridge::spawn_roster`, the helper the run path uses, so the
+  harnesses no longer rebuild anything. Their default output is unchanged
+  byte for byte, and `--legacy-spawn` (now `examples/common/legacy_spawn.rs`,
+  which rebuilds the old builder's monsters) still reproduces the pre-fix
+  identities byte for byte.
 
 ## Reproduce
 

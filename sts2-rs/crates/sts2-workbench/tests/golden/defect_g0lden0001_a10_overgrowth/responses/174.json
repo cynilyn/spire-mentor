@@ -12,23 +12,23 @@
  "pv": null,
  "scores": [
   {
-   "action": "DEFEND_DEFECT.title",
+   "action": "STRIKE_DEFECT.title",
    "is_best": true,
    "low_confidence": false,
-   "q": 1.197,
+   "q": 1.1934,
    "q_saturated": false,
-   "stable_idx": 0,
+   "stable_idx": 4,
    "target_index": null,
    "visits": 16,
    "win_prob": 1.0
   },
   {
-   "action": "STRIKE_DEFECT.title",
+   "action": "DEFEND_DEFECT.title",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.1936,
+   "q": 1.1894,
    "q_saturated": false,
-   "stable_idx": 4,
+   "stable_idx": 0,
    "target_index": null,
    "visits": 16,
    "win_prob": 1.0
@@ -37,7 +37,7 @@
    "action": "end turn",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.1666,
+   "q": 1.1771,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,

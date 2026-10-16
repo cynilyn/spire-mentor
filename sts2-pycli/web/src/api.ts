@@ -1128,8 +1128,11 @@ export const DEFAULT_MCTS_CONFIG: MctsConfig = {
   // Raise it when you want wall-clock over a legible search.
   threads: 1,
   // Match the deployed honest search. These three travel together — c_puct
-  // 2.5 + beliefdraw + draw_widening_c 2.0 — and measure the same wall clock
-  // as the old clairvoyant default (141 ms/search @2000 sims, either way).
+  // 2.5 + beliefdraw + draw_widening_c 2.0 — and the engine adds the run
+  // agent's EndTurn widening (5.787 / 0.436) for beliefdraw by itself
+  // (`MctsConfig::apply_mode_dialect`, GH #758), so it is not repeated here.
+  // `sts2-workbench/tests/search_dialect_parity.rs` parses this object and
+  // fails if it stops searching like the run agent.
   hidden_info: "beliefdraw",
   draw_widening_c: 2.0,
 };

@@ -847,15 +847,18 @@ pub struct Card {
     /// [`CardTags::NONE`]; per-card factories (sts2-content) populate this
     /// from the static spec.
     pub tags: CardTags,
-    /// Energy actually spent on this play, recorded by [`crate::combat_loop::play_card`]
-    /// for X-cost cards prior to dispatch. Mirrors Python
-    /// `CardInstance.energy_spent` (read by `heavenly_drill`,
-    /// `whirlwind`, `skewer`, `tempest`, `multi_cast`, etc. at
-    /// `sts2-rl-agent@01c094d:sts2_env/cards/regent.py:735` /
-    /// `silent.py` / `defect.py`). 0 for non-X-cost cards or before
-    /// the first play. Reset on `reset_combat_vars` since X-cost
-    /// state does not survive end-of-combat (the card itself is
-    /// returned to the run-pool).
+    /// Energy value of this card's most recent play (C#
+    /// `ResourceInfo.EnergyValue`), stamped by
+    /// [`crate::combat_loop::play_card`] before dispatch: the raw energy an
+    /// X-cost card captured (C# `CapturedXValue`; its handlers resolve X
+    /// through [`crate::card_effects::resolving_card_x_value`], which adds
+    /// ChemicalX), the paid cost for any other card (GH #741: read by
+    /// RightHandHand's late effect and IvoryTile). An auto-play stamps the
+    /// captured energy / modifier-resolved cost the same way. 0 before the
+    /// first play. Reset on `reset_combat_vars` since the state does not
+    /// survive end-of-combat (the card itself is returned to the run-pool).
+    /// A non-X card's value is not part of its observational identity — see
+    /// [`observational_energy_spent`].
     pub energy_spent: i32,
     /// Extra play repetitions for this specific card instance. Mirrors
     /// Python's `CardInstance.base_replay_count: int` (default 0).
@@ -1972,6 +1975,9 @@ pub(crate) fn insert_into_unknown_sorted(player: &mut PlayerCombatState, uid: Ca
 /// derived `PartialEq` rather than hand-listing fields, so a future
 /// field added to [`Card`] is covered automatically — conservative by
 /// construction (there is no field this helper could forget to check).
+///
+/// A non-X card's `energy_spent` is excluded too: see
+/// [`observational_energy_spent`].
 #[must_use]
 pub fn cards_observationally_equal(a: &Card, b: &Card) -> bool {
     if a.uid == b.uid {
@@ -1979,7 +1985,29 @@ pub fn cards_observationally_equal(a: &Card, b: &Card) -> bool {
     }
     let mut a2 = *a;
     a2.uid = b.uid;
-    a2 == *b
+    a2.energy_spent = observational_energy_spent(a);
+    let mut b2 = *b;
+    b2.energy_spent = observational_energy_spent(b);
+    a2 == b2
+}
+
+/// `card.energy_spent` as the observational identity sees it: the stamped
+/// value for an X-cost card, `0` for every other card.
+///
+/// GH #741: `play_card` stamps a non-X card's paid cost into `energy_spent`
+/// (C# `ResourceInfo.EnergyValue`) for its late effects to read. The value is
+/// a per-play transient, overwritten at the start of every play before anything
+/// reads it, so a Strike that was played earlier is the same card as one that
+/// was not. Before #741 a non-X card always read `0` here, so masking it keeps
+/// the MCTS draw-chance and pile hashes exactly as they were. X-cost cards were
+/// already stamped and keep their value.
+#[must_use]
+pub fn observational_energy_spent(card: &Card) -> i32 {
+    if card.is_x_cost() {
+        card.energy_spent
+    } else {
+        0
+    }
 }
 
 /// Whether every card instance named by `segment` (e.g. from
@@ -4906,6 +4934,26 @@ mod tests {
             !cards_observationally_equal(&a, &b),
             "a real content difference must compare unequal"
         );
+    }
+
+    /// GH #741: a non-X card's stamped `energy_spent` is a per-play transient,
+    /// so it does not split observational identity (the MCTS draw-chance and
+    /// pile hashes); an X-cost card's value still does, as before #741.
+    #[test]
+    fn cards_observationally_equal_ignores_non_x_energy_spent() {
+        let a = sample_card(1);
+        let mut b = sample_card(2);
+        b.energy_spent = 2;
+        assert!(!a.is_x_cost());
+        assert!(cards_observationally_equal(&a, &b));
+
+        let mut x1 = sample_card(3);
+        x1.cost = -1;
+        let mut x2 = x1;
+        x2.uid = uid(4);
+        x2.energy_spent = 3;
+        assert!(x1.is_x_cost());
+        assert!(!cards_observationally_equal(&x1, &x2));
     }
 
     #[test]

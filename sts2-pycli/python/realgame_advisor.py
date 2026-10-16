@@ -13,8 +13,9 @@ Pipeline per ``advice_request`` (combat only in v1):
    :func:`realgame_adapter.to_headless_combat_play` — the same path the
    autopilot MCTS driver uses.
 2. Run the deployed honest-search configuration
-   (``hidden_info="beliefdraw"``, ``c_puct=2.5``, ``draw_widening_c=2.0``
-   — the engine-world 50% baseline; NOT the leaky clairvoyant default) via
+   (``hidden_info="beliefdraw"``, ``c_puct=2.5``, ``draw_widening_c=2.0``,
+   and the run agent's EndTurn widening 5.787 / 0.436, which the engine
+   applies with the mode — NOT the leaky clairvoyant default) via
    ``sts2_rs.mcts_recommend``, keeping the raw result so the principal
    variation survives (``recommend_all`` drops it).
 3. Map the ranked rows through :func:`sts2_hint.recommender.tags_from_result`
@@ -73,6 +74,12 @@ logger = logging.getLogger(__name__)
 
 #: The deployed honest-search knobs (see RecommendConfig.hidden_info notes:
 #: beliefdraw + c_puct 2.5 + draw_widening_c 2.0 travel together).
+#:
+#: The EndTurn widening is deliberately NOT listed: it is left to the engine,
+#: which applies the run agent's values with the mode
+#: (`MctsConfig::apply_mode_dialect`, GH #758). Before that the advisor
+#: searched EndTurn at the pre-#467 0.5 / 0.4 while every published win rate
+#: was measured at 5.787 / 0.436.
 #:
 #: The `c_puct` here is the value for the DEPLOYED budgets. The search resolves
 #: it per decision via `belief_draw_c_puct(sims, threads)` instead, because the
@@ -436,6 +443,8 @@ def compute_combat_advice(
             rollout_policy=call_cfg.rollout_policy,
             hidden_info=call_cfg.hidden_info,
             draw_widening_c=call_cfg.resolved_draw_widening_c(),
+            endturn_widening_c=call_cfg.endturn_widening_c,
+            endturn_widening_alpha=call_cfg.endturn_widening_alpha,
             common_random_numbers=call_cfg.common_random_numbers,
         )
     tags = tags_from_result(result, wire["deck"]["hand"])

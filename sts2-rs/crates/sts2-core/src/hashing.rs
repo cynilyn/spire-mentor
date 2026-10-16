@@ -755,7 +755,9 @@ fn hash_pile_observational<H: Hasher>(pile: &[crate::CardUid], state: &CombatSta
     }
 }
 
-/// Content-only fingerprint of `card`, excluding its [`crate::CardUid`] —
+/// Content-only fingerprint of `card`, excluding its [`crate::CardUid`] (and a
+/// non-X card's per-play `energy_spent`, see
+/// [`crate::cards::observational_energy_spent`]) —
 /// the identity a player can actually observe. Mirrors
 /// [`crate::cards::cards_observationally_equal`]'s all-fields-except-uid
 /// comparison by construction (clone, unify `uid` on a fixed sentinel,
@@ -773,6 +775,7 @@ fn card_observational_key(card: &crate::Card) -> u64 {
     let sentinel = crate::CardUid::new(1).expect("1 is a valid non-zero CardUid");
     let mut c = *card;
     c.uid = sentinel;
+    c.energy_spent = crate::cards::observational_energy_spent(card);
     let mut h = new_hasher();
     c.hash(&mut h);
     h.finish()
@@ -1347,6 +1350,34 @@ mod tests {
         let mut changed = sparse.clone();
         changed.cards[1].upgraded = false;
         assert_ne!(fold(&uids(&[5]), &sparse), fold(&uids(&[5]), &changed));
+    }
+
+    /// GH #741: `play_card` now stamps a non-X card's paid cost into
+    /// `energy_spent`; the observational key masks it so a played Strike keys
+    /// the same as an unplayed one (as it did before #741). An X-cost card's
+    /// stamped X still splits the key.
+    #[test]
+    fn observational_key_masks_non_x_energy_spent_only() {
+        let base = crate::Card {
+            uid: crate::CardUid::new(1).expect("nz"),
+            cost: 2,
+            ..crate::Card::pod_defaults()
+        };
+        let mut played = base;
+        played.energy_spent = 2;
+        assert_eq!(
+            card_observational_key(&base),
+            card_observational_key(&played)
+        );
+
+        let x = crate::Card { cost: -1, ..base };
+        let mut x_played = x;
+        x_played.energy_spent = 3;
+        assert!(x.is_x_cost());
+        assert_ne!(
+            card_observational_key(&x),
+            card_observational_key(&x_played)
+        );
     }
 
     /// `hash_entries_by_key` hashes an in-order map straight from its slice

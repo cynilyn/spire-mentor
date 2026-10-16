@@ -25,6 +25,8 @@ use sts2_core::{apply, legal_actions, CardUid, CombatState, MonsterKind};
 
 fn install() {
     content_dispatch::install_default_registry();
+    // ChemicalX's `modify_x_value` listener lives in the relic registry.
+    sts2_content::relics::dispatch::install_default_registry();
     // The card POD factory is registered by the relic installer, not the card
     // installer. Idempotent.
     sts2_core::register_card_factory(sts2_content::cards::spec_index::card_pod_from_id);
@@ -107,8 +109,7 @@ fn make_it_so_returns_on_the_third_skill_through_the_frozen_table() {
 
 /// `RightHandHand` returns from discard after a play that spends 2 or more
 /// energy (C# `RightHandHand.AfterCardPlayedLate`), and not after one that
-/// spends less. The engine stamps `energy_spent` only on X-cost cards, so the
-/// trigger here is Whirlwind.
+/// spends less. The trigger here is an X-cost card (Whirlwind).
 #[test]
 fn right_hand_hand_returns_after_a_two_energy_play_through_the_frozen_table() {
     install();
@@ -129,6 +130,122 @@ fn right_hand_hand_returns_after_a_two_energy_play_through_the_frozen_table() {
             state.player.discard
         );
     }
+}
+
+/// GH #741: a NON-X play that spends 2+ energy returns `RightHandHand` too.
+/// C# `PlayCardAction.ExecuteAction` sets `EnergyValue = EnergySpent = item`
+/// (the energy `SpendResources` paid) for every play, not just X-cost ones.
+/// Bash costs 2 (returns); Strike costs 1 (stays in discard).
+#[test]
+fn right_hand_hand_returns_after_a_two_cost_non_x_play() {
+    install();
+    for (card, returns) in [(CardId::Bash, true), (CardId::StrikeIronclad, false)] {
+        let (mut state, right_hand_hand) =
+            play_ready(CharacterId::Necrobinder, &[card], CardId::RightHandHand, 3);
+        let _ = play_card(&mut state, 0, Some(0));
+        assert_eq!(
+            state.player.hand.contains(&right_hand_hand),
+            returns,
+            "{card:?}: hand={:?} discard={:?}",
+            state.player.hand,
+            state.player.discard
+        );
+    }
+}
+
+/// GH #741: the energy value is per play. A 2-cost Bash returns
+/// `RightHandHand`; a 1-cost Strike played next must not, whatever the earlier
+/// play left behind.
+#[test]
+fn right_hand_hand_reads_the_current_play_not_a_stale_one() {
+    install();
+    let (mut state, right_hand_hand) = play_ready(
+        CharacterId::Necrobinder,
+        &[CardId::Bash, CardId::StrikeIronclad],
+        CardId::RightHandHand,
+        3,
+    );
+    let _ = play_card(&mut state, 0, Some(0));
+    assert!(state.player.hand.contains(&right_hand_hand));
+    // Put it back in discard, then play the 1-cost Strike.
+    state.player.hand.retain(|u| *u != right_hand_hand);
+    state.player.discard.push(right_hand_hand);
+    let strike_pos = state
+        .player
+        .hand
+        .iter()
+        .position(|u| state.cards[u.0.get() as usize - 1].card_id == CardId::StrikeIronclad)
+        .expect("strike in hand");
+    let _ = play_card(&mut state, u8::try_from(strike_pos).expect("fits"), Some(0));
+    assert!(
+        state.player.discard.contains(&right_hand_hand),
+        "a 1-energy play must not return RightHandHand"
+    );
+}
+
+/// C# `Hook.AfterCardPlayed` runs every listener's `AfterCardPlayedLate` for
+/// AUTO-plays too (`CardCmd.AutoPlay` → `OnPlayWrapper`), with `EnergyValue =
+/// EnergyCost.GetAmountToSpend()`. Havoc auto-plays the draw-pile top: a 2-cost
+/// Bash returns `RightHandHand`, a 1-cost Strike does not.
+#[test]
+fn right_hand_hand_returns_after_an_auto_played_two_cost_card() {
+    install();
+    for (top, returns) in [(CardId::Bash, true), (CardId::StrikeIronclad, false)] {
+        let (mut state, right_hand_hand) = play_ready(
+            CharacterId::Necrobinder,
+            &[CardId::Havoc],
+            CardId::RightHandHand,
+            3,
+        );
+        let top_uid = add_card(&mut state, top);
+        state.player.draw.push(top_uid);
+        let _ = play_card(&mut state, 0, None);
+        assert!(
+            !state.player.draw.contains(&top_uid),
+            "Havoc auto-played {top:?}"
+        );
+        assert_eq!(
+            state.player.hand.contains(&right_hand_hand),
+            returns,
+            "{top:?}: hand={:?} discard={:?}",
+            state.player.hand,
+            state.player.discard
+        );
+    }
+}
+
+/// ChemicalX's +2 is an X-VALUE modifier (`ChemicalX.ModifyXValue`, read
+/// through `CardModel.ResolveEnergyXValue`), not energy: the `EnergyValue`
+/// RightHandHand reads is the raw energy spent. A 0-energy Whirlwind with
+/// ChemicalX resolves X = 2 but spends 0, so RightHandHand stays in discard.
+#[test]
+fn chemical_x_does_not_count_as_energy_for_right_hand_hand() {
+    install();
+    let (mut state, right_hand_hand) = play_ready(
+        CharacterId::Necrobinder,
+        &[CardId::Whirlwind],
+        CardId::RightHandHand,
+        0,
+    );
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::ChemicalX,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let hp_before = state.creatures.iter().map(|c| c.current_hp).sum::<i32>();
+    let _ = play_card(&mut state, 0, None);
+    let hp_after = state.creatures.iter().map(|c| c.current_hp).sum::<i32>();
+    assert!(
+        hp_after < hp_before,
+        "ChemicalX still gives Whirlwind X = 2 hits"
+    );
+    assert!(
+        state.player.discard.contains(&right_hand_hand),
+        "0 energy spent must not return RightHandHand: hand={:?}",
+        state.player.hand
+    );
 }
 
 static MAKE_IT_SO: OnceLock<LateEffectFn> = OnceLock::new();

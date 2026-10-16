@@ -182,9 +182,17 @@ use sts2_cli::replay::motif::{motifs_at, Motif};
 use sts2_core::{is_terminal, legal_actions, Action, CombatPhase, CombatState};
 use sts2_mcts::{par_search, HiddenInfoMode, Mcts, MctsConfig};
 
-/// Deployed advisor dialect (`sts2-runai::mcts_config_for` +
-/// `realgame_advisor.py::HONEST_SEARCH`). The book must be built in the
-/// dialect it will judge, or the gold answers encode a different search.
+/// The book's oracle dialect: BeliefDraw + `c_puct` 2.5 + `draw_widening_c`
+/// 2.0, with the engine-default EndTurn widening 0.5 / 0.4 (`oracle_config`
+/// does NOT call `MctsConfig::apply_mode_dialect`).
+///
+/// That is the PRE-#467 dialect. It matched the advisor
+/// (`realgame_advisor.py::HONEST_SEARCH`) until GH #758 moved every
+/// interactive surface onto the run agent's 5.787 / 0.436, and never matched
+/// the run agent (`sts2-runai::mcts_config_for`) after PR #467. Kept as-is
+/// so the committed books stay reproducible from this source; a book meant
+/// to judge the deployed search must be rebuilt with `apply_mode_dialect`
+/// (the gold answers encode the search that built them).
 const ORACLE_DEPTH: u32 = 200;
 const C_PUCT: f32 = 2.5;
 const DRAW_WIDENING_C: f32 = 2.0;

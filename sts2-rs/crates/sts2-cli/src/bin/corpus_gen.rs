@@ -623,21 +623,27 @@ enum CliSearchDialect {
     /// against every corpus generated before this flag existed.
     Legacy,
     /// The deployed combat dialect (`sts2-runai::mcts_config_for` under
-    /// `STS2_RUNAI_HONEST` unset): `BeliefDraw` + `c_puct` 2.5 +
-    /// `draw_widening_c` 2.0. Pair with `--max-rollout-depth 200`
+    /// `STS2_RUNAI_HONEST` unset): `BeliefDraw` plus
+    /// [`MctsConfig::apply_mode_dialect`] — `c_puct` from
+    /// `belief_draw_c_puct` of the budget (2.5 at >= 1000 sims),
+    /// `draw_widening_c` 2.0 and the PR #467 EndTurn widening 5.787 / 0.436.
+    /// Before GH #758 this stamped only the first two, so a "deployed"
+    /// corpus searched EndTurn at the pre-#467 0.5 / 0.4 and a flat
+    /// `c_puct` 2.5 at every budget. Pair with `--max-rollout-depth 200`
     /// (`COMBAT_ROLLOUT_DEPTH`) — the depth keeps its own flag, and a
     /// mismatch is warned about rather than silently corrected.
     Deployed,
 }
 
 impl CliSearchDialect {
-    /// Stamp the dialect onto a config built from `MctsConfig::default()`.
-    /// `Legacy` is a no-op, so every pre-existing call site is unchanged.
+    /// Stamp the dialect onto a config built from `MctsConfig::default()`
+    /// with its `max_simulations` already set (the `c_puct` is
+    /// budget-keyed). `Legacy` is a no-op, so every pre-existing call site
+    /// is unchanged.
     fn apply(self, cfg: &mut MctsConfig) {
         if self == Self::Deployed {
             cfg.hidden_info = HiddenInfoMode::BeliefDraw;
-            cfg.c_puct = 2.5;
-            cfg.draw_widening_c = 2.0;
+            cfg.apply_mode_dialect();
         }
     }
 }
@@ -1581,7 +1587,8 @@ fn main() -> ExitCode {
     if args.search_dialect == CliSearchDialect::Deployed {
         eprintln!(
             "[corpus-gen] --search-dialect deployed: teacher runs BeliefDraw + \
-             c_puct 2.5 + draw_widening_c 2.0"
+             the deployed dialect (budget-keyed c_puct, draw_widening_c 2.0, \
+             EndTurn widening 5.787/0.436)"
         );
         // Depth keeps its own flag, so `deployed` can be half-applied. Warn
         // rather than override: silently rewriting a value the caller passed

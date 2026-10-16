@@ -28,7 +28,9 @@ pub(crate) fn play_cascade(state: &mut CombatState, _t: Option<CreatureUid>) -> 
     let Some(card) = sts2_core::card_effects::resolving_card_inst(state) else {
         return EffectResult::Resolved;
     };
-    let count = card.energy_spent + i32::from(card.upgraded);
+    let upgraded = card.upgraded;
+    // C# `ResolveEnergyXValue()` — the captured X plus ChemicalX's +2.
+    let count = sts2_core::card_effects::resolving_card_x_value(state) + i32::from(upgraded);
     // Cascade does NOT force-exhaust — auto-played cards route to their
     // natural pile (C# Cascade.cs `forceExhaust: false`). Use the two-phase
     // `AutoPlayFromDrawPile` mirror so the collected cards sit in Play (not

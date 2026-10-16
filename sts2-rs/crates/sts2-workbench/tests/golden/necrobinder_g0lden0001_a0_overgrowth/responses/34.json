@@ -12,8 +12,22 @@
  "pv": null,
  "scores": [
   {
-   "action": "Bodyguard",
+   "action": "Defend",
    "is_best": true,
+   "losses": 0,
+   "low_confidence": false,
+   "q": 1.2159,
+   "q_saturated": false,
+   "stable_idx": 1,
+   "target_index": null,
+   "ties": 0,
+   "visits": 10,
+   "win_prob": 1.0,
+   "wins": 10
+  },
+  {
+   "action": "Bodyguard",
+   "is_best": false,
    "losses": 0,
    "low_confidence": false,
    "q": 1.2145,
@@ -24,34 +38,6 @@
    "visits": 10,
    "win_prob": 1.0,
    "wins": 10
-  },
-  {
-   "action": "Defend",
-   "is_best": false,
-   "losses": 0,
-   "low_confidence": false,
-   "q": 1.2134,
-   "q_saturated": false,
-   "stable_idx": 1,
-   "target_index": null,
-   "ties": 0,
-   "visits": 10,
-   "win_prob": 1.0,
-   "wins": 10
-  },
-  {
-   "action": "Unleash",
-   "is_best": false,
-   "losses": 0,
-   "low_confidence": false,
-   "q": 1.2109,
-   "q_saturated": false,
-   "stable_idx": 0,
-   "target_index": 0,
-   "ties": 0,
-   "visits": 9,
-   "win_prob": 1.0,
-   "wins": 9
   },
   {
    "action": "Strike",
@@ -68,11 +54,25 @@
    "wins": 10
   },
   {
+   "action": "Unleash",
+   "is_best": false,
+   "losses": 0,
+   "low_confidence": false,
+   "q": 1.2101,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": 0,
+   "ties": 0,
+   "visits": 9,
+   "win_prob": 1.0,
+   "wins": 9
+  },
+  {
    "action": "end turn",
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.1847,
+   "q": 1.1938,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,

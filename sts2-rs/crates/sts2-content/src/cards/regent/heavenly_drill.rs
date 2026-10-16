@@ -31,7 +31,7 @@ pub(crate) fn play_heavenly_drill(
     // Falls back to 0 if the play-pile is empty (test paths that
     // bypass `play_card` and invoke `dispatch` directly without
     // pushing a card onto Play).
-    let mut x = sts2_core::card_effects::resolving_card_inst(state).map_or(0, |c| c.energy_spent);
+    let mut x = sts2_core::card_effects::resolving_card_x_value(state);
     if x >= 4 {
         x = x.saturating_mul(2);
     }

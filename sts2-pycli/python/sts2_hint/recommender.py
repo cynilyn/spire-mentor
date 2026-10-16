@@ -194,6 +194,13 @@ class RecommendConfig:
     # resolved mode deploys": 2.0 under BeliefDraw (the F2 retune), else the
     # engine default. See :meth:`resolved_c_puct` for the c_puct half.
     draw_widening_c: float | None = None
+    # EndTurn-node progressive-widening pair. None (the default) means "what
+    # the resolved mode deploys", resolved in Rust by
+    # ``MctsConfig::apply_mode_dialect`` — under BeliefDraw that is the PR
+    # #467 retune (5.787 / 0.436) the run agent plays with (GH #758). Set
+    # numbers only for an ablation; 0.5 / 0.4 is the pre-#467 dialect.
+    endturn_widening_c: float | None = None
+    endturn_widening_alpha: float | None = None
     # Common random numbers: give every stochastic edge off one decision node
     # the SAME reseed stream, so sibling alternatives are compared under
     # matched luck instead of each rolling its own draw. Off by default — it
@@ -683,6 +690,8 @@ def recommend_all(game: Any, cfg: RecommendConfig | None = None) -> list[HintTag
         rollout_policy=cfg.rollout_policy,
         hidden_info=cfg.hidden_info,
         draw_widening_c=cfg.resolved_draw_widening_c(),
+        endturn_widening_c=cfg.endturn_widening_c,
+        endturn_widening_alpha=cfg.endturn_widening_alpha,
         common_random_numbers=cfg.common_random_numbers,
     )
 
@@ -736,6 +745,8 @@ def search_tree(game: Any, cfg: RecommendConfig | None = None) -> dict[str, Any]
         # the inspector showed a leaky search next to an honest hint panel.
         hidden_info=cfg.hidden_info,
         draw_widening_c=cfg.resolved_draw_widening_c(),
+        endturn_widening_c=cfg.endturn_widening_c,
+        endturn_widening_alpha=cfg.endturn_widening_alpha,
     )
 
 
@@ -792,6 +803,8 @@ def recommend(game: Any, cfg: RecommendConfig | None = None) -> dict[int, HintTa
         rollout_policy=cfg.rollout_policy,
         hidden_info=cfg.hidden_info,
         draw_widening_c=cfg.resolved_draw_widening_c(),
+        endturn_widening_c=cfg.endturn_widening_c,
+        endturn_widening_alpha=cfg.endturn_widening_alpha,
         common_random_numbers=cfg.common_random_numbers,
     )
 

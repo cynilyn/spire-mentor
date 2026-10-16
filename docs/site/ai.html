@@ -121,10 +121,9 @@
   draw both resolve there. Raising its widening constants (C = 5.79,
   α = 0.44) gained <strong>+6.35 pp</strong> full-run win rate on 2,000
   paired runs (p = 8.2e-10). Spending the same extra compute on plain extra
-  simulations gained nothing measurable. These constants are the run
-  agent's: training, the promotion gates and the published win rates use
-  them. The real-game advisor and the browser hint still search with the
-  library's default end-of-turn widening (C 0.5, α 0.4).</p>
+  simulations gained nothing measurable. Every search on this page uses
+  these constants: training, the promotion gates, the published win rates,
+  the real-game advisor and the browser hint.</p>
 
   <h3>Transpositions and rollouts</h3>
   <p>A transposition table merges positions reached by different orders of
@@ -157,15 +156,18 @@
     </tbody>
   </table>
   </div>
-  <p class="note">The advisor and the hint rows share their budgets with this
-  page's search, not its end-of-turn widening (see above). Root-parallel
+  <p class="note">Root-parallel
   search gives each thread its own tree with a
   decorrelated seed and sums the root statistics. Shared-tree parallelism
   with virtual loss was tried, scaled no better, and broke determinism.</p>
   <p class="note">How long these take on the benchmark server (not a
   player's PC): the advisor's 8,000 simulations on an Act-1 boss take 275 ms
   on one thread and 39.6 ms on eight; the browser hint's 2,000 on an early
-  fight take 39.9 ms as WASM in Chromium and 27.9 ms native. More on the
+  fight take 39.9 ms as WASM in Chromium and 27.9 ms native. Those were
+  measured with the old, narrower end-of-turn widening; the current one
+  makes the hint's search about 8% slower (native, 2,000 simulations:
+  28.6 ms before, 30.9 ms after), and the advisor's has not been re-timed.
+  More on the
   <a href="benchmarks.html#search">benchmarks page</a>.</p>
 </section>
 

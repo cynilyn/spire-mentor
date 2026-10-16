@@ -21,8 +21,8 @@ use super::{
     pocketwatch::*, power_cell::*, rainbow_ring::*, razor_tooth::*, red_mask::*, red_skull::*,
     ring_of_the_drake::*, ring_of_the_snake::*, ripple_basin::*, ruined_helmet::*,
     screaming_flagon::*, self_forming_clay::*, shuriken::*, sling_of_courage::*, snecko_skull::*,
-    sparkling_rouge::*, spiked_gauntlets::*, stone_calendar::*, strike_dummy::*, sturdy_clamp::*,
-    the_abacus::*, the_courier::*, tingsha::*, tough_bandages::*, tungsten_rod::*, tuning_fork::*,
+    sparkling_rouge::*, stone_calendar::*, strike_dummy::*, sturdy_clamp::*, the_abacus::*,
+    the_courier::*, tingsha::*, tough_bandages::*, tungsten_rod::*, tuning_fork::*,
     twisted_funnel::*, unceasing_top::*, unsettling_lamp::*, vajra::*, vambrace::*,
     vexing_puzzlebox::*,
 };
@@ -8418,7 +8418,7 @@ fn parrying_shield_constants_parity() {
 }
 
 // -------------------------------------------------------------------
-// SpikedGauntlets before_card_played cost-charge leg (sts2-rs-ff3hr)
+// Shared card fixture
 // -------------------------------------------------------------------
 
 fn push_card_of_type(
@@ -8447,76 +8447,6 @@ fn push_card_of_type(
         affliction: None,
     });
     uid
-}
-
-fn state_with_spiked_gauntlets() -> CombatState {
-    let mut state = CombatState::default();
-    state.relics.push(crate::Relic {
-        id: NonZeroU32::new(17).unwrap(),
-        kind: crate::RelicKind::SpikedGauntlets,
-        counter: 0,
-        is_wax: false,
-        is_melted: false,
-    });
-    state
-}
-
-/// SpikedGauntlets deducts +1 energy on Power-card plays.
-#[test]
-#[serial_test::serial(global_registry)]
-fn spiked_gauntlets_charges_extra_energy_on_power_card() {
-    install_default_registry();
-    let mut state = state_with_spiked_gauntlets();
-    state.player.energy = 3;
-    let uid = push_card_of_type(&mut state, crate::cards::CardType::Power, 1);
-    let ctx = CardEventCtx {
-        card_id: state.cards[0].card_id,
-        card_uid: Some(uid),
-        target: None,
-        card_tags: crate::cards::CardTags::NONE,
-        energy_spent: 0,
-    };
-    let result = dispatch_before_card_played(&mut state, &ctx);
-    assert_eq!(result, EffectResult::Resolved);
-    assert_eq!(state.player.energy, 2, "+1 energy deducted");
-}
-
-/// SpikedGauntlets does NOT charge on non-Power card plays.
-#[test]
-#[serial_test::serial(global_registry)]
-fn spiked_gauntlets_passes_through_attack_card() {
-    install_default_registry();
-    let mut state = state_with_spiked_gauntlets();
-    state.player.energy = 3;
-    let uid = push_card_of_type(&mut state, crate::cards::CardType::Attack, 1);
-    let ctx = CardEventCtx {
-        card_id: state.cards[0].card_id,
-        card_uid: Some(uid),
-        target: None,
-        card_tags: crate::cards::CardTags::NONE,
-        energy_spent: 0,
-    };
-    dispatch_before_card_played(&mut state, &ctx);
-    assert_eq!(state.player.energy, 3, "Attack cards leave energy alone");
-}
-
-/// Without SpikedGauntlets equipped, the listener is a no-op.
-#[test]
-#[serial_test::serial(global_registry)]
-fn spiked_gauntlets_inactive_without_relic() {
-    install_default_registry();
-    let mut state = CombatState::default();
-    state.player.energy = 3;
-    let uid = push_card_of_type(&mut state, crate::cards::CardType::Power, 1);
-    let ctx = CardEventCtx {
-        card_id: state.cards[0].card_id,
-        card_uid: Some(uid),
-        target: None,
-        card_tags: crate::cards::CardTags::NONE,
-        energy_spent: 0,
-    };
-    dispatch_before_card_played(&mut state, &ctx);
-    assert_eq!(state.player.energy, 3, "no relic -> no charge");
 }
 
 // -------------------------------------------------------------------

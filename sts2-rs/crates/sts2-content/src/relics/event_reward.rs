@@ -1085,11 +1085,22 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // dupe of Whirlwind at turn start with 3 energy deals 5×3 to all enemies; the
     // base-stat dupe dealt 5×0 = 0 (coverage seed 4708: LivingShield/Turret took
     // 0 instead of 15). Stamp the captured X here for X-cost dupes.
-    if dupe.is_x_cost() {
+    let dupe_is_x = dupe.is_x_cost();
+    if dupe_is_x {
         dupe.energy_spent = i32::from(state.player.energy);
     }
     state.cards.push(dupe);
     state.player.play.push(new_uid);
+    // GH #741: a non-X auto-play's `EnergyValue` is
+    // `EnergyCost.GetAmountToSpend()` (`CardCmd.AutoPlay`), the dupe's
+    // modifier-resolved cost. Stamp it so RightHandHand / IvoryTile read this
+    // play, not a value the cloned card carried over.
+    if !dupe_is_x {
+        let cost = sts2_core::hooks::effective_card_cost(state, new_uid);
+        if let Some(c) = state.cards.last_mut() {
+            c.energy_spent = cost;
+        }
+    }
     // C# `CardCmd.AutoPlay` adds the freshly-`CreateDupe()`'d card (`Pile==null`)
     // to the Play pile via plain `CardPileCmd.Add` (`CardCmd.cs:115-117`), which
     // fires `Hook.AfterCardEnteredCombat(combatState, card)` (`CardPileCmd.cs:520`)
@@ -1273,6 +1284,10 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     }
     state.player.card_plays_started_this_turn =
         state.player.card_plays_started_this_turn.saturating_add(1);
+    // C# `Hook.AfterCardPlayed` ends with `AfterCardPlayedLate` (Hook.cs:431)
+    // for the dupe's auto-play too; fired after the tallies so MakeItSo sees
+    // this play counted, and once per replay below.
+    sts2_core::card_effects::fire_late_effects(state, &hook_played_ctx);
     // C# `CardModel.OnPlayWrapper` computes `playCount = GeneratePlayCount(...)`
     // (CardModel.cs:1896) and runs the WHOLE play body — `OnPlay` +
     // `AfterCardPlayed` + the `CardPlayFinished` record — that many times, and
@@ -1332,6 +1347,7 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
             }
             state.player.card_plays_started_this_turn =
                 state.player.card_plays_started_this_turn.saturating_add(1);
+            sts2_core::card_effects::fire_late_effects(state, &hook_played_ctx);
         }
     }
     state.autoplay_inline_resolve = prev_inline;

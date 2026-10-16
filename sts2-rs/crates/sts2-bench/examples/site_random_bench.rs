@@ -24,34 +24,28 @@
 //!   (TIMED) and plays the clone in place;
 //! * one thread (no rayon), plain `--release`.
 //!
-//! Monsters are set up the way a real run sets them up
-//! (`sts2_content::run_callbacks::build_combat_for_room` and
-//! `run_bridge::enter_combat_from_roster`), not the way the `sts2-cli`
-//! scenario builder does (GH #762). The builder gives every monster the AI of
-//! slot 0 and drops the encounter's spawn args, so in THE_KIN_BOSS both
-//! followers open the same way and in INKLETS_NORMAL no inklet opens with
-//! WHIRLWIND. It also rolls HP off `Rng::new(seed)`, the very stream the
-//! roster randomizer has just read, so in the five randomized rosters a
-//! monster's HP follows from which kind was drawn (a front Axe Ruby Raider
-//! always had 20 HP, a front Tracker always 25). Here, after the builder:
-//! * each monster's AI is rebuilt with the run path's
-//!   `SpawnPosition { alone: n == 1, front: i == 0, back: n > 1 && i == n - 1,
-//!   index: i }` and the roster's spawn args;
-//! * HP is rolled as the run path rolls it: `roll_unique_max_hps` (C#
-//!   `SetUniqueMonsterHpValue`: no two enemies share an HP value when the
-//!   ranges allow it) off the combat's own `RunRngSet.niche`, which a summon
-//!   later in the fight continues from;
-//! * the legacy combat RNG (`CombatState::rng`) is reseeded as the run path
-//!   seeds it, from the run seed instead of `Rng::new(seed)`.
+//! Monsters are set up the way a real run sets them up: the `sts2-cli`
+//! scenario builder spawns them through `run_bridge::spawn_roster`, the helper
+//! `run_bridge::enter_combat_from_roster` uses (GH #762). Each monster's AI is
+//! built from its roster position and the roster's spawn args, and HP is
+//! rolled with `roll_unique_max_hps` (C# `SetUniqueMonsterHpValue`: no two
+//! enemies share an HP value when the ranges allow it) off the combat's own
+//! `RunRngSet.niche`. Given the same roster and `RunRngSet::new(seed)`, the
+//! start state equals `enter_combat_from_roster`'s in every monster field
+//! (kind, slot, HP, block, powers, AI state, opening intent), in the RNG
+//! cursors and in the opening hand and draw pile (checked on all 22
+//! encounters x 200 seeds when this harness still rebuilt the monsters itself).
 //!
-//! Given the same roster and `RunRngSet::new(seed)`, the start state then
-//! equals `enter_combat_from_roster`'s in every monster field (kind, slot,
-//! HP, block, powers, AI state, opening intent), in the RNG cursors and in
-//! the opening hand and draw pile (checked on all 22 encounters x 200 seeds).
-//!
-//! `--legacy-spawn` keeps the builder's monsters as they are. Its output is
-//! byte-for-byte that of this harness before the fix, which is what the
-//! 2026-10-14 site numbers were measured with.
+//! Before that fix the builder gave every monster the AI of slot 0 and dropped
+//! the encounter's spawn args, so in THE_KIN_BOSS both followers opened the
+//! same way and in INKLETS_NORMAL no inklet opened with WHIRLWIND. It also
+//! rolled HP off `Rng::new(seed)`, the very stream the roster randomizer had
+//! just read, so in the five randomized rosters a monster's HP followed from
+//! which kind was drawn (a front Axe Ruby Raider always had 20 HP, a front
+//! Tracker always 25). `--legacy-spawn` rebuilds those monsters
+//! (`common/legacy_spawn.rs`). Its output is byte-for-byte that of this
+//! harness before PR #761's workaround, which is what the 2026-10-14 site
+//! numbers were measured with.
 //!
 //! Left as the builder makes it, because nothing in this workload reads it
 //! (setting them as the run path does leaves the 2200 x 50 identity
@@ -85,14 +79,15 @@ use rand::{Rng as _, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use sts2_cli::sim::scenario::relics::seed_relics;
-use sts2_cli::sim::scenario::{resolve_encounter, MonsterSpec};
+use sts2_cli::sim::scenario::resolve_encounter;
 use sts2_cli::sim::{build_starter_state_from_monsters, PlayerClass};
 use sts2_content::encounters::act1_overgrowth::ACT1_ENCOUNTERS;
-use sts2_content::monster_dispatch::{build_ai_with_ascension, SpawnPosition};
 use sts2_core::combat_loop::{start_combat, start_player_turn};
-use sts2_core::monsters::roll_unique_max_hps;
 use sts2_core::relics::RelicId;
-use sts2_core::{apply, legal_actions, CombatState, MonsterKind};
+use sts2_core::{apply, legal_actions, CombatState};
+
+#[path = "common/legacy_spawn.rs"]
+mod legacy_spawn;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -116,9 +111,9 @@ struct Args {
     /// Round-robin mix only. Default: all 22 of `ACT1_ENCOUNTERS`.
     #[arg(long)]
     encounters: Option<String>,
-    /// Keep the `sts2-cli` scenario builder's monsters (every monster on slot
-    /// 0's AI, no spawn args, HP rolled independently; GH #762): the harness
-    /// as it was before the run-path fix, for auditing.
+    /// Rebuild the pre-#762 scenario builder's monsters (every monster on slot
+    /// 0's AI, no spawn args, HP rolled independently): the harness the
+    /// 2026-10-14 site numbers were measured with.
     #[arg(long)]
     legacy_spawn: bool,
 }
@@ -147,64 +142,6 @@ fn encounter_list(arg: Option<&str>) -> Vec<&'static str> {
     list
 }
 
-/// Give the scenario builder's monsters what a real run gives them
-/// (`run_callbacks::build_combat_for_room` then
-/// `run_bridge::enter_combat_from_roster`; GH #762):
-/// * the AI built from the run path's `SpawnPosition` and the roster's spawn
-///   args (the builder uses index 0 for everyone and drops the args);
-/// * HP from `roll_unique_max_hps` off the combat's `RunRngSet.niche`, the run
-///   path's rule and stream (the builder rolls each monster independently off
-///   `Rng::new(seed)`, the roster randomizer's own stream, so two monsters
-///   can share a value and a randomized roster's HP is tied to its kinds).
-///   The builder leaves `niche` unread, so after this its cursor is where the
-///   run path's is: past one read per monster, where a mid-fight summon's HP
-///   roll continues;
-/// * the legacy combat RNG seeded from the run seed, as the run path seeds it,
-///   instead of the builder's `Rng::new(seed)` (already read for HP).
-///
-/// Spawn buffs need no redo: `apply_creature_spawn_buffs` reads the species
-/// and the ascension only, and the builder already ran it. The encounter slot
-/// (`MonsterSpec.slot`, the run path's `assign_encounter_slots`) lives on the
-/// `MonsterAi`, so it is stamped again onto the new one.
-fn spawn_as_run(state: &mut CombatState, specs: &[MonsterSpec]) {
-    let n = specs.len();
-    assert_eq!(state.enemy_uids.len(), n, "one creature per roster entry");
-    assert!(
-        specs.iter().all(|m| m.hp_override.is_none()),
-        "encounter rosters carry no HP overrides"
-    );
-    let kinds: Vec<MonsterKind> = specs.iter().map(|m| m.kind).collect();
-    let hps = roll_unique_max_hps(&kinds, &mut state.run_rng.niche, state.ascension);
-    state.rng = sts2_core::dotnet_rng::Rng::new(state.run_rng.seed);
-    for (i, spec) in specs.iter().enumerate() {
-        let position = SpawnPosition {
-            alone: n == 1,
-            front: i == 0,
-            back: n > 1 && i == n - 1,
-            index: u8::try_from(i).expect("roster index fits u8"),
-        };
-        let ai = build_ai_with_ascension(spec.kind, spec.args, position, state.ascension);
-        let uid = state.enemy_uids[i];
-        let creature = state
-            .creatures
-            .iter_mut()
-            .find(|c| c.id == uid.0)
-            .expect("enemy uid in the creature store");
-        assert_eq!(
-            creature.species,
-            Some(spec.kind),
-            "creature {i} is roster entry {i}"
-        );
-        creature.current_hp = hps[i];
-        creature.max_hp = hps[i];
-        creature.ai = Some(ai);
-        if let Some(slot) = spec.slot {
-            state.set_enemy_slot(uid, slot);
-        }
-        assert_eq!(state.enemy_slot(uid), spec.slot, "slot of creature {i}");
-    }
-}
-
 fn start_state(
     seed: u64,
     burning_blood: bool,
@@ -225,8 +162,8 @@ fn start_state(
     let specs = monsters.clone();
     let mut state =
         build_starter_state_from_monsters(seed, monsters, PlayerClass::Ironclad, None, None, None);
-    if !legacy_spawn {
-        spawn_as_run(&mut state, &specs);
+    if legacy_spawn {
+        legacy_spawn::respawn_legacy(&mut state, &specs, seed);
     }
     if burning_blood {
         // Must precede start_combat (relics.rs: "MUST be called BEFORE start_combat").

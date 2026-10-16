@@ -468,9 +468,11 @@ pub fn install_pool() {
     // Bead `sts2-rs-70anj.4` (Wave 4 body-fill, batch 8):
     // VelvetChoker — per-turn play cap of `VELVET_CHOKER_MAX_CARDS = 6`.
     // `after_card_played` bumps `relic.counter`; `before_side_turn_start`
-    // resets it on the PLAYER side. The actual play gate lives in
-    // hooks::should_play (which reads relic.counter). The +1 max_energy
-    // leg is already wired via hooks::modify_max_energy.
+    // resets it on the PLAYER side. The play gate is
+    // hooks::relic_should_play_blocked (reads relic.counter), called by
+    // combat_loop::player_should_play_blocked and legal_actions; the +1
+    // max_energy leg is the VelvetChoker arm of hooks::modify_max_energy
+    // (GH #742 wired both).
     register_after_card_played(
         RelicId::VelvetChoker,
         listener_velvet_choker_card_played as AfterCardPlayedFn,
@@ -3274,9 +3276,9 @@ fn listener_paels_claw(rs: &mut RunState) -> EffectResult {
 
 /// `VelvetChoker::after_card_played` — bump `relic.counter` once per
 /// card played (Python `shop_event.py::VelvetChoker.after_card_played`:
-/// `self._cards_this_turn += 1`). The per-turn cap is enforced in
-/// `hooks::should_play` (reads the counter and rejects play when
-/// >= `VELVET_CHOKER_MAX_CARDS`). Bead `sts2-rs-70anj.4`.
+/// `self._cards_this_turn += 1`). The per-turn cap is enforced by
+/// `hooks::relic_should_play_blocked` (reads the counter and rejects play
+/// when >= `VELVET_CHOKER_MAX_CARDS`). Bead `sts2-rs-70anj.4`.
 fn listener_velvet_choker_card_played(
     state: &mut CombatState,
     _ctx: &CardEventCtx,

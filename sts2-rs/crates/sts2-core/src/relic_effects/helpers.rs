@@ -409,20 +409,6 @@ pub(crate) const INTIMIDATING_HELMET_COST_THRESHOLD: i8 = 2;
 
 pub(crate) const INTIMIDATING_HELMET_BLOCK: i32 = 4;
 
-/// `SpikedGauntlets.before_card_played` — charge +1 energy on Power
-/// card plays (Python `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::SpikedGauntlets`).
-/// Bead `sts2-rs-ff3hr`: completes the cost-charge leg deferred from
-/// `sts2-rs-5yj3z`'s `should_play` predicate. The predicate gates plays
-/// on `energy >= cost + 1`; this listener does the actual deduction.
-///
-/// The energy is decremented via `state.player.energy -= 1` since
-/// `state.player.energy` is i8 and the should_play guard guarantees
-/// `energy >= cost + 1 >= 1` at this point (cost >= 0 for Power cards
-/// — Power is not an X-cost type at the pin). Saturating-sub keeps
-/// the field non-negative even under any future cost-modifier
-/// reordering that could elide the should_play guard.
-pub(crate) const SPIKED_GAUNTLETS_POWER_COST_INCREASE: i8 = 1;
-
 /// `SturdyClamp.after_block_cleared` — cap player block to
 /// `MAX_RETAINED_BLOCK = 10`. Fires unconditionally; when the
 /// `should_clear_block` predicate suppressed the clear, the block

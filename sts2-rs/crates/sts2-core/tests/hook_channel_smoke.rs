@@ -1048,7 +1048,7 @@ fn listener_before_card_played(
 }
 /// Bead `sts2-rs-60izs`: smoke-cover dispatch_before_card_played.
 /// Same CardEventCtx signature as after_card_played (existing
-/// smoke test). Production listener: SpikedGauntlets.
+/// smoke test). Production listener: IntimidatingHelmet.
 #[test]
 fn before_card_played_listener_fires() {
     C_BEFORE_CARD_PLAYED.store(0, Ordering::SeqCst);

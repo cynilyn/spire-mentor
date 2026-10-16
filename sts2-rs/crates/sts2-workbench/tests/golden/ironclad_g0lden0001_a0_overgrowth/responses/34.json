@@ -26,6 +26,20 @@
    "wins": 10
   },
   {
+   "action": "Defend",
+   "is_best": false,
+   "losses": 0,
+   "low_confidence": false,
+   "q": 1.2631,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "ties": 0,
+   "visits": 10,
+   "win_prob": 1.0,
+   "wins": 10
+  },
+  {
    "action": "Strike",
    "is_best": false,
    "losses": 0,
@@ -40,25 +54,11 @@
    "wins": 10
   },
   {
-   "action": "Defend",
-   "is_best": false,
-   "losses": 0,
-   "low_confidence": false,
-   "q": 1.2581,
-   "q_saturated": false,
-   "stable_idx": 0,
-   "target_index": null,
-   "ties": 0,
-   "visits": 10,
-   "win_prob": 1.0,
-   "wins": 10
-  },
-  {
    "action": "Bloodletting",
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.2439,
+   "q": 1.2467,
    "q_saturated": false,
    "stable_idx": 1,
    "target_index": null,
@@ -72,7 +72,7 @@
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.2109,
+   "q": 1.2201,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,

@@ -930,9 +930,9 @@ pub use sts2_mcts::belief_draw_c_puct;
 /// That 2.5 is no longer a flat constant: it is the value
 /// [`belief_draw_c_puct`] returns at every DEPLOYED budget, and the
 /// function steps down below 500 sims. See its doc comment for the curve.
-/// The EndTurn-widening retune layered on top (PR #467) is documented
-/// inline at its assignment below.
-fn mcts_config_for(
+/// The EndTurn-widening retune layered on top (PR #467) is documented on
+/// [`MctsConfig::apply_mode_dialect`], which applies all three constants.
+pub fn mcts_config_for(
     hidden_info: sts2_mcts::HiddenInfoMode,
     max_simulations: u32,
     seed: u64,
@@ -947,53 +947,15 @@ fn mcts_config_for(
         hidden_info,
         ..MctsConfig::default()
     };
-    if hidden_info == sts2_mcts::HiddenInfoMode::BeliefDraw {
-        config.c_puct = belief_draw_c_puct(max_simulations);
-        config.draw_widening_c = 2.0;
-        // 2026-08-17 EndTurn-widening retune (PR #467). `EndTurn` is the
-        // highest-entropy transition in the game — one edge that resolves
-        // every monster's intent, the turn-boundary hooks and the next
-        // draw — and its DPW class was the one never swept: `0.5 / 0.4`
-        // was hand-set BELOW the other classes precisely because
-        // realizing the transition is the most expensive one, i.e. tuned
-        // for cost containment rather than for strength. At 100 visits
-        // that cap admits 4 sampled enemy turns; these values admit 44,
-        // so the search actually hedges over what the enemies might do.
-        //
-        // Paired full-run gate, `main-500` panel, Ironclad, `ppo` +
-        // `eval-cheap`, 500 cells per arm per ascension (McNemar exact):
-        //   A8   38.6% -> 48.8%  (+10.20pp, p = 4.6e-05)
-        //   A9   20.2% -> 23.6%  ( +3.40pp, p = 0.13)
-        //   A10   5.2% ->  7.4%  ( +2.20pp, p = 0.11)
-        //   A0   68.4% -> 78.0%  ( +9.60pp, p = 2.3e-05)
-        //   pooled all-ascension +6.35pp, n = 2000, p = 8.2e-10
-        // A0 was the non-regression arm and came back POSITIVE, so this
-        // is NOT ascension-specific and is applied unconditionally to
-        // the honest deployed dialect rather than gated on ascension.
-        //
-        // It is a SEARCH-METHOD win, not a compute win, and the control
-        // that establishes that is the load-bearing evidence: the same
-        // ~2.4x extra engine work spent on plain sims instead
-        // (`--sims 2400 --boss-sims 9600`, no knob) is NULL — +0.80pp at
-        // A8 (p = 0.80) and +1.40pp at A0 (p = 0.60) — while this retune
-        // at the ORIGINAL budget beats that bigger-budget arm by
-        // +9.40pp (A8, p = 1.2e-04) and +8.20pp (A0, p = 5.3e-04). Same
-        // shape as the chance-node default before it: the METHOD moves
-        // win rate where the BUDGET does not.
-        //
-        // COST: median full-run wall-clock ~104s -> ~247s at identical
-        // sims, because each additionally-admitted outcome re-realizes a
-        // whole enemy turn. Anything that compares arms at fixed
-        // wall-clock, or that runs near `run_arena`'s 600s per-seed
-        // `--timeout-ms`, must account for that — an arm which silently
-        // trips that cap has its slow runs scored as losses.
-        //
-        // Rollback: `STS2_RUNAI_MCTS_OVERRIDES="endturn_widening_c=0.5,\
-        // endturn_widening_alpha=0.4"` restores the pre-retune dialect
-        // without a rebuild.
-        config.endturn_widening_c = 5.787;
-        config.endturn_widening_alpha = 0.436;
-    }
+    // The deployed dialect — BeliefDraw's budget-keyed c_puct, the F2
+    // draw widening and the PR #467 EndTurn retune — lives in sts2-mcts so
+    // the advisor and the workbench hint (`RecommendParams::mcts_config`)
+    // apply the identical constants (GH #758).
+    //
+    // Rollback of the EndTurn retune: `STS2_RUNAI_MCTS_OVERRIDES=
+    // "endturn_widening_c=0.5,endturn_widening_alpha=0.4"` restores the
+    // pre-retune dialect for this agent without a rebuild.
+    config.apply_mode_dialect();
     config
 }
 

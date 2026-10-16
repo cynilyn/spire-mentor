@@ -29,8 +29,7 @@ pub mod toml_file;
 // `sts2-content`.
 #[allow(unused_imports)]
 pub use encounter::{
-    monster_ai, resolve_encounter, summarize_monsters, EncounterError, MonsterAiArgs, MonsterSpec,
-    ENCOUNTERS,
+    resolve_encounter, summarize_monsters, EncounterError, MonsterAiArgs, MonsterSpec, ENCOUNTERS,
 };
 #[allow(unused_imports)]
 pub use sts2_content::monster_dispatch::{MonsterSpawnArgs, SpawnPosition};

@@ -12634,6 +12634,11 @@ pub fn legal_actions(state: &CombatState) -> SmallVec<[Action; 16]> {
     // write the legacy surface while cards/relics would write the mirror.
     let smoggy_blocks = state.player_power_amount(PowerKind::Smoggy) > 0;
 
+    // GH #742: mirror the `play_card` relic `ShouldPlay` gate (C#
+    // `VelvetChoker.ShouldPlay`, six card plays per turn). Card-independent,
+    // so it blocks every card once reached.
+    let relic_blocks = hooks::relic_should_play_blocked(state);
+
     // Perf 2026-07-04: reserve the emission upper bound up front so the
     // SmallVec never regrows mid-loop (a full hand of Enemy-target cards ×
     // several alive enemies spills past the 16-slot inline buffer and used
@@ -12769,7 +12774,7 @@ pub fn legal_actions(state: &CombatState) -> SmallVec<[Action; 16]> {
         }
         // Bead `sts2-rs-ybtmu`: skip every card once the SlothPower
         // per-turn play cap is reached (mirrors the `play_card` gate).
-        if sloth_cap_reached {
+        if sloth_cap_reached || relic_blocks {
             continue;
         }
         // Bead `sts2-rs-xk9yo`: skip every card once the player owns Ringing

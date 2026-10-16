@@ -372,9 +372,10 @@
   {
    "chance_action": "End turn",
    "chance_closed": false,
-   "chance_draws": 1,
+   "chance_draws": 2,
    "children": [
-    10
+    10,
+    22
    ],
    "id": 9,
    "is_terminal": false,
@@ -382,7 +383,7 @@
    "label": "End turn",
    "losses": 2,
    "node_kind": "chance",
-   "outcome_cap": 1,
+   "outcome_cap": 10,
    "outcome_ordinal": null,
    "parent": 1,
    "proven_loss": false,
@@ -412,14 +413,12 @@
    "chance_action": null,
    "chance_closed": false,
    "chance_draws": 0,
-   "children": [
-    22
-   ],
+   "children": [],
    "id": 10,
    "is_terminal": false,
    "kind": "outcome",
    "label": "outcome #0",
-   "losses": 2,
+   "losses": 1,
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": 0,
@@ -443,8 +442,8 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": -2.4621,
-   "visits": 2,
+   "value_sum": -1.2311,
+   "visits": 1,
    "wins": 0
   },
   {
@@ -761,7 +760,7 @@
    "label": "End turn",
    "losses": 1,
    "node_kind": "chance",
-   "outcome_cap": 1,
+   "outcome_cap": 8,
    "outcome_ordinal": null,
    "parent": 7,
    "proven_loss": false,
@@ -868,13 +867,13 @@
    "children": [],
    "id": 22,
    "is_terminal": false,
-   "kind": "play",
-   "label": "NegativePulse",
+   "kind": "outcome",
+   "label": "outcome #1",
    "losses": 1,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 10,
+   "outcome_ordinal": 1,
+   "parent": 9,
    "proven_loss": false,
    "proven_win": false,
    "q": -1.2311,
@@ -886,8 +885,8 @@
       "uid": 2
      }
     ],
-    "energy": 2,
-    "player_block": 5,
+    "energy": 3,
+    "player_block": 0,
     "player_hp": 2,
     "player_max_hp": 66,
     "round": 8

@@ -150,9 +150,10 @@ def play_run_mcts(
     )
 
     rm = sts2_rs.RunManager(seed=seed, character=character, neow_start=True)
-    # The decision policy lives in RunStepper so the workbench's faithful "play
-    # to end" reuses this exact logic (RNG stream, combat-seed schedule, boss-sim
-    # card rewards) and reproduces these runs move-for-move. `neow_start=True`
+    # The decision policy lives in RunStepper. The workbench's faithful "play
+    # to end" does NOT reuse it (it drives the native HeuristicRunAgent and
+    # shares only `hash_seed`), so these runs are not reproduced there
+    # move-for-move. `neow_start=True`
     # opens on the Neow event like the real game / run-AI arena; skipping it
     # forfeits the opening blessing and shifts the act-1 event cursor.
     stepper = RunStepper(

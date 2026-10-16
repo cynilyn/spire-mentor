@@ -195,6 +195,8 @@ def _mcts_recommend(cs: Any, cfg: Any) -> dict[str, Any]:
         # regret review then graded honest play against it.
         hidden_info=cfg.hidden_info,
         draw_widening_c=cfg.resolved_draw_widening_c(),
+        endturn_widening_c=cfg.endturn_widening_c,
+        endturn_widening_alpha=cfg.endturn_widening_alpha,
     )
 
 

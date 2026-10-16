@@ -96,7 +96,6 @@ pub mod shuriken;
 pub mod sling_of_courage;
 pub mod snecko_skull;
 pub mod sparkling_rouge;
-pub mod spiked_gauntlets;
 pub mod stone_calendar;
 pub mod strike_dummy;
 pub mod sturdy_clamp;
@@ -202,7 +201,6 @@ pub fn install_default_registry() {
         sparkling_rouge::install();
         bookmark::install();
         intimidating_helmet::install();
-        spiked_gauntlets::install();
         orange_dough::install();
         vexing_puzzlebox::install();
         unceasing_top::install();

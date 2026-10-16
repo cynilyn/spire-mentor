@@ -59,7 +59,7 @@
    "action": "end turn",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.1027,
+   "q": 1.1099,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,

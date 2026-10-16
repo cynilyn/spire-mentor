@@ -16,70 +16,70 @@
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.0683,
+   "q": 1.0663,
    "q_saturated": false,
    "stable_idx": 3,
    "target_index": null,
    "ties": 0,
-   "visits": 12,
+   "visits": 13,
    "win_prob": 1.0,
-   "wins": 12
+   "wins": 13
   },
   {
    "action": "Strike",
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.0631,
+   "q": 1.0653,
    "q_saturated": false,
    "stable_idx": 0,
    "target_index": 0,
    "ties": 0,
-   "visits": 11,
+   "visits": 12,
    "win_prob": 1.0,
-   "wins": 11
-  },
-  {
-   "action": "Defend",
-   "is_best": false,
-   "losses": 0,
-   "low_confidence": false,
-   "q": 1.0621,
-   "q_saturated": false,
-   "stable_idx": 4,
-   "target_index": null,
-   "ties": 0,
-   "visits": 11,
-   "win_prob": 1.0,
-   "wins": 11
+   "wins": 12
   },
   {
    "action": "Bodyguard",
    "is_best": false,
    "losses": 1,
    "low_confidence": false,
-   "q": 0.7866,
+   "q": 0.823,
    "q_saturated": false,
    "stable_idx": 1,
    "target_index": null,
    "ties": 0,
-   "visits": 8,
-   "win_prob": 0.875,
-   "wins": 7
+   "visits": 9,
+   "win_prob": 0.8889,
+   "wins": 8
+  },
+  {
+   "action": "Defend",
+   "is_best": false,
+   "losses": 1,
+   "low_confidence": false,
+   "q": 0.8128,
+   "q_saturated": false,
+   "stable_idx": 4,
+   "target_index": null,
+   "ties": 0,
+   "visits": 9,
+   "win_prob": 0.8889,
+   "wins": 8
   },
   {
    "action": "end turn",
    "is_best": false,
    "losses": 2,
    "low_confidence": false,
-   "q": 0.267,
+   "q": 0.1359,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
    "ties": 0,
-   "visits": 6,
-   "win_prob": 0.6667,
-   "wins": 4
+   "visits": 5,
+   "win_prob": 0.6,
+   "wins": 3
   }
  ]
 }

@@ -16,8 +16,8 @@
 use serde_json::{json, Map, Value};
 use sts2_core::{apply, legal_actions, Action, CombatState};
 use sts2_mcts::{
-    hint, par_search_with_policy, EdgeAction, HiddenInfoMode, LeafEval, Mcts, MctsConfig, NodeKind,
-    RolloutPolicyKind, RootOutcome, SharedPolicy,
+    dpw_outcome_cap, hint, par_search_with_policy, EdgeAction, HiddenInfoMode, LeafEval, Mcts,
+    MctsConfig, NodeKind, RolloutPolicyKind, RootOutcome, SharedPolicy,
 };
 
 use super::combat::combat_action_to_value;
@@ -53,6 +53,11 @@ pub struct RecommendParams {
     pub hidden_info: HiddenInfoMode,
     /// `None` keeps the mode default (`MctsConfig::default().draw_widening_c`).
     pub draw_widening_c: Option<f32>,
+    /// Explicit EndTurn DPW coefficient (an ablation knob). `None` keeps what
+    /// the mode deploys ([`MctsConfig::apply_mode_dialect`]).
+    pub endturn_widening_c: Option<f32>,
+    /// Explicit EndTurn DPW exponent; `None` keeps the mode's.
+    pub endturn_widening_alpha: Option<f32>,
     pub common_random_numbers: bool,
 }
 
@@ -69,7 +74,9 @@ impl Default for RecommendParams {
             // The DEPLOYED honest search, not the leaky one. These three are
             // one setting: see `resolve_mode_constants`.
             hidden_info: HiddenInfoMode::BeliefDraw,
-            draw_widening_c: Some(2.0),
+            draw_widening_c: Some(sts2_mcts::BELIEF_DRAW_DRAW_WIDENING_C),
+            endturn_widening_c: None,
+            endturn_widening_alpha: None,
             common_random_numbers: false,
         }
     }
@@ -160,6 +167,12 @@ impl RecommendParams {
             Some(Value::Null) | None => {}
             Some(v) => p.draw_widening_c = num_f32(v),
         }
+        if let Some(v) = obj.get("endturn_widening_c").and_then(num_f32) {
+            p.endturn_widening_c = Some(v);
+        }
+        if let Some(v) = obj.get("endturn_widening_alpha").and_then(num_f32) {
+            p.endturn_widening_alpha = Some(v);
+        }
         if let Some(v) = obj.get("common_random_numbers").and_then(Value::as_bool) {
             p.common_random_numbers = v;
         }
@@ -174,36 +187,42 @@ impl RecommendParams {
     /// caller pinned them.
     ///
     /// `c_puct` and `draw_widening_c` are not free knobs: the deployed
-    /// BeliefDraw honest search is the triple (beliefdraw,
-    /// [`sts2_mcts::belief_draw_c_puct`] of the budget, 2.0) — the F2 retune,
-    /// bead `sts2-rs-09x5n`. Pairing BeliefDraw with the engine's `SQRT_2` /
+    /// BeliefDraw honest search sets them from the budget
+    /// ([`MctsConfig::apply_mode_dialect`] — the F2 retune, bead
+    /// `sts2-rs-09x5n`). Pairing BeliefDraw with the engine's `SQRT_2` /
     /// no-widening numbers is a MISTUNED search, not a neutral one, and the
     /// constant depends on `sims`, which callers set independently. So a
     /// config that names a mode or a budget without naming the constants gets
-    /// the constants that mode deploys at that budget.
+    /// the constants that mode deploys at that budget. (The EndTurn pair
+    /// needs no resolving here: `None` defers to the dialect in
+    /// [`Self::mcts_config`].)
     ///
     /// Every other mode keeps the historical 1.4 / no widening byte-identical.
     fn resolve_mode_constants(&mut self, keep_c_puct: bool, keep_draw_widening: bool) {
         let honest = self.hidden_info == HiddenInfoMode::BeliefDraw;
+        let mut dialect = MctsConfig {
+            hidden_info: self.hidden_info,
+            max_simulations: self.sims,
+            ..MctsConfig::default()
+        };
+        dialect.apply_mode_dialect();
         if !keep_c_puct {
-            self.c_puct = if honest {
-                sts2_mcts::belief_draw_c_puct(self.sims)
-            } else {
-                1.4
-            };
+            self.c_puct = if honest { dialect.c_puct } else { 1.4 };
         }
         if !keep_draw_widening {
-            self.draw_widening_c = if honest { Some(2.0) } else { None };
+            self.draw_widening_c = honest.then_some(dialect.draw_widening_c);
         }
     }
 
     /// The search config `mcts_recommend` / `mcts_search_tree` build: the
-    /// deployed-search knobs pinned (no transposition table, regularized
-    /// π temperature 0.1, uniform PUCT prior) plus this call's parameters.
+    /// mode's deployed dialect ([`MctsConfig::apply_mode_dialect`], the same
+    /// call the run agent's `sts2-runai::policy::mcts_config_for` makes), the
+    /// deployed-search knobs pinned (no transposition table, regularized π
+    /// temperature 0.1, uniform PUCT prior), then this call's parameters —
+    /// an explicit `c_puct` / widening value wins over the dialect.
     #[must_use]
     pub fn mcts_config(&self) -> MctsConfig {
-        MctsConfig {
-            c_puct: self.c_puct,
+        let mut cfg = MctsConfig {
             max_simulations: self.sims,
             max_rollout_depth: self.depth,
             seed: self.seed,
@@ -212,12 +231,21 @@ impl RecommendParams {
             regularized_pi_temperature: 0.1,
             use_puct_prior: false,
             hidden_info: self.hidden_info,
-            draw_widening_c: self
-                .draw_widening_c
-                .unwrap_or(MctsConfig::default().draw_widening_c),
             common_random_numbers: self.common_random_numbers,
             ..MctsConfig::default()
+        };
+        cfg.apply_mode_dialect();
+        cfg.c_puct = self.c_puct;
+        cfg.draw_widening_c = self
+            .draw_widening_c
+            .unwrap_or(MctsConfig::default().draw_widening_c);
+        if let Some(c) = self.endturn_widening_c {
+            cfg.endturn_widening_c = c;
         }
+        if let Some(alpha) = self.endturn_widening_alpha {
+            cfg.endturn_widening_alpha = alpha;
+        }
+        cfg
     }
 }
 
@@ -614,20 +642,10 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             } else {
                 n.children.iter().map(|(_, cid)| cid.0).collect()
             };
-            // DPW outcome cap at the node's current visits, mirroring
-            // `chance_widen_or_sample`: EndTurn chance nodes use the
-            // separately-tuned `endturn_*` coefficients.
+            // DPW outcome cap at the node's current visits — the engine's
+            // own class selection (EndTurn > Draw > Default) and formula.
             let outcome_cap = if is_chance {
-                let is_endturn =
-                    matches!(n.chance_action, Some(EdgeAction::Other(Action::EndTurn)));
-                let (c, alpha) = if is_endturn {
-                    (cfg.endturn_widening_c, cfg.endturn_widening_alpha)
-                } else {
-                    (cfg.chance_widening_c, cfg.chance_widening_alpha)
-                };
-                #[allow(clippy::cast_sign_loss)]
-                let cap = (c * ((n.visits + 1) as f32).powf(alpha)).ceil().max(1.0) as u32;
-                cap
+                dpw_outcome_cap(&cfg, n)
             } else {
                 0
             };
@@ -750,6 +768,42 @@ mod tests {
         assert!((p.c_puct - 1.4).abs() < 1e-6);
         assert!(
             (p.mcts_config().draw_widening_c - MctsConfig::default().draw_widening_c).abs() < 1e-6
+        );
+    }
+
+    /// GH #758: the EndTurn pair follows the mode's deployed dialect (the run
+    /// agent's PR #467 retune under BeliefDraw), an explicit value wins, and
+    /// every other mode keeps the engine's 0.5 / 0.4.
+    #[test]
+    fn endturn_widening_follows_the_mode_unless_pinned() {
+        let (dc, dalpha) = sts2_mcts::BELIEF_DRAW_ENDTURN_WIDENING;
+        let cfg = RecommendParams::default().mcts_config();
+        assert_eq!(cfg.endturn_widening_c.to_bits(), dc.to_bits());
+        assert_eq!(cfg.endturn_widening_alpha.to_bits(), dalpha.to_bits());
+
+        let p = RecommendParams::from_config(
+            &json!({"endturn_widening_c": 0.5, "endturn_widening_alpha": 0.4}),
+            "t",
+        )
+        .unwrap();
+        assert_eq!(p.endturn_widening_c, Some(0.5));
+        let cfg = p.mcts_config();
+        assert!((cfg.endturn_widening_c - 0.5).abs() < 1e-6);
+        assert!((cfg.endturn_widening_alpha - 0.4).abs() < 1e-6);
+        // Pinning the EndTurn pair leaves the rest of the dialect alone.
+        assert!((cfg.draw_widening_c - 2.0).abs() < 1e-6);
+
+        let cfg = RecommendParams::from_config(&json!({"hidden_info": "clairvoyant"}), "t")
+            .unwrap()
+            .mcts_config();
+        let engine = MctsConfig::default();
+        assert_eq!(
+            cfg.endturn_widening_c.to_bits(),
+            engine.endturn_widening_c.to_bits()
+        );
+        assert_eq!(
+            cfg.endturn_widening_alpha.to_bits(),
+            engine.endturn_widening_alpha.to_bits()
         );
     }
 

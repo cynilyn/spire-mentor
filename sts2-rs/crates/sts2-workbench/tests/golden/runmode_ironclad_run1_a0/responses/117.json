@@ -15,18 +15,18 @@
    "action": "STRIKE_IRONCLAD.title",
    "is_best": true,
    "low_confidence": false,
-   "q": 1.2454,
+   "q": 1.2433,
    "q_saturated": false,
    "stable_idx": 0,
    "target_index": null,
-   "visits": 17,
+   "visits": 16,
    "win_prob": 1.0
   },
   {
    "action": "BASH.title",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.2384,
+   "q": 1.2395,
    "q_saturated": false,
    "stable_idx": 2,
    "target_index": null,
@@ -37,11 +37,11 @@
    "action": "end turn",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.1924,
+   "q": 1.2051,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
-   "visits": 15,
+   "visits": 16,
    "win_prob": 1.0
   }
  ]

@@ -6536,17 +6536,23 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     // energy for an X-cost card (which then drains to 0).
     let energy_spent_for_hook: i32 = if card.is_x_cost() {
         let raw_x = i32::from(state.player.energy).max(0);
-        // Bead `sts2-rs-70anj.3.7`: relic-side `modify_x_value` fold
-        // (ChemicalX +2 etc.) before stamping `card.energy_spent`.
-        let x = crate::relic_effects::dispatch_modify_x_value(state, raw_x);
-        state.cards[card_idx].energy_spent = x;
+        // C# `SpendEnergy` sets `CapturedXValue = amount` — the RAW energy
+        // spent, which is also the play's `EnergyValue`. The relic
+        // `modify_x_value` fold (ChemicalX +2) is NOT stamped here: C# applies
+        // it at read time (`CardModel.ResolveEnergyXValue`), so X-cost handlers
+        // read `card_effects::resolving_card_x_value` while RightHandHand /
+        // IvoryTile see the raw energy (GH #741 follow-up).
+        state.cards[card_idx].energy_spent = raw_x;
         state.player.energy = 0;
-        // Energy *lost* is the raw available pool (ChemicalX modifies the X
-        // value used by the effect, not the energy spent). Matches C#
-        // `SpendEnergy(GetAmountToSpend())`.
         raw_x
     } else {
-        i32::from(cost_i8)
+        // GH #741: C# `PlayCardAction.ExecuteAction` sets `EnergyValue =
+        // EnergySpent = item` (the energy `SpendResources` paid) for EVERY
+        // play, so a non-X card stamps its paid cost too. RightHandHand's late
+        // effect and IvoryTile's `after_card_played` read it off the card.
+        let paid = i32::from(cost_i8);
+        state.cards[card_idx].energy_spent = paid;
+        paid
     };
 
     // C# `CardModel.SpendEnergy` fires `Hook.AfterEnergySpent` immediately
@@ -6583,7 +6589,11 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     // play-log and are not separately recorded. No-op unless recording is on.
     {
         let pl = &state.cards[card_idx];
-        let (pl_id, pl_up, pl_energy) = (pl.card_id, pl.upgraded, pl.energy_spent);
+        // The play logs carry the X value for an X-cost card and 0 for any
+        // other, as they did before GH #741 started stamping non-X cards'
+        // `energy_spent` (the workbench goldens pin this shape).
+        let pl_energy = crate::cards::observational_energy_spent(pl);
+        let (pl_id, pl_up) = (pl.card_id, pl.upgraded);
         record_play_into(
             &mut state.combat_log,
             pl_id,
@@ -6698,9 +6708,9 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
 
     // Bead `sts2-rs-ff3hr`: relic-side `before_card_played` dispatch.
     // Fires after the energy spend + Hand→Play move so listeners
-    // observe the play state (energy already deducted by the base
-    // cost; SpikedGauntlets deducts the additional +1 on Power
-    // plays). The hooks-bus `before_card_played` channel is read-only
+    // observe the play state (energy already deducted by the
+    // modifier-resolved cost, which includes SpikedGauntlets' +1 on Power
+    // cards — GH #742). The hooks-bus `before_card_played` channel is read-only
     // (`noop_hook!`), so the relic-side `&mut state` channel is the
     // canonical site for state-mutating pre-play hooks.
     let before_played_ctx = crate::relic_effects::CardEventCtx {
@@ -8351,6 +8361,8 @@ pub fn auto_play_n_from_draw_top(state: &mut CombatState, count: i32, force_exha
 ///   at most `Amount` card plays per turn.
 /// * `RingingPower.ShouldPlay` (bead `sts2-rs-xk9yo`): exactly one card
 ///   play per turn.
+/// * `VelvetChoker.ShouldPlay` (GH #742): at most six card plays per turn —
+///   the relic half, [`hooks::relic_should_play_blocked`].
 /// * `SmoggyPower.ShouldPlay` (`SmoggyPower.cs:64-71`): a player-owned card
 ///   carrying the `Smog` card-affliction cannot be played while the player
 ///   has SmoggyPower. Since `SmoggyPower.AfterCardPlayed` smogs every
@@ -8366,6 +8378,9 @@ pub fn auto_play_n_from_draw_top(state: &mut CombatState, count: i32, force_exha
 /// seeds 3931/5571: a Ringing/Bound-blocked Cascade/Stampede auto-play
 /// actually resolved in Rust).
 pub fn player_should_play_blocked(state: &CombatState, card: &crate::cards::Card) -> bool {
+    if hooks::relic_should_play_blocked(state) {
+        return true;
+    }
     if matches!(
         card.affliction,
         Some(crate::card_afflictions::CardAffliction {
@@ -8812,16 +8827,24 @@ pub(crate) fn resolve_auto_played_card_at_target(
     // rs=1). Stamp it here (no energy drain, mirroring C#).
     if state.cards[top_idx].is_x_cost() {
         state.cards[top_idx].energy_spent = i32::from(state.player.energy.max(0));
+    } else {
+        // GH #741: a non-X auto-play is free (C# `EnergySpent = 0`) but its
+        // `EnergyValue` is `EnergyCost.GetAmountToSpend()` — the card's
+        // modifier-resolved cost (`CardCmd.AutoPlay`). Stamp that, so a value
+        // left by an earlier manual play of this card is never read here.
+        state.cards[top_idx].energy_spent = crate::hooks::effective_card_cost(state, top_uid);
     }
 
     // UI play-log: this auto-play passed every early-return guard (unplayable,
     // AnyAlly-without-ally, ShouldPlay-blocked) above and WILL resolve, so it
     // is recorded here — after the X-cost capture so `energy_spent` reflects the
-    // captured X (free auto-plays of non-X cards typically read 0). Free play
+    // captured X. A non-X auto-play is free, so it logs 0 (the card's stamped
+    // `energy_spent` is its C# `EnergyValue`, not energy paid). Free play
     // -> `auto_played = true`, no player-chosen target.
     {
         let inst = &state.cards[top_idx];
-        let (id, up, energy) = (inst.card_id, inst.upgraded, inst.energy_spent);
+        let energy = crate::cards::observational_energy_spent(inst);
+        let (id, up) = (inst.card_id, inst.upgraded);
         record_play_into(&mut state.combat_log, id, up, energy, true, None);
         crate::event_log::record(
             state,
@@ -9440,6 +9463,13 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
     // (C# records `CardPlayFinished` even for an Enemy-targeted no-alive-enemy
     // play).
     auto_play_tally_finished(state, top_card_type, top_idx);
+    // C# `Hook.AfterCardPlayed` ends with every listener's
+    // `AfterCardPlayedLate` (Hook.cs:431-437) — auto-plays included, since
+    // `CardCmd.AutoPlay` runs the same `OnPlayWrapper`. Fired after the tally
+    // so MakeItSo's skill count sees this play (C# records `CardPlayFinished`
+    // before `AfterCardPlayed`), and once per replay below. RightHandHand reads
+    // the `EnergyValue` stamped above (GH #741 follow-up).
+    crate::card_effects::fire_late_effects(state, &hook_played_ctx);
 
     // Bead `sts2-rs-xk9yo`: an AUTO-PLAYED card honors its per-instance
     // `base_replay_count` just like a hand-played one. C#
@@ -9521,6 +9551,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
             // hand-play replay loop (combat_loop.rs:4828) — so a SECOND replay
             // of a scaling Attack sees the FIRST replay counted.
             auto_play_tally_finished(state, top_card_type, top_idx);
+            crate::card_effects::fire_late_effects(state, &hook_played_ctx);
         }
     }
 
@@ -18051,10 +18082,11 @@ mod tests {
         assert_eq!(state.player.energy, 0);
     }
 
-    /// Non-X-cost cards (cost ≥ 0) leave `energy_spent` at its default
-    /// 0 — the X-cost branch is gated on `Card::is_x_cost()`.
+    /// GH #741: a non-X-cost card stamps the energy it paid into
+    /// `energy_spent` (C# `PlayCardAction` sets `EnergyValue = EnergySpent =
+    /// item` for every play), so late effects such as RightHandHand's see it.
     #[test]
-    fn n4wd_non_x_cost_leaves_energy_spent_zero() {
+    fn n4wd_non_x_cost_records_the_energy_paid() {
         let mut state = state_with_cultists(1);
         let _ = start_combat(&mut state);
         state.phase = CombatPhase::PlayerPlayPhase;
@@ -18070,8 +18102,8 @@ mod tests {
 
         let idx = new_uid.0.get() as usize - 1;
         assert_eq!(
-            state.cards[idx].energy_spent, 0,
-            "non-X-cost cards must not record energy_spent",
+            state.cards[idx].energy_spent, 2,
+            "a cost-2 card records the 2 energy it paid",
         );
         assert_eq!(
             state.player.energy, 1,

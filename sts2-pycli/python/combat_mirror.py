@@ -2111,6 +2111,8 @@ class CombatMirror:
             rollout_policy=cfg.rollout_policy,
             hidden_info=cfg.hidden_info,
             draw_widening_c=cfg.resolved_draw_widening_c(),
+            endturn_widening_c=cfg.endturn_widening_c,
+            endturn_widening_alpha=cfg.endturn_widening_alpha,
             common_random_numbers=cfg.common_random_numbers,
         )
 

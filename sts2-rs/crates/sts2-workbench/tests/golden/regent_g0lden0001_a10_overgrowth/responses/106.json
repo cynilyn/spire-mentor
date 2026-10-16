@@ -16,56 +16,56 @@
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.0208,
+   "q": 1.0214,
    "q_saturated": false,
    "stable_idx": 3,
    "target_index": null,
    "ties": 0,
-   "visits": 16,
+   "visits": 17,
    "win_prob": 1.0,
-   "wins": 16
+   "wins": 17
   },
   {
    "action": "Defend",
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
-   "q": 1.0195,
+   "q": 1.0202,
    "q_saturated": false,
    "stable_idx": 1,
    "target_index": null,
    "ties": 0,
-   "visits": 15,
+   "visits": 17,
    "win_prob": 1.0,
-   "wins": 15
+   "wins": 17
   },
   {
    "action": "Venerate",
    "is_best": false,
-   "losses": 1,
+   "losses": 2,
    "low_confidence": false,
-   "q": 0.8046,
+   "q": 0.5711,
    "q_saturated": false,
    "stable_idx": 2,
    "target_index": null,
    "ties": 0,
-   "visits": 11,
-   "win_prob": 0.9091,
-   "wins": 10
+   "visits": 10,
+   "win_prob": 0.8,
+   "wins": 8
   },
   {
    "action": "end turn",
    "is_best": false,
-   "losses": 2,
+   "losses": 3,
    "low_confidence": false,
-   "q": 0.252,
+   "q": -0.6712,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,
    "ties": 0,
-   "visits": 6,
-   "win_prob": 0.6667,
-   "wins": 4
+   "visits": 4,
+   "win_prob": 0.25,
+   "wins": 1
   }
  ]
 }

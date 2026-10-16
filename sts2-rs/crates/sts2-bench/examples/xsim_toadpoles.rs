@@ -28,12 +28,13 @@
 //! and draw order; the Toadpoles' HP is set with `hp_override`), at
 //! `--ascension` (default 10, the fixture's), the same counts, cap, policy
 //! RNG stream and stop accounting. The Toadpoles' AI is built the way a real run
-//! builds it (`run_bridge::enter_combat_from_roster`: `SpawnPosition.index`
-//! = roster index, so index 0 is C#'s `IsFront` toad and opens SPIKEN, index
-//! 1 opens WHIRL, as `ToadpolesWeak.GenerateMonsters`). The `sts2-cli`
-//! scenario builder alone gives both toads index 0, so both open SPIKEN
-//! (GH #762); `--legacy-spawn` keeps that, and with `--ascension 0` it is
-//! this harness as it was before the fix. `--mode clone` is their
+//! builds it: the `sts2-cli` scenario builder spawns through
+//! `run_bridge::spawn_roster` (GH #762), so `SpawnPosition.index` is the roster
+//! index, index 0 is C#'s `IsFront` toad and opens SPIKEN, index 1 opens WHIRL,
+//! as `ToadpolesWeak.GenerateMonsters`. Before that fix the builder gave both
+//! toads index 0, so both opened SPIKEN; `--legacy-spawn` rebuilds that
+//! (`common/legacy_spawn.rs`), and with `--ascension 0` it is this harness as
+//! it was before PR #761. `--mode clone` is their
 //! clone-and-apply per transition; `--mode inplace` applies to the
 //! playout's own copy instead (our search's pattern); `both` runs clone
 //! first.
@@ -81,10 +82,12 @@ use clap::Parser;
 
 use sts2_cli::sim::scenario::{MonsterAiArgs, MonsterSpawnArgs, MonsterSpec};
 use sts2_cli::sim::{build_starter_state_from_monsters_with_ascension, PlayerClass};
-use sts2_content::monster_dispatch::{build_ai_with_ascension, SpawnPosition};
 use sts2_core::cards::CardId;
 use sts2_core::combat_loop::{start_combat, start_player_turn};
 use sts2_core::{apply, legal_actions, CardUid, CombatState, MonsterKind};
+
+#[path = "common/legacy_spawn.rs"]
+mod legacy_spawn;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -122,8 +125,8 @@ struct Args {
     /// field, which sansb's admission reads as A10).
     #[arg(long, default_value_t = 10)]
     ascension: u8,
-    /// Keep the `sts2-cli` scenario builder's Toadpoles (both on slot 0's AI,
-    /// so both open SPIKEN; GH #762), for auditing the pre-fix harness.
+    /// Rebuild the pre-#762 scenario builder's Toadpoles (both on slot 0's AI,
+    /// so both open SPIKEN), for auditing the pre-fix harness.
     #[arg(long)]
     legacy_spawn: bool,
 }
@@ -137,41 +140,6 @@ const HAND: [CardId; 5] = [S, S, D, S, S];
 const DRAW: [CardId; 5] = [S, D, D, B, D];
 const TOAD_HP: [u32; 2] = [26, 25];
 
-/// Rebuild each monster's AI the way a real run does
-/// (`run_bridge::enter_combat_from_roster`; GH #762): the run path's
-/// `SpawnPosition` (the builder uses index 0 for every monster) and the
-/// spec's spawn args. HP is pinned here, spawn buffs read only the species and
-/// the ascension, and the encounter slot (kept on the AI) is stamped again.
-fn spawn_as_run(state: &mut CombatState, specs: &[MonsterSpec]) {
-    let n = specs.len();
-    assert_eq!(state.enemy_uids.len(), n, "one creature per roster entry");
-    for (i, spec) in specs.iter().enumerate() {
-        let position = SpawnPosition {
-            alone: n == 1,
-            front: i == 0,
-            back: n > 1 && i == n - 1,
-            index: u8::try_from(i).expect("roster index fits u8"),
-        };
-        let ai = build_ai_with_ascension(spec.kind, spec.args, position, state.ascension);
-        let uid = state.enemy_uids[i];
-        let creature = state
-            .creatures
-            .iter_mut()
-            .find(|c| c.id == uid.0)
-            .expect("enemy uid in the creature store");
-        assert_eq!(
-            creature.species,
-            Some(spec.kind),
-            "creature {i} is roster entry {i}"
-        );
-        creature.ai = Some(ai);
-        if let Some(slot) = spec.slot {
-            state.set_enemy_slot(uid, slot);
-        }
-        assert_eq!(state.enemy_slot(uid), spec.slot, "slot of creature {i}");
-    }
-}
-
 fn build(seed: u64, ascension: u8, legacy_spawn: bool) -> CombatState {
     let monsters: Vec<MonsterSpec> = (0..2)
         .map(|idx| MonsterSpec {
@@ -179,7 +147,7 @@ fn build(seed: u64, ascension: u8, legacy_spawn: bool) -> CombatState {
             hp_override: Some(TOAD_HP[idx]),
             // Index 0 is C#'s `IsFront = true` (opens SPIKEN), index 1 the
             // back toad (opens WHIRL), as `ToadpolesWeak.GenerateMonsters`.
-            // The Toadpole AI reads only the spawn index (`spawn_as_run`);
+            // The Toadpole AI reads only the spawn index (its roster index);
             // `ai_args` reaches Nibbits only.
             ai_args: MonsterAiArgs {
                 is_alone: false,
@@ -199,8 +167,8 @@ fn build(seed: u64, ascension: u8, legacy_spawn: bool) -> CombatState {
         None,
         ascension,
     );
-    if !legacy_spawn {
-        spawn_as_run(&mut s, &specs);
+    if legacy_spawn {
+        legacy_spawn::respawn_legacy(&mut s, &specs, seed);
     }
     let _ = start_combat(&mut s);
     let _ = start_player_turn(&mut s);

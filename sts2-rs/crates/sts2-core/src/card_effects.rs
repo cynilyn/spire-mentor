@@ -3481,6 +3481,16 @@ pub fn resolving_card_inst(state: &CombatState) -> Option<&crate::cards::Card> {
     state.cards.get(uid.0.get() as usize - 1)
 }
 
+/// The X value of the X-cost card currently being played: its captured
+/// `energy_spent` (C# `EnergyCost.CapturedXValue`) folded through the relic
+/// `modify_x_value` chain (ChemicalX +2) — C# `CardModel.ResolveEnergyXValue`,
+/// which every v0.107.1 X-cost card reads. 0 when nothing is resolving.
+#[must_use]
+pub fn resolving_card_x_value(state: &CombatState) -> i32 {
+    let captured = resolving_card_inst(state).map_or(0, |c| c.energy_spent);
+    crate::relic_effects::dispatch_modify_x_value(state, captured)
+}
+
 /// `base_damage` of the card currently being played, or 0 when nothing is
 /// resolving. C# `DamageVar.BaseValue` off the `CardPlay`'s own card.
 #[must_use]

@@ -38,7 +38,7 @@
    "parent": null,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1411,
+   "q": 1.1416,
    "summary": {
     "enemies": [
      {
@@ -65,7 +65,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 54.7706,
+   "value_sum": 54.7956,
    "visits": 48,
    "wins": 48
   },
@@ -136,7 +136,7 @@
    "label": "Glow",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 3,
+   "outcome_cap": 5,
    "outcome_ordinal": null,
    "parent": 0,
    "proven_loss": false,
@@ -236,7 +236,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 3,
+   "outcome_cap": 5,
    "outcome_ordinal": null,
    "parent": 0,
    "proven_loss": false,
@@ -337,7 +337,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 3,
+   "outcome_cap": 5,
    "outcome_ordinal": null,
    "parent": 0,
    "proven_loss": false,
@@ -436,7 +436,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 3,
+   "outcome_cap": 5,
    "outcome_ordinal": null,
    "parent": 0,
    "proven_loss": false,
@@ -732,9 +732,10 @@
   {
    "chance_action": "End turn",
    "chance_closed": false,
-   "chance_draws": 1,
+   "chance_draws": 4,
    "children": [
-    15
+    15,
+    40
    ],
    "id": 14,
    "is_terminal": false,
@@ -742,12 +743,12 @@
    "label": "End turn",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 1,
+   "outcome_cap": 12,
    "outcome_ordinal": null,
    "parent": 0,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1105,
+   "q": 1.1168,
    "summary": {
     "enemies": [
      {
@@ -774,7 +775,7 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 4.442,
+   "value_sum": 4.467,
    "visits": 4,
    "wins": 4
   },
@@ -783,9 +784,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [
-    25,
-    40,
-    55
+    25
    ],
    "id": 15,
    "is_terminal": false,
@@ -798,7 +797,7 @@
    "parent": 14,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1105,
+   "q": 1.1034,
    "summary": {
     "enemies": [
      {
@@ -825,9 +824,9 @@
    },
    "target_index": null,
    "ties": 0,
-   "value_sum": 4.442,
-   "visits": 4,
-   "wins": 4
+   "value_sum": 2.2067,
+   "visits": 2,
+   "wins": 2
   },
   {
    "chance_action": null,
@@ -1218,7 +1217,7 @@
    "label": "Glow",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 1,
    "proven_loss": false,
@@ -1314,7 +1313,7 @@
    "label": "Glow",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 11,
    "proven_loss": false,
@@ -1457,7 +1456,7 @@
    "label": "Glow",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 13,
    "proven_loss": false,
@@ -1553,7 +1552,7 @@
    "label": "Glow",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 12,
    "proven_loss": false,
@@ -1698,7 +1697,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 1,
    "proven_loss": false,
@@ -1794,7 +1793,7 @@
    "label": "Glow",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 10,
    "proven_loss": false,
@@ -1977,19 +1976,21 @@
    "chance_action": null,
    "chance_closed": false,
    "chance_draws": 0,
-   "children": [],
+   "children": [
+    55
+   ],
    "id": 40,
    "is_terminal": false,
-   "kind": "play",
-   "label": "FallingStar",
+   "kind": "outcome",
+   "label": "outcome #2",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": null,
-   "parent": 15,
+   "outcome_ordinal": 2,
+   "parent": 14,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.1033,
+   "q": 1.1301,
    "summary": {
     "enemies": [
      {
@@ -1998,7 +1999,7 @@
       "uid": 2
      },
      {
-      "hp": 26,
+      "hp": 34,
       "max_hp": 34,
       "uid": 3
      },
@@ -2014,11 +2015,11 @@
     "player_max_hp": 75,
     "round": 2
    },
-   "target_index": 1,
+   "target_index": null,
    "ties": 0,
-   "value_sum": 1.1033,
-   "visits": 1,
-   "wins": 1
+   "value_sum": 2.2603,
+   "visits": 2,
+   "wins": 2
   },
   {
    "chance_action": "PhotonCut",
@@ -2033,7 +2034,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 11,
    "proven_loss": false,
@@ -2176,7 +2177,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 13,
    "proven_loss": false,
@@ -2272,7 +2273,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 12,
    "proven_loss": false,
@@ -2415,7 +2416,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 1,
    "proven_loss": false,
@@ -2511,7 +2512,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 10,
    "proven_loss": false,
@@ -2701,14 +2702,14 @@
    "node_kind": "decision",
    "outcome_cap": 0,
    "outcome_ordinal": null,
-   "parent": 15,
+   "parent": 40,
    "proven_loss": false,
    "proven_win": false,
-   "q": 1.132,
+   "q": 1.1284,
    "summary": {
     "enemies": [
      {
-      "hp": 11,
+      "hp": 3,
       "max_hp": 11,
       "uid": 2
      },
@@ -2718,7 +2719,7 @@
       "uid": 3
      },
      {
-      "hp": 0,
+      "hp": 8,
       "max_hp": 8,
       "uid": 4
      }
@@ -2729,9 +2730,9 @@
     "player_max_hp": 75,
     "round": 2
    },
-   "target_index": 2,
+   "target_index": 0,
    "ties": 0,
-   "value_sum": 1.132,
+   "value_sum": 1.1284,
    "visits": 1,
    "wins": 1
   },
@@ -2795,7 +2796,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 11,
    "proven_loss": false,
@@ -2891,7 +2892,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 13,
    "proven_loss": false,
@@ -3034,7 +3035,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 12,
    "proven_loss": false,
@@ -3130,7 +3131,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 1,
    "proven_loss": false,
@@ -3226,7 +3227,7 @@
    "label": "PhotonCut",
    "losses": 0,
    "node_kind": "chance",
-   "outcome_cap": 2,
+   "outcome_cap": 3,
    "outcome_ordinal": null,
    "parent": 10,
    "proven_loss": false,

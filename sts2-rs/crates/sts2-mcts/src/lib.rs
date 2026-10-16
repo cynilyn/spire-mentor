@@ -870,6 +870,119 @@ pub fn belief_draw_c_puct(max_simulations: u32) -> f32 {
     }
 }
 
+/// `draw_widening_c` of the deployed BeliefDraw dialect — the F2 retune,
+/// bead `sts2-rs-09x5n`. Set by [`MctsConfig::apply_mode_dialect`].
+pub const BELIEF_DRAW_DRAW_WIDENING_C: f32 = 2.0;
+
+/// `(endturn_widening_c, endturn_widening_alpha)` of the deployed BeliefDraw
+/// dialect — the 2026-08-17 EndTurn-widening retune (PR #467). Set by
+/// [`MctsConfig::apply_mode_dialect`]; see there for the evidence.
+pub const BELIEF_DRAW_ENDTURN_WIDENING: (f32, f32) = (5.787, 0.436);
+
+impl MctsConfig {
+    /// Set the constants that TRAVEL WITH [`Self::hidden_info`] at
+    /// [`Self::max_simulations`]: the deployed search dialect.
+    ///
+    /// The one source of truth for it. The run agent
+    /// (`sts2-runai::policy::mcts_config_for`) and every interactive surface
+    /// (`sts2-wire::emit::mcts::RecommendParams::mcts_config` — the
+    /// real-game advisor, the workbench hint / inspector / coach, SimLab)
+    /// call this, so a future retune cannot land on one and miss the other.
+    /// Before GH #758 the advisor and the hint carried their own copy of
+    /// the pre-#467 dialect and searched EndTurn at the engine's 0.5 / 0.4.
+    ///
+    /// BeliefDraw gets, in addition to the engine defaults:
+    ///
+    /// * `c_puct` = [`belief_draw_c_puct`] of the budget (F2 retune,
+    ///   budget-keyed);
+    /// * `draw_widening_c` = [`BELIEF_DRAW_DRAW_WIDENING_C`] (F2 retune);
+    /// * `endturn_widening_c / alpha` = [`BELIEF_DRAW_ENDTURN_WIDENING`]
+    ///   (PR #467).
+    ///
+    /// Every other mode is left untouched: those retunes were measured only
+    /// under BeliefDraw. Call this BEFORE applying a caller's explicit
+    /// overrides, so an ablation still gets what it asks for.
+    ///
+    /// # The EndTurn retune (PR #467)
+    ///
+    /// `EndTurn` is the highest-entropy transition in the game — one edge
+    /// that resolves every monster's intent, the turn-boundary hooks and
+    /// the next draw — and its DPW class was the one never swept: `0.5 /
+    /// 0.4` was hand-set BELOW the other classes precisely because
+    /// realizing the transition is the most expensive one, i.e. tuned for
+    /// cost containment rather than for strength. At 100 visits that cap
+    /// admits 4 sampled enemy turns; these values admit 44, so the search
+    /// actually hedges over what the enemies might do.
+    ///
+    /// Paired full-run gate, `main-500` panel, Ironclad, `ppo` +
+    /// `eval-cheap`, 500 cells per arm per ascension (McNemar exact):
+    ///
+    /// ```text
+    ///   A8   38.6% -> 48.8%  (+10.20pp, p = 4.6e-05)
+    ///   A9   20.2% -> 23.6%  ( +3.40pp, p = 0.13)
+    ///   A10   5.2% ->  7.4%  ( +2.20pp, p = 0.11)
+    ///   A0   68.4% -> 78.0%  ( +9.60pp, p = 2.3e-05)
+    ///   pooled all-ascension +6.35pp, n = 2000, p = 8.2e-10
+    /// ```
+    ///
+    /// A0 was the non-regression arm and came back POSITIVE, so this is NOT
+    /// ascension-specific and is applied unconditionally to the honest
+    /// dialect rather than gated on ascension.
+    ///
+    /// It is a SEARCH-METHOD win, not a compute win, and the control that
+    /// establishes that is the load-bearing evidence: the same extra engine
+    /// work spent on plain sims instead (`--sims 2400 --boss-sims 9600`, no
+    /// knob) is NULL — +0.80pp at A8 (p = 0.80) and +1.40pp at A0 (p =
+    /// 0.60) — while this retune at the ORIGINAL budget beats that
+    /// bigger-budget arm by +9.40pp (A8, p = 1.2e-04) and +8.20pp (A0, p =
+    /// 5.3e-04).
+    ///
+    /// COST: #467 measured ~2.4x full-run wall-clock at identical sims, but
+    /// most of that was a quadratic dedup-hash scan that PR #469 removed
+    /// (see [`ChanceOutcome::dedup_hash`]). After #469: ~1.14x / 1.16x per
+    /// search at 1000 / 4000 sims (`widening_cost_probe`, single thread)
+    /// and ~1.17x (A0) / 1.16x (A8) per full run (n = 48 per arm). Anything
+    /// that compares arms at fixed wall-clock, or runs near `run_arena`'s
+    /// per-seed `--timeout-ms`, must still account for it.
+    pub fn apply_mode_dialect(&mut self) {
+        if self.hidden_info == HiddenInfoMode::BeliefDraw {
+            self.c_puct = belief_draw_c_puct(self.max_simulations);
+            self.draw_widening_c = BELIEF_DRAW_DRAW_WIDENING_C;
+            (self.endturn_widening_c, self.endturn_widening_alpha) = BELIEF_DRAW_ENDTURN_WIDENING;
+        }
+    }
+
+    /// The `(C, α)` pair that sizes a chance node of `class`.
+    fn widening_pair(&self, class: WideningClass) -> (f32, f32) {
+        match class {
+            WideningClass::EndTurn => (self.endturn_widening_c, self.endturn_widening_alpha),
+            WideningClass::Draw => (self.draw_widening_c, self.draw_widening_alpha),
+            WideningClass::Default => (self.chance_widening_c, self.chance_widening_alpha),
+        }
+    }
+}
+
+/// `ceil(C · (visits+1)^α)`, at least 1 — the DPW outcome cap formula.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn dpw_cap_formula(c: f32, alpha: f32, visits: u32) -> usize {
+    (c * ((visits + 1) as f32).powf(alpha)).ceil().max(1.0) as usize
+}
+
+/// The DPW outcome cap the search applies to chance node `node` at its
+/// current visit count under `config` — the same class selection
+/// (EndTurn > Draw > Default) and formula as the search itself, for
+/// displays such as the tree inspector that must not drift from it.
+/// Meaningless for a decision node.
+#[must_use]
+pub fn dpw_outcome_cap(config: &MctsConfig, node: &MctsNode) -> usize {
+    let (c, alpha) = config.widening_pair(WideningClass::of_node(node));
+    dpw_cap_formula(c, alpha, node.visits)
+}
+
 impl Default for MctsConfig {
     fn default() -> Self {
         Self {
@@ -1301,6 +1414,20 @@ enum WideningClass {
     Default,
     EndTurn,
     Draw,
+}
+
+impl WideningClass {
+    /// H1 retune (bead `sts2-rs-k1z14`): `EndTurn` keeps priority over
+    /// `Draw` — see the type doc.
+    fn of_node(node: &MctsNode) -> Self {
+        if matches!(node.chance_action, Some(EdgeAction::Other(Action::EndTurn))) {
+            Self::EndTurn
+        } else if node.chance_is_draw_triggered {
+            Self::Draw
+        } else {
+            Self::Default
+        }
+    }
 }
 
 /// One sampled outcome of a chance node. `n` is the outcome ordinal (the
@@ -4474,17 +4601,7 @@ impl<P: Policy> Mcts<P> {
     /// the returned cap is bit-identical — this only removes the
     /// per-chance-visit `powf` (perf-investigation 2026-07-04).
     fn dpw_cap(&mut self, class: WideningClass, visits: u32) -> usize {
-        let (c, alpha) = match class {
-            WideningClass::EndTurn => (
-                self.config.endturn_widening_c,
-                self.config.endturn_widening_alpha,
-            ),
-            WideningClass::Draw => (self.config.draw_widening_c, self.config.draw_widening_alpha),
-            WideningClass::Default => (
-                self.config.chance_widening_c,
-                self.config.chance_widening_alpha,
-            ),
-        };
+        let (c, alpha) = self.config.widening_pair(class);
         let slot = class as usize;
         let key = (c.to_bits(), alpha.to_bits());
         if self.dpw_cap_params[slot] != key {
@@ -4498,13 +4615,7 @@ impl<P: Policy> Mcts<P> {
         while cache.len() <= idx {
             #[allow(clippy::cast_possible_truncation)]
             let v = cache.len() as u32;
-            #[allow(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss
-            )]
-            let cap = (c * ((v + 1) as f32).powf(alpha)).ceil().max(1.0) as usize;
-            cache.push(cap);
+            cache.push(dpw_cap_formula(c, alpha, v));
         }
         cache[idx]
     }
@@ -4516,10 +4627,6 @@ impl<P: Policy> Mcts<P> {
     fn chance_widen_or_sample(&mut self, chance_id: NodeId, path: &[NodeId]) -> (NodeId, bool) {
         let visits = self.tree.node(chance_id).visits;
         let n_outcomes = self.tree.node(chance_id).chance_outcomes.len();
-        let is_endturn = matches!(
-            self.tree.node(chance_id).chance_action,
-            Some(EdgeAction::Other(Action::EndTurn))
-        );
         // Always `false` outside `DrawChance`/`BeliefDraw`.
         let is_draw_triggered = self.tree.node(chance_id).chance_is_draw_triggered;
         // H1 retune (bead `sts2-rs-k1z14`): `EndTurn` keeps priority over
@@ -4529,13 +4636,7 @@ impl<P: Policy> Mcts<P> {
         // draw-triggered (the common case — `EndTurn` resolves the next
         // player turn's hand draw) still needs its pile reshuffled to hedge
         // over draw order, it just widens under the `EndTurn` coefficients.
-        let widening_class = if is_endturn {
-            WideningClass::EndTurn
-        } else if is_draw_triggered {
-            WideningClass::Draw
-        } else {
-            WideningClass::Default
-        };
+        let widening_class = WideningClass::of_node(self.tree.node(chance_id));
         let cap = self.dpw_cap(widening_class, visits);
 
         // Optional closed-node gate (`chance_closed_stops_widening`): once
@@ -4570,7 +4671,7 @@ impl<P: Policy> Mcts<P> {
             let base = self.tree.node(chance_id).randomness_base;
             // Perf item M12: an `EndTurn` draw re-runs only the part of the
             // enemy turn after its cached RNG-free prefix, when it can.
-            let cached = if is_endturn {
+            let cached = if widening_class == WideningClass::EndTurn {
                 self.realize_endturn_widen(chance_id, parent, base, n)
             } else {
                 None
@@ -10608,6 +10709,78 @@ mod tests {
             "a chance node born from a deferred draw must be marked draw-triggered under \
              BeliefDraw so it selects WideningClass::Draw"
         );
+    }
+
+    /// GH #758: `dpw_outcome_cap` — what the tree inspector displays — sizes
+    /// every chance node with the class the search itself uses, including
+    /// `Draw` for a draw-triggered non-EndTurn node (the inspector used to
+    /// size those with the `chance_*` pair and under-report the cap).
+    #[test]
+    fn dpw_outcome_cap_uses_the_search_widening_class() {
+        use sts2_core::cards::CardId;
+        let state =
+            build_pommel_strike_state(&[(CardId::StrikeIronclad, false), (CardId::Bash, false)]);
+        let mut cfg = belief_draw_cfg(0xCA9, 200);
+        cfg.apply_mode_dialect();
+        let mut m = Mcts::new(state, cfg);
+        let _ = m.search_n(200);
+        let formula = |(c, alpha): (f32, f32), visits: u32| dpw_cap_formula(c, alpha, visits);
+        let (mut draw, mut endturn) = (0, 0);
+        for node in &m.tree.arena {
+            if node.kind != NodeKind::Chance {
+                continue;
+            }
+            let got = dpw_outcome_cap(&cfg, node);
+            if matches!(node.chance_action, Some(EdgeAction::Other(Action::EndTurn))) {
+                endturn += 1;
+                assert_eq!(got, formula(BELIEF_DRAW_ENDTURN_WIDENING, node.visits));
+            } else if node.chance_is_draw_triggered {
+                draw += 1;
+                let draw_pair = (BELIEF_DRAW_DRAW_WIDENING_C, cfg.draw_widening_alpha);
+                assert_eq!(got, formula(draw_pair, node.visits));
+                if node.visits > 0 {
+                    assert_ne!(
+                        got,
+                        formula(
+                            (cfg.chance_widening_c, cfg.chance_widening_alpha),
+                            node.visits
+                        ),
+                        "a Draw node's cap must differ from the Default pair's here"
+                    );
+                }
+            }
+        }
+        assert!(
+            draw > 0,
+            "fixture never expanded a draw-triggered chance node"
+        );
+        assert!(endturn > 0, "fixture never expanded an EndTurn chance node");
+    }
+
+    /// The dialect is BeliefDraw-only and budget-keyed.
+    #[test]
+    fn apply_mode_dialect_sets_the_belief_draw_constants_only() {
+        let mut cfg = belief_draw_cfg(1, 300);
+        cfg.apply_mode_dialect();
+        assert!((cfg.c_puct - belief_draw_c_puct(300)).abs() < f32::EPSILON);
+        assert!((cfg.draw_widening_c - BELIEF_DRAW_DRAW_WIDENING_C).abs() < f32::EPSILON);
+        assert_eq!(
+            (cfg.endturn_widening_c, cfg.endturn_widening_alpha),
+            BELIEF_DRAW_ENDTURN_WIDENING
+        );
+        for mode in [
+            HiddenInfoMode::Clairvoyant,
+            HiddenInfoMode::RootScramble,
+            HiddenInfoMode::DrawChance,
+        ] {
+            let before = MctsConfig {
+                hidden_info: mode,
+                ..MctsConfig::default()
+            };
+            let mut after = before;
+            after.apply_mode_dialect();
+            assert_eq!(format!("{before:?}"), format!("{after:?}"), "{mode:?}");
+        }
     }
 
     #[test]

@@ -5058,7 +5058,9 @@ fn relic_modify_max_energy(state: &CombatState, relic: &crate::Relic) -> i32 {
         // (Python `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::PrismaticGem`).
         // The card-pool widening leg ships separately once a
         // `modify_card_reward_creation_options` channel exists.
-        | crate::RelicKind::PrismaticGem => 1,
+        | crate::RelicKind::PrismaticGem
+        // C# `VelvetChoker.ModifyMaxEnergy` → `amount + EnergyVar(1)` (GH #742).
+        | crate::RelicKind::VelvetChoker => 1,
         crate::RelicKind::Bread => i32::from(state.round > 1),
         // `PumpkinCandle.ModifyMaxEnergy → energy + 1` while its
         // `KindleCount > 0` (v0.107.1 C#
@@ -5580,20 +5582,10 @@ fn relic_should_flush(state: &CombatState, relic: &crate::Relic) -> bool {
 /// Per-listener `should_play` predicate. Default `true`,
 /// any-false short-circuits via [`dispatch_should_play`].
 ///
-/// **SpikedGauntlets arm (`sts2-rs-5yj3z`):** mirrors Python
-/// `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::SpikedGauntlets`.
-/// Power cards cost +1 energy while equipped. The predicate gates the
-/// play on `state.player.energy >= card.cost + POWER_COST_INCREASE = 1`
-/// for Power-type cards. Non-Power cards and missing-ctx callers
-/// short-circuit to `true` (play permitted).
-///
-/// **Cost-charge leg landed** (`sts2-rs-ff3hr`): the relic-side
-/// `before_card_played` channel
-/// (`relic_effects::dispatch_before_card_played`) fires from
-/// `combat_loop::play_card` after the base energy spend, and the
-/// SpikedGauntlets listener deducts the +1 Power-card surcharge.
-/// This predicate's `energy >= cost + 1` gate now matches the actual
-/// charge — over-protection is gone.
+/// The only C# relic override of `ShouldPlay` is `VelvetChoker`. (A
+/// SpikedGauntlets arm used to gate Power cards on `energy >= cost + 1`; GH
+/// #742 moved that relic into the cost itself — see
+/// [`effective_card_cost_inst_with_mask`] — so affordability needs no veto.)
 #[allow(clippy::needless_pass_by_value)]
 pub fn should_play(state: &CombatState, listener: ListenerRef, ctx: &CardCtx) -> bool {
     let ListenerRef::Relic(uid) = listener else {
@@ -5607,33 +5599,32 @@ pub fn should_play(state: &CombatState, listener: ListenerRef, ctx: &CardCtx) ->
 
 /// The relic arm of [`should_play`] on an already-resolved relic. Only the
 /// kinds in [`SHOULD_PLAY_RELIC_KINDS`] can return `false`.
-fn relic_should_play(state: &CombatState, relic: &crate::Relic, ctx: &CardCtx) -> bool {
+fn relic_should_play(_state: &CombatState, relic: &crate::Relic, _ctx: &CardCtx) -> bool {
     match relic.kind {
-        crate::RelicKind::SpikedGauntlets => {
-            let Some(card_type) = ctx.card_type else {
-                return true;
-            };
-            if card_type != crate::cards::CardType::Power {
-                return true;
-            }
-            let Some(card_uid) = ctx.card_uid else {
-                return true;
-            };
-            let idx = card_uid.0.get() as usize - 1;
-            let Some(card) = state.cards.get(idx) else {
-                return true;
-            };
-            let required = i32::from(card.cost).saturating_add(1);
-            i32::from(state.player.energy) >= required
-        }
-        // VelvetChoker per-turn play cap (bead `sts2-rs-70anj.4`). The
-        // counter is bumped by the sts2-content `after_card_played`
-        // listener; this reads it and rejects further plays once the
-        // cap is hit. MAX_CARDS = 6 (Python
-        // `shop_event.py::VelvetChoker.MAX_CARDS`).
-        crate::RelicKind::VelvetChoker => relic.counter < 6,
+        // C# `VelvetChoker.ShouldPlay` → `!(_cardsPlayedThisTurn >= 6)`
+        // (`CardsVar(6)`). The counter is bumped by the sts2-content
+        // `after_card_played` listener and reset at the player's turn start.
+        // Checked for manual AND auto-plays (`CardCmd.AutoPlay` runs the same
+        // hook), via `combat_loop::player_should_play_blocked`.
+        crate::RelicKind::VelvetChoker => relic.counter < VELVET_CHOKER_MAX_CARDS,
         _ => true,
     }
+}
+
+/// `VelvetChoker`'s per-turn play cap (C# `CardsVar(6)`).
+const VELVET_CHOKER_MAX_CARDS: i32 = 6;
+
+/// `true` when a relic's `ShouldPlay` vetoes the player's next card play —
+/// the relic half of C# `Hook.ShouldPlay`, read by the live play gates
+/// (`combat_loop::player_should_play_blocked` and `legal_actions`). Today only
+/// VelvetChoker can veto, and it does not depend on the card, so the result is
+/// the same for every card in hand. GH #742: nothing called the relic arm
+/// before, so VelvetChoker's cap was never enforced.
+#[must_use]
+#[inline]
+pub fn relic_should_play_blocked(state: &CombatState) -> bool {
+    relics_of_kinds(state, SHOULD_PLAY_RELIC_KINDS)
+        .any(|relic| !relic_should_play(state, relic, &CardCtx::default()))
 }
 noop_hook!(should_draw, DrawCtx, bool, true);
 /// Per-listener `should_take_extra_turn` predicate. Default `false`,
@@ -9439,14 +9430,9 @@ const SHOULD_FLUSH_RELIC_KINDS: &[crate::RelicKind] = &[
 const SHOULD_TAKE_EXTRA_TURN_RELIC_KINDS: &[crate::RelicKind] = &[crate::RelicKind::PaelsEye];
 
 /// [`crate::RelicKind`]s that can return `false` from [`relic_should_play`]:
-/// SpikedGauntlets (a Power card the player cannot pay the +1 for) and
-/// VelvetChoker (six cards played this turn). The only C# relic override of
-/// `ShouldPlay` is `VelvetChoker`; the SpikedGauntlets arm is a Rust-side
-/// affordability check.
-const SHOULD_PLAY_RELIC_KINDS: &[crate::RelicKind] = &[
-    crate::RelicKind::SpikedGauntlets,
-    crate::RelicKind::VelvetChoker,
-];
+/// VelvetChoker (six cards played this turn), the only C# relic override of
+/// `ShouldPlay`.
+const SHOULD_PLAY_RELIC_KINDS: &[crate::RelicKind] = &[crate::RelicKind::VelvetChoker];
 
 // ---------------------------------------------------------------------------
 // Per-category dispatchers (P1-4 sts2-rs-73b)
@@ -12400,13 +12386,13 @@ fn dispatch_after_energy_spent_body(state: &mut CombatState, amount: i32) {
 /// relic itself instead of a uid that [`modify_max_energy`] re-finds with a
 /// scan of `state.relics`, which made the walk quadratic in the relic count.
 /// The arm acts for WhisperingEarring, SpikedGauntlets, BlessedAntler, Sozu,
-/// BloodSoakedRose, PhilosophersStone, Ectoplasm, PrismaticGem, Bread and
-/// PumpkinCandle, and adds `0` for every other kind. It is one `match`, so a
-/// kind pre-filter over those ten (as `relics_of_kinds` does for the
-/// smaller sets) would cost about what it saves; every relic still goes
-/// through the arm. (C# also overrides `ModifyMaxEnergy` in `PaelsFlesh`,
+/// BloodSoakedRose, PhilosophersStone, Ectoplasm, PrismaticGem, VelvetChoker,
+/// Bread and PumpkinCandle, and adds `0` for every other kind. It is one
+/// `match`, so a kind pre-filter over those eleven (as `relics_of_kinds` does
+/// for the smaller sets) would cost about what it saves; every relic still
+/// goes through the arm. (C# also overrides `ModifyMaxEnergy` in `PaelsFlesh`,
 /// whose energy the Rust port grants from an `after_side_turn_start`
-/// listener, and in `VelvetChoker`, which has no Rust max-energy arm.)
+/// listener.)
 ///
 /// Same sum as walking every listener: the power gate drops only
 /// `saturating_add(0)`s, and the relic walk adds the same deltas in the same
@@ -12497,12 +12483,17 @@ pub fn dispatch_modify_card_cost(state: &CombatState, ctx: &CardCostCtx) -> i32 
     // remaining listener folds `None`, reducing the fold to
     // `ctx.base_cost.max(0)`. This subsumes the old `powers.is_empty()`
     // check (an empty arena has an empty presence set).
+    let relic_add = relic_card_cost_add(state, ctx.card_type, ctx.base_cost, || {
+        ctx.card_uid
+            .and_then(|uid| crate::card_by_uid(&state.cards, uid))
+            .is_some_and(crate::cards::Card::is_x_cost)
+    });
     if !state
         .powers
         .present_kinds()
         .intersects(&MODIFY_CARD_COST_KINDS)
     {
-        return ctx.base_cost.max(0);
+        return ctx.base_cost.max(0) + relic_add;
     }
 
     let mut add_acc: i32 = ctx.base_cost;
@@ -12516,7 +12507,35 @@ pub fn dispatch_modify_card_cost(state: &CombatState, ctx: &CardCostCtx) -> i32 
             None => {}
         }
     }
-    override_min.unwrap_or(add_acc).max(0)
+    // C# `Hook.ModifyEnergyCostInCombat` walks the early
+    // `TryModifyEnergyCostInCombat` pass over creature powers BEFORE relics
+    // (`CombatState.IterateHookListeners`), and every additive power floors at
+    // 0 on its own (CuriousPower), so the relic `+1` lands on the floored power
+    // sum. Every `Override` is a `...Late` hook, applied after both.
+    override_min.unwrap_or(add_acc.max(0) + relic_add).max(0)
+}
+
+/// The relic half of the early `TryModifyEnergyCostInCombat` pass: C#
+/// `SpikedGauntlets` raises the owner's Power cards' cost by 1 (GH #742).
+/// Because it is a COST, `legal_actions` (affordability) and `play_card`
+/// (payment) both see it, as C# `CanPlay` and `SpendResources` do.
+///
+/// `0` when the cost is negative (C# `ModifyEnergyCostInCombat` returns a
+/// negative `originalCost` untouched) or the card is X-cost
+/// (`CardEnergyCost.GetWithModifiers` skips the global hooks for `CostsX`).
+#[inline]
+fn relic_card_cost_add(
+    state: &CombatState,
+    card_type: Option<crate::cards::CardType>,
+    base_cost: i32,
+    is_x_cost: impl FnOnce() -> bool,
+) -> i32 {
+    i32::from(
+        card_type == Some(crate::cards::CardType::Power)
+            && base_cost >= 0
+            && state.relics.owns(crate::RelicKind::SpikedGauntlets)
+            && !is_x_cost(),
+    )
 }
 
 /// Power kinds with a non-default arm in [`modify_card_cost`] (its relic arm is
@@ -12659,7 +12678,8 @@ pub fn effective_card_cost_inst_with_mask(
     // itself is hoisted to the caller (`mods_present`) so per-hand loops
     // pay it once per enumeration.
     if !mods_present {
-        return base_cost.max(0);
+        return base_cost.max(0)
+            + relic_card_cost_add(state, Some(card.card_type), base_cost, || card.is_x_cost());
     }
     let ctx = CardCostCtx {
         owner: CreatureRef::Player,
@@ -12784,9 +12804,9 @@ pub fn dispatch_should_flush(state: &CombatState, _ctx: &CombatLifecycleCtx) -> 
 /// `should_play` predicate. Powers-then-relics, *first false short-circuits*.
 ///
 /// The relic walk visits only the relics in `SHOULD_PLAY_RELIC_KINDS`; see
-/// [`dispatch_should_reset_energy`]. No engine path calls this dispatcher
-/// (`combat_loop::player_should_play_blocked` is the live play gate), so the
-/// power walk is left as it was.
+/// [`dispatch_should_reset_energy`]. No engine path calls this dispatcher:
+/// `combat_loop::player_should_play_blocked` is the live play gate, and it
+/// reads the relic half through [`relic_should_play_blocked`].
 #[must_use]
 pub fn dispatch_should_play(state: &CombatState, ctx: &CardCtx) -> bool {
     for listener in iter_power_listeners(state) {
@@ -18809,6 +18829,63 @@ mod tests {
         // Turn-start reset of the counter restores the base cost.
         state.combat_log.osty_attacks_this_turn = 0;
         assert_eq!(effective_card_cost(&state, uid), 2);
+    }
+
+    /// GH #742: C# `SpikedGauntlets.TryModifyEnergyCostInCombat` adds 1 to the
+    /// owner's Power cards in the EARLY pass, after the creature powers
+    /// (`CombatState.IterateHookListeners` yields powers before relics):
+    /// - Curious (early power, floors at 0) runs first: a 1-cost Power under
+    ///   Curious 2 is `max(0, 1 - 2) + 1 = 1`, not `max(0, 1 - 2 + 1) = 0`.
+    /// - FreePower is a LATE hook, so it still zeroes the card.
+    /// - X-cost and negative-cost cards skip the global hooks entirely.
+    #[test]
+    fn spiked_gauntlets_adds_one_to_power_cards_after_powers_before_late_overrides() {
+        use crate::cards::{CardId, CardTags, CardType, TargetType};
+        let mut state = CombatState::default();
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        state.init_player_creature();
+        state.relics.push(crate::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: crate::RelicKind::SpikedGauntlets,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let mk = |raw: u32, card_id, cost, card_type| crate::Card {
+            uid: crate::CardUid::new(raw).expect("non-zero"),
+            card_id,
+            cost,
+            card_type,
+            target_type: TargetType::Self_,
+            upgraded: false,
+            base_damage: 0,
+            base_block: 0,
+            combat_vars: crate::cards::CombatVars::new(),
+            enchantments: crate::cards::CardEnchantments::new(),
+            tags: CardTags::NONE,
+            energy_spent: 0,
+            base_replay_count: 0,
+            keyword_override: None,
+            affliction: None,
+        };
+        let power = mk(1, CardId::Inflame, 1, CardType::Power);
+        let attack = mk(2, CardId::StrikeIronclad, 1, CardType::Attack);
+        let x_power = mk(3, CardId::Inflame, -1, CardType::Power);
+        for c in [power, attack, x_power] {
+            state.cards.push(c);
+        }
+        assert_eq!(effective_card_cost(&state, power.uid), 2);
+        assert_eq!(effective_card_cost(&state, attack.uid), 1);
+        assert_eq!(effective_card_cost(&state, x_power.uid), 0);
+
+        let player = state.player.creature_uid.expect("player creature");
+        crate::card_effects::apply_power_to_creature(&mut state, player, PowerKind::Curious, 2);
+        assert_eq!(effective_card_cost(&state, power.uid), 1);
+        assert_eq!(effective_card_cost(&state, x_power.uid), 0);
+
+        crate::card_effects::apply_power_to_creature(&mut state, player, PowerKind::FreePower, 1);
+        assert_eq!(effective_card_cost(&state, power.uid), 0);
     }
 
     /// C# `CuriousPower.TryModifyEnergyCostInCombat`

@@ -9,7 +9,7 @@ use super::prelude::*;
 /// target = rng.choice(alive_enemies); _deal_damage_single(...)`).
 /// Bead `sts2-rs-6ynt.8` wave (Volley).
 pub(crate) fn play_volley(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    let hits = sts2_core::card_effects::resolving_card_inst(state).map_or(0, |c| c.energy_spent);
+    let hits = sts2_core::card_effects::resolving_card_x_value(state);
     if hits <= 0 {
         return EffectResult::Resolved;
     }

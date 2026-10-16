@@ -12,23 +12,23 @@
  "pv": null,
  "scores": [
   {
-   "action": "STRIKE_DEFECT.title",
+   "action": "DUALCAST.title",
    "is_best": true,
    "low_confidence": false,
-   "q": 1.2288,
+   "q": 1.2284,
    "q_saturated": false,
-   "stable_idx": 1,
+   "stable_idx": 3,
    "target_index": null,
    "visits": 10,
    "win_prob": 1.0
   },
   {
-   "action": "DUALCAST.title",
+   "action": "STRIKE_DEFECT.title",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.2284,
+   "q": 1.2277,
    "q_saturated": false,
-   "stable_idx": 3,
+   "stable_idx": 1,
    "target_index": null,
    "visits": 10,
    "win_prob": 1.0
@@ -48,7 +48,7 @@
    "action": "end turn",
    "is_best": false,
    "low_confidence": false,
-   "q": 1.1951,
+   "q": 1.1915,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,

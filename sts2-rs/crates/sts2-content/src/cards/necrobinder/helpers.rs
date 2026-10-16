@@ -26,8 +26,10 @@ pub(crate) fn current_card_upgraded(state: &CombatState) -> bool {
 
 /// Energy spent on the current card (X-cost). The engine drains
 /// `player.energy` and stamps `energy_spent` before dispatch.
+/// Folds the relic `modify_x_value` chain (ChemicalX +2) via
+/// [`sts2_core::card_effects::resolving_card_x_value`].
 pub(crate) fn current_card_energy_spent(state: &CombatState) -> i32 {
-    card_effects::resolving_card_inst(state).map_or(0, |c| c.energy_spent)
+    card_effects::resolving_card_x_value(state)
 }
 
 /// `base_damage` of the card currently resolving.

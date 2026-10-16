@@ -6,7 +6,7 @@ sts2-cli v0.0.1 — seed=0 encounter=nibbit (Nibbit) player=Ironclad agent=Human
   player  : HP 80/80  block 0  energy 3/3
   draw    : 5  discard: 0  exhaust: 0
   monsters:
-    slot 0: Nibbit       HP 45/45 block 0  intent Attack { damage: 12 }  alive: true
+    slot 0: Nibbit       HP 43/43 block 0  intent Attack { damage: 12 }  alive: true
   hand    : 5 card(s)
     slot 0: StrikeIronclad  cost 1  (Attack/Enemy)
     slot 1: StrikeIronclad  cost 1  (Attack/Enemy)
@@ -19,7 +19,7 @@ sts2-cli v0.0.1 — seed=0 encounter=nibbit (Nibbit) player=Ironclad agent=Human
   player  : HP 80/80  block 0  energy 3/3
   draw    : 5  discard: 0  exhaust: 0
   monsters:
-    slot 0: Nibbit       HP 45/45 block 0  intent Attack { damage: 12 }  alive: true
+    slot 0: Nibbit       HP 43/43 block 0  intent Attack { damage: 12 }  alive: true
   hand    : 5 card(s)
     slot 0: StrikeIronclad  cost 1  (Attack/Enemy)
     slot 1: StrikeIronclad  cost 1  (Attack/Enemy)
@@ -50,7 +50,7 @@ sts2-cli v0.0.1 — seed=0 encounter=nibbit (Nibbit) player=Ironclad agent=Human
   player  : HP 80/80  block 0  energy 2/3
   draw    : 5  discard: 1  exhaust: 0
   monsters:
-    slot 0: Nibbit       HP 39/45 block 0  intent Attack { damage: 12 }  alive: true
+    slot 0: Nibbit       HP 37/43 block 0  intent Attack { damage: 12 }  alive: true
   hand    : 4 card(s)
     slot 0: StrikeIronclad  cost 1  (Attack/Enemy)
     slot 1: StrikeIronclad  cost 1  (Attack/Enemy)
@@ -70,7 +70,7 @@ sts2-cli v0.0.1 — seed=0 encounter=nibbit (Nibbit) player=Ironclad agent=Human
   player  : HP 80/80  block 0  energy 1/3
   draw    : 5  discard: 2  exhaust: 0
   monsters:
-    slot 0: Nibbit       HP 33/45 block 0  intent Attack { damage: 12 }  alive: true
+    slot 0: Nibbit       HP 31/43 block 0  intent Attack { damage: 12 }  alive: true
   hand    : 3 card(s)
     slot 0: StrikeIronclad  cost 1  (Attack/Enemy)
     slot 1: StrikeIronclad  cost 1  (Attack/Enemy)
@@ -87,7 +87,7 @@ sts2-cli v0.0.1 — seed=0 encounter=nibbit (Nibbit) player=Ironclad agent=Human
   player  : HP 68/80  block 0  energy 3/3
   draw    : 0  discard: 5  exhaust: 0
   monsters:
-    slot 0: Nibbit       HP 33/45 block 0  intent Attack { damage: 6 }  alive: true
+    slot 0: Nibbit       HP 31/43 block 0  intent Attack { damage: 6 }  alive: true
   hand    : 5 card(s)
     slot 0: DefendIronclad  cost 1  (Skill/Self_)
     slot 1: DefendIronclad  cost 1  (Skill/Self_)

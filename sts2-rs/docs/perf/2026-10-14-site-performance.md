@@ -273,9 +273,14 @@ whole L3 domains (`taskset -c 6-17` here) or pin each worker to its own CPU:
 Both searches, the hint's and the advisor's, run as those callers configure
 them: hidden draw order (belief-draw), draw widening 2.0, heuristic rollouts
 to depth 200, no transposition table, and the search library's default
-end-of-turn widening. The run agent's search widens end-of-turn nodes more
-(see `docs/site/ai.html`), so these timings are not the run agent's cost per
-simulation.
+end-of-turn widening (0.5 / 0.4). The run agent's search widens end-of-turn
+nodes more, so these timings are not the run agent's cost per simulation.
+
+**Superseded by GH #758 (2026-10-15):** the hint and the advisor now search
+with the run agent's end-of-turn widening (5.787 / 0.436). `hint_bench`
+BENCH1, CPU 20, three interleaved runs per arm, median of 9: 2,000 sims
+28.6 ms → 30.9 ms (1.08×), 1,000 sims 13.9 ms → 15.0 ms (1.08×). The
+advisor's 8,000-sim boss search was not re-timed.
 
 **PPO collection** (`scripts/site-bench/ppo_collect.py`). Both engines run
 the same committed Python sources; only the extension differs. The

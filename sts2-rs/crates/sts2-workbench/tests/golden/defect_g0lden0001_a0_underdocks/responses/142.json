@@ -1,19 +1,19 @@
 {
  "act": null,
  "best_label": "drink Energy Potion",
- "best_win_prob": 1.0,
- "drop_pct": 10,
+ "best_win_prob": 0.9167,
+ "drop_pct": 0,
  "floor": null,
  "idx": 98,
- "is_blunder": true,
+ "is_blunder": false,
  "matched_best": false,
- "message": "Turn 3: end turn instead of drink Energy Potion dropped P(win) 100%→90% (−10 pts)",
+ "message": "Turn 3: end turn instead of drink Energy Potion dropped P(win) 92%→92% (−0 pts)",
  "n_actions": 2,
  "node_id": null,
  "played_label": "end turn",
- "played_win_prob": 0.9,
- "player_rank": 1,
- "regret": 0.1,
+ "played_win_prob": 0.9167,
+ "player_rank": 0,
+ "regret": 0.0,
  "turn": 3,
- "visits": 14
+ "visits": 12
 }
