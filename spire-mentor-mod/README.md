@@ -106,6 +106,10 @@ locking the DLL); `./deploy.ps1` redeploys without rebuilding.
 To assemble a self-contained mod zip for another machine (bundling BaseLib
 and the packaged advisor backend), see `package.ps1` and
 `packaging/README-dist.txt` — and note the D5 distribution caveat above.
+The package holds no `.json` but `SpireMentor.json`: the game reads every
+`.json` under a mod's folder as a manifest (`ModManager.cs`,
+`ReadModsInDirRecursive`), so the workbench's and the advisor's data ship
+gzipped as `.json.gz`, and `package.ps1` fails on any it finds.
 
 For the Steam Workshop, `workshop.ps1` stages the same files (without
 BaseLib, which the item lists as a required Workshop item) into

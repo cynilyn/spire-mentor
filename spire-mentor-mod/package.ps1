@@ -121,6 +121,28 @@ Copy-Item -Recurse $advisorDist (Join-Path $simDir "SimAdvisor")
 # plane serves the files from the advisor's own data/ppo.
 Copy-Item -Recurse $workbenchDist (Join-Path $simDir "workbench")
 Get-ChildItem (Join-Path $simDir "workbench/ppo") -Filter *.onnx | Remove-Item
+# The game reads every .json under a mod's folder as a mod manifest and logs a
+# stack trace for each one that is not, so the build's .json files ship
+# gzipped: the control plane serves x.json from x.json.gz (StaticSite in
+# realgame_control.py). The advisor's own data is gzipped by its spec.
+Get-ChildItem (Join-Path $simDir "workbench") -Recurse -File |
+    Where-Object { $_.Extension -eq ".json" } | ForEach-Object {
+        $src = [IO.File]::OpenRead($_.FullName)
+        try {
+            $dst = [IO.File]::Create("$($_.FullName).gz")
+            try {
+                $gz = [IO.Compression.GZipStream]::new($dst, [IO.Compression.CompressionLevel]::Optimal)
+                try { $src.CopyTo($gz) } finally { $gz.Dispose() }
+            } finally { $dst.Dispose() }
+        } finally { $src.Dispose() }
+        Remove-Item $_.FullName
+    }
+$strayJson = Get-ChildItem $simDir -Recurse -File |
+    Where-Object { $_.Extension -eq ".json" -and $_.FullName -ne (Join-Path $simDir "SpireMentor.json") }
+if ($strayJson) {
+    throw "the game would read these as mod manifests -- gzip them or rename them:`n  " +
+          (($strayJson | ForEach-Object { $_.FullName.Substring($simDir.FullName.Length + 1) }) -join "`n  ")
+}
 Copy-Item (Join-Path $baseLibDir "BaseLib.dll") $libDir
 Copy-Item (Join-Path $baseLibDir "BaseLib.pck") $libDir
 Copy-Item (Join-Path $baseLibDir "BaseLib.json") $libDir

@@ -34,6 +34,7 @@ Orbs are similarly hand-curated (5 values; trivially small).
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 from typing import Final
@@ -59,10 +60,19 @@ _LOCALIZATION_DIR: Final[Path] = runtime_paths.data_root() / "localization_eng"
 def _load_json(path: Path) -> dict[str, str]:
     """Load a localization JSON file. Returns ``{}`` if missing — the
     adapter degrades to fail-loud at translate time rather than at
-    import time."""
+    import time.
+
+    The packaged advisor ships these as ``<name>.json.gz`` (the game reads
+    every ``.json`` under a mod's folder as a mod manifest), so a missing
+    ``.json`` falls back to its gzipped copy."""
+    gz = path.with_name(path.name + ".gz")
     try:
-        with path.open(encoding="utf-8") as fh:
-            data = json.load(fh)
+        if not path.is_file() and gz.is_file():
+            with gzip.open(gz, "rt", encoding="utf-8") as fh:
+                data = json.load(fh)
+        else:
+            with path.open(encoding="utf-8") as fh:
+                data = json.load(fh)
         if not isinstance(data, dict):
             return {}
         # Values may be lists/dicts in some files; coerce to str-only.
