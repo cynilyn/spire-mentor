@@ -9,6 +9,7 @@ machinery for real over HTTP on an ephemeral port.
 
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 import threading
@@ -454,6 +455,52 @@ class TestBundledWorkbench:
         assert not StaticSite.is_static_build(tmp_path)  # a server build of the SPA
         (tmp_path / "wb-precache.json").write_text("{}")
         assert StaticSite.is_static_build(tmp_path)
+
+
+class TestGzippedJson:
+    """The mod's copy of the build ships every .json as .json.gz (the game
+    reads each .json under a mod's folder as a mod manifest)."""
+
+    @pytest.fixture
+    def gz_plane(self, tmp_path: Path):
+        root = tmp_path / "workbench"
+        (root / "assets").mkdir(parents=True)
+        (root / "index.html").write_text("<!doctype html><title>wb</title>")
+        (root / "wb-precache.json.gz").write_bytes(gzip.compress(b'{"build": "t"}'))
+        (root / "assets" / "card_text.json.gz").write_bytes(gzip.compress(b'{"STRIKE": "Deal 6"}'))
+        assert StaticSite.is_static_build(root)
+        control = ControlPlane(LiveRunTree())
+        control.start(0, site=StaticSite(root))
+        yield control
+        control.stop()
+
+    def test_sent_gzip_encoded_when_accepted(self, gz_plane) -> None:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{gz_plane.port}/assets/card_text.json",
+            headers={"Accept-Encoding": "gzip, deflate, br"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            headers = {k.lower(): v for k, v in r.headers.items()}
+            body = r.read()
+        assert headers["content-encoding"] == "gzip"
+        assert headers["content-type"] == "application/json"
+        assert headers["vary"] == "accept-encoding"
+        assert int(headers["content-length"]) == len(body)
+        assert json.loads(gzip.decompress(body)) == {"STRIKE": "Deal 6"}
+
+    def test_decompressed_for_a_client_without_gzip(self, gz_plane) -> None:
+        code, headers, body = _fetch(gz_plane, "/assets/card_text.json")
+        assert code == 200 and "content-encoding" not in headers
+        assert json.loads(body) == {"STRIKE": "Deal 6"}
+        assert int(headers["content-length"]) == len(body)
+
+    def test_head_and_missing(self, gz_plane) -> None:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{gz_plane.port}/wb-precache.json", method="HEAD"
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200 and r.read() == b""
+        assert _fetch(gz_plane, "/assets/nope.json")[0] == 404
 
 
 class TestLiveLog:

@@ -1273,3 +1273,17 @@ def test_the_bridges_keyword_bools_are_read_but_not_emitted():
     a desync on every affected live-arm card."""
     flags = adapter._flags_for_card({"retain": True, "ethereal": True, "innate": True})
     assert flags == []
+
+
+def test_localization_falls_back_to_the_gzipped_copy(tmp_path: Path) -> None:
+    """The packaged advisor ships `localization_eng/*.json` gzipped (the game
+    reads every .json in a mod's folder as a mod manifest)."""
+    import gzip
+
+    from sts2_hint import canonical_maps
+
+    (tmp_path / "relics.json.gz").write_bytes(gzip.compress(b'{"ANCHOR.title": "Anchor", "X": 1}'))
+    assert canonical_maps._load_json(tmp_path / "relics.json") == {"ANCHOR.title": "Anchor"}
+    (tmp_path / "relics.json").write_text('{"ANCHOR.title": "Plain"}', encoding="utf-8")
+    assert canonical_maps._load_json(tmp_path / "relics.json") == {"ANCHOR.title": "Plain"}
+    assert canonical_maps._load_json(tmp_path / "missing.json") == {}

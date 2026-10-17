@@ -47,7 +47,20 @@ for character in champions.characters():
 loc = glob.glob(os.path.join(PYCLI, "localization_eng", "*.json"))
 if not loc:
     raise SystemExit("no localization_eng/*.json found")
-datas += [(p, "localization_eng") for p in loc]
+# Gzipped: the game reads every .json under a mod's folder as a mod manifest
+# and logs a stack trace for each one that is not. The reader that runs in
+# the bundle (sts2_hint/canonical_maps.py) falls back to <name>.json.gz.
+import gzip  # noqa: E402
+import shutil  # noqa: E402
+
+loc_gz_dir = os.path.join(PYCLI, "build", "localization_eng_gz")
+shutil.rmtree(loc_gz_dir, ignore_errors=True)
+os.makedirs(loc_gz_dir)
+for p in loc:
+    gz = os.path.join(loc_gz_dir, os.path.basename(p) + ".gz")
+    with open(p, "rb") as src, gzip.GzipFile(gz, "wb", mtime=0) as dst:
+        shutil.copyfileobj(src, dst)
+    datas.append((gz, "localization_eng"))
 
 a = Analysis(
     [os.path.join(PYCLI, "python", "realgame_advisor.py")],

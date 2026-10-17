@@ -44,11 +44,19 @@ control plane then share one origin, so the live-game views need neither the
 CORS opt-in nor Chrome's local-network prompt. ``GET /api/health`` answers
 200 only while a site is mounted: the mod's workbench button probes it to
 choose between this page and the dev workbench on :8077.
+
+The mod's copy of the build carries its ``.json`` files gzipped as
+``<name>.json.gz``: the game reads every ``.json`` under a mod's folder as a
+mod manifest. A request for ``x.json`` falls back to ``x.json.gz``, sent with
+``content-encoding: gzip`` (decompressed here for a client that does not
+accept gzip), so the page never sees the difference.
 """
 
 from __future__ import annotations
 
 import copy
+import gzip
+import io
 import json
 import logging
 import re
@@ -115,12 +123,17 @@ class StaticSite:
         """True for a browser-only build. ``wb-precache.json`` is written only
         by the static build (vite.config.ts ``swPrecache``); a server build of
         the same SPA would call ``/api/*`` here and fail on every request."""
-        return (root / "index.html").is_file() and (root / "wb-precache.json").is_file()
+        precache = root / "wb-precache.json"
+        return (root / "index.html").is_file() and (
+            precache.is_file() or precache.with_name(precache.name + ".gz").is_file()
+        )
 
     def resolve(self, url_path: str) -> Path | None:
         """The file for a request path, or None. Never leaves the roots."""
         rel = url_path.lstrip("/") or "index.html"
         found = self._under(self.root, rel)
+        if found is None and rel.endswith(".json"):
+            found = self._under(self.root, rel + ".gz")
         if found is None and self.ppo_dir is not None and rel.startswith("ppo/"):
             found = self._under(self.ppo_dir, rel[len("ppo/") :])
         if found is None and "." not in rel.rsplit("/", 1)[-1]:
@@ -138,8 +151,14 @@ class StaticSite:
         return path if path.is_file() else None
 
     @staticmethod
+    def gzipped(url_path: str, file: Path) -> bool:
+        """True when ``file`` is the ``.json.gz`` stand-in for a ``.json``
+        request (``resolve``): its bytes go out gzip-encoded."""
+        return file.name.endswith(".json.gz") and not url_path.endswith(".gz")
+
+    @staticmethod
     def headers(url_path: str, file: Path) -> dict[str, str]:
-        ext = file.suffix.lower()
+        ext = ".json" if StaticSite.gzipped(url_path, file) else file.suffix.lower()
         ctype = _MIME.get(ext, "application/octet-stream")
         if url_path.startswith("/assets/") and ext == ".png":
             ctype = "image/webp"
@@ -452,15 +471,29 @@ class ControlPlane:
                 file = site.resolve(unquote(path))
                 if file is None:
                     return False
+                encoding = None
                 try:
-                    size = file.stat().st_size
-                    fh = file.open("rb")
-                except OSError:
+                    if site.gzipped(path, file):
+                        accept = self.headers.get("accept-encoding", "")
+                        if "gzip" in accept.lower():
+                            encoding = "gzip"
+                            fh = file.open("rb")
+                        else:
+                            fh = io.BytesIO(gzip.decompress(file.read_bytes()))
+                    else:
+                        fh = file.open("rb")
+                    size = fh.seek(0, io.SEEK_END)
+                    fh.seek(0)
+                except (OSError, EOFError):
                     return False
                 with fh:
                     self.send_response(200)
                     for name, value in site.headers(path, file).items():
                         self.send_header(name, value)
+                    if site.gzipped(path, file):
+                        self.send_header("vary", "accept-encoding")
+                    if encoding:
+                        self.send_header("content-encoding", encoding)
                     self.send_header("content-length", str(size))
                     self.end_headers()
                     if not head:
