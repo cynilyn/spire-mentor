@@ -30,9 +30,10 @@
 <nav id="toc" class="toc" aria-label="Contents">
   <p class="toc-title">On this page</p>
   <ol>
+    <li><a href="#primer">PPO in plain words</a></li>
     <li><a href="#env">The environment</a></li>
     <li><a href="#reward">Reward</a></li>
-    <li><a href="#ppo">PPO</a></li>
+    <li><a href="#ppo">PPO settings</a></li>
     <li><a href="#compute">Collection &amp; compute</a></li>
     <li><a href="#start">Starting points</a></li>
     <li><a href="#lineage">Champion lineages</a></li>
@@ -60,6 +61,88 @@
     <figcaption>One PPO iteration. On the engine of August–September 2026 the 150-iteration legs in the table below took 36 to 63 hours each, with 46 worker processes on a 24-core CPU. On the October 2026 engine a typical Ironclad iteration of the current recipe (960 games at 250/1,000 simulations) takes 208 s instead of 609 s on the previous (12 October) engine, so 150 iterations take about 9 hours instead of 25 (<a href="benchmarks.html#training">benchmarks</a>).</figcaption>
   </figure>
 
+</section>
+
+<section id="primer">
+  <h2>PPO in plain words</h2>
+  <p>PPO (Proximal Policy Optimization) is a reinforcement-learning method:
+  the network learns by playing, not by copying labelled examples. Nobody
+  tells it which card was the right pick. It finds out only at the end of a
+  run how far it got, and has to work out for itself which of its choices
+  were responsible. This section explains the idea without the maths; the
+  rest of the page assumes it.</p>
+
+  <h3>The policy</h3>
+  <p>The network being trained is a <em>policy</em>: shown a situation (the
+  deck, relics, HP, map, and the options on offer) it gives each option a
+  probability. At a card reward it might say 55% Inflame, 30% Pommel
+  Strike, 15% skip. Learning means shifting those probabilities towards
+  choices that lead to better runs.</p>
+
+  <h3>Play, then learn</h3>
+  <p>Training alternates two phases, the loop in the figure above:</p>
+  <ol>
+    <li><strong>Play.</strong> The current net plays a batch of full runs.
+    During training it <em>samples</em> from its probabilities instead of
+    always taking the favourite, so it keeps trying options it is unsure
+    about. Every decision is recorded: what it saw, what it chose, and how
+    likely that choice was.</li>
+    <li><strong>Learn.</strong> Once the batch is in, the net is updated so
+    that choices which turned out well become more likely and choices which
+    turned out badly become less likely. Then the updated net plays the next
+    batch.</li>
+  </ol>
+  <p>One batch teaches very little on its own. A training leg is typically
+  150 iterations of this loop, tens of thousands of runs, and a champion is
+  the product of several legs.</p>
+
+  <h3>Which choice deserves the credit?</h3>
+  <p>A run has dozens of decisions and one outcome. A win does not mean every
+  pick in it was good, and a death does not mean every pick was bad: the
+  run may have been lost to one unlucky elite. PPO handles this with a
+  second output, the <em>critic</em> (the value head): from any situation it
+  predicts how well the run will go from here.</p>
+  <p>The credit for a choice, its <em>advantage</em>, is how much better
+  things went than the critic expected at the moment of choosing. Suppose
+  the critic expects a return of 0.40 at a card reward, the net takes
+  Inflame, and the critic's estimate one decision later is 0.46: the pick
+  gets an advantage of about +0.06. A choice that leaves the run worse off
+  than expected gets a negative advantage. Any single advantage is noisy,
+  because the fights and draws in between are random, but over thousands
+  of runs the luck averages out and the real effect of the choice remains.
+  The critic is trained at the same time, to predict returns ever more
+  accurately.</p>
+  <p class="note">"GAE" in the settings below is how the advantage blends
+  the critic's next estimate with what actually happened over the rest of
+  the run; λ = 0.97 leans mostly on what actually happened.</p>
+
+  <h3>Small steps: the "proximal" part</h3>
+  <p>The obvious rule, raise every probability in proportion to its
+  advantage, is unstable: one batch of lucky runs can push a probability
+  from 30% to 95%, and a policy that has lurched that far is playing a
+  different game from the one the batch measured. PPO limits each update.
+  For every recorded decision it compares the new probability of the choice
+  with the old one, and once that ratio leaves the band 0.8–1.2 the choice
+  earns no further credit. The net can still change a lot over many
+  iterations, but only a little per batch, which also makes it safe to
+  learn from each batch more than once (here, two passes).</p>
+  <figure class="fig">
+    <div class="canvas"><svg viewBox="0 0 760 290" role="img" aria-label="PPO's clipped objective. For a choice with positive advantage, the gain grows as its probability rises, until the new-to-old ratio reaches 1.2, then stays flat. For a choice with negative advantage, the gain from lowering its probability stops at a ratio of 0.8."><defs><marker id="aa-clip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead-acc"/></marker></defs><text x="60" y="22" class="h" text-anchor="start">Choice turned out well</text><text x="60" y="40" class="s" text-anchor="start">advantage &gt; 0: make it more likely</text><rect x="172" y="50" width="56" height="168" class="faint"/><line x1="60" y1="218" x2="340" y2="218" class="line-m"/><line x1="200" y1="214" x2="200" y2="222" class="line-m"/><text x="172" y="236" class="s num" text-anchor="middle">0.8</text><text x="200" y="236" class="s num" text-anchor="middle">1</text><text x="228" y="236" class="s num" text-anchor="middle">1.2</text><path d="M228,98 L284,58" class="line-m dash"/><path d="M60,218 L228,98 L340,98" class="path"/><text x="238" y="120" class="m" text-anchor="start">no more credit past 1.2×</text><text x="200" y="262" class="m" text-anchor="middle">new probability ÷ old probability</text><text x="440" y="22" class="h" text-anchor="start">Choice turned out badly</text><text x="440" y="40" class="s" text-anchor="start">advantage &lt; 0: make it less likely</text><rect x="552" y="50" width="56" height="168" class="faint"/><line x1="440" y1="218" x2="720" y2="218" class="line-m"/><line x1="580" y1="214" x2="580" y2="222" class="line-m"/><text x="552" y="236" class="s num" text-anchor="middle">0.8</text><text x="580" y="236" class="s num" text-anchor="middle">1</text><text x="608" y="236" class="s num" text-anchor="middle">1.2</text><path d="M440,62 L552,118" class="line-m dash"/><path d="M440,118 L552,118 L720,202" class="path"/><text x="446" y="146" class="m" text-anchor="start">no more credit below 0.8×</text><text x="580" y="262" class="m" text-anchor="middle">new probability ÷ old probability</text></svg></div>
+    <figcaption>What one recorded decision contributes to PPO's objective as the update moves the probability of the choice (higher is better for the net). The shaded band is ±20% around the probability it had when the batch was played; the dashed line is the unclipped rule, whose incentive never stops.</figcaption>
+  </figure>
+
+  <h3>Keeping it curious</h3>
+  <p>Left alone, a policy tends to become certain too early, always taking
+  the same option and never learning what the others are worth. A small
+  <em>entropy bonus</em> rewards keeping some probability spread across the
+  options. It is held flat early in a leg and decays towards the end, as the
+  net settles.</p>
+
+  <h3>Training versus playing</h3>
+  <p>Sampling and the entropy bonus exist only to learn. When the trained
+  net plays for real, in the gates, the published win rates and the advisor,
+  it takes its highest-probability option every time, and the critic is not
+  used to choose anything; its estimate is only shown, as <code>V</code>.</p>
 </section>
 
 <section id="env">
@@ -109,7 +192,9 @@ shaping = Φ(s′) − Φ(s),   Φ = 0.1 · hp_fraction + 0.035 · upgraded_card
 </section>
 
 <section id="ppo">
-  <h2>PPO</h2>
+  <h2>PPO settings</h2>
+  <p>The exact recipe, for readers who know PPO. Each line maps onto a step
+  of the <a href="#primer">plain-words version</a> above.</p>
   <div class="table-wrap">
   <table class="kv">
     <tbody>

@@ -243,6 +243,19 @@
     <li>which potion to drop when the belt is full.</li>
   </ul>
 
+  <h3>How it learned</h3>
+  <p>Nobody wrote down which choices are good. The network was trained with
+  reinforcement learning (PPO): it played hundreds of thousands of
+  simulated runs, with the combat search fighting every fight, and after
+  each batch it made the choices that had led to better-than-expected runs
+  a little more likely and the others a little less likely. A second output,
+  the value head, learned alongside it to predict how well a run will go
+  from a given situation; that prediction is what decides whether an
+  outcome counts as better or worse than expected. Each update is kept
+  small, which is the "proximal" in Proximal Policy Optimization. The
+  <a href="training.html#primer">training page</a> walks through this step
+  by step.</p>
+
   <h3>What it sees</h3>
   <p>The state is a set of tokens. Each token is the sum of a section
   embedding, up to twelve categorical embeddings and a projection of
@@ -285,7 +298,8 @@
 
   <h3>Choosing</h3>
   <p>At play time the policy is greedy: it takes the highest-probability
-  option. Options that differ only in their target (remove <em>which</em>
+  option. (During training it samples from the probabilities instead, so it
+  keeps trying options it is unsure about.) Options that differ only in their target (remove <em>which</em>
   card, smith <em>which</em> card) first pool their probability by kind, so a
   well-liked action is not out-voted because its mass was split across many
   targets. One rule sits on top: an event choice that would kill the player
