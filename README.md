@@ -4,9 +4,14 @@
 [![Docs](https://img.shields.io/badge/docs-tfriedel.github.io%2Fspire--mentor-blue)](https://tfriedel.github.io/spire-mentor/)
 [![Steam Workshop](https://img.shields.io/badge/Steam_Workshop-Spire_Mentor-1b2838?logo=steam)](https://steamcommunity.com/sharedfiles/filedetails/?id=3821016481)
 
-**This is a full port of the Slay the Spire 2 game logic to Rust including a strong AI that is trained using it.  
-You can also play the game in the browser and see how the AI would play or use it to give feedback on your play.  
-There’s even an auto-battler mode where you only make the macro-level decisions and the fights play automatically.**
+**A Rust simulator of Slay the Spire 2's combat and run rules, plus a strong AI trained on it.  
+It's an analysis and training tool for people who own the game: replay positions in the browser, see how the AI would play them, or let it coach you.  
+You can even let the AI play the fights, so you can practise the run-level decisions.**
+
+> **You need your own copy of Slay the Spire 2** (Steam). This project is not
+> affiliated with Mega Crit. Art and sound are extracted locally from your
+> install and are never distributed; the repository contains no art, audio or
+> game code. See [what's included](#whats-included-and-what-isnt).
 
 ![The browser workbench in the act-3 boss fight: the best card carries a 95% win badge and the machine-reasoning panel ranks every legal move](docs/site/img/wb-combat.webp)
 
@@ -18,8 +23,8 @@ move.</sub>
 
 ### Simulation
 
-- complete Rust port of **all characters**, cards, relics, potions and enemies of the current stable build v0.107.1  
-- optimized for [speed](https://tfriedel.github.io/spire-mentor/benchmarks.html), but with no compromises on accuracy: \~1,500× faster than running the game's own combat logic headless on one core (\~60k combats/s), \~2,400× using the whole machine. This was also the main reason to port the game to Rust, because the training time is bottlenecked by the simulation.  
+- complete Rust port of the combat and run rules for **all characters**, cards, relics, potions and enemies of the current stable build v0.107.1  
+- optimized for [speed](https://tfriedel.github.io/spire-mentor/benchmarks.html), but with no compromises on accuracy: \~1,500× faster than running the game's own combat logic headless on one core (\~60k combats/s), \~2,400× using the whole machine. This was also the main reason to port the rules to Rust, because the training time is bottlenecked by the simulation.  
 - parity tests and fuzzing against the game's own code after every action. After the initial implementation I found there were lots of little differences between the simulation and the real game, so I invested a lot of effort into extensive parity testing. Ironclad is currently at 100% parity, the other characters between 99.4% and 99.8%.  
 - Python bindings so you can run combats, full runs or the training stack from Python
 
@@ -31,10 +36,10 @@ move.</sub>
 
 ### UI / workbench
 
-- game with graphics / sound runs as WASM in your browser. You can play it on any platform. Art and sound are extracted from your own copy of the game (one command) and not included in this git repository.  
+- the workbench runs in your browser (WASM). With art and sound imported from your own install (one command), it looks like the real game. Neither is included in this git repository.  
 - revert to any step and branch off to play a situation in multiple different ways  
 - use AI to coach you  
-- play STS2 as an autobattler where you only make macro decisions and let AI handle the fights  
+- let the AI play the fights so you can practise the macro decisions  
 - analyze your game after you've finished to find the biggest blunders  
 - copy a state from the real game into the workbench to analyze it  
 - explore the MCTS search tree  
@@ -75,9 +80,8 @@ Win rates for every ascension level are in the
 ![The live regret coach flagging a move as it is made](docs/site/img/wb-regret-coach.webp)
 
 I started out with a CLI-based interface to the STS2 simulator, but this has now turned
-into a full-blown React front end over the Rust engine compiled to WebAssembly. It looks almost
-like the real game, with animations, sound etc.
-Note that you need to own the real game to extract the graphics & sounds with `just import-game`.
+into a full-blown React front end over the Rust engine compiled to WebAssembly, with animations and sound.
+The graphics and sounds come from your own copy of the game: `just import-game` extracts them locally.
 
 Some things you can do:
 
@@ -166,8 +170,7 @@ documentation with screenshots at
 ## What's included and what isn't
 
 > Slay the Spire 2 is © Mega Crit. This project is not affiliated with or
-> endorsed by them. The repository contains the game's **text and extracted
-> data**, so the engine, the AI and the workbench work out of the box. It
+> endorsed by them. The repository contains the game's **text**, so the engine, the AI and the workbench work out of the box. It
 > contains **no art, audio, game assemblies or decompiled code**. The tooling
 > extracts those from **your own copy of the game**
 > ([docs/bring-your-own-game.md](docs/bring-your-own-game.md)) into paths that
