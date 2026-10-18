@@ -25,6 +25,72 @@
     7,
     8
    ],
+   "edges": [
+    {
+     "child": 1,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 6
+    },
+    {
+     "child": 2,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 6
+    },
+    {
+     "child": 3,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 6
+    },
+    {
+     "child": 4,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 6
+    },
+    {
+     "child": 5,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 6
+    },
+    {
+     "child": 6,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 6
+    },
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 6
+    },
+    {
+     "child": 8,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 6
+    }
+   ],
    "id": 0,
    "is_terminal": false,
    "kind": null,
@@ -72,6 +138,48 @@
     12,
     15,
     14
+   ],
+   "edges": [
+    {
+     "child": 10,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 21,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 12,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 15,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 14,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
    ],
    "id": 1,
    "is_terminal": false,
@@ -121,6 +229,48 @@
     19,
     35
    ],
+   "edges": [
+    {
+     "child": 10,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 17,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 22,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 19,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 35,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 2,
    "is_terminal": false,
    "kind": "play",
@@ -168,6 +318,48 @@
     26,
     27,
     25
+   ],
+   "edges": [
+    {
+     "child": 11,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 26,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 27,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 25,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 3,
    "is_terminal": false,
@@ -217,6 +409,48 @@
     29,
     32
    ],
+   "edges": [
+    {
+     "child": 12,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 24,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 29,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 32,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 4,
    "is_terminal": false,
    "kind": "play",
@@ -264,6 +498,48 @@
     26,
     30,
     34
+   ],
+   "edges": [
+    {
+     "child": 15,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 20,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 26,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 30,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 34,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    }
    ],
    "id": 5,
    "is_terminal": false,
@@ -313,6 +589,48 @@
     24,
     38
    ],
+   "edges": [
+    {
+     "child": 14,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 22,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 27,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 24,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 38,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    }
+   ],
    "id": 6,
    "is_terminal": false,
    "kind": "play",
@@ -361,6 +679,48 @@
     29,
     37
    ],
+   "edges": [
+    {
+     "child": 13,
+     "kind": "play",
+     "label": "Bodyguard",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 19,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 25,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 29,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 37,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    }
+   ],
    "id": 7,
    "is_terminal": false,
    "kind": "play",
@@ -405,6 +765,24 @@
    "children": [
     9,
     28
+   ],
+   "edges": [
+    {
+     "child": 9,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 4
+    },
+    {
+     "child": 28,
+     "kind": "outcome",
+     "label": "outcome #3",
+     "outcome_ordinal": 3,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 8,
    "is_terminal": false,
@@ -452,6 +830,32 @@
     23,
     39
    ],
+   "edges": [
+    {
+     "child": 16,
+     "kind": "play",
+     "label": "UltimateStrike",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 23,
+     "kind": "play",
+     "label": "UltimateStrike",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 39,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 9,
    "is_terminal": false,
    "kind": "outcome",
@@ -494,6 +898,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 10,
    "is_terminal": false,
    "kind": "play",
@@ -536,6 +941,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 11,
    "is_terminal": false,
    "kind": "play",
@@ -578,6 +984,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 12,
    "is_terminal": false,
    "kind": "play",
@@ -620,6 +1027,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 13,
    "is_terminal": false,
    "kind": "play",
@@ -662,6 +1070,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 14,
    "is_terminal": false,
    "kind": "play",
@@ -704,6 +1113,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 15,
    "is_terminal": false,
    "kind": "play",
@@ -746,6 +1156,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 16,
    "is_terminal": false,
    "kind": "play",
@@ -788,6 +1199,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 17,
    "is_terminal": false,
    "kind": "play",
@@ -830,6 +1242,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 18,
    "is_terminal": false,
    "kind": "play",
@@ -872,6 +1285,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 19,
    "is_terminal": false,
    "kind": "play",
@@ -914,6 +1328,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 20,
    "is_terminal": false,
    "kind": "play",
@@ -956,6 +1371,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 21,
    "is_terminal": false,
    "kind": "play",
@@ -998,6 +1414,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 22,
    "is_terminal": false,
    "kind": "play",
@@ -1040,6 +1457,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 23,
    "is_terminal": false,
    "kind": "play",
@@ -1082,10 +1500,11 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 24,
    "is_terminal": false,
    "kind": "play",
-   "label": "Sow",
+   "label": "StrikeNecrobinder",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -1113,7 +1532,7 @@
     "player_max_hp": 66,
     "round": 3
    },
-   "target_index": null,
+   "target_index": 1,
    "ties": 0,
    "value_sum": 2.364,
    "visits": 2,
@@ -1124,6 +1543,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 25,
    "is_terminal": false,
    "kind": "play",
@@ -1166,6 +1586,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 26,
    "is_terminal": false,
    "kind": "play",
@@ -1208,6 +1629,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 27,
    "is_terminal": false,
    "kind": "play",
@@ -1252,6 +1674,16 @@
    "children": [
     31
    ],
+   "edges": [
+    {
+     "child": 31,
+     "kind": "play",
+     "label": "Sow",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 28,
    "is_terminal": false,
    "kind": "outcome",
@@ -1294,10 +1726,11 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 29,
    "is_terminal": false,
    "kind": "play",
-   "label": "Sow",
+   "label": "DefendNecrobinder",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -1336,6 +1769,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 30,
    "is_terminal": false,
    "kind": "play",
@@ -1378,6 +1812,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 31,
    "is_terminal": false,
    "kind": "play",
@@ -1422,6 +1857,16 @@
    "children": [
     33
    ],
+   "edges": [
+    {
+     "child": 33,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 32,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1464,6 +1909,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 33,
    "is_terminal": false,
    "kind": "outcome",
@@ -1506,6 +1952,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 34,
    "is_terminal": false,
    "kind": "play",
@@ -1550,6 +1997,16 @@
    "children": [
     36
    ],
+   "edges": [
+    {
+     "child": 36,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 35,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1592,6 +2049,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 36,
    "is_terminal": false,
    "kind": "outcome",
@@ -1634,6 +2092,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 37,
    "is_terminal": false,
    "kind": "play",
@@ -1676,6 +2135,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 38,
    "is_terminal": false,
    "kind": "play",
@@ -1718,6 +2178,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 39,
    "is_terminal": false,
    "kind": "play",

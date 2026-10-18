@@ -21,6 +21,40 @@
     4,
     5
    ],
+   "edges": [
+    {
+     "child": 1,
+     "kind": "play",
+     "label": "TrueGrit",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 12
+    },
+    {
+     "child": 3,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 12
+    },
+    {
+     "child": 4,
+     "kind": "play",
+     "label": "DefendIronclad",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 12
+    },
+    {
+     "child": 5,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 12
+    }
+   ],
    "id": 0,
    "is_terminal": false,
    "kind": null,
@@ -67,6 +101,32 @@
     18,
     23
    ],
+   "edges": [
+    {
+     "child": 2,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 5
+    },
+    {
+     "child": 18,
+     "kind": "outcome",
+     "label": "outcome #3",
+     "outcome_ordinal": 3,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 23,
+     "kind": "outcome",
+     "label": "outcome #4",
+     "outcome_ordinal": 4,
+     "target_index": null,
+     "visits": 4
+    }
+   ],
    "id": 1,
    "is_terminal": false,
    "kind": "play",
@@ -111,6 +171,24 @@
    "children": [
     9,
     13
+   ],
+   "edges": [
+    {
+     "child": 9,
+     "kind": "play",
+     "label": "DefendIronclad",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 13,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
    ],
    "id": 2,
    "is_terminal": false,
@@ -158,6 +236,32 @@
     12,
     16
    ],
+   "edges": [
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "TrueGrit",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 5
+    },
+    {
+     "child": 12,
+     "kind": "play",
+     "label": "DefendIronclad",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    },
+    {
+     "child": 16,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 4
+    }
+   ],
    "id": 3,
    "is_terminal": false,
    "kind": "play",
@@ -203,6 +307,32 @@
     10,
     12,
     19
+   ],
+   "edges": [
+    {
+     "child": 10,
+     "kind": "play",
+     "label": "TrueGrit",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 4
+    },
+    {
+     "child": 12,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 3
+    },
+    {
+     "child": 19,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 4
+    }
    ],
    "id": 4,
    "is_terminal": false,
@@ -253,6 +383,56 @@
     42,
     48
    ],
+   "edges": [
+    {
+     "child": 6,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 11,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 15,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 24,
+     "kind": "outcome",
+     "label": "outcome #4",
+     "outcome_ordinal": 4,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 42,
+     "kind": "outcome",
+     "label": "outcome #8",
+     "outcome_ordinal": 8,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 48,
+     "kind": "outcome",
+     "label": "outcome #10",
+     "outcome_ordinal": 10,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 5,
    "is_terminal": false,
    "kind": "end_turn",
@@ -297,6 +477,24 @@
    "children": [
     33,
     39
+   ],
+   "edges": [
+    {
+     "child": 33,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 39,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
    ],
    "id": 6,
    "is_terminal": false,
@@ -343,6 +541,24 @@
     8,
     22
    ],
+   "edges": [
+    {
+     "child": 8,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 22,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 4
+    }
+   ],
    "id": 7,
    "is_terminal": false,
    "kind": "play",
@@ -387,14 +603,24 @@
    "children": [
     50
    ],
+   "edges": [
+    {
+     "child": 50,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 8,
    "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
+   "kind": "outcome",
+   "label": "outcome #0",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": null,
+   "outcome_ordinal": 0,
    "parent": 7,
    "proven_loss": false,
    "proven_win": false,
@@ -418,7 +644,7 @@
     "player_max_hp": 80,
     "round": 2
    },
-   "target_index": 1,
+   "target_index": null,
    "ties": 0,
    "value_sum": 3.246,
    "visits": 3,
@@ -431,14 +657,24 @@
    "children": [
     25
    ],
+   "edges": [
+    {
+     "child": 25,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 9,
    "is_terminal": false,
-   "kind": "outcome",
-   "label": "outcome #0",
+   "kind": "play",
+   "label": "DefendIronclad",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": 0,
+   "outcome_ordinal": null,
    "parent": 2,
    "proven_loss": false,
    "proven_win": false,
@@ -475,6 +711,24 @@
    "children": [
     9,
     53
+   ],
+   "edges": [
+    {
+     "child": 9,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 4
+    },
+    {
+     "child": 53,
+     "kind": "outcome",
+     "label": "outcome #3",
+     "outcome_ordinal": 3,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 10,
    "is_terminal": false,
@@ -521,6 +775,24 @@
     21,
     54
    ],
+   "edges": [
+    {
+     "child": 21,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 54,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 11,
    "is_terminal": false,
    "kind": "outcome",
@@ -565,10 +837,20 @@
    "children": [
     34
    ],
+   "edges": [
+    {
+     "child": 34,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
+   ],
    "id": 12,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeIronclad",
+   "label": "DefendIronclad",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -596,7 +878,7 @@
     "player_max_hp": 80,
     "round": 2
    },
-   "target_index": 1,
+   "target_index": null,
    "ties": 0,
    "value_sum": 5.4028,
    "visits": 5,
@@ -609,6 +891,24 @@
    "children": [
     14,
     49
+   ],
+   "edges": [
+    {
+     "child": 14,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    },
+    {
+     "child": 49,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 13,
    "is_terminal": false,
@@ -653,6 +953,16 @@
    "chance_draws": 0,
    "children": [
     32
+   ],
+   "edges": [
+    {
+     "child": 32,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
    ],
    "id": 14,
    "is_terminal": false,
@@ -699,6 +1009,24 @@
     28,
     45
    ],
+   "edges": [
+    {
+     "child": 28,
+     "kind": "play",
+     "label": "Bloodletting",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 45,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 15,
    "is_terminal": false,
    "kind": "outcome",
@@ -743,6 +1071,24 @@
    "children": [
     17,
     27
+   ],
+   "edges": [
+    {
+     "child": 17,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 27,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 16,
    "is_terminal": false,
@@ -789,6 +1135,24 @@
     36,
     44
    ],
+   "edges": [
+    {
+     "child": 36,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 44,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 17,
    "is_terminal": false,
    "kind": "outcome",
@@ -833,6 +1197,24 @@
    "children": [
     22,
     53
+   ],
+   "edges": [
+    {
+     "child": 22,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 53,
+     "kind": "play",
+     "label": "DefendIronclad",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 18,
    "is_terminal": false,
@@ -879,6 +1261,24 @@
     20,
     52
    ],
+   "edges": [
+    {
+     "child": 20,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 52,
+     "kind": "outcome",
+     "label": "outcome #3",
+     "outcome_ordinal": 3,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 19,
    "is_terminal": false,
    "kind": "end_turn",
@@ -924,6 +1324,24 @@
     29,
     40
    ],
+   "edges": [
+    {
+     "child": 29,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 40,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 20,
    "is_terminal": false,
    "kind": "outcome",
@@ -966,6 +1384,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 21,
    "is_terminal": false,
    "kind": "play",
@@ -1010,14 +1429,24 @@
    "children": [
     30
    ],
+   "edges": [
+    {
+     "child": 30,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 22,
    "is_terminal": false,
-   "kind": "play",
-   "label": "StrikeIronclad",
+   "kind": "outcome",
+   "label": "outcome #1",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": null,
+   "outcome_ordinal": 1,
    "parent": 7,
    "proven_loss": false,
    "proven_win": false,
@@ -1041,7 +1470,7 @@
     "player_max_hp": 80,
     "round": 2
    },
-   "target_index": 1,
+   "target_index": null,
    "ties": 0,
    "value_sum": 4.328,
    "visits": 4,
@@ -1054,6 +1483,24 @@
    "children": [
     8,
     37
+   ],
+   "edges": [
+    {
+     "child": 8,
+     "kind": "play",
+     "label": "StrikeIronclad",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 37,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 23,
    "is_terminal": false,
@@ -1097,6 +1544,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 24,
    "is_terminal": false,
    "kind": "outcome",
@@ -1142,6 +1590,24 @@
     26,
     43
    ],
+   "edges": [
+    {
+     "child": 26,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 43,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 25,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1184,6 +1650,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 26,
    "is_terminal": false,
    "kind": "outcome",
@@ -1226,6 +1693,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 27,
    "is_terminal": false,
    "kind": "outcome",
@@ -1268,6 +1736,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 28,
    "is_terminal": false,
    "kind": "play",
@@ -1310,6 +1779,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 29,
    "is_terminal": false,
    "kind": "play",
@@ -1353,6 +1823,16 @@
    "chance_draws": 2,
    "children": [
     31
+   ],
+   "edges": [
+    {
+     "child": 31,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 30,
    "is_terminal": false,
@@ -1398,6 +1878,16 @@
    "children": [
     41
    ],
+   "edges": [
+    {
+     "child": 41,
+     "kind": "play",
+     "label": "Bloodletting",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 31,
    "is_terminal": false,
    "kind": "outcome",
@@ -1440,6 +1930,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 32,
    "is_terminal": false,
    "kind": "play",
@@ -1482,6 +1973,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 33,
    "is_terminal": false,
    "kind": "play",
@@ -1527,6 +2019,24 @@
     35,
     47
    ],
+   "edges": [
+    {
+     "child": 35,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    },
+    {
+     "child": 47,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 34,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1571,6 +2081,16 @@
    "children": [
     55
    ],
+   "edges": [
+    {
+     "child": 55,
+     "kind": "play",
+     "label": "Bash",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 35,
    "is_terminal": false,
    "kind": "outcome",
@@ -1613,6 +2133,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 36,
    "is_terminal": false,
    "kind": "play",
@@ -1658,6 +2179,24 @@
     38,
     46
    ],
+   "edges": [
+    {
+     "child": 38,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 46,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 37,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1700,6 +2239,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 38,
    "is_terminal": false,
    "kind": "outcome",
@@ -1742,6 +2282,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 39,
    "is_terminal": false,
    "kind": "play",
@@ -1784,6 +2325,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 40,
    "is_terminal": false,
    "kind": "play",
@@ -1826,6 +2368,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 41,
    "is_terminal": false,
    "kind": "play",
@@ -1868,6 +2411,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 42,
    "is_terminal": false,
    "kind": "outcome",
@@ -1910,6 +2454,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 43,
    "is_terminal": false,
    "kind": "outcome",
@@ -1952,6 +2497,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 44,
    "is_terminal": false,
    "kind": "play",
@@ -1994,6 +2540,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 45,
    "is_terminal": false,
    "kind": "play",
@@ -2036,6 +2583,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 46,
    "is_terminal": false,
    "kind": "outcome",
@@ -2078,6 +2626,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 47,
    "is_terminal": false,
    "kind": "outcome",
@@ -2120,6 +2669,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 48,
    "is_terminal": false,
    "kind": "outcome",
@@ -2162,6 +2712,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 49,
    "is_terminal": false,
    "kind": "outcome",
@@ -2206,6 +2757,16 @@
    "children": [
     51
    ],
+   "edges": [
+    {
+     "child": 51,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 50,
    "is_terminal": false,
    "kind": "end_turn",
@@ -2248,6 +2809,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 51,
    "is_terminal": false,
    "kind": "outcome",
@@ -2290,6 +2852,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 52,
    "is_terminal": false,
    "kind": "outcome",
@@ -2332,6 +2895,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 53,
    "is_terminal": false,
    "kind": "play",
@@ -2374,6 +2938,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 54,
    "is_terminal": false,
    "kind": "play",
@@ -2416,6 +2981,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 55,
    "is_terminal": false,
    "kind": "play",
