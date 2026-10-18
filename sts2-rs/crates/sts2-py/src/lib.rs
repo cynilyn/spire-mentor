@@ -2990,6 +2990,7 @@ pub(crate) fn action_score_pydict<'py>(
     common_random_numbers = false,
     endturn_widening_c = None,
     endturn_widening_alpha = None,
+    dominance_pruning = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn mcts_recommend<'py>(
@@ -3007,6 +3008,7 @@ fn mcts_recommend<'py>(
     common_random_numbers: bool,
     endturn_widening_c: Option<f32>,
     endturn_widening_alpha: Option<f32>,
+    dominance_pruning: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     // The search config, the ranking and the dict shape all live in
     // `sts2_wire::emit::mcts` — the same code the browser workbench runs, so
@@ -3044,6 +3046,7 @@ fn mcts_recommend<'py>(
         endturn_widening_c,
         endturn_widening_alpha,
         common_random_numbers,
+        dominance_pruning,
     };
     let root_state = state.inner.clone();
     // Forward the wire-side trust flag so `--mcts-log` consumers can tell

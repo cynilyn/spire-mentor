@@ -89,8 +89,10 @@
 //!
 //! An arm is `mean` (the deployed control), `pm:<p>[:<shift>]` (globally
 //! shifted power mean) or `pmn:<p>` (per-node min-max normalized power
-//! mean). Every arm's row carries a `dq_vs_ctl` column — the mean absolute
-//! change it made to the scored root Q values relative to the control. An
+//! mean), any of them suffixed `+dp` to turn on
+//! `MctsConfig::dominance_pruning`. Every arm's row carries a `dq_vs_ctl`
+//! column — the mean absolute change it made to the scored root Q values
+//! relative to the control. An
 //! arm reporting `pair_acc` equal to the control AND `dq_vs_ctl` near zero
 //! did not fail, it never fired, and those are different findings.
 
@@ -262,9 +264,23 @@ struct Arm {
     /// `vbzji` experiment found deep-and-few beats shallow-and-many on win
     /// rate, so this is here to test a *mechanism*, not to ship.
     depth: u32,
+    /// `MctsConfig::dominance_pruning` — the `+dp` arm suffix.
+    dominance_pruning: bool,
 }
 
+/// An arm spec, optionally suffixed `+dp` to turn on
+/// `MctsConfig::dominance_pruning` (`mean+dp`, `pmn:4+dp`).
 fn parse_arm(spec: &str) -> Option<(String, Arm)> {
+    if let Some(base) = spec.strip_suffix("+dp") {
+        let (name, arm) = parse_arm(base)?;
+        return Some((
+            format!("{name}+dp"),
+            Arm {
+                dominance_pruning: true,
+                ..arm
+            },
+        ));
+    }
     let mut it = spec.split(':');
     match it.next()? {
         "mean" => Some((
@@ -274,6 +290,7 @@ fn parse_arm(spec: &str) -> Option<(String, Arm)> {
                 p: 1.0,
                 shift: 1.5,
                 depth: SEARCH_DEPTH,
+                dominance_pruning: false,
             },
         )),
         "pm" => {
@@ -286,6 +303,7 @@ fn parse_arm(spec: &str) -> Option<(String, Arm)> {
                     p,
                     shift,
                     depth: SEARCH_DEPTH,
+                    dominance_pruning: false,
                 },
             ))
         }
@@ -298,6 +316,7 @@ fn parse_arm(spec: &str) -> Option<(String, Arm)> {
                     p,
                     shift: 1.5,
                     depth: SEARCH_DEPTH,
+                    dominance_pruning: false,
                 },
             ))
         }
@@ -316,6 +335,7 @@ fn arm_config(arm: Arm, sims: u32, seed: u64) -> MctsConfig {
         backup_rule: arm.rule,
         backup_power_p: arm.p,
         backup_power_shift: arm.shift,
+        dominance_pruning: arm.dominance_pruning,
         ..MctsConfig::default()
     }
 }
