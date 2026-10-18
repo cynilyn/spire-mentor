@@ -105,6 +105,14 @@ pub const PY_DATA_INPUTS: [(&str, &str); 0] = [];
 pub const RUNAI_DATA_INPUTS: [(&str, &str); 1] =
     [("data/runai/heuristic_v.toml", "data/runai/heuristic_v.toml")];
 
+/// Extra out-of-`src` engine inputs for sts2-mcts: the built-in Ironclad
+/// playout net `src/rollout_net.rs` bakes in with `include_str!`. A missing
+/// input is skipped, as everywhere.
+pub const MCTS_DATA_INPUTS: [(&str, &str); 1] = [(
+    "data/rollout_nets/ironclad.json",
+    "data/rollout_nets/ironclad.json",
+)];
+
 /// Every workspace crate compiled into the `sts2_rs` extension, in the FIXED
 /// order used by both the aggregate and the recompute. `sts2_py::src_hash()`
 /// must combine the compiled-in consts in this same order.
@@ -133,6 +141,7 @@ pub fn data_inputs(krate: &str) -> &'static [(&'static str, &'static str)] {
     match krate {
         "sts2-py" => &PY_DATA_INPUTS,
         "sts2-runai" => &RUNAI_DATA_INPUTS,
+        "sts2-mcts" => &MCTS_DATA_INPUTS,
         _ => &[],
     }
 }
@@ -169,13 +178,32 @@ pub fn emit_build_stamp(krate: &str, env_var: &str) {
         "cargo:rustc-env={env_var}={}",
         hash_engine_crate(rs_root, krate)
     );
-    let data = data_inputs(krate).iter().map(|(_, rel)| rs_root.join(rel));
+    let data = data_inputs(krate)
+        .iter()
+        .map(|(_, rel)| rerun_watch_path(rs_root, &rs_root.join(rel)));
     for path in [crate_dir.join("src"), crate_dir.join("Cargo.toml")]
         .into_iter()
         .chain(data)
     {
         println!("cargo:rerun-if-changed={}", path.display());
     }
+}
+
+/// What to name in `rerun-if-changed` for data input `path`: the file when it
+/// exists, else its nearest existing ancestor directory (no higher than
+/// `rs_root`). Cargo treats a missing `rerun-if-changed` path as always
+/// stale, so naming an absent optional input would rerun the build script —
+/// and rebuild every dependent crate — on every build. A directory is scanned
+/// for changes, so the input appearing later still triggers the rerun.
+fn rerun_watch_path(rs_root: &Path, path: &Path) -> PathBuf {
+    let mut p = path;
+    while !p.exists() && p != rs_root {
+        match p.parent() {
+            Some(parent) => p = parent,
+            None => break,
+        }
+    }
+    p.to_path_buf()
 }
 
 /// Hash the workspace-wide engine inputs that no single crate's `src` owns: the
@@ -466,5 +494,24 @@ mod tests {
             "order must matter"
         );
         assert_eq!(combine(&["aa", "bb"]).len(), 16);
+    }
+
+    #[test]
+    fn a_missing_data_input_is_watched_through_its_nearest_directory() {
+        let root = std::env::temp_dir().join(format!("srchash-watch-{}", std::process::id()));
+        let dir = root.join("data");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("nets").join("net.json");
+        assert_eq!(rerun_watch_path(&root, &file), dir, "absent: nearest dir");
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&file, "{}").expect("write");
+        assert_eq!(rerun_watch_path(&root, &file), file, "present: the file");
+        let outside = root.join("gone").join("x.json");
+        std::fs::remove_dir_all(&root).expect("cleanup");
+        assert_eq!(
+            rerun_watch_path(&root, &outside),
+            root,
+            "never above rs_root"
+        );
     }
 }

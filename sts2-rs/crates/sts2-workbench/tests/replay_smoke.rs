@@ -255,6 +255,22 @@ fn load_run_and_the_replay_projections() {
     );
     assert_eq!(review["config"], json!({"blunder_pct": 8.0, "top_n": 1}));
 
+    // Replay path tops up the played move like the live coach: at this tiny
+    // budget (64 sims) a re-searched, hand-played row has < PLAYED_MIN_VISITS visits, and
+    // without the top-up it grades "uncertain" and vanishes from the review.
+    let recomputed = call(
+        &mut wb,
+        "POST",
+        "/api/regret-review",
+        json!({"config": {"sims": 64, "recompute": true}}),
+    );
+    let ds = recomputed["decisions"].as_array().expect("decisions");
+    assert!(!ds.is_empty(), "{recomputed}");
+    assert!(
+        ds.iter().all(|d| d["verdict"] != json!("uncertain")),
+        "replay review left an ungraded decision: {recomputed}"
+    );
+
     // MCTS Runs over the host's logs.
     let logs = vec![(log.filename.clone(), log.text.clone())];
     let runs = Workbench::mcts_runs(&logs);
@@ -344,4 +360,76 @@ fn an_unresumable_log_says_so() {
     assert_eq!(wpa["available"], json!(false));
     let tl = call(&mut wb, "GET", "/api/timeline", Value::Null);
     assert_eq!(tl["steps"][0]["label"], json!("go"));
+}
+
+/// Rewrites a recorded run so every combat step carries ONE synthetic score
+/// block: the played move at `played_visits` (not best) beside a best row.
+fn with_synthetic_rows(text: &str, played_visits: i64) -> String {
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("jsonl"))
+        .filter(|l: &Value| l["type"] != json!("mcts"))
+        .collect();
+    let mut out = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        out.push(l.to_string());
+        if l["type"] != json!("state") || l["data"]["decision"] != json!("combat_play") {
+            continue;
+        }
+        let Some(act) = lines[i + 1..].iter().find(|x| x["type"] == json!("action")) else {
+            continue;
+        };
+        let (Some(idx), _) = sts2_workbench::advisors::action_stable_key(&act["data"]["args"])
+        else {
+            continue;
+        };
+        let rows = json!([
+            {"stable_idx": idx, "target_index": act["data"]["args"]["target_index"],
+             "action": "played", "win_prob": 0.2, "visits": played_visits, "q": 0.0,
+             "is_best": false},
+            {"stable_idx": 9999, "target_index": null, "action": "best",
+             "win_prob": 0.9, "visits": 5000, "q": 0.5, "is_best": true},
+        ]);
+        out.push(
+            json!({"step": l["step"], "ts": "t", "type": "mcts",
+                   "data": {"source": "agent", "root_outcomes": rows}})
+            .to_string(),
+        );
+    }
+    out.join("\n") + "\n"
+}
+
+fn review_of(text: &str) -> Value {
+    let mut wb = new_wb();
+    wb.load_run("x.jsonl", text).expect("load");
+    call(
+        &mut wb,
+        "POST",
+        "/api/regret-review",
+        json!({"config": {"sims": 64}}),
+    )
+}
+
+#[test]
+fn recorded_thin_played_rows_are_topped_up() {
+    let mut wb = new_wb();
+    let log = play_and_quit(&mut wb, "run_12", 40);
+    let min = i64::from(u8::try_from(sts2_workbench::advisors::PLAYED_MIN_VISITS).unwrap());
+
+    // Thin played rows: the review re-searches them, so none stay "uncertain".
+    let topped = review_of(&with_synthetic_rows(&log.text, 2));
+    let ds = topped["decisions"].as_array().expect("decisions");
+    assert!(!ds.is_empty(), "{topped}");
+    for d in ds {
+        assert_ne!(d["verdict"], json!("uncertain"), "{d}");
+    }
+
+    // Rows already at the floor are graded as recorded (no rebuild, no search).
+    let kept = review_of(&with_synthetic_rows(&log.text, min));
+    let ds = kept["decisions"].as_array().expect("decisions");
+    assert!(!ds.is_empty(), "{kept}");
+    assert!(
+        ds.iter().all(|d| d["verdict"] != json!("uncertain")),
+        "{kept}"
+    );
 }

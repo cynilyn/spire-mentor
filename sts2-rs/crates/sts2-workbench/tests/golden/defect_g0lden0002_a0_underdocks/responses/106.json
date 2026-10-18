@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Lightning Rod",
+   "hp_n": 16,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 17.875,
    "q": 1.0607,
    "q_saturated": false,
    "stable_idx": 0,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Cold Snap",
+   "hp_n": 16,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 18.1875,
    "q": 1.0547,
    "q_saturated": false,
    "stable_idx": 1,
@@ -41,9 +44,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 16,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 14.625,
    "q": 1.0418,
    "q_saturated": false,
    "stable_idx": -1,

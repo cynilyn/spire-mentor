@@ -144,7 +144,7 @@ fn root_outcome_to_pydict<'py>(
     o: &RootOutcome,
     is_best: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    crate::action_score_pydict(
+    let d = crate::action_score_pydict(
         py,
         &o.action,
         o.visits,
@@ -152,8 +152,15 @@ fn root_outcome_to_pydict<'py>(
         o.losses,
         o.ties,
         o.value_sum,
+        o.hp_sum,
+        o.hp_n,
         /* low_confidence */ false,
         /* q_saturated */ false,
         is_best,
-    )
+    )?;
+    // The child's return variance, so a caller can put the top-two gap in
+    // standard errors (`ppo.pilot_human_decks --escalate`, GH #777). Kept off
+    // the shared wire shape (`action_score_value`) that the workbench pins.
+    d.set_item("value_var", o.value_variance())?;
+    Ok(d)
 }

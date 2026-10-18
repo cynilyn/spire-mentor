@@ -48,9 +48,10 @@ pub fn build_state_with_ascension(
     // play as no-ops.
     sts2_content::cards::dispatch::ensure_installed();
 
-    // The run-side character this scenario stands in for. Only starting gold
-    // reads it today (see the `gold` field below); the class-specific deck /
-    // max-HP resolution stays on the `PlayerClass` match right after.
+    // The run-side character this scenario stands in for. It is carried into
+    // `player.character` the way `run_bridge` does for a real run, and sets
+    // the starting gold (see the `gold` field below); the class-specific
+    // deck / max-HP resolution stays on the `PlayerClass` match right after.
     let character_id = match player {
         PlayerClass::Ironclad => sts2_core::potions::CharacterId::Ironclad,
         PlayerClass::Silent => sts2_core::potions::CharacterId::Silent,
@@ -115,7 +116,13 @@ pub fn build_state_with_ascension(
         play: SmallVec::new(),
         stars: 0,
         powers: SmallVec::new(),
-        character: None,
+        // A combat whose player has no character mis-simulates it: Defect
+        // gets the temporary 1-slot orb belt instead of its 3 slots, and
+        // character-keyed search policy (the rollout's priority tables)
+        // falls back to the shared ladder. Real runs set it in
+        // `run_bridge`; every fixture-realized combat (position books,
+        // harvest pools, sweeps) comes through here (GH #805).
+        character: Some(character_id),
         potions: smallvec::SmallVec::new(),
         potion_slot_indices: SmallVec::new(),
         potion_slots: 0,

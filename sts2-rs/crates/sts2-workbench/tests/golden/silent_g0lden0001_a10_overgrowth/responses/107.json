@@ -39,7 +39,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1

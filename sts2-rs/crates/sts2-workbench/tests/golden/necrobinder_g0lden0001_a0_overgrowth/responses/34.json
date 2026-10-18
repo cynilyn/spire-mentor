@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Defend",
+   "hp_n": 10,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 60.5,
    "q": 1.2159,
    "q_saturated": false,
    "stable_idx": 1,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Bodyguard",
+   "hp_n": 10,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 60.1,
    "q": 1.2145,
    "q_saturated": false,
    "stable_idx": 4,
@@ -41,9 +44,11 @@
   },
   {
    "action": "Strike",
+   "hp_n": 10,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 58.9,
    "q": 1.2102,
    "q_saturated": false,
    "stable_idx": 3,
@@ -55,9 +60,11 @@
   },
   {
    "action": "Unleash",
+   "hp_n": 9,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 58.8889,
    "q": 1.2101,
    "q_saturated": false,
    "stable_idx": 0,
@@ -69,9 +76,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 9,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 54.3333,
    "q": 1.1938,
    "q_saturated": false,
    "stable_idx": -1,

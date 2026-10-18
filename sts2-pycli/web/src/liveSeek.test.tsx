@@ -52,7 +52,9 @@ function dec(over: Partial<DecisionRegret> & Pick<DecisionRegret, "idx">): Decis
   return {
     turn: 1, floor: 1, act: 1, played_label: "", played_win_prob: 0, best_label: "",
     best_win_prob: 0, regret: 0, drop_pct: 0, player_rank: 0, n_actions: 2, visits: 0,
-    matched_best: false, is_blunder: true, message: "", ...over,
+    matched_best: false, is_blunder: true, message: "",
+    played_mean_hp: null, best_mean_hp: null, hp_drop: null, severity: 0,
+    verdict: "blunder", best_line: [], ...over,
   };
 }
 

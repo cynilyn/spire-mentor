@@ -2255,10 +2255,11 @@ fn build_card(parsed: &ParsedCard, uid: CardUid, path: &str) -> WireResult<Card>
     // only `state_to_dict` sends the banks), so disagreement is a schema
     // error rather than something to reconcile.
     if let Some(persistent) = parsed.persistent_cost {
-        const ENGINE_OWNED: [VarKey; 3] = [
+        const ENGINE_OWNED: [VarKey; 4] = [
             VarKey::StompCostReductionThisTurn,
             VarKey::PinpointCostReductionThisTurn,
             VarKey::SneckoCostDeltaThisTurn,
+            VarKey::SneckoRollLive,
         ];
         if let Some(k) = ENGINE_OWNED
             .iter()
@@ -4022,6 +4023,7 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::WireCostExpiringOnPlay => "wire_cost_expiring_on_play",
         VarKey::WireCostStable => "wire_cost_stable",
         VarKey::Generic => "generic",
+        VarKey::SneckoRollLive => "snecko_roll_live",
     }
 }
 
@@ -4053,6 +4055,7 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::AutoPlayStarX,
         VarKey::WireTransientCostThisTurn,
         VarKey::Generic,
+        VarKey::SneckoRollLive,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }

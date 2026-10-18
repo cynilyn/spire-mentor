@@ -66,6 +66,7 @@ pub mod lethal_detector;
 pub mod motif;
 pub mod npz;
 pub mod quiescence;
+pub mod rollout_net;
 pub mod tt;
 pub mod value_net;
 
@@ -897,11 +898,40 @@ impl MctsConfig {
     ///   budget-keyed);
     /// * `draw_widening_c` = [`BELIEF_DRAW_DRAW_WIDENING_C`] (F2 retune);
     /// * `endturn_widening_c / alpha` = [`BELIEF_DRAW_ENDTURN_WIDENING`]
-    ///   (PR #467).
+    ///   (PR #467);
+    /// * `rollout_policy` = [`RolloutPolicyKind::Net`] (GH #777): the
+    ///   built-in playout net for a character that has one, which today is
+    ///   only Ironclad. Every other character keeps the heuristic playout,
+    ///   with identical draws.
     ///
     /// Every other mode is left untouched: those retunes were measured only
     /// under BeliefDraw. Call this BEFORE applying a caller's explicit
     /// overrides, so an ablation still gets what it asks for.
+    ///
+    /// # The playout net (GH #777)
+    ///
+    /// The Ironclad gate ran on the `91,000,000` panel, 200 seeds per level,
+    /// paired. Setup: the `plr_it550` champion, `eval-cheap` 1000/4000 sims,
+    /// `--act1 roll`, the heuristic playout against the built-in net at
+    /// T = 1. McNemar exact:
+    ///
+    /// ```text
+    ///   A0   92.5% -> 91.5%  ( -1.00pp, p = 0.82)
+    ///   A3   89.0% -> 89.5%  ( +0.50pp, p = 1.0)
+    ///   A5   77.5% -> 86.0%  ( +8.50pp, p = 0.012)
+    ///   A8   64.5% -> 73.0%  ( +8.50pp, p = 0.050)
+    ///   A9   33.5% -> 43.5%  (+10.00pp, p = 0.009)
+    ///   A10  10.0% -> 11.5%  ( +1.50pp, p = 0.71)
+    ///   pooled +4.67pp, n = 1200, p = 3.6e-4
+    /// ```
+    ///
+    /// It was stopped early at 6 of the 11 pre-registered levels. A10 gains
+    /// little because the second act-3 boss (`DoubleBoss`) undoes the boss-1
+    /// gain: the net passes boss 1 in 87 of 200 A10 runs against 66.
+    ///
+    /// COST: about 1.5x per search at the same sims, about 1.75x per full
+    /// run. To restore the heuristic playout for an agent, set
+    /// `STS2_RUNAI_MCTS_OVERRIDES=rollout_policy=heuristic`.
     ///
     /// # The EndTurn retune (PR #467)
     ///
@@ -949,6 +979,7 @@ impl MctsConfig {
             self.c_puct = belief_draw_c_puct(self.max_simulations);
             self.draw_widening_c = BELIEF_DRAW_DRAW_WIDENING_C;
             (self.endturn_widening_c, self.endturn_widening_alpha) = BELIEF_DRAW_ENDTURN_WIDENING;
+            self.rollout_policy = RolloutPolicyKind::Net;
         }
     }
 
@@ -1258,12 +1289,27 @@ pub struct RootOutcome {
     /// with a top-two gap of many standard errors *knew*; one that picked
     /// it inside one standard error guessed.
     pub value_sq_sum: f32,
+    /// Sum of the player's final HP over the rollouts that reached a
+    /// decided end (terminal / proven leaf, or a rollout that ran to
+    /// terminal; 0 for a death). Depth-cut rollouts contribute nothing.
+    /// Pure bookkeeping: no search decision reads it.
+    pub hp_sum: f32,
+    /// Number of rollouts counted in [`Self::hp_sum`]; `<= visits`.
+    pub hp_n: u32,
     /// `value_sum / visits` — the player-perspective expected value
     /// of taking this action.
     pub mean_value: f32,
 }
 
 impl RootOutcome {
+    /// Mean final player HP over the rollouts that reached a decided end,
+    /// or `None` when none did (`hp_n == 0`).
+    #[must_use]
+    pub fn mean_final_hp(&self) -> Option<f32> {
+        #[allow(clippy::cast_precision_loss)]
+        (self.hp_n > 0).then(|| self.hp_sum / self.hp_n as f32)
+    }
+
     /// Sample variance of the returns backed up through this child
     /// (population form, `Σv²/n − mean²`, clamped at 0 against rounding).
     /// `0.0` for an unvisited child.
@@ -1288,6 +1334,13 @@ impl RootOutcome {
         let n = self.visits as f32;
         (self.value_variance() / n).sqrt()
     }
+}
+
+/// Player HP at the end of a rollout / decisive leaf, floored at 0 (a death
+/// reads as 0). Feeds [`MctsNode::hp_sum`]; bookkeeping only.
+#[allow(clippy::cast_precision_loss)]
+fn final_hp_of(state: &CombatState) -> f32 {
+    state.player.current_hp.max(0) as f32
 }
 
 /// Maximum absolute value any single rollout can legitimately produce.
@@ -1515,6 +1568,13 @@ pub struct MctsNode {
     pub own_visits: u32,
     /// Sum of the values of the simulations counted by [`Self::own_visits`].
     pub own_value_sum: f32,
+    /// Sum of final player HP over simulations through this node that
+    /// reached a decided end, and their count ([`Self::hp_n`] `<=`
+    /// [`Self::visits`]). Bookkeeping only; never read by selection or
+    /// [`BackupRule`] aggregation.
+    pub hp_sum: f32,
+    /// Count of simulations contributing to [`Self::hp_sum`].
+    pub hp_n: u32,
     pub children: SmallVec<[(EdgeAction, NodeId); 6]>,
     /// Per-**edge** visit counts, parallel to [`Self::children`]: entry `i`
     /// is how many simulations traversed `children[i]` *from this node*.
@@ -1724,6 +1784,8 @@ impl MctsNode {
             value_sq_sum: 0.0,
             own_visits: 0,
             own_value_sum: 0.0,
+            hp_sum: 0.0,
+            hp_n: 0,
             children: SmallVec::new(),
             child_visits: SmallVec::new(),
             parent,
@@ -2518,6 +2580,76 @@ impl<P: Policy> Mcts<P> {
         self.forced_root_child = None;
     }
 
+    /// The root child reached by `action`, if it has been expanded.
+    fn root_child_for(&self, action: &Action) -> Option<NodeId> {
+        let root_state = &self.tree.root_state;
+        self.tree
+            .node(self.tree.root)
+            .children
+            .iter()
+            .find(|(edge, _)| edge.resolve(root_state).as_ref() == Some(action))
+            .map(|(_, cid)| *cid)
+    }
+
+    /// Move `action`'s untried root edge to the front of the queue, so the
+    /// next expansion at the root (which pops index 0) materializes it.
+    fn promote_root_untried(&mut self, action: &Action) {
+        let root = self.tree.root;
+        let pos = {
+            let root_state = &self.tree.root_state;
+            self.tree
+                .node(root)
+                .untried_actions
+                .iter()
+                .position(|edge| edge.resolve(root_state).as_ref() == Some(action))
+        };
+        if let Some(i) = pos.filter(|&i| i > 0) {
+            let edge = self.tree.node_mut(root).untried_actions.remove(i);
+            self.tree.node_mut(root).untried_actions.insert(0, edge);
+        }
+    }
+
+    /// Spend `n` simulations on ONE root action: the forced-root search the
+    /// Sequential Halving driver runs per arm, exposed for pricing a single
+    /// move (the workbench coach's played-move top-up).
+    ///
+    /// The search is rooted at the position the move is chosen FROM, under
+    /// this search's own config and hidden-information mode, so a move that
+    /// draws or ends the turn passes through a chance node that re-deals per
+    /// simulation — it is never priced on the caller's realized draw. The
+    /// first simulation(s) materialize the child (lazy expansion; the target
+    /// edge is promoted to the front of the root queue), every later one is
+    /// pinned to it. Returns that child's [`RootOutcome`], or `None` when the
+    /// root is terminal, `action` is not a root action, or the budget ran out
+    /// before the child could be expanded.
+    ///
+    /// Leaves [`Self::search`] untouched: nothing here runs unless called.
+    pub fn search_forced(&mut self, action: &Action, n: u32) -> Option<RootOutcome> {
+        let mut spent = 0_u32;
+        let child = loop {
+            if let Some(c) = self.root_child_for(action) {
+                break c;
+            }
+            if spent >= n || self.tree.node(self.tree.root).is_terminal {
+                return None;
+            }
+            let expanded = self.tree.node(self.tree.root).is_expanded;
+            if expanded && self.tree.node(self.tree.root).untried_actions.is_empty() {
+                return None; // not a root action
+            }
+            self.promote_root_untried(action);
+            self.one_simulation_forcing(None);
+            spent += 1;
+        };
+        while spent < n {
+            self.one_simulation_forcing(Some(child));
+            spent += 1;
+        }
+        self.root_outcomes()
+            .into_iter()
+            .find(|o| o.action == *action)
+    }
+
     /// Allocate the root budget by Sequential Halving (Karnin, Koren &
     /// Somekh 2013) instead of by UCT — see
     /// [`MctsConfig::root_sequential_halving`].
@@ -3053,6 +3185,8 @@ impl<P: Policy> Mcts<P> {
                     ties: c.ties,
                     value_sum: c.value_sum,
                     value_sq_sum: c.value_sq_sum,
+                    hp_sum: c.hp_sum,
+                    hp_n: c.hp_n,
                     mean_value: mean,
                 })
             })
@@ -4035,11 +4169,19 @@ impl<P: Policy> Mcts<P> {
         let leaf_proven_win = leaf.proven_win;
         let leaf_proven_loss = leaf.proven_loss;
         let leaf_decisive = leaf_proven_win || leaf_proven_loss || leaf.is_terminal;
-        let (value, rollout_hit_terminal) = if leaf_decisive {
+        let (value, rollout_hit_terminal, final_hp) = if leaf_decisive {
+            // A proven win/terminal leaf keeps its HP; a proven loss is a
+            // death even if the stored state is still alive.
+            let hp = if leaf_proven_loss && !leaf_proven_win {
+                0.0
+            } else {
+                final_hp_of(&realized)
+            };
             (
                 self.decisive_leaf_value(leaf_proven_win, leaf_proven_loss, &realized),
                 // Unused: `leaf_decisive` already forces the decisive bucket.
                 true,
+                Some(hp),
             )
         } else {
             let mut state = (*realized).clone();
@@ -4060,7 +4202,8 @@ impl<P: Policy> Mcts<P> {
                 // there.
                 self.depth_cap_hits += 1;
             }
-            (v, hit_terminal)
+            let hp = hit_terminal.then(|| final_hp_of(&state));
+            (v, hit_terminal, hp)
         };
         self.tree.node_mut(node_id).realized = Some(realized);
         debug_assert!(
@@ -4113,6 +4256,10 @@ impl<P: Policy> Mcts<P> {
             n.visits += 1;
             n.value_sum += value;
             n.value_sq_sum += value * value;
+            if let Some(hp) = final_hp {
+                n.hp_sum += hp;
+                n.hp_n += 1;
+            }
             if nid == leaf_id {
                 n.own_visits += 1;
                 n.own_value_sum += value;
@@ -5193,6 +5340,16 @@ fn rollout(
             RolloutPolicyKind::Heuristic => {
                 expert::pick_rollout_action_with(rng, state, &acts, cfg.rollout_end_turn_priority)
             }
+            RolloutPolicyKind::Learned => expert::pick_rollout_action_learned(
+                rng,
+                state,
+                &acts,
+                cfg.rollout_end_turn_priority,
+                expert::learned_priorities(),
+            ),
+            RolloutPolicyKind::Net => {
+                rollout_net::pick(rng, state, &acts, cfg.rollout_end_turn_priority)
+            }
         };
         let action = acts[idx].clone();
         let _ = core_apply(state, action);
@@ -5259,6 +5416,16 @@ pub fn sample_rollout_leaf_state(
         let idx = match policy_kind {
             RolloutPolicyKind::Uniform => Uniform.pick(rng, state, &acts),
             RolloutPolicyKind::Heuristic => expert::pick_rollout_action(rng, state, &acts),
+            RolloutPolicyKind::Learned => expert::pick_rollout_action_learned(
+                rng,
+                state,
+                &acts,
+                expert::END_TURN_PRIORITY,
+                expert::learned_priorities(),
+            ),
+            RolloutPolicyKind::Net => {
+                rollout_net::pick(rng, state, &acts, expert::END_TURN_PRIORITY)
+            }
         };
         let action = acts[idx].clone();
         let _ = core_apply(state, action);
@@ -5362,19 +5529,21 @@ fn sum_enemy_hp(state: &CombatState) -> i32 {
         .creatures
         .iter()
         .filter(|c| state.enemy_uids.iter().any(|u| u.0 == c.id))
-        .map(|c| c.current_hp.max(0))
+        .map(|c| c.scored_hp(state.ascension).0.max(0))
         .sum()
 }
 
 /// `max_hp` sibling of [`sum_enemy_hp`] — the denominator for
 /// [`loss_quality`]'s enemy-HP-removed fraction. Same all-enemy
-/// (minions included) convention.
+/// (minions included) convention. A beaten sentinel (see
+/// [`sts2_core::Creature::is_beaten_sentinel`]) counts at its spawn max HP, so it reads as
+/// fully removed with its real weight.
 fn sum_enemy_max_hp(state: &CombatState) -> i32 {
     state
         .creatures
         .iter()
         .filter(|c| state.enemy_uids.iter().any(|u| u.0 == c.id))
-        .map(|c| c.max_hp.max(0))
+        .map(|c| c.scored_hp(state.ascension).1.max(0))
         .sum()
 }
 
@@ -5804,6 +5973,8 @@ where
                 // root-parallel result (found by `combat_position_book
                 // oracle-q`, GH #494).
                 existing.value_sq_sum += o.value_sq_sum;
+                existing.hp_sum += o.hp_sum;
+                existing.hp_n += o.hp_n;
             } else {
                 merged.push(o);
             }
@@ -7847,6 +8018,50 @@ mod tests {
             (c_early - c_late).abs() < 1e-6 && (c_early + 1.45).abs() < 1e-6,
             "loss_gradient=false must restore the constant -1.45 backup, \
              got early={c_early}, late={c_late}"
+        );
+    }
+
+    /// A Waterfall Giant whose death was interrupted (999,999,999 HP, waiting
+    /// to EXPLODE) is beaten: the loss score must count it as fully removed —
+    /// the same as a giant killed outright, and above one left at 1 HP.
+    /// Before the fix the sentinel HP read as 0% removed.
+    #[test]
+    fn beaten_sentinel_giant_counts_as_removed_in_loss_quality() {
+        use sts2_core::MonsterKind;
+        let mut s = make_smoke_state(1);
+        s.ascension = 10;
+        s.player.current_hp = 0;
+        let giant_id = s.enemy_uids[0].0;
+        let set_giant = |s: &mut CombatState, hp: i32, max_hp: i32| {
+            let c = s
+                .creatures
+                .iter_mut()
+                .find(|c| c.id == giant_id)
+                .expect("giant");
+            c.species = Some(MonsterKind::WaterfallGiant);
+            c.current_hp = hp;
+            c.max_hp = max_hp;
+        };
+        let spawn = MonsterKind::WaterfallGiant.min_initial_hp(10);
+        assert_eq!(spawn, 250, "A10 is past ToughEnemies");
+
+        set_giant(&mut s, 999_999_999, 999_999_999);
+        assert_eq!(sum_enemy_hp(&s), 0);
+        assert_eq!(sum_enemy_max_hp(&s), spawn);
+        let sentinel = loss_quality(&s);
+
+        set_giant(&mut s, 0, spawn);
+        let killed = loss_quality(&s);
+        set_giant(&mut s, 1, spawn);
+        let one_hp = loss_quality(&s);
+
+        assert!(
+            (sentinel - killed).abs() < 1e-6,
+            "sentinel {sentinel} vs killed {killed}"
+        );
+        assert!(
+            sentinel > one_hp,
+            "sentinel {sentinel} must beat 1 HP left {one_hp}"
         );
     }
 
@@ -10768,6 +10983,7 @@ mod tests {
             (cfg.endturn_widening_c, cfg.endturn_widening_alpha),
             BELIEF_DRAW_ENDTURN_WIDENING
         );
+        assert_eq!(cfg.rollout_policy, RolloutPolicyKind::Net);
         for mode in [
             HiddenInfoMode::Clairvoyant,
             HiddenInfoMode::RootScramble,

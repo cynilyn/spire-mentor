@@ -791,12 +791,15 @@ pub fn eval_features_wide(state: &CombatState) -> [f32; WIDE_FEATURE_DIM] {
         let Some(c) = state.creatures.iter().find(|c| c.id == uid.0) else {
             continue;
         };
-        let alive = c.current_hp > 0;
+        // A beaten sentinel (the exploding Waterfall Giant) reads as a dead
+        // enemy of its spawn max HP, not a fresh 999,999,999-HP one.
+        let (c_hp, c_max) = c.scored_hp(state.ascension);
+        let alive = c_hp > 0;
         out[base] = if alive { 1.0 } else { 0.0 };
-        let emax = c.max_hp.max(1) as f32;
+        let emax = c_max.max(1) as f32;
         // out[base + 1] (poison-adjusted hp_ratio) is set after the
         // power scan below, once this enemy's Poison stack is known.
-        out[base + 2] = c.max_hp as f32 / 100.0;
+        out[base + 2] = c_max as f32 / 100.0;
 
         // 3..7: intent kind one-hots (Attack / Buff / Debuff /
         // Defend / Other). MultiAttack rolls into the Attack
@@ -894,7 +897,7 @@ pub fn eval_features_wide(state: &CombatState) -> [f32; WIDE_FEATURE_DIM] {
         // so Ironclad and every non-poison position is byte-identical.
         // (sts2-rs Silent combat-eval, GH #194.)
         let poison_pending = i64::from(poison) * i64::from(poison + 1) / 2;
-        let cur = i64::from(c.current_hp.max(0));
+        let cur = i64::from(c_hp.max(0));
         let eff_hp = (cur - poison_pending).max(0) as f32;
         out[base + 1] = eff_hp / emax;
     }

@@ -658,13 +658,35 @@ export type DecisionAdvisorProgress =
       candidate_key: string;
     };
 
-/**
- * Win-prob drop (pts) below which a move counts as a *tie* with the MCTS line
- * rather than a mistake. At the default 300 sims, swings this small are within
- * MCTS sampling noise, so the coach/review treat them as "on the line" and
- * don't call them suboptimal. (Blunders are >= 8 pts, server-side.)
- */
-export const NEAR_TIE_DROP_PCT = 3;
+/** POST /api/live/last-choice-grade: the run-level choice that produced the
+ *  active node, graded by agreement with the PPO policy. `prob`s are policy
+ *  probabilities, NOT win chances — never render them as "win %". */
+export interface ChoiceGrade {
+  node_id: number;
+  parent_id: number;
+  decision: string;
+  kind: string;            // "Card reward", "Map", "Event", …
+  verdict: "agree" | "tossup" | "flag";
+  strength: "strong preference" | "preference";
+  played: { label: string; prob: number; rank: number };
+  top: { label: string; prob: number };
+  alternatives: { label: string; prob: number }[];
+  n_options: number;
+  checkable: boolean;      // a rollout check can compare you vs the AI
+}
+
+/** Result of the choice coach's rollout check: rows keyed "you" / "ai". */
+export interface ChoiceCheck {
+  candidates: DecisionAdvisorCandidate[];
+  act?: number;
+  config?: Record<string, unknown>;
+  error?: string;
+}
+
+/** A progress event streamed by POST /api/live/last-choice-check/stream. */
+export type ChoiceCheckProgress =
+  | { type: "start"; total: number; rollouts: number; act: number; candidates: { key: string; label: string }[] }
+  | { type: "tick"; done: number; total: number; candidate_key: string };
 
 /** One combat decision diffed against the MCTS line (regret review). */
 export interface DecisionRegret {
@@ -684,6 +706,12 @@ export interface DecisionRegret {
   matched_best: boolean;
   is_blunder: boolean;
   message: string;
+  played_mean_hp: number | null;
+  best_mean_hp: number | null;
+  hp_drop: number | null;  // >= 0; null when HP data is thin
+  severity: number;
+  verdict: "best" | "tie" | "slip" | "blunder" | "uncertain";
+  best_line: string[];     // the AI's labels for the rest of its turn (may be empty)
   node_id?: number | null; // live runs only: the branch-tree node to seek to (stable across rewinds)
   error?: string;          // present on the live last-move payload when scoring is unavailable
 }
@@ -697,6 +725,7 @@ export interface RegretReview {
     blunder_count: number;
     cumulative_drop_pct: number;
     worst_drop_pct: number;
+    cumulative_hp_drop: number;
   };
   config?: Record<string, unknown>;
 }
@@ -1569,6 +1598,58 @@ export const api = {
     },
     // "Blunder right after you did one": regret of the move that produced the
     // current state, vs the MCTS line for the previous combat position.
+    // Choice coach: grade the run-level choice just made (map, card reward,
+    // shop, rest, event, …) by policy agreement. null = nothing to grade (a
+    // combat move, a forced pick, no net loaded).
+    lastChoiceGrade: async (): Promise<ChoiceGrade | null> => {
+      const resp = await apiFetch("/api/live/last-choice-grade", { method: "POST" });
+      if (resp.status === 409) return null;
+      return json<ChoiceGrade>(resp);
+    },
+    // On-demand rollout check of a graded choice: your pick vs the AI's top
+    // pick, paired playouts to the end of the act. Slow — streams progress.
+    lastChoiceCheckStream: async (
+      nodeId: number,
+      config: Record<string, unknown>,
+      onProgress: (ev: ChoiceCheckProgress) => void,
+    ): Promise<ChoiceCheck> => {
+      const resp = await apiFetch("/api/live/last-choice-check/stream", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config: { ...config, node_id: nodeId } }),
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error(`${resp.status} ${await resp.text()}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let result: ChoiceCheck | null = null;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line) as
+            | ChoiceCheckProgress
+            | (ChoiceCheck & { type: "result" })
+            | { type: "error"; error: string };
+          if (ev.type === "result") {
+            result = ev;
+          } else if (ev.type === "error") {
+            result = { candidates: [], error: ev.error };
+          } else {
+            onProgress(ev);
+          }
+        }
+      }
+      if (result == null) throw new Error("choice check stream ended without a result");
+      return result;
+    },
     lastMoveRegret: (config: Record<string, unknown>) =>
       apiFetch("/api/live/last-move-regret", {
         method: "POST",

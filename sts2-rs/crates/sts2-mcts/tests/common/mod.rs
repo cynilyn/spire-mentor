@@ -349,3 +349,22 @@ pub fn build_vertical_slice_hp(seed: u64, player_hp: i32, cultist_hp: i32) -> Co
     let _ = start_player_turn(&mut state);
     state
 }
+
+/// A net whose logit is exactly the heuristic's softmax logit
+/// (`-priority / tau`, feature 21): the net with the heuristic's
+/// preferences.
+pub fn heuristic_mirror_net() -> sts2_mcts::rollout_net::RolloutNet {
+    use sts2_mcts::rollout_net::{RolloutNet, ACTION_DIM, STATE_DIM};
+    let (h, d) = (2usize, 2usize);
+    let zeros = |r: usize, c: usize| vec![vec![0.0f32; c]; r];
+    let mut lin = vec![0.0f32; ACTION_DIM];
+    lin[21] = 1.0;
+    let text = serde_json::json!({
+        "state_dim": STATE_DIM, "action_dim": ACTION_DIM, "hidden": h, "emb_dim": d,
+        "temperature": 1.0, "keys": ["<unk>", "end_turn"],
+        "w1": zeros(h, STATE_DIM), "b1": vec![0.0; h], "w2": zeros(d, h), "b2": vec![0.0; d],
+        "emb": zeros(2, d), "bias": [0.0, 0.0], "proj": zeros(d, ACTION_DIM), "lin": lin,
+    })
+    .to_string();
+    RolloutNet::from_json(&text).expect("valid net")
+}

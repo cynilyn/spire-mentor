@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Neutralize",
+   "hp_n": 20,
    "is_best": true,
    "losses": 7,
    "low_confidence": false,
+   "mean_final_hp": 2.6,
    "q": 0.2371,
    "q_saturated": false,
    "stable_idx": 1,
@@ -27,9 +28,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 16,
    "is_best": false,
    "losses": 7,
    "low_confidence": false,
+   "mean_final_hp": 3.0625,
    "q": 0.0439,
    "q_saturated": false,
    "stable_idx": -1,
@@ -41,9 +44,11 @@
   },
   {
    "action": "Neutralize",
+   "hp_n": 12,
    "is_best": false,
    "losses": 6,
    "low_confidence": false,
+   "mean_final_hp": 2.25,
    "q": -0.0959,
    "q_saturated": false,
    "stable_idx": 1,

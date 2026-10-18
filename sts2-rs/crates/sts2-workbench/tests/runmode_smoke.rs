@@ -526,3 +526,114 @@ fn stream_frames_still_work_beside_run_mode() {
         Some("result" | "error")
     ));
 }
+
+/// Start a fresh overgrowth run (first decision: the Neow event).
+fn start_neow(wb: &mut Workbench, seed: &str) {
+    call(
+        wb,
+        "POST",
+        "/api/live/start",
+        json!({"character": "Ironclad", "seed": seed, "ascension": 0, "act1": "overgrowth"}),
+    );
+}
+
+/// The policy panel's options sorted by probability, highest first.
+fn ranked_options(wb: &mut Workbench) -> Vec<Value> {
+    let panel = call(wb, "POST", "/api/live/ppo-policy", json!({}));
+    assert_eq!(panel["ppo_available"], json!(true));
+    let mut opts = panel["options"].as_array().unwrap().clone();
+    opts.sort_by(|a, b| b["prob"].as_f64().partial_cmp(&a["prob"].as_f64()).unwrap());
+    opts
+}
+
+fn take(wb: &mut Workbench, opt: &Value) {
+    let r = call(
+        wb,
+        "POST",
+        "/api/live/action",
+        json!({"action": opt["action"], "args": opt["args"]}),
+    );
+    assert!(r["error"].is_null(), "{r}");
+}
+
+#[test]
+fn choice_grade_after_a_neow_pick() {
+    let mut wb = new_wb();
+    // No net: nothing is snapshotted, so there is no grade.
+    start_neow(&mut wb, "COACHCHOICE");
+    let opts = call(&mut wb, "POST", "/api/live/ppo-policy", json!({}));
+    let first = opts["options"][0].clone();
+    take(&mut wb, &first);
+    let e = status(&mut wb, "POST", "/api/live/last-choice-grade", json!({})).unwrap_err();
+    assert_eq!(e, 409);
+
+    start_neow(&mut wb, "COACHCHOICE");
+    call_load(&mut wb);
+    let root = call(&mut wb, "GET", "/api/live/timeline", Value::Null)["active_leaf"].clone();
+    let opts = ranked_options(&mut wb);
+    take(&mut wb, opts.last().unwrap());
+    let g = call(&mut wb, "POST", "/api/live/last-choice-grade", json!({}));
+    assert_eq!(g["decision"], json!("event_choice"));
+    assert_eq!(g["kind"], json!("Event"));
+    assert!(matches!(g["verdict"].as_str(), Some("flag" | "tossup")), "{g}");
+    assert_eq!(g["played"]["rank"], json!(opts.len()));
+    assert_eq!(g["n_options"], json!(opts.len()));
+    assert_eq!(g["top"]["label"], opts[0]["label"]);
+    assert_eq!(g["checkable"], json!(true));
+
+    // Undo: the grade belongs to the move just undone, so it is withdrawn.
+    call(&mut wb, "POST", "/api/live/seek", json!({"node_id": root}));
+    let e = status(&mut wb, "POST", "/api/live/last-choice-grade", json!({})).unwrap_err();
+    assert_eq!(e, 409);
+
+    take(&mut wb, &opts[0]);
+    let g = call(&mut wb, "POST", "/api/live/last-choice-grade", json!({}));
+    assert_eq!(g["verdict"], json!("agree"));
+    assert_eq!(g["played"]["rank"], json!(1));
+    assert_eq!(g["checkable"], json!(false));
+}
+
+#[test]
+fn choice_check_streams_you_vs_ai() {
+    let mut wb = new_wb();
+    start_neow(&mut wb, "COACHCHECK");
+    call_load(&mut wb);
+    let opts = ranked_options(&mut wb);
+    take(&mut wb, opts.last().unwrap());
+    let g = call(&mut wb, "POST", "/api/live/last-choice-grade", json!({}));
+    let config = json!({"node_id": g["node_id"], "rollouts": 1, "sims": 0, "max_steps": 4, "seed": 1});
+    let mut frames = Vec::new();
+    wb.call_stream(
+        "POST",
+        "/api/live/last-choice-check/stream",
+        &json!({"config": config}),
+        &mut |f| frames.push(f.clone()),
+    );
+    let start = frames.first().unwrap();
+    assert_eq!(start["type"], json!("start"));
+    assert_eq!(start["candidates"].as_array().unwrap().len(), 2);
+    let result = frames.last().unwrap();
+    assert_eq!(result["type"], json!("result"), "{result}");
+    let mut keys: Vec<&str> = result["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["ai", "you"]);
+
+    // An agreeing pick has nothing to check.
+    start_neow(&mut wb, "COACHCHECK");
+    let opts = ranked_options(&mut wb);
+    take(&mut wb, &opts[0]);
+    let g = call(&mut wb, "POST", "/api/live/last-choice-grade", json!({}));
+    let mut frames = Vec::new();
+    wb.call_stream(
+        "POST",
+        "/api/live/last-choice-check/stream",
+        &json!({"config": {"node_id": g["node_id"]}}),
+        &mut |f| frames.push(f.clone()),
+    );
+    assert_eq!(frames, vec![json!({"type": "error", "error": "nothing to check"})]);
+}

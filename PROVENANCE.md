@@ -92,6 +92,11 @@ file against the pinned donor source (`just fetch-donors`), and
   `sts2-rs/data/runai/nets/value_human_a0*` and `nets/*ranker*` (trained on
   the corpus's outcome labels), and the synergy catalogs above.
   Redistribution rights for player-uploaded data are unresolved.
+  One exception ships: the MCTS playout net
+  `sts2-rs/data/rollout_nets/ironclad.json` (owner decision, 2026-10-18). It
+  was trained by the simulator's own search and playouts; the scraped runs
+  supplied only the fight start positions (deck, relics, HP). The file holds
+  network weights and no run data.
 - **Private infrastructure** — `sts2-pycli/deploy/` (Terraform, GCP identity,
   the deploy justfile), `sts2-pycli/web/wrangler.toml`, the root `Dockerfile`,
   `.gcloudignore`, `.dockerignore`, `sts2-pycli/packaging/`.

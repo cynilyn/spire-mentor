@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,8 +12,10 @@
  "scores": [
   {
    "action": "DEFEND_SILENT.title",
+   "hp_n": 0,
    "is_best": true,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.2294,
    "q_saturated": false,
    "stable_idx": 2,
@@ -24,8 +25,10 @@
   },
   {
    "action": "SURVIVOR.title",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.2202,
    "q_saturated": false,
    "stable_idx": 5,
@@ -35,8 +38,10 @@
   },
   {
    "action": "STRIKE_SILENT.title",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.2166,
    "q_saturated": false,
    "stable_idx": 1,
@@ -46,8 +51,10 @@
   },
   {
    "action": "NEUTRALIZE.title",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.2146,
    "q_saturated": false,
    "stable_idx": 0,
@@ -57,8 +64,10 @@
   },
   {
    "action": "end turn",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.1498,
    "q_saturated": false,
    "stable_idx": -1,

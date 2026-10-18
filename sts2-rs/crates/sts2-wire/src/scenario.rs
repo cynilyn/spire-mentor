@@ -165,7 +165,32 @@ pub fn build_scenario_state(
     // canonical UPPER_SNAKE form used by T6's `IC_CARDS` constant.
     let mut draw: SmallVec<[CardUid; 32]> = SmallVec::new();
     let mut cards_arena: Vec<Card> = Vec::with_capacity(deck_ids.len());
-    for (idx, name) in deck_ids.iter().enumerate() {
+    for (idx, full_name) in deck_ids.iter().enumerate() {
+        // GH #777: an optional "@<ENCHANTMENT>[:<amount>]" suffix
+        // ("FIGHT_ME+1@VIGOROUS:8") enchants the card the way the run's
+        // enchant path does (`apply_static_enchantment` on the deck card,
+        // which the combat then copies), so a human deck with enchanted cards
+        // can be rebuilt. The amount defaults to 1; any spelling
+        // `EnchantmentId::from_wire_name` accepts works.
+        let (name, enchant) = match full_name.split_once('@') {
+            Some((card, ench)) => {
+                let (ench_id, amount) = match ench.split_once(':') {
+                    Some((id, amt)) => (
+                        id,
+                        amt.parse::<i32>().map_err(|_| {
+                            format!("bad enchantment amount in card id {full_name:?}")
+                        })?,
+                    ),
+                    None => (ench, 1),
+                };
+                let id =
+                    sts2_core::cards::EnchantmentId::from_wire_name(ench_id).ok_or_else(|| {
+                        format!("unknown enchantment {ench_id:?} in card id {full_name:?}")
+                    })?;
+                (card, Some((id, amount)))
+            }
+            None => (full_name.as_str(), None),
+        };
         // Sweep v2: an optional "+N" suffix ("BASH+1") requests an upgraded
         // card. Parsed here (resolve_card_name only knows base ids) and
         // applied below via the canonical `Card::upgrade()` delta path.
@@ -186,7 +211,7 @@ pub fn build_scenario_state(
                 }
                 (base, n)
             }
-            None => (name.as_str(), 0),
+            None => (name, 0),
         };
         let spec = sts2_content::names::resolve_card_name(base_name, None)
             .map_err(|e| format!("unknown card id {base_name:?}: {e:?}"))?;
@@ -211,6 +236,9 @@ pub fn build_scenario_state(
         };
         if plus_levels >= 1 && card.is_upgradable() {
             card.upgrade();
+        }
+        if let Some((id, amount)) = enchant {
+            let _ = sts2_content::enchantments::apply_static_enchantment(&mut card, id, amount);
         }
         cards_arena.push(card);
     }
@@ -546,5 +574,66 @@ mod tests {
         // Unknown state / non-rotating kind → no override.
         assert!(starter_args_for_move_state(MonsterKind::ScrollOfBiting, "WAT").is_none());
         assert!(starter_args_for_move_state(MonsterKind::Nibbit, "CHOMP").is_none());
+    }
+
+    fn build(deck: &[&str]) -> Result<sts2_core::CombatState, String> {
+        let deck: Vec<String> = deck.iter().map(|s| (*s).to_string()).collect();
+        super::build_scenario_state(
+            1,
+            "Ironclad",
+            &deck,
+            70,
+            80,
+            &[],
+            &[],
+            "SHRINKER_BEETLE_WEAK",
+            0,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn enchantment_suffix_enchants_the_card() {
+        // GH #777: "ID[+1]@ENCHANTMENT[:amount]" rebuilds a human deck's
+        // enchanted card; any `from_wire_name` spelling, amount default 1.
+        use sts2_core::cards::EnchantmentId;
+        let state = build(&[
+            "STRIKE_IRONCLAD@SHARP:3",
+            "DEFEND_IRONCLAD+1@steady",
+            "BASH",
+        ])
+        .unwrap();
+        let with = |id, amount| {
+            state
+                .cards
+                .iter()
+                .filter(|c| c.enchantment(id) == amount)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(with(EnchantmentId::Sharp, 3).len(), 1);
+        let steady = with(EnchantmentId::Steady, 1);
+        assert_eq!(steady.len(), 1);
+        assert!(
+            steady[0].upgraded,
+            "the upgrade suffix still applies before '@'"
+        );
+        assert_eq!(
+            state
+                .cards
+                .iter()
+                .filter(|c| c.enchantment(EnchantmentId::Sharp) == 0
+                    && c.enchantment(EnchantmentId::Steady) == 0)
+                .count(),
+            1,
+            "the unsuffixed card stays unenchanted"
+        );
+    }
+
+    #[test]
+    fn enchantment_suffix_rejects_unknown_id_and_bad_amount() {
+        let err = |card: &str| build(&[card]).err().unwrap();
+        assert!(err("STRIKE_IRONCLAD@NOPE").contains("unknown enchantment"));
+        assert!(err("STRIKE_IRONCLAD@SHARP:x").contains("bad enchantment amount"));
     }
 }

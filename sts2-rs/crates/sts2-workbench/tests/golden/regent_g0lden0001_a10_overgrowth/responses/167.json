@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,8 +12,10 @@
  "scores": [
   {
    "action": "DEFEND_REGENT.title",
+   "hp_n": 0,
    "is_best": true,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.1824,
    "q_saturated": false,
    "stable_idx": 0,
@@ -24,8 +25,10 @@
   },
   {
    "action": "STRIKE_REGENT.title",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.1726,
    "q_saturated": false,
    "stable_idx": 4,
@@ -35,8 +38,10 @@
   },
   {
    "action": "end turn",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
+   "mean_final_hp": null,
    "q": 1.1608,
    "q_saturated": false,
    "stable_idx": -1,

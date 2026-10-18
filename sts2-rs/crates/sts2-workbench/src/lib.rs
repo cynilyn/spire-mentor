@@ -34,6 +34,7 @@ pub mod runlog;
 pub mod runmode;
 pub mod saves;
 pub mod session;
+pub mod session_choice;
 mod session_runmode;
 pub mod simlab;
 pub mod simlab_catalog;

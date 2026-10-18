@@ -59,7 +59,12 @@
 //! |---|---:|---:|---:|
 //! | `combat_position_book.json` | 168 | 1 | **0** |
 //! | `combat_position_book_v2.json` | 159 | 0 | **0** |
-//! | `combat_position_book_v3.json` | 303 | 2 | **0** |
+//! | `combat_position_book_v3.json` | 292 | 3 | **0** |
+//!
+//! The v3 row is the 2026-10-18 rebuild (GH #805; it was 303 / 2 / 0).
+//! **v1 and v2 were not rebuilt and are stale**: 0/168 and 0/159 of their
+//! positions realize to the state they froze once fixture combats carry
+//! `player.character`, so their rows above describe books nothing can score.
 //!
 //! v1/v2 are verified against the belt-less pool (`data/run-fixtures/`);
 //! **v3 is verified against the belt-carrying pool**
@@ -2023,6 +2028,8 @@ mod tests {
             ties: visits,
             value_sum,
             value_sq_sum: values.iter().map(|v| v * v).sum(),
+            hp_sum: 0.0,
+            hp_n: 0,
             mean_value: value_sum / visits as f32,
         }
     }
