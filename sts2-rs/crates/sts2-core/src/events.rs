@@ -936,6 +936,14 @@ pub struct EventCombatRequest {
     /// `false` (C# `extraRewards` added via `CombatRoom.AddExtraReward`):
     /// TheLanternKey's LanternKey card, FakeMerchant's FakeMerchantsRug.
     pub victory_rewards: Vec<crate::runstate::Reward>,
+    /// Grant the normal Monster-room combat rewards on a clean victory (gold,
+    /// potion roll, 3-card reward). C# `RewardsCmd.OfferForRoomEnd` offers
+    /// them whenever the encounter's `ShouldGiveRewards` is true
+    /// (`RewardsCmd.cs:26`, default true) and its room type is Monster
+    /// (`RewardsSet.cs:224-230`). Only DenseVegetation sets this today
+    /// (B12); the other event combats still skip them (gap, see the 0c
+    /// repair notes). Default `false`.
+    pub monster_room_rewards: bool,
 }
 
 impl EventCombatRequest {
@@ -949,6 +957,7 @@ impl EventCombatRequest {
             resume: true,
             parent_event,
             victory_rewards: Vec::new(),
+            monster_room_rewards: false,
         }
     }
 
@@ -965,7 +974,16 @@ impl EventCombatRequest {
             resume: false,
             parent_event,
             victory_rewards,
+            monster_room_rewards: false,
         }
+    }
+
+    /// Builder: also grant the normal Monster-room combat rewards on a clean
+    /// victory (see [`Self::monster_room_rewards`]).
+    #[must_use]
+    pub fn with_monster_room_rewards(mut self) -> Self {
+        self.monster_room_rewards = true;
+        self
     }
 }
 
