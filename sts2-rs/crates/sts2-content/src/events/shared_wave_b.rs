@@ -3452,7 +3452,7 @@ mod tests {
         // Derive the run master seed that reproduces C#'s event Seed. v0.107.1
         // single-player additive player term is 0, so
         // event_seed == master + hash("TINKER_TIME")  (mod 2^32).
-        let hash = sts2_core::deterministic_hash_code("TINKER_TIME") as u32;
+        let hash = sts2_core::deterministic_hash_code_old("TINKER_TIME") as u32;
         let master = CSHARP_EVENT_SEED.wrapping_sub(hash) as i32;
 
         let mut rs = fresh_state();

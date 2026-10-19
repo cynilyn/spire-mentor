@@ -706,7 +706,7 @@ fn candidate(mode: SeedMode, index: u64) -> Candidate {
     match mode {
         SeedMode::String => {
             let s = index_to_seed_string(index);
-            let numeric = sts2_core::deterministic_hash_code(&sts2_core::canonicalize_seed(&s));
+            let numeric = sts2_core::deterministic_hash_code_old(&sts2_core::canonicalize_seed(&s));
             Candidate { numeric, label: s }
         }
         SeedMode::Int => {
@@ -892,7 +892,7 @@ pub fn run<W: Write>(args: SeedfindArgs, out: &mut W) -> io::Result<usize> {
         let cand = match args.mode {
             SeedMode::String => {
                 let numeric =
-                    sts2_core::deterministic_hash_code(&sts2_core::canonicalize_seed(dump));
+                    sts2_core::deterministic_hash_code_old(&sts2_core::canonicalize_seed(dump));
                 Candidate {
                     numeric,
                     label: dump.clone(),

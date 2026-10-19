@@ -285,7 +285,10 @@ pub use map::{
 // `RunRngSet` registry lands separately in P9.1.g (`sts2-rs-ewm6b`)
 // and will compose this primitive into named streams.
 pub mod dotnet_rng;
-pub use dotnet_rng::{canonicalize_seed, deterministic_hash_code, DotNetRandom, Rng as DotNetRng};
+pub use dotnet_rng::{
+    canonicalize_seed, deterministic_hash_code_old, seed_bases, xxhash64_bytes, xxhash64_utf8,
+    DotNetRandom, Rng as DotNetRng, SeedBases,
+};
 
 // Bead sts2-rs-ewm6b (P9.1.g): multi-stream RNG bundle composed on top
 // of [`dotnet_rng::Rng`]. Mirrors Python `RunRngSet` at

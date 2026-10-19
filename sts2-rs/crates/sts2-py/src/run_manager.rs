@@ -183,7 +183,7 @@ impl PyRunManager {
         let effective_seed = match string_seed {
             Some(s) => {
                 let canonical = sts2_core::canonicalize_seed(s);
-                sts2_core::deterministic_hash_code(&canonical)
+                sts2_core::deterministic_hash_code_old(&canonical)
             }
             None => seed,
         };

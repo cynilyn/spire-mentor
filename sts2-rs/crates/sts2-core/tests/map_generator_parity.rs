@@ -18,7 +18,7 @@
 //! 1. `Rng(seed).next_int(0, 1_000_000_000)` × 12 matches Python for
 //!    seeds `[0, 1, 42, 2026, -1, INT_MIN]`. Validates the .NET
 //!    `System.Random` port (DotNetRandom + Rng wrapper).
-//! 2. `deterministic_hash_code` matches Python for 5 strings.
+//! 2. `deterministic_hash_code_old` matches Python for 5 strings.
 //! 3. `generate_act_map(15, Rng(seed), asc=0, ...)` produces a graph
 //!    whose `(col, row) → point_type` table is identical to the
 //!    C#-anchored snapshot for seeds `[0, 42, 2026]`.
@@ -26,7 +26,7 @@
 
 use serde_json::Value;
 use sts2_core::{
-    deterministic_hash_code, generate_act_map, generate_golden_path_map, DotNetRng as Rng,
+    deterministic_hash_code_old, generate_act_map, generate_golden_path_map, DotNetRng as Rng,
     MapPointType,
 };
 
@@ -95,7 +95,7 @@ fn dotnet_rng_sequences_match_python() {
 }
 
 #[test]
-fn deterministic_hash_code_matches_python() {
+fn deterministic_hash_code_old_matches_python() {
     let fixture = load_fixture();
     let hash_codes = fixture
         .get("hash_codes")
@@ -104,7 +104,7 @@ fn deterministic_hash_code_matches_python() {
         .expect("hash_codes not object");
     for (name, expected_val) in hash_codes {
         let expected = expected_val.as_i64().expect("hash not int") as i32;
-        let got = deterministic_hash_code(name);
+        let got = deterministic_hash_code_old(name);
         assert_eq!(got, expected, "hash diverged for {name:?}");
     }
 }

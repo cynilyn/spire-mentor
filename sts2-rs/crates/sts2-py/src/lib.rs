@@ -2796,7 +2796,7 @@ fn build_info(py: Python<'_>) -> PyResult<PyObject> {
 /// engines start combat from byte-identical RNG state. Bead `sts2-rs-ykmk9`.
 #[pyfunction]
 fn deterministic_hash_code(text: &str) -> i32 {
-    sts2_core::deterministic_hash_code(text)
+    sts2_core::deterministic_hash_code_old(text)
 }
 
 /// Roll the run's act list from a display seed — the port of C#

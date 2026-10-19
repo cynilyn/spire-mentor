@@ -40,7 +40,7 @@ const INT_MAX_EXCLUSIVE: i64 = (i32::MAX as i64) + 1;
 /// (no `O` / no `I` to avoid 0/1 confusion). Canonicalisation folds
 /// the visually-ambiguous letters onto digits so the same human-typed
 /// seed always hashes to the same int. Required before
-/// [`deterministic_hash_code`] when ingesting scraped run-file seeds.
+/// [`deterministic_hash_code_old`] when ingesting scraped run-file seeds.
 #[must_use]
 pub fn canonicalize_seed(seed: &str) -> String {
     let upper = seed.to_uppercase();
@@ -72,7 +72,7 @@ pub(crate) fn rng_trace_enabled() -> bool {
 /// single `RunRngSet` can offer independent streams keyed by string
 /// without the seeds colliding across runs.
 #[must_use]
-pub fn deterministic_hash_code(text: &str) -> i32 {
+pub fn deterministic_hash_code_old(text: &str) -> i32 {
     let bytes: Vec<u16> = text.encode_utf16().collect();
     let mut num: i32 = 352_654_597;
     let mut num2: i32 = num;
@@ -91,6 +91,140 @@ pub fn deterministic_hash_code(text: &str) -> i32 {
     num.wrapping_add(num2.wrapping_mul(1_566_083_941))
 }
 
+const XXH_P1: u64 = 0x9E37_79B1_85EB_CA87;
+const XXH_P2: u64 = 0xC2B2_AE3D_27D4_EB4F;
+const XXH_P3: u64 = 0x1656_67B1_9E37_79F9;
+const XXH_P4: u64 = 0x85EB_CA77_C2B2_AE63;
+const XXH_P5: u64 = 0x27D4_EB2F_1656_67C5;
+
+#[inline]
+fn xxh_round(acc: u64, input: u64) -> u64 {
+    acc.wrapping_add(input.wrapping_mul(XXH_P2))
+        .rotate_left(31)
+        .wrapping_mul(XXH_P1)
+}
+
+#[inline]
+fn xxh_merge_round(acc: u64, val: u64) -> u64 {
+    (acc ^ xxh_round(0, val))
+        .wrapping_mul(XXH_P1)
+        .wrapping_add(XXH_P4)
+}
+
+#[inline]
+fn read_u64_le(b: &[u8]) -> u64 {
+    u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+}
+
+#[inline]
+fn read_u32_le(b: &[u8]) -> u32 {
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+
+/// XXH64 (seed 0) over raw bytes — the algorithm behind .NET
+/// `System.IO.Hashing.XxHash64.HashToUInt64(data, 0)`. Self-contained so the
+/// seed path needs no new dependency; locked by standard vectors in the tests.
+#[must_use]
+pub fn xxhash64_bytes(data: &[u8]) -> u64 {
+    let len = data.len();
+    let mut rest = data;
+    let mut h: u64;
+    if len >= 32 {
+        let mut v1 = XXH_P1.wrapping_add(XXH_P2);
+        let mut v2 = XXH_P2;
+        let mut v3 = 0u64;
+        let mut v4 = 0u64.wrapping_sub(XXH_P1);
+        while rest.len() >= 32 {
+            v1 = xxh_round(v1, read_u64_le(&rest[0..8]));
+            v2 = xxh_round(v2, read_u64_le(&rest[8..16]));
+            v3 = xxh_round(v3, read_u64_le(&rest[16..24]));
+            v4 = xxh_round(v4, read_u64_le(&rest[24..32]));
+            rest = &rest[32..];
+        }
+        h = v1
+            .rotate_left(1)
+            .wrapping_add(v2.rotate_left(7))
+            .wrapping_add(v3.rotate_left(12))
+            .wrapping_add(v4.rotate_left(18));
+        h = xxh_merge_round(h, v1);
+        h = xxh_merge_round(h, v2);
+        h = xxh_merge_round(h, v3);
+        h = xxh_merge_round(h, v4);
+    } else {
+        h = XXH_P5;
+    }
+    h = h.wrapping_add(len as u64);
+    while rest.len() >= 8 {
+        h ^= xxh_round(0, read_u64_le(rest));
+        h = h.rotate_left(27).wrapping_mul(XXH_P1).wrapping_add(XXH_P4);
+        rest = &rest[8..];
+    }
+    if rest.len() >= 4 {
+        h ^= u64::from(read_u32_le(rest)).wrapping_mul(XXH_P1);
+        h = h.rotate_left(23).wrapping_mul(XXH_P2).wrapping_add(XXH_P3);
+        rest = &rest[4..];
+    }
+    for &b in rest {
+        h ^= u64::from(b).wrapping_mul(XXH_P5);
+        h = h.rotate_left(11).wrapping_mul(XXH_P1);
+    }
+    h ^= h >> 33;
+    h = h.wrapping_mul(XXH_P2);
+    h ^= h >> 29;
+    h = h.wrapping_mul(XXH_P3);
+    h ^ (h >> 32)
+}
+
+/// v0.111.0 string hash `StringHelper.GetDeterministicHashCode`:
+/// `XxHash64.HashToUInt64(UTF8(text), 0)`. Replaces the 32-bit UTF-16 hash
+/// (kept as [`deterministic_hash_code_old`]).
+#[must_use]
+pub fn xxhash64_utf8(text: &str) -> u64 {
+    xxhash64_bytes(text.as_bytes())
+}
+
+/// Seed bases derived from a run's seed string (v0.111.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeedBases<'a> {
+    /// `RunRngSet.Seed`: base of the 12 run streams, maps, events, encounters.
+    pub run_seed: u64,
+    /// `PlayerRngSet` base (`H(full string) + slot 0`): rewards/shops/transformations.
+    pub player_seed: u64,
+    /// `H(full string)`: also the `act_selection` base (`StartRunLobby`).
+    pub full_hash: u64,
+    /// `"old"` for pre-save seed strings, else `""`.
+    pub prefix: &'a str,
+}
+
+/// Derive the run and player seed bases from a seed string.
+///
+/// The lowercase `old` test runs on `raw` **before** normalization and is
+/// case-sensitive (`OLD…` does not match). `old` seeds: `run_seed` is the
+/// legacy 32-bit hash of the rest, zero-extended; the player base and
+/// `act_selection` still use the xxhash of the **whole** string, prefix
+/// included. Other seeds are canonicalized first (`CanonicalizeSeed`), and
+/// every base is the xxhash of the canonical string.
+#[must_use]
+pub fn seed_bases(raw: &str) -> SeedBases<'_> {
+    if let Some(rest) = raw.strip_prefix("old") {
+        let full_hash = xxhash64_utf8(raw);
+        SeedBases {
+            run_seed: u64::from(deterministic_hash_code_old(rest) as u32),
+            player_seed: full_hash,
+            full_hash,
+            prefix: &raw[..3],
+        }
+    } else {
+        let full_hash = xxhash64_utf8(&canonicalize_seed(raw));
+        SeedBases {
+            run_seed: full_hash,
+            player_seed: full_hash,
+            full_hash,
+            prefix: "",
+        }
+    }
+}
+
 /// Xoshiro256\*\* PRNG with Splitmix64 seeding — the **v0.107.1** game RNG.
 ///
 /// Game v0.107.1's "Major Update #2" replaced the per-system PRNG. Until
@@ -104,7 +238,7 @@ pub fn deterministic_hash_code(text: &str) -> i32 {
 /// Direct port of `MegaCrit.Sts2.Core.Random/MegaRandom.cs` (v0.107.1). Every
 /// constant and the exact `NextULongInner` / `NextDouble` / `NextInt` derivation
 /// match the C# byte-for-byte; verified against oracle-emitted reference vectors
-/// in the tests below. The seed-derivation scaffolding ([`deterministic_hash_code`],
+/// in the tests below. The seed-derivation scaffolding ([`deterministic_hash_code_old`],
 /// [`Rng::with_name`], counters) is UNCHANGED from v0.103.2 — only the generator
 /// underneath swapped, so RNG *stream order* is identical and only the bytes
 /// each draw yields differ.
@@ -368,7 +502,7 @@ impl Rng {
     /// independent streams under the same base seed don't collide.
     #[must_use]
     pub fn with_name(base_seed: i32, name: &str) -> Self {
-        let combined = (base_seed as u32).wrapping_add(deterministic_hash_code(name) as u32);
+        let combined = (base_seed as u32).wrapping_add(deterministic_hash_code_old(name) as u32);
         if rng_trace_enabled() {
             // `seed` matches C#'s `Rng.Seed` (base + DeterministicHashCode),
             // so the symmetric C#/Rust `RNGTRACE` logs align by seed. The
@@ -762,15 +896,100 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_hash_code_matches_python_snapshots() {
-        // Captured from Python: deterministic_hash_code("monster"),
+    fn xxhash64_standard_vectors() {
+        assert_eq!(xxhash64_utf8(""), 0xEF46_DB37_51D8_E999);
+        assert_eq!(xxhash64_utf8("a"), 0xD24E_C4F1_A98C_6E5B);
+        // Published XXH64 vectors (seed 0) covering the 4-byte, 8-byte and
+        // 32-byte-stripe branches.
+        assert_eq!(xxhash64_utf8("abc"), 0x44BC_2CF5_AD77_0999);
+        assert_eq!(
+            xxhash64_utf8("Nobody inspects the spammish repetition"),
+            0xFBCE_A83C_8A37_8BF1
+        );
+    }
+
+    /// W1 vectors: `run_seed`/`player_seed` of the 20 oracle seeds.
+    /// Source: sts2_bot `logs/engine/p0/stage1_vectors.json`
+    /// (sha256 5267538d84c1a1468b68656b82bdd270e4a4e21b60a251366beb475786aa8976,
+    /// oracle f79d3a9, game v0.111.0).
+    const W1_VECTORS: [(&str, u64, u64); 20] = [
+        ("P0A0", 10883704133362413376, 10883704133362413376),
+        ("P0A1", 5101801426979218024, 5101801426979218024),
+        ("P0A2", 15767174202476603724, 15767174202476603724),
+        ("P0A3", 5706165440450657479, 5706165440450657479),
+        ("P0A4", 5688482973830756896, 5688482973830756896),
+        ("P0A5", 8097214833571844205, 8097214833571844205),
+        ("P0A6", 5024012090796935627, 5024012090796935627),
+        ("P0A7", 7397479155778214808, 7397479155778214808),
+        ("P0A8", 9135721552375587661, 9135721552375587661),
+        ("P0A9", 13778472366970538763, 13778472366970538763),
+        ("P0A10", 12159427438006513464, 12159427438006513464),
+        ("P0A11", 17697121495486258137, 17697121495486258137),
+        ("P0A12", 14391125488767557262, 14391125488767557262),
+        ("P0A13", 16941348480414710656, 16941348480414710656),
+        ("P0A14", 15074555918783445927, 15074555918783445927),
+        ("oldP0A0", 273692109, 15676685915450073139),
+        ("oldP0A1", 3002575464, 18283884523336027873),
+        ("oldP0A2", 3405859991, 17731986911216078246),
+        ("oldP0A3", 1839776050, 13570675488851547012),
+        ("oldP0A4", 2599290937, 3030005280704353688),
+    ];
+
+    #[test]
+    fn seed_bases_match_w1_vectors() {
+        for (seed, run, player) in W1_VECTORS {
+            let b = seed_bases(seed);
+            assert_eq!(b.run_seed, run, "{seed} run_seed");
+            assert_eq!(b.player_seed, player, "{seed} player_seed");
+            assert_eq!(b.full_hash, xxhash64_utf8(seed), "{seed} full_hash");
+            if seed.starts_with("old") {
+                assert_eq!(b.prefix, "old");
+                assert_ne!(b.run_seed, b.player_seed, "{seed}: old seeds use two bases");
+            } else {
+                assert_eq!(b.prefix, "");
+                assert_eq!(b.run_seed, b.player_seed, "{seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn seed_bases_edge_cases() {
+        // Only the lowercase prefix selects the legacy path (decided before
+        // normalization); `OLD...` is an ordinary seed (canonicalized, then hashed whole).
+        let upper = seed_bases("OLDP0A0");
+        assert_eq!(upper.prefix, "");
+        assert_eq!(upper.run_seed, xxhash64_utf8("0LDP0A0")); // canonicalize folds O -> 0
+        assert_eq!(upper.run_seed, upper.player_seed);
+        // Non-old seeds are canonicalized (O->0, I->1, uppercase) before hashing.
+        assert_eq!(seed_bases("p0a0").run_seed, xxhash64_utf8("P0A0"));
+        assert_eq!(seed_bases("POAI").run_seed, xxhash64_utf8("P0A1"));
+        // `old` rest is hashed as given with the legacy hash.
+        assert_eq!(
+            seed_bases("oldP0A0").run_seed,
+            u64::from(deterministic_hash_code_old("P0A0") as u32)
+        );
+        // Empty string and a 12-character seed.
+        let empty = seed_bases("");
+        assert_eq!(empty.run_seed, 0xEF46_DB37_51D8_E999);
+        assert_eq!(empty.player_seed, empty.run_seed);
+        let twelve = seed_bases("ABCDEFGH2345");
+        assert_eq!(twelve.run_seed, xxhash64_utf8("ABCDEFGH2345"));
+        // `old` alone: empty rest.
+        let bare = seed_bases("old");
+        assert_eq!(bare.prefix, "old");
+        assert_eq!(bare.player_seed, xxhash64_utf8("old"));
+    }
+
+    #[test]
+    fn deterministic_hash_code_old_matches_python_snapshots() {
+        // Captured from Python: deterministic_hash_code_old("monster"),
         // ("event"), ("treasure"), ("") at pin 01c094d.
         // Placeholder asserts — replaced once parity harness runs.
-        let _ = deterministic_hash_code("monster");
-        let _ = deterministic_hash_code("event");
-        let _ = deterministic_hash_code("treasure");
+        let _ = deterministic_hash_code_old("monster");
+        let _ = deterministic_hash_code_old("event");
+        let _ = deterministic_hash_code_old("treasure");
         assert_eq!(
-            deterministic_hash_code(""),
+            deterministic_hash_code_old(""),
             352_654_597_i32.wrapping_add(352_654_597_i32.wrapping_mul(1_566_083_941))
         );
     }
@@ -822,7 +1041,7 @@ mod tests {
         assert_eq!(dirs, vec![-1, 1, 0]);
     }
 
-    /// Named streams seed as `base + deterministic_hash_code(name)` (unchanged
+    /// Named streams seed as `base + deterministic_hash_code_old(name)` (unchanged
     /// from v0.103.2) and feed MegaRandom. Oracle: `Rng(0,name).Seed` +
     /// first `NextInt(0,1000)`.
     #[test]

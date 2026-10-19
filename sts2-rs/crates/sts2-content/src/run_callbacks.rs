@@ -800,7 +800,7 @@ fn build_combat_for_room(
     // `EncounterModel.GenerateMonstersWithSlots` (`EncounterModel.cs:201`)
     // seeds the roster Rng `new Rng(Seed + TotalFloor + hash(Id.Entry))` ==
     // `Rng::with_name(Seed + TotalFloor, enc.id)` (`with_name` adds
-    // `deterministic_hash_code(name)`; `Id.Entry == Slugify(className) ==
+    // `deterministic_hash_code_old(name)`; `Id.Entry == Slugify(className) ==
     // EncounterDef.id`); `CombatState.CreateCreature` then rolls each enemy's
     // HP off `RunState.Rng.Niche`.
     //
@@ -906,7 +906,7 @@ pub fn dump_roster_for_encounter(
     // seeds it `new Rng((uint)(runState.Rng.Seed + TotalFloor + GetDeterministicHashCode(Id.Entry)))`
     // where `Id.Entry == Slugify(className) == EncounterDef.id`. That is
     // exactly `Rng::with_name(Seed + TotalFloor, id)` (with_name adds
-    // `deterministic_hash_code(name)` to the base). niche is consumed ONLY
+    // `deterministic_hash_code_old(name)` to the base). niche is consumed ONLY
     // by the per-creature HP roll below — keeping the two streams separate
     // is what makes the randomizer rows' HP line up (rolling the roster off
     // niche shifted the HP cursor by the roster reads).
@@ -1010,11 +1010,11 @@ pub fn populate_starter_deck(rs: &mut RunState, character: CharacterId) {
 /// Pipeline mirrors the C# game exactly:
 /// 1. `canonicalize_seed` — uppercase, fold `O→0` and `I→1`, trim. Same
 ///    rule as `SeedHelper.CanonicalizeSeed` in C#.
-/// 2. `deterministic_hash_code` — port of
+/// 2. `deterministic_hash_code_old` — port of
 ///    `StringHelper.GetDeterministicHashCode`. Returns `i32`.
 /// 3. `RunManager::new(int_seed, Ironclad)` — `RunRngSet::new(int_seed)`
 ///    derives every per-stream RNG from the same seed via
-///    `deterministic_hash_code(stream_name)`.
+///    `deterministic_hash_code_old(stream_name)`.
 ///
 /// Match-up with the C# init at `StartRunLobby.cs:407`:
 ///
@@ -1024,7 +1024,7 @@ pub fn populate_starter_deck(rs: &mut RunState, character: CharacterId) {
 #[must_use]
 pub fn new_ironclad_run_manager_from_string_seed(seed: &str) -> RunManager {
     let canonical = sts2_core::canonicalize_seed(seed);
-    let int_seed = sts2_core::deterministic_hash_code(&canonical);
+    let int_seed = sts2_core::deterministic_hash_code_old(&canonical);
     new_ironclad_run_manager(int_seed)
 }
 
@@ -1099,7 +1099,7 @@ pub fn new_run_manager_for_character_from_string_seed(
     character: CharacterId,
 ) -> RunManager {
     let canonical = sts2_core::canonicalize_seed(seed);
-    let int_seed = sts2_core::deterministic_hash_code(&canonical);
+    let int_seed = sts2_core::deterministic_hash_code_old(&canonical);
     new_run_manager_for_character(int_seed, character)
 }
 

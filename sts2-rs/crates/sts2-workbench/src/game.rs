@@ -1674,7 +1674,7 @@ pub fn build_run_manager(
     use sts2_core::act_selection::ActVariant;
     ensure_content_installed();
     let canonical = sts2_core::canonicalize_seed(seed);
-    let effective_seed = sts2_core::deterministic_hash_code(&canonical);
+    let effective_seed = sts2_core::deterministic_hash_code_old(&canonical);
     let rm = if ascension > 0 {
         new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
     } else {
@@ -1722,7 +1722,7 @@ fn build_import_run_manager(cid: CharacterId, seed: &str, ascension: u8) -> RunM
     };
     ensure_content_installed();
     let canonical = sts2_core::canonicalize_seed(seed);
-    let effective_seed = sts2_core::deterministic_hash_code(&canonical);
+    let effective_seed = sts2_core::deterministic_hash_code_old(&canonical);
     let rm = if ascension > 0 {
         new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
     } else {

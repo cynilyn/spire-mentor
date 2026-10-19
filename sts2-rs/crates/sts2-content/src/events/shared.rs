@@ -112,7 +112,7 @@ pub const LOST_WISP: EventSpec = EventSpec {
 /// `GetPlayerSlotIndex(Owner) == Players.IndexOf(Owner) == 0` (`RunState.cs:620`),
 /// so the additive player term is **0** — v0.103.2 used `Owner.NetId == 1` here
 /// (`EventModel.cs:193`); the v0.107.1 change from `NetId` to `GetPlayerSlotIndex`
-/// drops it. [`Rng::with_name`] folds in `deterministic_hash_code(entry)`, matching
+/// drops it. [`Rng::with_name`] folds in `deterministic_hash_code_old(entry)`, matching
 /// the C# hash term exactly. `entry` is the event's `Id.Entry` (its L10N key root,
 /// e.g. `"TRASH_HEAP"`).
 fn event_rng(state: &RunState, entry: &str) -> sts2_core::dotnet_rng::Rng {

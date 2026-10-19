@@ -57,7 +57,7 @@
 //! roll *is* purely seed-driven. [`ActSelectionUnlocks::test_mode_on`] models
 //! that; [`ActSelectionUnlocks::live_game`] models a real save.
 
-use crate::dotnet_rng::{canonicalize_seed, deterministic_hash_code, Rng};
+use crate::dotnet_rng::{canonicalize_seed, deterministic_hash_code_old, Rng};
 
 /// One act model, identified by its C# `ModelId.Entry` slug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -173,7 +173,7 @@ const fn is_discovered(act: ActVariant, unlocks: &ActSelectionUnlocks) -> bool {
 /// Roll the run's act list from an **already-hashed** seed, mirroring
 /// `ActModel.GetRandomList` read-for-read.
 ///
-/// `seed_hash` is `deterministic_hash_code(canonicalize_seed(display_seed))` —
+/// `seed_hash` is `deterministic_hash_code_old(canonicalize_seed(display_seed))` —
 /// the same single hash `RunRngSet` takes. Use [`roll_acts_for_seed`] to go
 /// straight from the display seed.
 ///
@@ -226,7 +226,7 @@ pub fn roll_acts_with(rng: &mut Rng, unlocks: &ActSelectionUnlocks) -> [ActVaria
 #[must_use]
 pub fn roll_acts_for_seed(display_seed: &str, unlocks: &ActSelectionUnlocks) -> [ActVariant; 3] {
     roll_acts(
-        deterministic_hash_code(&canonicalize_seed(display_seed)),
+        deterministic_hash_code_old(&canonicalize_seed(display_seed)),
         unlocks,
     )
 }

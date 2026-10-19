@@ -6,7 +6,7 @@
 //! [`crate::run_room_gen::GeneratedActRooms::ancient`]). Each ancient's
 //! `GenerateInitialOptions` rolls 3 relic offers off a per-event RNG seeded
 //! per `EventModel.cs:193`:
-//!   `Rng(RunState.Rng.Seed + NetId + deterministic_hash_code(Id.Entry))`
+//!   `Rng(RunState.Rng.Seed + NetId + deterministic_hash_code_old(Id.Entry))`
 //! (single-player `NetId = 1`), i.e. `with_name(seed + 1, ancient.entry())`.
 //! The per-event RNG is ISOLATED from `up_front`, so an imperfect
 //! deck-condition predicate only changes that one event's offer identities —
@@ -329,7 +329,7 @@ mod tests {
     /// (`map_point_history[*][*].player_stats[0].ancient_choice`).
     ///
     /// CAVEAT — these are the scraped seeds whose run-master derives correctly
-    /// from the display string via `deterministic_hash_code(canonicalize_seed)`.
+    /// from the display string via `deterministic_hash_code_old(canonicalize_seed)`.
     /// ~20% of scraped string seeds do NOT round-trip through that
     /// canonicalization (verified: those same seeds also mis-derive the
     /// deterministic Neow act-1 offers — a per-seed master-derivation gap, not
@@ -519,7 +519,7 @@ mod tests {
         let c = cond();
         let mut fails = 0;
         for (seed, ancient, expected) in cases {
-            let master = crate::deterministic_hash_code(&crate::canonicalize_seed(seed));
+            let master = crate::deterministic_hash_code_old(&crate::canonicalize_seed(seed));
             let mut rng = event_rng(master, *ancient);
             let got: Vec<String> = roll_offers(*ancient, &mut rng, &c)
                 .iter()

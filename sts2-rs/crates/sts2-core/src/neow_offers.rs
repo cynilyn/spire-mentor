@@ -7,7 +7,7 @@
 //!
 //! Pure function: [`roll_neow_offers`] takes a per-event RNG (seeded
 //! per `EventModel.cs:193` — `RunState.Rng.Seed + NetId +
-//! deterministic_hash_code(Id.Entry)`; wiring lives in sub-bead
+//! deterministic_hash_code_old(Id.Entry)`; wiring lives in sub-bead
 //! `sts2-rs-14cid`) and returns the 3 relic offers, RNG-faithful to
 //! the C# algorithm (same `next_int` / `next_bool` / `shuffle` call
 //! sequence).
@@ -549,7 +549,7 @@ mod tests {
         // canonical-seed → hash pipeline inline to keep this test in
         // sts2-core (no sts2-content dep).
         let canonical = crate::canonicalize_seed("2J2DEKXJP9");
-        let master = crate::deterministic_hash_code(&canonical);
+        let master = crate::deterministic_hash_code_old(&canonical);
         // Reconstruct the same Rng the RunState path uses: master+NetId,
         // then mix the "NEOW" salt via with_name. Pins:
         // `EventModel.cs:193`, `NGame.cs:884` (NetId=1uL in SP).

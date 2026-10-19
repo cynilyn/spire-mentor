@@ -3,14 +3,14 @@
 //! Ports `sts2-rl-agent@01c094d:sts2_env/run/run_state.py:1340-1370`
 //! (`class RunRngSet`). Each named stream is an independent
 //! [`crate::dotnet_rng::Rng`] seeded by mixing a per-stream salt into
-//! the run's master seed via [`crate::dotnet_rng::deterministic_hash_code`],
+//! the run's master seed via [`crate::dotnet_rng::deterministic_hash_code_old`],
 //! exactly as Python does. Streams are *not* derived from one another —
 //! advancing `rewards` never perturbs `encounter`, so a fixture that
 //! shifts which stream rolls first stays parity-stable.
 //!
 //! ## Why this matters for parity
 //!
-//! Python's `Rng(seed, name)` calls `deterministic_hash_code(name)` to
+//! Python's `Rng(seed, name)` calls `deterministic_hash_code_old(name)` to
 //! mix the salt into `seed`, producing an independent sample sequence
 //! per stream. If `sts2-rs` collapses every roll into a single stream
 //! (the old `rewards_rng_seed: u64` Xoshiro shim), every fixture that
@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 
 #[cfg(test)]
-use crate::dotnet_rng::deterministic_hash_code;
+use crate::dotnet_rng::deterministic_hash_code_old;
 use crate::dotnet_rng::Rng;
 
 /// Mirrors Python `RUN_MANAGER_RNG_SEED_OFFSET = 9999` at
@@ -147,7 +147,7 @@ const RUN_DRAW_STREAM_SALTS: [u64; RUN_DRAW_STREAM_COUNT] = [
 /// that stream's counter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunRngSet {
-    /// `deterministic_hash_code(str(master_seed))` — the hashed master
+    /// `deterministic_hash_code_old(str(master_seed))` — the hashed master
     /// seed all per-stream salts mix into. Stored so per-act map RNGs
     /// can be created lazily.
     pub seed: i32,
@@ -204,7 +204,7 @@ impl RunRngSet {
     /// Construct a fresh `RunRngSet` from `master_seed`.
     ///
     /// The hash applied to `str(master_seed)` matches Python's
-    /// `deterministic_hash_code(str(master_seed))`, so a Rust caller
+    /// `deterministic_hash_code_old(str(master_seed))`, so a Rust caller
     /// passing `0_i32` and a Python caller passing `0` produce
     /// byte-identical opening sequences on every named stream.
     #[must_use]
@@ -214,7 +214,7 @@ impl RunRngSet {
         // The string entrypoint takes the canonicalised seed (e.g.
         // "BK9KTUB5Z1") and the integer seed is the result of that single
         // hash. The Python pin's `RunRngSet.__init__` re-hashes via
-        // `deterministic_hash_code(str(master_seed))` — a SECOND hash on
+        // `deterministic_hash_code_old(str(master_seed))` — a SECOND hash on
         // the integer-stringified seed — which produces a totally
         // different stream and prevented corpus map-gen parity with C#.
         //
@@ -224,7 +224,7 @@ impl RunRngSet {
         // cols against Python (which has the same double-hash bug) but
         // diverged from the C# scraped corpus. Treat the i32 argument
         // here as already-hashed-once (i.e. the result of
-        // `deterministic_hash_code(canonical_string_seed)`).
+        // `deterministic_hash_code_old(canonical_string_seed)`).
         let seed = master_seed;
         // v0.107.1 `Player.cs:329`: PlayerRngSet seed = hash(seed) +
         // GetPlayerSlotIndex(this), and GetPlayerSlotIndex == 0 in
@@ -508,7 +508,7 @@ mod tests {
         // with their salt — verify by reconstructing the expected seed
         // for one stream and checking the underlying Rng's seed.
         let set = RunRngSet::new(0);
-        let expected = (set.seed as u32).wrapping_add(deterministic_hash_code("up_front") as u32);
+        let expected = (set.seed as u32).wrapping_add(deterministic_hash_code_old("up_front") as u32);
         assert_eq!(set.up_front.seed(), expected);
     }
 
@@ -519,7 +519,7 @@ mod tests {
         // run-seed base (NO `+1` NetId offset). Bead `sts2-rs-ms8mm` family.
         let set = RunRngSet::new(0);
         let player_seed = set.seed;
-        let expected = (player_seed as u32).wrapping_add(deterministic_hash_code("rewards") as u32);
+        let expected = (player_seed as u32).wrapping_add(deterministic_hash_code_old("rewards") as u32);
         assert_eq!(set.rewards.seed(), expected);
     }
 
@@ -529,7 +529,7 @@ mod tests {
         // is `"treasure_room_relics"`. Parity demands the long form.
         let set = RunRngSet::new(0);
         let expected =
-            (set.seed as u32).wrapping_add(deterministic_hash_code("treasure_room_relics") as u32);
+            (set.seed as u32).wrapping_add(deterministic_hash_code_old("treasure_room_relics") as u32);
         assert_eq!(set.treasure_room.seed(), expected);
     }
 
@@ -597,7 +597,7 @@ mod tests {
         let master_seed = set.seed;
         let r = set.map_rng(0);
         let expected =
-            (master_seed as u32).wrapping_add(deterministic_hash_code("act_1_map") as u32);
+            (master_seed as u32).wrapping_add(deterministic_hash_code_old("act_1_map") as u32);
         assert_eq!(r.seed(), expected);
     }
 

@@ -65,7 +65,7 @@ pub const ENCOUNTER_GOLD_HIGH_BOSS: i32 = 100;
 
 /// Stream-name salt for the Neow event's per-event RNG. Mirrors C#
 /// `EventModel.cs:193` which mixes
-/// `deterministic_hash_code(base.Id.Entry)` into the run-master seed;
+/// `deterministic_hash_code_old(base.Id.Entry)` into the run-master seed;
 /// `Id.Entry` for the Neow event resolves to the class name "Neow"
 /// in v0.103.2. Parity sub-bead `sts2-rs-k8z6m` re-confirms against
 /// the scraped corpus; if it diverges the name moves here.
@@ -2450,7 +2450,7 @@ impl RunState {
     /// `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models/AncientEventModel.cs`.
     ///
     /// The Neow event RNG is seeded per `EventModel.cs:193`:
-    /// `Rng(uint(RunState.Rng.Seed + NetId + deterministic_hash_code(Id.Entry)))`.
+    /// `Rng(uint(RunState.Rng.Seed + NetId + deterministic_hash_code_old(Id.Entry)))`.
     /// For single-player runs `NetId == 0` is assumed (parity sub-bead
     /// `sts2-rs-k8z6m` will verify against the scraped corpus and tune
     /// the seed formula here if the assumption is off — see the
@@ -2478,7 +2478,7 @@ impl RunState {
         //   `NetSingleplayerGameService.cs:21`); v0.107.1 swapped `NetId` for
         //   `GetPlayerSlotIndex` and thereby dropped the +1 (bead `sts2-rs-ms8mm`).
         //
-        // `DotNetRng::with_name(s, n) = Rng(s + deterministic_hash_code(n))`
+        // `DotNetRng::with_name(s, n) = Rng(s + deterministic_hash_code_old(n))`
         // (modulo u32 wrap), matching the C# seed with a 0 player term.
         let mut event_rng = crate::DotNetRng::with_name(self.rng.seed, NEOW_EVENT_RNG_NAME);
         self.neow_offers = Some(crate::roll_neow_offers(&mut event_rng));
