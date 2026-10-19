@@ -1222,6 +1222,7 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // RunState side channel so `RunManager::do_card_reward_pick` builds the
     // picked card with the right upgrade state.
     rs.card_reward_upgraded_flags = cards.iter().map(|c| c.upgraded).collect();
+    rs.card_reward_enchantments = cards.iter().map(|c| c.enchantments).collect();
     cards.into_iter().map(|c| c.card_id).collect()
 }
 
@@ -1500,6 +1501,36 @@ mod tests {
         assert_eq!(event, monster, "event-room rewards == Monster-room rewards");
         assert!((10..=20).contains(&event.0), "gold in [10,20], got {}", event.0);
         assert_eq!(event.2.len(), 3, "3-card reward");
+    }
+
+    /// 0c P0A17: SilkenTress's Glam must survive the card-reward callback, which
+    /// hands the run manager bare `CardId`s. The enchantments ride the
+    /// offer-aligned `RunState::card_reward_enchantments` channel (first reward
+    /// only, then the `IsUsed` latch leaves later rewards plain).
+    #[test]
+    fn silken_tress_glam_is_carried_on_the_card_reward_channel() {
+        use sts2_core::cards::EnchantmentId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = new_run_manager_for_character(42, CharacterId::Ironclad).with_neow_start();
+        initialize_run_setup(&mut rm);
+        let rs = &mut rm.run_state;
+        rs.relics.push(RelicId::SilkenTress);
+
+        let first = generate_card_reward_options(rs);
+        assert_eq!(first.len(), 3);
+        assert_eq!(rs.card_reward_enchantments.len(), 3, "offer-aligned");
+        let glam = |e: &sts2_core::cards::CardEnchantments| e.get(EnchantmentId::Glam) != 0;
+        assert!(
+            rs.card_reward_enchantments.iter().any(glam),
+            "first reward carries Glam on at least one eligible card"
+        );
+
+        let second = generate_card_reward_options(rs);
+        assert_eq!(second.len(), 3);
+        assert!(
+            !rs.card_reward_enchantments.iter().any(glam),
+            "IsUsed latch: later rewards are plain"
+        );
     }
 
     /// Task #19 end-to-end: `generate_boss_relic_pool` returns the NEXT

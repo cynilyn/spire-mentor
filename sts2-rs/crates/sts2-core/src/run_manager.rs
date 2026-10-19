@@ -634,6 +634,10 @@ pub struct RunManager {
     /// rewards, act-2+ upgrade rolls). Empty for choose-screen / bundle
     /// offerings, which carry no upgrade state.
     card_reward_upgraded: Vec<bool>,
+    /// Per-option enchantments parallel to `card_reward_options` (Glam from
+    /// SilkenTress / Glitter), taken from
+    /// `RunState::card_reward_enchantments`. Empty when the offering carries none.
+    card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
     /// When `Some`, the current `Phase::CardReward` offering is a Scroll
     /// Boxes *bundle* pick rather than a single-card reward: each inner
     /// `Vec<CardId>` is one pack, the player picks one pack index and **all**
@@ -830,6 +834,7 @@ impl RunManager {
             callbacks: ContentCallbacks::default(),
             card_reward_options: Vec::new(),
             card_reward_upgraded: Vec::new(),
+            card_reward_enchantments: Vec::new(),
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
             pending_boss_act_advance: false,
@@ -2295,6 +2300,8 @@ impl RunManager {
             .map(|f| f(&mut self.run_state))
             .unwrap_or_default();
         self.card_reward_upgraded = std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+        self.card_reward_enchantments =
+            std::mem::take(&mut self.run_state.card_reward_enchantments);
         // A fresh post-combat offering is never a choose screen.
         self.card_offer_choose_screen = false;
         self.phase = Phase::CardReward;
@@ -2377,6 +2384,12 @@ impl RunManager {
                         c.upgraded = upgraded;
                         c
                     });
+                // Offer-time enchantments (SilkenTress / Glitter Glam): the C# reward
+                // card IS the enchanted clone (`SilkenTress.cs:66-69`), so the deck
+                // add keeps its enchantment.
+                if let Some(e) = self.card_reward_enchantments.get(i) {
+                    card.enchantments = *e;
+                }
                 // C# fires `Hook.ModifyCardBeingAddedToDeck` before the deck add
                 // (CardPileCmd.cs:502) — egg relics upgrade a matching pick at add
                 // time (run-starter-upgrade-flip A).
@@ -2610,9 +2623,12 @@ impl RunManager {
                             roller.map(|f| f(&mut self.run_state)).unwrap_or_default();
                         self.card_reward_upgraded =
                             std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+                        self.card_reward_enchantments =
+                            std::mem::take(&mut self.run_state.card_reward_enchantments);
                     } else {
                         self.card_reward_options = pre_resolved;
                         self.card_reward_upgraded = Vec::new();
+                        self.card_reward_enchantments = Vec::new();
                     }
                     opened = true;
                 }
@@ -2641,6 +2657,7 @@ impl RunManager {
         // never these representatives.
         self.card_reward_options = bundles.iter().filter_map(|b| b.first().copied()).collect();
         self.card_reward_upgraded.clear();
+        self.card_reward_enchantments.clear();
         self.card_reward_bundles = Some(bundles);
         true
     }
@@ -2678,6 +2695,7 @@ impl RunManager {
             // all-false. Replaces the prior unconditional `.clear()`, which
             // always granted unupgraded.
             self.card_reward_upgraded = select.upgraded;
+            self.card_reward_enchantments = Vec::new();
             self.card_offer_choose_screen = true;
             self.pending_choose_screen_post_add = select.post_add;
             // Stay in CardReward — get_available_actions now fans out the
@@ -9270,6 +9288,63 @@ mod tests {
         let _ = rm.exit_combat_and_transition();
         // Existing bridge behaviour is unchanged for the other event combats.
         assert_eq!(rm.run_state.gold, gold_before, "no normal rewards (gap)");
+    }
+
+    fn card_options_with_glam(rs: &mut RunState) -> Vec<crate::cards::CardId> {
+        let mut e = crate::cards::CardEnchantments::default();
+        e.set(crate::cards::EnchantmentId::Glam, 1);
+        rs.card_reward_enchantments = vec![crate::cards::CardEnchantments::default(), e];
+        vec![
+            crate::cards::CardId::StrikeIronclad,
+            crate::cards::CardId::SwordBoomerang,
+        ]
+    }
+
+    /// 0c P0A17: an offered card's enchantment (SilkenTress Glam) must reach the
+    /// deck when picked. The callback returns bare ids; the enchantments ride
+    /// `RunState::card_reward_enchantments`.
+    #[test]
+    fn picked_card_reward_keeps_its_offered_enchantment() {
+        let mut cb = bridge_callbacks(resolve_dense_vegetation_fight_with_rewards);
+        cb.apply_combat_gold_and_potion = Some(apply_gold_potion_marker);
+        cb.generate_card_reward_options = Some(card_options_with_glam);
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let _ = rm.exit_combat_and_transition();
+        assert_eq!(rm.phase(), Phase::CardReward);
+
+        let deck_len = rm.run_state.master_deck.len();
+        rm.take_action(RunAction::PickCardReward { idx: Some(1) });
+        let picked = rm.run_state.master_deck.last().expect("card added");
+        assert_eq!(rm.run_state.master_deck.len(), deck_len + 1);
+        assert_eq!(picked.card_id, crate::cards::CardId::SwordBoomerang);
+        assert!(
+            picked.has_enchantment(crate::cards::EnchantmentId::Glam),
+            "picked reward card keeps Glam"
+        );
+    }
+
+    #[test]
+    fn picked_card_reward_without_offered_enchantment_stays_plain() {
+        let mut cb = bridge_callbacks(resolve_dense_vegetation_fight_with_rewards);
+        cb.apply_combat_gold_and_potion = Some(apply_gold_potion_marker);
+        cb.generate_card_reward_options = Some(card_options_with_glam);
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let _ = rm.exit_combat_and_transition();
+        rm.take_action(RunAction::PickCardReward { idx: Some(0) });
+        let picked = rm.run_state.master_deck.last().expect("card added");
+        assert!(!picked.has_enchantment(crate::cards::EnchantmentId::Glam));
     }
 
     #[test]

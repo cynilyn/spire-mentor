@@ -1019,6 +1019,13 @@ pub struct RunState {
     /// `RunManager::enter_card_reward_phase` / `surface_pending_rewards`
     /// into its offer-aligned `card_reward_upgraded` list.
     pub card_reward_upgraded_flags: Vec<bool>,
+    /// Offer-aligned enchantment stacks the same `TryModifyCardRewardOptionsLate`
+    /// relics stamp on the offered cards (SilkenTress / Glitter -> Glam). The
+    /// callback hands the run manager bare `CardId`s, so without this channel
+    /// the picked card entered the deck WITHOUT its enchantment (0c P0A17: the
+    /// Silken Tress Glam on Sword Boomerang was lost, C# kept it). Set by the
+    /// content-side callback, `take`n like [`Self::card_reward_upgraded_flags`].
+    pub card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
 
     /// Relics the player has acquired this run. Mirrors Python
     /// `RunState.relics` (`run_state.py`). Bead `sts2-rs-zq8` (j87-b)
@@ -1839,6 +1846,7 @@ impl Default for RunState {
             pending_card_grants: Vec::new(),
             pending_bundles: Vec::new(),
             card_reward_upgraded_flags: Vec::new(),
+            card_reward_enchantments: Vec::new(),
             relics: Vec::new(),
             last_obtained_relic: None,
             last_combat_gold_proportion: 1.0,
