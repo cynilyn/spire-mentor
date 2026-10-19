@@ -65,7 +65,11 @@ def _message(rm, **overrides) -> dict:
         "act": 1,
         "floor": 2,
         "map": _map_block(rm),
-        "rng": {"run_seed": rm.run_seed, "counters": dict(rm.rng_counters())},
+        "rng": {
+            "run_seed": rm.run_seed,
+            "player_seed": rm.player_seed,
+            "counters": dict(rm.rng_counters()),
+        },
         "run_state": {
             "character": "IRONCLAD",
             "ascension": 0,
@@ -188,6 +192,25 @@ def test_a_foreign_seeds_cursors_are_refused_not_applied(live_run):
     game.start_imported(imported.run)
     # Refused, and said so: a cursor from another run is worse than none.
     assert any("not restored" in n for n in game.import_notes())
+
+
+def test_the_player_lineage_is_forwarded_and_a_wrong_one_is_refused(live_run):
+    msg = _message(live_run)
+    imported = parse_pasted_state(json.dumps(msg))
+    assert imported.run.rng["player_seed"] == live_run.player_seed
+
+    bad = _message(live_run)
+    bad["rng"]["player_seed"] = live_run.player_seed ^ 1
+    game = RustGame()
+    game.start_imported(parse_pasted_state(json.dumps(bad)).run)
+    assert any("not restored" in n and "player_seed" in n for n in game.import_notes())
+
+    # Legacy producer (no player_seed): applied, but said to be unverified.
+    legacy = _message(live_run)
+    del legacy["rng"]["player_seed"]
+    game = RustGame()
+    game.start_imported(parse_pasted_state(json.dumps(legacy)).run)
+    assert any("without a `player_seed`" in n for n in game.import_notes())
 
 
 def test_seek_rebuilds_an_imported_run(live_run, tmp_path):

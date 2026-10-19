@@ -863,6 +863,14 @@ impl RunManager {
         }
     }
 
+    /// Record the seed string the run was built from on the RNG bundle so the
+    /// wire can emit `seed_string` (builder-style; the bases are unchanged).
+    #[must_use]
+    pub fn with_seed_string(mut self, seed_string: &str) -> Self {
+        self.run_state.rng.seed_string = Some(std::sync::Arc::from(seed_string));
+        self
+    }
+
     /// Choose which of the two Act-1 models this run walks (GH #544).
     ///
     /// Builder-style; chain after [`Self::new`] / [`Self::with_ascension`]
@@ -6742,6 +6750,39 @@ mod tests {
             "no boots → off-path move rejected"
         );
         assert_eq!(rm2.run_state.winged_boots_off_path_used, 0);
+    }
+
+    /// W3 runtime routing: the run-start map comes from `act_1_map` =
+    /// `run_seed + XxHash64("act_1_map")` (the RUN base, also for `old` seeds,
+    /// where the player base differs), and building it advances that stream.
+    #[test]
+    fn act_map_is_generated_from_the_run_base_act_n_map_stream() {
+        let b = crate::dotnet_rng::seed_bases("oldP0A0");
+        assert_ne!(b.run_seed, b.player_seed);
+        let rm = RunManager::with_seed_bases(
+            b.run_seed,
+            b.player_seed,
+            b.full_hash,
+            CharacterId::Ironclad,
+            0,
+        );
+        let r = rm
+            .run_state
+            .rng
+            .map_rngs
+            .get(&0)
+            .expect("generate_map creates the act-1 map stream");
+        assert_eq!(
+            r.seed(),
+            b.run_seed
+                .wrapping_add(crate::dotnet_rng::xxhash64_utf8("act_1_map"))
+        );
+        assert_eq!(
+            r.seed(),
+            1_151_685_900_477_068_239,
+            "oracle oldP0A0 act_1_map seed"
+        );
+        assert!(r.counter() > 0, "map generation draws from its own stream");
     }
 
     #[test]

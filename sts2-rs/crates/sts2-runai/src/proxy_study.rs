@@ -111,7 +111,7 @@ fn eval_battery(
     let noop = CandidateMutation::Baseline;
     // Same decision_key the feature exporter uses (picks the elite
     // identity; does NOT feed the combat seeds).
-    let key = step ^ (u64::from(rm.seed as u32) << 24);
+    let key = step ^ (rm.seed << 24);
     let plan = EncounterPlan::for_decision(rm, key);
     let k = u64::from(budget.k);
     let sims = u64::from(budget.sims);
@@ -247,7 +247,7 @@ impl<P: RunPolicy> RunPolicy for ProxyStudyPolicy<P> {
             let view = VisibleRunView::from_run_manager(rm);
             let candidates = candidates_for_surface(rm, &view, surface, actions);
             if candidates.len() >= 2 {
-                let key = step ^ (u64::from(rm.seed as u32) << 24);
+                let key = step ^ (rm.seed << 24);
                 let plan = EncounterPlan::for_decision(rm, key);
                 if plan.elite.is_some() || plan.boss.is_some() {
                     let take = self.eligible_seen % self.snapshot_every == 0;

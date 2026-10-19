@@ -207,7 +207,7 @@ impl TieredPolicy {
         let view = VisibleRunView::from_run_manager(rm);
         // Mix the run seed into the decision key (so two runs don't share
         // encounter samples decision-for-decision), as the card path does.
-        let key = decision_key ^ (u64::from(rm.seed as u32) << 24);
+        let key = decision_key ^ (rm.seed << 24);
 
         let chosen = match rm.phase() {
             Phase::MapChoice => self.escalate_path(rm, &view, actions, key),
@@ -350,7 +350,7 @@ impl RunPolicy for TieredPolicy {
         };
         // Mix the run seed into the decision key so two runs don't
         // share elite samples decision-for-decision.
-        let key = decision_key ^ (u64::from(rm.seed as u32) << 24);
+        let key = decision_key ^ (rm.seed << 24);
         match self.escalate(rm, &candidates, &scores, budget, key) {
             Some(idx) => {
                 if tier3 {

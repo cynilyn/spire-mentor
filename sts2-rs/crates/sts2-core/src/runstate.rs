@@ -2499,7 +2499,14 @@ impl RunState {
         // Drop any multi-page scratch so a later single-page event can't
         // read a stale page/RNG/slot. Bead `sts2-rs-2guyj`.
         self.event_state = crate::events::MultiPageEventState::default();
-        self.current_event.take()
+        let prev = self.current_event.take();
+        // The Neow event's Rng lives only while the event is open (C# drops
+        // the `EventModel` with the room); a later `rng_dump` must not report
+        // its stale cursor as live.
+        if prev == Some(crate::events::EventId::Neow) {
+            self.neow_event_rng = None;
+        }
+        prev
     }
 
     /// Consume the [`RelicReward`] at `idx` from [`Self::relic_rewards`],

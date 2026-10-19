@@ -514,7 +514,9 @@ class RustGame(GameBackend):
         if snapshot.rng is not None:
             try:
                 ignored = self.rm.debug_set_rng_counters(
-                    snapshot.rng["run_seed"], snapshot.rng["counters"]
+                    snapshot.rng["run_seed"],
+                    snapshot.rng["counters"],
+                    snapshot.rng.get("player_seed"),
                 )
             except ValueError as exc:
                 # A seed mismatch or a backwards cursor: the lineage is not
@@ -524,6 +526,13 @@ class RustGame(GameBackend):
             else:
                 # Combat streams live on a CombatState, not the run; they are
                 # restored by the combat import, not here.
+                if "player_seed" not in snapshot.rng and any(
+                    k in snapshot.rng["counters"] for k in ("rewards", "shops", "transformations")
+                ):
+                    self._import_notes.append(
+                        "player-stream cursors applied without a `player_seed` to verify "
+                        "them (legacy u32-only producer)"
+                    )
                 run_level = [n for n in ignored if not n.startswith("combat_")]
                 if run_level:
                     self._import_notes.append(

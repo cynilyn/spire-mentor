@@ -1059,6 +1059,11 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // both are carried (the import restores `RunRngSet::new(run, player)`).
     set(&mut rng, "run_seed", state.run_rng.seed);
     set(&mut rng, "player_seed", state.run_rng.player_seed);
+    // The seed string, when the run knows it: lets a consumer recover the
+    // player base (and cross-check `run_seed`) without trusting two numbers.
+    if let Some(s) = &state.run_rng.seed_string {
+        set(&mut rng, "seed_string", &**s);
+    }
     rng.insert("counters".to_owned(), run_rng_counters(state));
     d.insert("rng".to_owned(), Value::Object(rng));
 

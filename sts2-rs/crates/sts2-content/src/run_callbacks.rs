@@ -1120,6 +1120,7 @@ pub fn new_run_manager_for_character_from_string_seed_with_ascension(
         character,
         ascension_level,
     )
+    .with_seed_string(seed)
     .with_content_callbacks(ironclad_content_callbacks());
     populate_starter_deck(&mut rm.run_state, character);
     rm
@@ -1204,6 +1205,7 @@ pub fn new_ironclad_run_manager_with_deck_and_hp_from_string_seed(
         CharacterId::Ironclad,
         0,
     )
+    .with_seed_string(seed)
     .with_content_callbacks(ironclad_content_callbacks());
     finish_ironclad_deck_run_manager(rm, deck, max_hp_override)
 }

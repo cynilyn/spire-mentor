@@ -63,7 +63,7 @@ impl<P: RunPolicy> RunPolicy for CollectingPolicy<P> {
             let view = VisibleRunView::from_run_manager(rm);
             let candidates = candidates_for_surface(rm, &view, surface, actions);
             if candidates.len() >= 2 {
-                let key = step ^ (u64::from(rm.seed as u32) << 24);
+                let key = step ^ (rm.seed << 24);
                 let plan = EncounterPlan::for_decision(rm, key);
                 if plan.elite.is_some() || plan.boss.is_some() {
                     self.out.push(DecisionPoint {

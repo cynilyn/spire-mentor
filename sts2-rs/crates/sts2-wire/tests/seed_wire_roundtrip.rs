@@ -19,7 +19,7 @@ use sts2_wire::state_from_json;
 fn state_with_seed(seed: &str, rewards_reads: u32, shuffle_reads: u32) -> CombatState {
     let b = seed_bases(seed);
     let mut state = CombatState::default();
-    state.run_rng = RunRngSet::new(b.run_seed, b.player_seed);
+    state.run_rng = RunRngSet::new(b.run_seed, b.player_seed).with_seed_string(seed);
     for _ in 0..rewards_reads {
         let _ = state.run_rng.rewards.next_int(0, 999);
     }
@@ -46,6 +46,7 @@ fn old_p0a0_round_trips_both_bases_and_the_next_player_draw() {
 
     assert_eq!(restored.run_rng.seed, 273_692_109);
     assert_eq!(restored.run_rng.player_seed, 15_676_685_915_450_073_139);
+    assert_eq!(restored.run_rng.seed_string.as_deref(), Some("oldP0A0"));
     let mut original = original;
     // The player stream's NEXT draw matches the original's.
     assert_eq!(

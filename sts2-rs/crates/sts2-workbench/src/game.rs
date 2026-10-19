@@ -1809,8 +1809,25 @@ fn graft_rng(rm: &mut RunManager, rng: &crate::state_import::RngBlock) -> Vec<St
             rng.run_seed
         )];
     }
+    // The player base differs from the run base for `old` seed strings, so a
+    // matching `run_seed` does not prove the player lineage: when the producer
+    // sends `player_seed`, it must match too.
+    if let Some(p) = rng.player_seed {
+        let ours_p = rm.run_state.rng.player_seed;
+        if p != ours_p {
+            return vec![format!(
+                "RNG cursors not restored — player_seed {p} is not this run's player seed                  ({ours_p}); the player lineage belongs to a different run"
+            )];
+        }
+    }
     let mut ignored: Vec<String> = Vec::new();
+    let mut unverified_player = false;
     for (name, target) in &rng.counters {
+        if rng.player_seed.is_none()
+            && matches!(name.as_str(), "rewards" | "shops" | "transformations")
+        {
+            unverified_player = true;
+        }
         let Ok(target) = u32::try_from(*target) else {
             continue;
         };
@@ -1831,14 +1848,20 @@ fn graft_rng(rm: &mut RunManager, rng: &crate::state_import::RngBlock) -> Vec<St
         .into_iter()
         .filter(|n| !n.starts_with("combat_"))
         .collect();
-    if run_level.is_empty() {
-        Vec::new()
-    } else {
-        vec![format!(
+    let mut notes = Vec::new();
+    if unverified_player {
+        notes.push(
+            "player-stream cursors applied without a `player_seed` to verify them              (legacy u32-only producer)"
+                .to_owned(),
+        );
+    }
+    if !run_level.is_empty() {
+        notes.push(format!(
             "RNG streams this engine does not carry: {}",
             run_level.join(", ")
-        )]
+        ));
     }
+    notes
 }
 
 /// Where the engine's generated act map differs from the pasted one
@@ -2066,6 +2089,55 @@ mod tests {
             .import_notes()
             .iter()
             .any(|n| n.contains("not restored")));
+    }
+
+    /// Two-base end to end on an `old` seed string: the run base alone does not
+    /// identify the player lineage, so a supplied `player_seed` must be honoured
+    /// (restored when it matches) and VALIDATED (refused when it does not).
+    #[test]
+    fn start_imported_validates_the_player_lineage_of_an_old_seed() {
+        let source = build_import_run_manager(CharacterId::Ironclad, "oldP0A0", 0);
+        assert_ne!(source.run_state.rng.seed, source.run_state.rng.player_seed);
+        let (map, _c, _r) = map_block_from(&source, false);
+        let run_seed = source.run_state.rng.seed;
+        let player_seed = source.run_state.rng.player_seed;
+        let counters = json!({"shops": 2, "rewards": 1});
+
+        let mut wire = import_wire(
+            json!({"run_seed": run_seed, "player_seed": player_seed, "counters": counters}),
+            map.clone(),
+        );
+        wire["seed"] = json!("oldP0A0");
+        let imported = parse_pasted_state(&wire.to_string()).expect("parse");
+        assert_eq!(
+            imported.run.rng.as_ref().unwrap().player_seed,
+            Some(player_seed)
+        );
+        let mut game = Game::new();
+        game.start_imported(&imported.run).expect("graft");
+        let rm = game.native_run_mut().expect("run");
+        assert_eq!(rm.run_state.rng.stream_mut("rewards").unwrap().counter(), 1);
+        assert!(!game
+            .import_notes()
+            .iter()
+            .any(|n| n.contains("not restored")));
+
+        // Same run base, wrong player base (what a run-base-only check would
+        // wave through): refused, nothing applied.
+        let mut bad = import_wire(
+            json!({"run_seed": run_seed, "player_seed": player_seed ^ 1, "counters": counters}),
+            map,
+        );
+        bad["seed"] = json!("oldP0A0");
+        let imported = parse_pasted_state(&bad.to_string()).expect("parse");
+        let mut game = Game::new();
+        game.start_imported(&imported.run).expect("graft");
+        let rm = game.native_run_mut().expect("run");
+        assert_eq!(rm.run_state.rng.stream_mut("rewards").unwrap().counter(), 0);
+        assert!(game
+            .import_notes()
+            .iter()
+            .any(|n| n.contains("not restored") && n.contains("player_seed")));
     }
 
     #[test]

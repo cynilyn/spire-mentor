@@ -154,6 +154,11 @@ pub struct RunRngSet {
     /// + player slot (0)`. Equal to [`Self::seed`] except for `old` seeds,
     /// where the player base hashes the whole string (prefix included).
     pub player_seed: u64,
+    /// The seed string this set was derived from, when known (string-seed
+    /// runs). Carried so the wire can emit `seed_string` and a restore can
+    /// recover the player base from it. `Arc<str>` keeps `Clone` (hot in MCTS)
+    /// to a refcount bump. Not hashed and not part of the seed derivation.
+    pub seed_string: Option<std::sync::Arc<str>>,
 
     // --- Run-scoped, derived from `seed` -------------------------------
     pub up_front: Rng,
@@ -216,6 +221,7 @@ impl RunRngSet {
         Self {
             seed,
             player_seed,
+            seed_string: None,
             up_front: Rng::with_name(seed, "up_front"),
             shuffle: Rng::with_name(seed, "shuffle"),
             unknown_map_point: Rng::with_name(seed, "unknown_map_point"),
@@ -235,6 +241,14 @@ impl RunRngSet {
             transformations: Rng::with_name(player_seed, "transformations"),
             map_rngs: BTreeMap::new(),
         }
+    }
+
+    /// Record the seed string this set was derived from (see
+    /// [`Self::seed_string`]).
+    #[must_use]
+    pub fn with_seed_string(mut self, seed_string: &str) -> Self {
+        self.seed_string = Some(std::sync::Arc::from(seed_string));
+        self
     }
 
     /// Single-base constructor for tests, benches and scenario spawners that

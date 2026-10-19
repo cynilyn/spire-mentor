@@ -672,7 +672,12 @@ impl PyRunManager {
             n,
             parsed.as_deref(),
             predict_next_floor,
-            self.seed_string.as_deref(),
+            self.inner
+                .run_state
+                .rng
+                .seed_string
+                .as_deref()
+                .or(self.seed_string.as_deref()),
         );
         if let serde_json::Value::Object(m) = &mut v {
             m.insert(
@@ -706,14 +711,23 @@ impl PyRunManager {
     /// Debug/reconstruction surface, not a parity surface: never call it on
     /// a recorded or parity-pinned run.
     ///
-    /// Raises `ValueError` when `run_seed` disagrees, when `counters` is
-    /// empty, or when a counter would move a stream BACKWARDS — the dotnet
+    /// `player_seed` (optional, u64) is the producer's player stream base.
+    /// When supplied it must equal this run's own (`H(full seed string) +
+    /// slot`): the two bases differ for `old` seed strings, so a matching
+    /// `run_seed` alone does not prove the player lineage. Omitted = legacy
+    /// single-u32 producer; player-stream cursors are then applied on the
+    /// run seed's word alone and are unverified.
+    ///
+    /// Raises `ValueError` when `run_seed` or `player_seed` disagrees, when
+    /// `counters` is empty, or when a counter would move a stream BACKWARDS — the dotnet
     /// Rng can only fast-forward, and a lower count means this snapshot does
     /// not belong to this run.
+    #[pyo3(signature = (run_seed, counters, player_seed = None))]
     fn debug_set_rng_counters(
         &mut self,
         run_seed: u64,
         counters: &Bound<'_, PyDict>,
+        player_seed: Option<u64>,
     ) -> PyResult<Vec<String>> {
         if counters.is_empty() {
             return Err(PyValueError::new_err(
@@ -728,6 +742,14 @@ impl PyRunManager {
                 "debug_set_rng_counters: run_seed {run_seed} is not this run's \
                  seed ({ours}) — these cursors belong to a different run"
             )));
+        }
+        if let Some(p) = player_seed {
+            let ours_p = self.inner.run_state.rng.player_seed;
+            if p != ours_p {
+                return Err(PyValueError::new_err(format!(
+                    "debug_set_rng_counters: player_seed {p} is not this run's                      player seed ({ours_p}) — the player lineage belongs to a                      different run"
+                )));
+            }
         }
         let mut ignored: Vec<String> = Vec::new();
         for (key, value) in counters.iter() {

@@ -332,7 +332,12 @@ pub fn rng_dump(
     }
     for eid in &event_ids {
         let live: Option<&Rng> = if eid == "NEOW" {
-            rs.neow_event_rng.as_ref()
+            // Live only while the Neow event is the open event.
+            if rs.current_event == Some(sts2_core::events::EventId::Neow) {
+                rs.neow_event_rng.as_ref()
+            } else {
+                None
+            }
         } else if open_event_entry.as_deref() == Some(eid.as_str()) {
             rs.event_state.rng.as_ref()
         } else {

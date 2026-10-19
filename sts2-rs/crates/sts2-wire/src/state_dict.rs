@@ -3018,6 +3018,9 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             player_seed.unwrap_or(run_seed),
         );
         let player_streams_known = player_seed.is_some();
+        if let Some(s) = parsed.seed_string.as_deref() {
+            state.run_rng.seed_string = Some(std::sync::Arc::from(s));
+        }
         for (name, counter) in &parsed.rng_counters {
             // One shared name→stream table (`RunRngSet::stream_mut`), also
             // used by the run-level live-state import. An unknown stream

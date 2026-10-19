@@ -99,7 +99,7 @@ class RunSnapshot:
     map: dict[str, Any] | None
     """The act map graph as the mod serialized it, or ``None``."""
     rng: dict[str, Any] | None
-    """``{"run_seed": int, "counters": {stream: count}}``, or ``None``."""
+    """``{"run_seed": int, "counters": {stream: count}}`` plus ``"player_seed"`` when sent, or ``None``."""
 
     @property
     def coord(self) -> tuple[int, int] | None:
@@ -372,7 +372,14 @@ def _rng_block(msg: dict[str, Any]) -> dict[str, Any] | None:
     }
     if not clean:
         return None
-    return {"run_seed": run_seed, "counters": clean}
+    out: dict[str, Any] = {"run_seed": run_seed, "counters": clean}
+    # v0.111.0: the player base differs from the run base for ``old`` seed
+    # strings, so the player lineage is forwarded (and validated by the engine)
+    # whenever the producer sends it.
+    player_seed = raw.get("player_seed")
+    if isinstance(player_seed, int) and not isinstance(player_seed, bool):
+        out["player_seed"] = player_seed
+    return out
 
 
 def _run_snapshot(msg: dict[str, Any], warnings: list[str]) -> RunSnapshot:
