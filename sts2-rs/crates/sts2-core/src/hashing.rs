@@ -2059,9 +2059,9 @@ mod tests {
         // Re-pinned 2026-10-20 (seed-hash port, stage 1) BY LAYOUT, not from an
         // oracle: `hash_run_rng_set` now folds `seed` as u64 (8 bytes, was i32),
         // adds `player_seed`, and every stream seed is a u64 `base + XxHash64(name)`.
-        // `run_search_hash` (which ignores RNG streams) is deliberately left at its
-        // previous value below — the proof that only the RNG block of the byte
-        // stream moved. Prior value 15_769_890_208_358_649_762.
+        // Prior value 15_769_890_208_358_649_762. `run_search_hash` moved too (it still
+        // folds the run RNG seeds); both are pure byte-layout shifts — the sample
+        // run's game state is unchanged.
         assert_eq!(
             run_hash(&rm),
             2_654_047_737_149_915_424_u64,
@@ -2069,8 +2069,8 @@ mod tests {
         );
         assert_eq!(
             run_search_hash(&rm),
-            17_752_695_356_920_422_117_u64,
-            "run_search_hash must keep its frozen SipHash value (re-pinned 2026-08-09)"
+            14_171_161_748_538_057_606_u64,
+            "run_search_hash must keep its frozen SipHash value (re-pinned 2026-10-20, layout; was 17_752_695_356_920_422_117)"
         );
     }
 

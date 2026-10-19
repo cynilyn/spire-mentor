@@ -168,8 +168,22 @@ fn take_action_rejects_invalid_map_move_from_start() {
     // a vk9fz follow-up — not gated here.
     use sts2_core::run_manager::{ActionResult, RunAction};
     let mut rm = RunManager::new(0, CharacterId::Ironclad);
+    // Which start-band columns are reachable depends on the seed's map (the
+    // 0.111.0 seed derivation makes col 0 reachable at seed 0), so pick a column
+    // the engine itself does not offer.
+    let offered: Vec<i32> = rm
+        .get_available_actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            RunAction::Move { col } => Some(col),
+            _ => None,
+        })
+        .collect();
+    let unreachable = (0..7_i32)
+        .find(|c| !offered.contains(c))
+        .expect("the start band offers fewer than 7 columns");
     assert_eq!(
-        rm.take_action(RunAction::Move { col: 0 }),
+        rm.take_action(RunAction::Move { col: unreachable }),
         ActionResult::InvalidForPhase,
         "Move from a fresh start to an unreachable col should reject as InvalidForPhase."
     );

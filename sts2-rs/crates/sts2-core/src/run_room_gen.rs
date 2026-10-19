@@ -924,10 +924,18 @@ mod tests {
         // 3-longer Overgrowth pool) the room generation has value-dependent
         // retries, so over 300 seeds the difference is spread over -6..15 (3 on
         // only 60 of them). Assert what is structural:
-        assert_ne!(
-            rng_o.counter(),
-            rng_u.counter(),
-            "the act-1 variant must move the up_front cursor"
+        let moved = (0..64_u64)
+            .filter(|&seed| {
+                let mut o = Rng::with_name(seed, "up_front");
+                let _ = generate_all_rooms(&mut o, false, ActVariant::Overgrowth);
+                let mut u = Rng::with_name(seed, "up_front");
+                let _ = generate_all_rooms(&mut u, false, ActVariant::Underdocks);
+                o.counter() != u.counter()
+            })
+            .count();
+        assert!(
+            moved > 0,
+            "the act-1 variant must move the up_front cursor on some seeds (it did on {moved}/64)"
         );
         // ... and the shuffle read cost itself: a Fisher-Yates over n items costs n-1 reads.
         let mut a = Rng::with_name(12345, "up_front");

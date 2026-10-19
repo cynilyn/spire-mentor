@@ -224,10 +224,22 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
         });
         let mut rng = state_ref.run_rng.combat_card_selection.clone();
         rng.shuffle(&mut sorted);
-        let mut expected: Vec<CardUid> = sorted.into_iter().take(3).collect();
-        // C# `FromCombatPile` presents the surfaced options ordered by
-        // `(Rarity, Id)` (CardSelectCmd.cs:404-409), so the option order is that
-        // presentation sort applied to the StableShuffle-selected subset.
+        let offered: Vec<CardUid> = sorted.into_iter().take(3).collect();
+        // C# `FromCombatPile` builds the surfaced list from the REAL draw pile
+        // filtered to the offered set (`pile.Cards.Where(cardOptions.Contains)`),
+        // then orders it by `(Rarity, Id)` (CardSelectCmd.cs:401-410). LINQ's
+        // OrderBy is stable, so copies that tie on `(Rarity, Id)` (base vs
+        // upgraded of one card) keep their DRAW-PILE order, not the post-shuffle
+        // order. (The earlier version of this test assumed shuffle order and only
+        // passed on the one seed where the two orders coincide; the engine fixed
+        // that tie-break in sts2-rs-i0f30's follow-up, seeds 2394/3646.)
+        let mut expected: Vec<CardUid> = state_ref
+            .player
+            .draw
+            .iter()
+            .copied()
+            .filter(|u| offered.contains(u))
+            .collect();
         let entry_sort = |cards: &[Card], v: &mut Vec<CardUid>| {
             v.sort_by(|&a, &b| {
                 let ca = &cards[a.0.get() as usize - 1];
@@ -258,7 +270,14 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
         uid_sorted.sort(); // CardUid Ord = instance-uid order
         let mut rng2 = state_ref2.run_rng.combat_card_selection.clone();
         rng2.shuffle(&mut uid_sorted);
-        let mut uid_keyed: Vec<CardUid> = uid_sorted.into_iter().take(3).collect();
+        let uid_offered: Vec<CardUid> = uid_sorted.into_iter().take(3).collect();
+        let mut uid_keyed: Vec<CardUid> = state_ref2
+            .player
+            .draw
+            .iter()
+            .copied()
+            .filter(|u| uid_offered.contains(u))
+            .collect();
         entry_sort(&state_ref2.cards, &mut uid_keyed);
         if actual != uid_keyed {
             discriminated = true;
