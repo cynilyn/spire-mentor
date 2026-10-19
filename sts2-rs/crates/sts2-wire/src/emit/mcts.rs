@@ -691,7 +691,10 @@ pub fn edge_descr(edge: &EdgeAction) -> (String, String, Option<u8>) {
 ///
 /// Each node carries `id, parent, visits, q (= value_sum/visits),
 /// value_sum, wins/losses/ties, is_terminal, proven_win, proven_loss,
-/// children[], the incoming edge (kind/label/target_index)`, the chance-node
+/// children[], edges[]` (one `{child, kind, label, target_index,
+/// outcome_ordinal, visits}` per child, in `children` order — the per-edge
+/// action and traffic; the graph is a DAG, so these are NOT properties of the
+/// child), `the incoming edge from parent (kind/label/target_index)`, the chance-node
 /// metadata (`node_kind ∈ {"decision","chance"}`, `chance_action`,
 /// `outcome_cap`, `chance_draws`, `chance_closed`, `outcome_ordinal`) and a
 /// `summary` of the state after the node's action. For a chance node
@@ -708,23 +711,63 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
         let _ = m.search();
         pv = m.get_pv().into_iter().take(PV_MAX_DEPTH).collect();
         let arena = &m.tree.arena;
-        // Incoming-edge labels, stamped from each parent: decision parents
-        // label the edge with the chosen action; chance parents label it as
-        // an "outcome" carrying the DPW ordinal.
-        let mut edges: Vec<(Option<String>, Option<String>, Option<u8>, Option<u32>)> =
-            vec![(None, None, None, None); arena.len()];
-        for n in arena {
-            for (edge, cid) in &n.children {
-                let (kind, label, tgt) = edge_descr(edge);
-                edges[cid.0 as usize] = (Some(kind), Some(label), tgt, None);
-            }
-            for outcome in &n.chance_outcomes {
-                edges[outcome.child.0 as usize] = (
-                    Some("outcome".to_string()),
-                    Some(format!("outcome #{}", outcome.n)),
-                    None,
-                    Some(outcome.n),
-                );
+        // The transposition table is always on, so the search graph is a DAG:
+        // one node can hang under several parents, reached by a different
+        // action from each (Zap→BeamCell and BeamCell→Zap merge). An edge's
+        // label and visit count therefore belong to the (parent, child) pair,
+        // not to the child — serialize them per edge, parallel to `children`.
+        // Decision edges carry `child_visits[i]`, the parent's own traffic
+        // through that edge (the child's `visits` sums every parent's);
+        // outcome edges carry the outcome child's `visits`, the statistic the
+        // engine itself samples outcomes by.
+        let edge_lists: Vec<Vec<Value>> = arena
+            .iter()
+            .map(|n| {
+                if matches!(n.kind, NodeKind::Chance) {
+                    n.chance_outcomes
+                        .iter()
+                        .map(|o| {
+                            json!({
+                                "child": o.child.0,
+                                "kind": "outcome",
+                                "label": format!("outcome #{}", o.n),
+                                "target_index": Value::Null,
+                                "outcome_ordinal": o.n,
+                                "visits": arena[o.child.0 as usize].visits,
+                            })
+                        })
+                        .collect()
+                } else {
+                    n.children
+                        .iter()
+                        .enumerate()
+                        .map(|(k, (edge, cid))| {
+                            let (kind, label, tgt) = edge_descr(edge);
+                            json!({
+                                "child": cid.0,
+                                "kind": kind,
+                                "label": label,
+                                "target_index": tgt,
+                                "outcome_ordinal": Value::Null,
+                                "visits": n.child_visits.get(k).copied().unwrap_or(0),
+                            })
+                        })
+                        .collect()
+                }
+            })
+            .collect();
+        // The node-level incoming edge (kind/label/target_index/
+        // outcome_ordinal) is the one from the node's allocating `parent`,
+        // so it agrees with the `parent` field. Under a shared node it is
+        // only ONE of its incoming edges; readers that walk from the root
+        // should use the parent's `edges` instead.
+        let mut incoming: Vec<Option<&Value>> = vec![None; arena.len()];
+        for (pid, list) in edge_lists.iter().enumerate() {
+            for e in list {
+                let cid = e["child"].as_u64().unwrap_or(0) as usize;
+                if arena[cid].parent.map(|p| p.0 as usize) == Some(pid) {
+                    incoming[cid] = Some(e);
+                }
             }
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
@@ -733,11 +776,10 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             // A chance node's subtree lives in `chance_outcomes`, NOT
             // `children` (empty for chance nodes); flatten both so the
             // serialized tree stays connected.
-            let children: Vec<u32> = if is_chance {
-                n.chance_outcomes.iter().map(|o| o.child.0).collect()
-            } else {
-                n.children.iter().map(|(_, cid)| cid.0).collect()
-            };
+            let children: Vec<u32> = edge_lists[i]
+                .iter()
+                .map(|e| e["child"].as_u64().unwrap_or(0) as u32)
+                .collect();
             // DPW outcome cap at the node's current visits — the engine's
             // own class selection (EndTurn > Draw > Default) and formula.
             let outcome_cap = if is_chance {
@@ -750,7 +792,13 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             } else {
                 0.0
             };
-            let (kind, label, target_index, outcome_ordinal) = edges[i].clone();
+            let field = |k: &str| incoming[i].map_or(Value::Null, |e| e[k].clone());
+            let (kind, label, target_index, outcome_ordinal) = (
+                field("kind"),
+                field("label"),
+                field("target_index"),
+                field("outcome_ordinal"),
+            );
             let enemies: Vec<Value> = n
                 .snapshot
                 .enemies
@@ -770,6 +818,7 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             d.insert("proven_win".into(), json!(n.proven_win));
             d.insert("proven_loss".into(), json!(n.proven_loss));
             d.insert("children".into(), json!(children));
+            d.insert("edges".into(), json!(edge_lists[i]));
             d.insert("kind".into(), json!(kind));
             d.insert("label".into(), json!(label));
             d.insert("target_index".into(), json!(target_index));

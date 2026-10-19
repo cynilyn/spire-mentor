@@ -20,6 +20,40 @@
     3,
     4
    ],
+   "edges": [
+    {
+     "child": 1,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 11
+    },
+    {
+     "child": 2,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 15
+    },
+    {
+     "child": 3,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 16
+    },
+    {
+     "child": 4,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 6
+    }
+   ],
    "id": 0,
    "is_terminal": false,
    "kind": null,
@@ -60,6 +94,32 @@
     6,
     7,
     13
+   ],
+   "edges": [
+    {
+     "child": 6,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 6
+    },
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 13,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
    ],
    "id": 1,
    "is_terminal": false,
@@ -103,6 +163,40 @@
     9,
     15
    ],
+   "edges": [
+    {
+     "child": 6,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 3
+    },
+    {
+     "child": 8,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 7
+    },
+    {
+     "child": 9,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 15,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
+   ],
    "id": 2,
    "is_terminal": false,
    "kind": "play",
@@ -143,6 +237,32 @@
     7,
     9,
     11
+   ],
+   "edges": [
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 3
+    },
+    {
+     "child": 9,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 8
+    },
+    {
+     "child": 11,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 4
+    }
    ],
    "id": 3,
    "is_terminal": false,
@@ -188,6 +308,56 @@
     39,
     45
    ],
+   "edges": [
+    {
+     "child": 5,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 10,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 23,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 38,
+     "kind": "outcome",
+     "label": "outcome #3",
+     "outcome_ordinal": 3,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 39,
+     "kind": "outcome",
+     "label": "outcome #4",
+     "outcome_ordinal": 4,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 45,
+     "kind": "outcome",
+     "label": "outcome #5",
+     "outcome_ordinal": 5,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 4,
    "is_terminal": false,
    "kind": "end_turn",
@@ -225,6 +395,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 5,
    "is_terminal": false,
    "kind": "outcome",
@@ -266,10 +437,36 @@
     18,
     27
    ],
+   "edges": [
+    {
+     "child": 17,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 3
+    },
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    },
+    {
+     "child": 27,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 6,
    "is_terminal": false,
    "kind": "play",
-   "label": "Unleash",
+   "label": "StrikeNecrobinder",
    "losses": 4,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -305,6 +502,24 @@
    "children": [
     18,
     42
+   ],
+   "edges": [
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 42,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 7,
    "is_terminal": false,
@@ -348,6 +563,40 @@
     19,
     29
    ],
+   "edges": [
+    {
+     "child": 17,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 20,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 19,
+     "kind": "play",
+     "label": "DefendNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 29,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
+   ],
    "id": 8,
    "is_terminal": false,
    "kind": "play",
@@ -389,10 +638,36 @@
     19,
     21
    ],
+   "edges": [
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "Unleash",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    },
+    {
+     "child": 19,
+     "kind": "play",
+     "label": "StrikeNecrobinder",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 3
+    },
+    {
+     "child": 21,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
+   ],
    "id": 9,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeNecrobinder",
+   "label": "DefendNecrobinder",
    "losses": 4,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -415,7 +690,7 @@
     "player_max_hp": 66,
     "round": 2
    },
-   "target_index": 0,
+   "target_index": null,
    "ties": 0,
    "value_sum": 0.0133,
    "visits": 9,
@@ -426,6 +701,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 10,
    "is_terminal": false,
    "kind": "outcome",
@@ -468,6 +744,40 @@
     50,
     51
    ],
+   "edges": [
+    {
+     "child": 12,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 25,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 50,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 51,
+     "kind": "outcome",
+     "label": "outcome #3",
+     "outcome_ordinal": 3,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 11,
    "is_terminal": false,
    "kind": "end_turn",
@@ -505,6 +815,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 12,
    "is_terminal": false,
    "kind": "outcome",
@@ -546,6 +857,32 @@
     26,
     49
    ],
+   "edges": [
+    {
+     "child": 14,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 26,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 49,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 13,
    "is_terminal": false,
    "kind": "end_turn",
@@ -583,6 +920,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 14,
    "is_terminal": false,
    "kind": "outcome",
@@ -624,6 +962,32 @@
     24,
     52
    ],
+   "edges": [
+    {
+     "child": 16,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 24,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 52,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 15,
    "is_terminal": false,
    "kind": "end_turn",
@@ -661,6 +1025,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 16,
    "is_terminal": false,
    "kind": "outcome",
@@ -699,6 +1064,16 @@
    "chance_draws": 0,
    "children": [
     34
+   ],
+   "edges": [
+    {
+     "child": 34,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 17,
    "is_terminal": false,
@@ -739,10 +1114,20 @@
    "children": [
     40
    ],
+   "edges": [
+    {
+     "child": 40,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 18,
    "is_terminal": false,
    "kind": "play",
-   "label": "Unleash",
+   "label": "DefendNecrobinder",
    "losses": 2,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -765,7 +1150,7 @@
     "player_max_hp": 66,
     "round": 2
    },
-   "target_index": 0,
+   "target_index": null,
    "ties": 0,
    "value_sum": -0.3925,
    "visits": 4,
@@ -777,6 +1162,16 @@
    "chance_draws": 0,
    "children": [
     32
+   ],
+   "edges": [
+    {
+     "child": 32,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 19,
    "is_terminal": false,
@@ -815,6 +1210,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 20,
    "is_terminal": false,
    "kind": "play",
@@ -855,6 +1251,24 @@
     22,
     47
    ],
+   "edges": [
+    {
+     "child": 22,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 47,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 21,
    "is_terminal": false,
    "kind": "end_turn",
@@ -892,6 +1306,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 22,
    "is_terminal": false,
    "kind": "outcome",
@@ -929,6 +1344,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 23,
    "is_terminal": false,
    "kind": "outcome",
@@ -966,6 +1382,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 24,
    "is_terminal": false,
    "kind": "outcome",
@@ -1003,6 +1420,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 25,
    "is_terminal": false,
    "kind": "outcome",
@@ -1040,6 +1458,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 26,
    "is_terminal": false,
    "kind": "outcome",
@@ -1080,6 +1499,24 @@
     28,
     31
    ],
+   "edges": [
+    {
+     "child": 28,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 31,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 27,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1117,6 +1554,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 28,
    "is_terminal": false,
    "kind": "outcome",
@@ -1158,6 +1596,32 @@
     37,
     44
    ],
+   "edges": [
+    {
+     "child": 30,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 37,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 44,
+     "kind": "outcome",
+     "label": "outcome #2",
+     "outcome_ordinal": 2,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 29,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1195,6 +1659,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 30,
    "is_terminal": false,
    "kind": "outcome",
@@ -1232,6 +1697,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 31,
    "is_terminal": false,
    "kind": "outcome",
@@ -1272,6 +1738,24 @@
     33,
     46
    ],
+   "edges": [
+    {
+     "child": 33,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 46,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 32,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1309,6 +1793,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 33,
    "is_terminal": false,
    "kind": "outcome",
@@ -1349,6 +1834,24 @@
     35,
     36
    ],
+   "edges": [
+    {
+     "child": 35,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 36,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 34,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1386,6 +1889,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 35,
    "is_terminal": false,
    "kind": "outcome",
@@ -1423,6 +1927,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 36,
    "is_terminal": false,
    "kind": "outcome",
@@ -1460,6 +1965,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 37,
    "is_terminal": false,
    "kind": "outcome",
@@ -1497,6 +2003,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 38,
    "is_terminal": false,
    "kind": "outcome",
@@ -1534,6 +2041,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 39,
    "is_terminal": false,
    "kind": "outcome",
@@ -1573,6 +2081,16 @@
    "children": [
     41
    ],
+   "edges": [
+    {
+     "child": 41,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 40,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1610,6 +2128,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 41,
    "is_terminal": false,
    "kind": "outcome",
@@ -1649,6 +2168,16 @@
    "children": [
     43
    ],
+   "edges": [
+    {
+     "child": 43,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 42,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1686,6 +2215,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 43,
    "is_terminal": false,
    "kind": "outcome",
@@ -1723,6 +2253,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 44,
    "is_terminal": false,
    "kind": "outcome",
@@ -1760,6 +2291,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 45,
    "is_terminal": false,
    "kind": "outcome",
@@ -1797,6 +2329,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 46,
    "is_terminal": false,
    "kind": "outcome",
@@ -1836,6 +2369,16 @@
    "children": [
     48
    ],
+   "edges": [
+    {
+     "child": 48,
+     "kind": "play",
+     "label": "Flatten",
+     "outcome_ordinal": null,
+     "target_index": 0,
+     "visits": 1
+    }
+   ],
    "id": 47,
    "is_terminal": false,
    "kind": "outcome",
@@ -1873,6 +2416,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 48,
    "is_terminal": false,
    "kind": "play",
@@ -1910,6 +2454,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 49,
    "is_terminal": false,
    "kind": "outcome",
@@ -1947,6 +2492,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 50,
    "is_terminal": false,
    "kind": "outcome",
@@ -1984,6 +2530,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 51,
    "is_terminal": false,
    "kind": "outcome",
@@ -2021,6 +2568,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 52,
    "is_terminal": false,
    "kind": "outcome",

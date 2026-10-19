@@ -21,6 +21,48 @@
     4,
     5
    ],
+   "edges": [
+    {
+     "child": 1,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 13
+    },
+    {
+     "child": 2,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 9
+    },
+    {
+     "child": 3,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 2,
+     "visits": 13
+    },
+    {
+     "child": 4,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 11
+    },
+    {
+     "child": 5,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 0,
    "is_terminal": false,
    "kind": null,
@@ -73,6 +115,40 @@
     9,
     19
    ],
+   "edges": [
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 2
+    },
+    {
+     "child": 8,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 2,
+     "visits": 2
+    },
+    {
+     "child": 9,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 19,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 5
+    }
+   ],
    "id": 1,
    "is_terminal": false,
    "kind": "play",
@@ -124,6 +200,32 @@
     10,
     12
    ],
+   "edges": [
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 10,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 12,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 2,
    "is_terminal": false,
    "kind": "play",
@@ -174,6 +276,32 @@
     8,
     11,
     14
+   ],
+   "edges": [
+    {
+     "child": 8,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 11,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 4
+    },
+    {
+     "child": 14,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 5
+    }
    ],
    "id": 3,
    "is_terminal": false,
@@ -228,6 +356,48 @@
     18,
     23
    ],
+   "edges": [
+    {
+     "child": 9,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 10,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 2
+    },
+    {
+     "child": 11,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 2,
+     "visits": 1
+    },
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 23,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
+   ],
    "id": 4,
    "is_terminal": false,
    "kind": "play",
@@ -278,6 +448,24 @@
     6,
     21
    ],
+   "edges": [
+    {
+     "child": 6,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 21,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 5,
    "is_terminal": false,
    "kind": "end_turn",
@@ -325,6 +513,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 6,
    "is_terminal": false,
    "kind": "outcome",
@@ -375,10 +564,28 @@
     26,
     32
    ],
+   "edges": [
+    {
+     "child": 26,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 32,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 7,
    "is_terminal": false,
    "kind": "play",
-   "label": "LightningRod",
+   "label": "StrikeDefect",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -411,7 +618,7 @@
     "player_max_hp": 75,
     "round": 2
    },
-   "target_index": null,
+   "target_index": 1,
    "ties": 0,
    "value_sum": 5.1848,
    "visits": 5,
@@ -424,6 +631,24 @@
    "children": [
     22,
     35
+   ],
+   "edges": [
+    {
+     "child": 22,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 35,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 8,
    "is_terminal": false,
@@ -474,6 +699,24 @@
    "children": [
     26,
     22
+   ],
+   "edges": [
+    {
+     "child": 26,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 22,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 2,
+     "visits": 1
+    }
    ],
    "id": 9,
    "is_terminal": false,
@@ -526,10 +769,36 @@
     37,
     44
    ],
+   "edges": [
+    {
+     "child": 26,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 37,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 44,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 10,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeDefect",
+   "label": "DefendDefect",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -562,7 +831,7 @@
     "player_max_hp": 75,
     "round": 2
    },
-   "target_index": 1,
+   "target_index": null,
    "ties": 0,
    "value_sum": 5.1598,
    "visits": 5,
@@ -577,10 +846,36 @@
     31,
     42
    ],
+   "edges": [
+    {
+     "child": 22,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 31,
+     "kind": "play",
+     "label": "DefendDefect",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 42,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 11,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeDefect",
+   "label": "DefendDefect",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -613,7 +908,7 @@
     "player_max_hp": 75,
     "round": 2
    },
-   "target_index": 2,
+   "target_index": null,
    "ties": 0,
    "value_sum": 5.1884,
    "visits": 5,
@@ -626,6 +921,24 @@
    "children": [
     13,
     17
+   ],
+   "edges": [
+    {
+     "child": 13,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 17,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 12,
    "is_terminal": false,
@@ -674,6 +987,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 13,
    "is_terminal": false,
    "kind": "outcome",
@@ -724,6 +1038,24 @@
     15,
     16
    ],
+   "edges": [
+    {
+     "child": 15,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 16,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 4
+    }
+   ],
    "id": 14,
    "is_terminal": false,
    "kind": "end_turn",
@@ -771,6 +1103,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 15,
    "is_terminal": false,
    "kind": "outcome",
@@ -822,6 +1155,32 @@
     38,
     47
    ],
+   "edges": [
+    {
+     "child": 28,
+     "kind": "play",
+     "label": "BulkUp",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 38,
+     "kind": "play",
+     "label": "Zap",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 47,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 16,
    "is_terminal": false,
    "kind": "outcome",
@@ -869,6 +1228,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 17,
    "is_terminal": false,
    "kind": "outcome",
@@ -918,6 +1278,24 @@
    "children": [
     27,
     37
+   ],
+   "edges": [
+    {
+     "child": 27,
+     "kind": "play",
+     "label": "LightningRod",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 37,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
    ],
    "id": 18,
    "is_terminal": false,
@@ -969,6 +1347,24 @@
     20,
     25
    ],
+   "edges": [
+    {
+     "child": 20,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 25,
+     "kind": "outcome",
+     "label": "outcome #1",
+     "outcome_ordinal": 1,
+     "target_index": null,
+     "visits": 4
+    }
+   ],
    "id": 19,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1016,6 +1412,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 20,
    "is_terminal": false,
    "kind": "outcome",
@@ -1063,6 +1460,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 21,
    "is_terminal": false,
    "kind": "outcome",
@@ -1110,10 +1508,11 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 22,
    "is_terminal": false,
    "kind": "play",
-   "label": "LightningRod",
+   "label": "DefendDefect",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -1158,6 +1557,16 @@
    "chance_draws": 3,
    "children": [
     24
+   ],
+   "edges": [
+    {
+     "child": 24,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 3
+    }
    ],
    "id": 23,
    "is_terminal": false,
@@ -1208,6 +1617,24 @@
    "children": [
     30,
     39
+   ],
+   "edges": [
+    {
+     "child": 30,
+     "kind": "play",
+     "label": "BulkUp",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 39,
+     "kind": "play",
+     "label": "Zap",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 24,
    "is_terminal": false,
@@ -1260,6 +1687,32 @@
     34,
     41
    ],
+   "edges": [
+    {
+     "child": 29,
+     "kind": "play",
+     "label": "BulkUp",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 34,
+     "kind": "play",
+     "label": "Zap",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 41,
+     "kind": "play",
+     "label": "StrikeDefect",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 25,
    "is_terminal": false,
    "kind": "outcome",
@@ -1307,10 +1760,11 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 26,
    "is_terminal": false,
    "kind": "play",
-   "label": "LightningRod",
+   "label": "DefendDefect",
    "losses": 0,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -1354,6 +1808,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 27,
    "is_terminal": false,
    "kind": "play",
@@ -1401,6 +1856,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 28,
    "is_terminal": false,
    "kind": "play",
@@ -1448,6 +1904,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 29,
    "is_terminal": false,
    "kind": "play",
@@ -1495,6 +1952,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 30,
    "is_terminal": false,
    "kind": "play",
@@ -1542,6 +2000,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 31,
    "is_terminal": false,
    "kind": "play",
@@ -1590,6 +2049,16 @@
    "chance_draws": 2,
    "children": [
     33
+   ],
+   "edges": [
+    {
+     "child": 33,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 32,
    "is_terminal": false,
@@ -1640,6 +2109,16 @@
    "children": [
     40
    ],
+   "edges": [
+    {
+     "child": 40,
+     "kind": "play",
+     "label": "BulkUp",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 33,
    "is_terminal": false,
    "kind": "outcome",
@@ -1687,6 +2166,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 34,
    "is_terminal": false,
    "kind": "play",
@@ -1735,6 +2215,16 @@
    "chance_draws": 2,
    "children": [
     36
+   ],
+   "edges": [
+    {
+     "child": 36,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 35,
    "is_terminal": false,
@@ -1785,6 +2275,16 @@
    "children": [
     46
    ],
+   "edges": [
+    {
+     "child": 46,
+     "kind": "play",
+     "label": "BulkUp",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 36,
    "is_terminal": false,
    "kind": "outcome",
@@ -1832,6 +2332,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 37,
    "is_terminal": false,
    "kind": "play",
@@ -1879,6 +2380,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 38,
    "is_terminal": false,
    "kind": "play",
@@ -1926,6 +2428,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 39,
    "is_terminal": false,
    "kind": "play",
@@ -1973,6 +2476,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 40,
    "is_terminal": false,
    "kind": "play",
@@ -2020,6 +2524,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 41,
    "is_terminal": false,
    "kind": "play",
@@ -2069,6 +2574,16 @@
    "children": [
     43
    ],
+   "edges": [
+    {
+     "child": 43,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 42,
    "is_terminal": false,
    "kind": "end_turn",
@@ -2116,6 +2631,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 43,
    "is_terminal": false,
    "kind": "outcome",
@@ -2165,6 +2681,16 @@
    "children": [
     45
    ],
+   "edges": [
+    {
+     "child": 45,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 44,
    "is_terminal": false,
    "kind": "end_turn",
@@ -2212,6 +2738,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 45,
    "is_terminal": false,
    "kind": "outcome",
@@ -2259,6 +2786,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 46,
    "is_terminal": false,
    "kind": "play",
@@ -2306,6 +2834,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 47,
    "is_terminal": false,
    "kind": "play",

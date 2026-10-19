@@ -1023,8 +1023,15 @@ export interface SearchTreeNode {
   proven_win: boolean;
   proven_loss: boolean;
   children: number[];
-  // The action that produced this node from its parent (null at the root).
-  // For a node reached as a chance OUTCOME this is "outcome".
+  // One entry per child, in `children` order: the action on that edge and the
+  // traffic through it. The search graph is a DAG (transpositions are merged),
+  // so a node can hang under several parents via different actions — the
+  // label and visits of an edge belong to the edge, not to the child. Absent
+  // in older dumps; readers fall back to the child's own fields.
+  edges?: SearchTreeEdge[];
+  // The action from this node's allocating `parent` (null at the root). For a
+  // shared node this is only one of its incoming edges — prefer the parent's
+  // `edges` when walking from the root. A chance OUTCOME's kind is "outcome".
   kind: string | null;          // "play" | "end_turn" | "potion" | "channel" | "outcome" | ...
   label: string | null;
   target_index: number | null;
@@ -1052,6 +1059,17 @@ export interface SearchTreeNode {
     round: number;
     enemies: { uid: number; hp: number; max_hp: number }[];
   };
+}
+/** One parent→child edge of the search graph (see SearchTreeNode.edges). */
+export interface SearchTreeEdge {
+  child: number;
+  kind: string | null;
+  label: string | null;
+  target_index: number | null;
+  outcome_ordinal?: number | null;
+  // Decision edge: simulations that took this edge FROM this parent, n(s,a).
+  // Outcome edge: the outcome child's visits (what the engine samples by).
+  visits: number;
 }
 export interface SearchTree {
   nodes: SearchTreeNode[];
