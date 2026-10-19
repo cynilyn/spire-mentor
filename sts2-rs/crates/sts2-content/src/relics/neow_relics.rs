@@ -186,15 +186,11 @@ fn listener_silken_tress_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
     if rs.relic_counters.get(&RelicId::SilkenTress).copied() == Some(1) {
         return EffectResult::NotImplemented;
     }
-    let pool = crate::names::deck_card_spec_pool();
     for card in cards.iter_mut() {
-        let Some(spec) = pool.iter().find(|s| s.id == card.card_id) else {
-            continue;
-        };
         // `glam.CanEnchant(card)` (`SilkenTress.cs:65`).
-        if crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Glam) {
+        if crate::enchantments::glam_can_enchant_offered_card(card) {
             // `CardCmd.Enchant<Glam>(card, 1m)` (`SilkenTress.cs:68`).
-            let _ = crate::enchantments::apply_static_enchantment(card, EnchantmentId::Glam, 1);
+            card.set_enchantment(EnchantmentId::Glam, 1);
         }
     }
     // `AfterModifyingCardRewardOptions` → `IsUsed = true` (`:75-83`).
@@ -921,6 +917,29 @@ mod tests {
             !second[0].has_enchantment(EnchantmentId::Glam),
             "later rewards are not enchanted (one-time IsUsedUp)"
         );
+    }
+
+    /// `glam.CanEnchant` (`EnchantmentModel.cs:289`): an offered card that
+    /// already carries ANY enchantment (no enchantment is stackable) is skipped,
+    /// including one that already has Glam; Status/Curse are skipped.
+    #[test]
+    fn silken_tress_skips_already_enchanted_and_ineligible_offers() {
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::SilkenTress);
+        let mut nimble = card_pod_from_id(CardId::DefendIronclad, false).expect("Defend POD");
+        nimble.set_enchantment(EnchantmentId::Nimble, 2);
+        let mut glam = card_pod_from_id(CardId::StrikeIronclad, false).expect("Strike POD");
+        glam.set_enchantment(EnchantmentId::Glam, 1);
+        let mut status = card_pod_from_id(CardId::StrikeIronclad, false).expect("Strike POD");
+        status.card_type = sts2_core::cards::CardType::Status;
+        let plain = card_pod_from_id(CardId::Bash, false).expect("Bash POD");
+        let mut cards = vec![nimble, glam, status, plain];
+        let _ = listener_silken_tress_card_reward(&mut rs, &mut cards);
+        assert_eq!(cards[0].enchantment(EnchantmentId::Glam), 0, "Nimble offer untouched");
+        assert_eq!(cards[0].enchantment(EnchantmentId::Nimble), 2);
+        assert_eq!(cards[1].enchantment(EnchantmentId::Glam), 1, "no reapplication");
+        assert_eq!(cards[2].enchantment(EnchantmentId::Glam), 0, "Status rejected");
+        assert_eq!(cards[3].enchantment(EnchantmentId::Glam), 1, "plain card enchanted");
     }
 
     /// Without owning SilkenTress, the card-reward listener is a no-op.

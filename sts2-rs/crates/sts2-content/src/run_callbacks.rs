@@ -1276,7 +1276,21 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // RunState side channel so `RunManager::do_card_reward_pick` builds the
     // picked card with the right upgrade state.
     rs.card_reward_upgraded_flags = cards.iter().map(|c| c.upgraded).collect();
-    rs.card_reward_enchantments = cards.iter().map(|c| c.enchantments).collect();
+    // Carry ONLY Glam (SilkenTress / Glitter offer-time application). Every other
+    // offer-time enchantment (Fresnel Nimble, WingCharm Swift, ...) keeps the
+    // 0c-baseline behaviour: dropped here, and re-applied (or not) by the deck-add
+    // hook exactly as before.
+    rs.card_reward_enchantments = cards
+        .iter()
+        .map(|c| {
+            let mut e = sts2_core::cards::CardEnchantments::default();
+            let glam = c.enchantment(sts2_core::cards::EnchantmentId::Glam);
+            if glam != 0 {
+                e.set(sts2_core::cards::EnchantmentId::Glam, glam);
+            }
+            e
+        })
+        .collect();
     cards.into_iter().map(|c| c.card_id).collect()
 }
 
@@ -1585,6 +1599,91 @@ mod tests {
             !rs.card_reward_enchantments.iter().any(glam),
             "IsUsed latch: later rewards are plain"
         );
+    }
+
+    /// Real reward generation -> pick, through `RunManager`: a Neow Lost Coffer
+    /// card reward with the COMBAT roller (so offer-time relic enchantments ride
+    /// `card_reward_enchantments`), holding `relic`. Returns the offered ids, the
+    /// picked option index chosen by `choose` and the deck card that was added.
+    fn reward_pick_with_relic(
+        seed: i32,
+        relic: RelicId,
+        choose: impl Fn(&[sts2_core::cards::CardId]) -> Option<usize>,
+    ) -> Option<(Vec<sts2_core::cards::CardId>, usize, sts2_core::cards::Card)> {
+        use sts2_core::run_manager::{Phase, RunAction, RunManager};
+        use sts2_core::NeowRelic;
+        crate::relics::dispatch::ensure_installed();
+        let mut cb = ironclad_content_callbacks();
+        // Route the Lost Coffer card reward through the combat roller.
+        cb.generate_noncombat_card_reward_options = None;
+        let mut rm = RunManager::new(seed, CharacterId::Ironclad)
+            .with_content_callbacks(cb)
+            .with_neow_start();
+        rm.run_state.direct_event_relic_grant = true;
+        let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+        offers.positive_2 = NeowRelic::LostCoffer;
+        rm.run_state.neow_offers = Some(offers);
+        rm.run_state.relics.push(relic);
+        rm.take_action(RunAction::EventChoice { idx: 1 });
+        assert_eq!(rm.phase(), Phase::CardReward);
+        let offered = rm.card_reward_options().to_vec();
+        let idx = choose(&offered)?;
+        let before = rm.run_state.master_deck.len();
+        rm.take_action(RunAction::PickCardReward { idx: Some(idx) });
+        assert_eq!(rm.run_state.master_deck.len(), before + 1, "card added");
+        let card = *rm.run_state.master_deck.last().expect("picked card");
+        Some((offered, idx, card))
+    }
+
+    /// SilkenTress -> Glam(1) survives the pick (0c P0A17).
+    #[test]
+    fn silken_tress_reward_pick_enters_deck_with_glam_1() {
+        use sts2_core::cards::EnchantmentId;
+        let (_, _, card) =
+            reward_pick_with_relic(3, RelicId::SilkenTress, |o| (!o.is_empty()).then_some(0))
+                .expect("a reward to pick");
+        assert_eq!(card.enchantment(EnchantmentId::Glam), 1, "Glam(1) after pick");
+    }
+
+    /// Only Glam rides the carry channel. FresnelLens keeps its 0c-baseline
+    /// behaviour (6ca85c1): the offer-time Nimble is dropped at pick, and the
+    /// deck-add hook (which has no CanEnchant gate in the baseline) stamps
+    /// Nimble(2) on whatever was picked. A picked card therefore has Nimble(2),
+    /// never Nimble(4) (that doubling appears only if non-Glam offer-time
+    /// enchantments are carried).
+    #[test]
+    fn fresnel_reward_pick_keeps_the_0c_baseline_nimble_2() {
+        use sts2_core::cards::EnchantmentId;
+        for seed in 0..6 {
+            let (_, _, card) = reward_pick_with_relic(seed, RelicId::FresnelLens, |o| {
+                (!o.is_empty()).then_some(0)
+            })
+            .expect("a reward to pick");
+            assert_eq!(
+                card.enchantment(EnchantmentId::Nimble),
+                2,
+                "0c-baseline: Nimble(2) after pick (seed {seed})"
+            );
+            assert_eq!(card.enchantment(EnchantmentId::Glam), 0);
+        }
+    }
+
+    /// Glam is not applied on top of an already-enchanted offer, nor twice
+    /// (`EnchantmentModel.cs:173,289`): Glitter then SilkenTress leave Glam(1).
+    #[test]
+    fn glam_offer_respects_can_enchant_no_reapplication() {
+        use sts2_core::cards::EnchantmentId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = new_run_manager_for_character(42, CharacterId::Ironclad).with_neow_start();
+        initialize_run_setup(&mut rm);
+        let rs = &mut rm.run_state;
+        rs.relics.push(RelicId::Glitter);
+        rs.relics.push(RelicId::SilkenTress);
+        let _ = generate_card_reward_options(rs);
+        assert_eq!(rs.card_reward_enchantments.len(), 3);
+        for e in &rs.card_reward_enchantments {
+            assert_eq!(e.get(EnchantmentId::Glam), 1, "Glam(1), not stacked to 2");
+        }
     }
 
     /// Task #19 end-to-end: `generate_boss_relic_pool` returns the NEXT

@@ -82,6 +82,22 @@ pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId
     }
 }
 
+/// C# `Glam.CanEnchant` for a card in a card REWARD (SilkenTress / Glitter,
+/// `SilkenTress.cs:65`, `Glitter.cs:28`). Glam does not override `CanEnchant`,
+/// so the base rules of `EnchantmentModel.CanEnchant` apply
+/// (`EnchantmentModel.cs:280-292`):
+/// - Status / Curse / Quest cards are rejected (`:262-266`);
+/// - Unplayable cards are rejected only while in the DECK pile (`:284-287`), so
+///   an offered (not-yet-deck) card is not rejected for that;
+/// - a card that already carries an enchantment is rejected unless the
+///   enchantment is stackable AND the same type (`:289`); `IsStackable` is
+///   `false` (`:173`) and no enchantment overrides it, so any existing
+///   enchantment blocks Glam (no same-enchantment reapplication either).
+#[must_use]
+pub fn glam_can_enchant_offered_card(card: &Card) -> bool {
+    !matches!(card.card_type, CardType::Status | CardType::Curse) && card.enchantments.is_empty()
+}
+
 // ---------------------------------------------------------------------------
 // Static (apply-time) mutators
 // ---------------------------------------------------------------------------
