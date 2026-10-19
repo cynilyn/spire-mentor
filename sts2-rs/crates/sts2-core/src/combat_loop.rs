@@ -9426,6 +9426,12 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
         card_type: Some(top_card_type),
     };
     hooks::dispatch_after_card_played(state, &hook_played_ctx);
+    // B13: Glam's `AfterCardPlayed` latch (`Glam.cs:42-51`) via the shared
+    // `OnPlayWrapper` (`CardModel.cs:1959`). Glam only: the other enchantment
+    // after-play markers are not enabled for auto-plays. Placed before the late
+    // hooks and the replay loop, like the manual path; the replay count was
+    // already fixed up front (`GeneratePlayCount`), so replays still run.
+    crate::enchantment_hooks::mark_glam_used_after_play(state, top_uid);
 
     // Bead `sts2-rs-50un1`: C# `CardCmd.AutoPlay` runs the full `OnPlayWrapper`,
     // whose `AfterCardPlayed` fires `RupturePower.AfterCardPlayed` — applying
