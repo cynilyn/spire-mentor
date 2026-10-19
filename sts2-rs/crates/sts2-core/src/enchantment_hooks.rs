@@ -186,6 +186,24 @@ pub fn enchant_glam_play_count_bonus(card: &crate::cards::Card) -> i32 {
     }
 }
 
+/// Latch Glam's `UsedThisCombat` after a play (C# `Glam.AfterCardPlayed`,
+/// `Glam.cs:42-51`), WITHOUT running any other enchantment's after-play
+/// behaviour. The auto-play path uses this: C# runs the same
+/// `CardModel.OnPlayWrapper` for auto-plays (`Hook.AfterCardPlayed` at
+/// `CardModel.cs:1959`), so an auto-played Glam card consumes the bonus too.
+/// The other first-use markers (Swift / Sown / Vigorous / Goopy) stay
+/// manual-path only, as before (out of the 0c repair scope).
+pub fn mark_glam_used_after_play(state: &mut CombatState, card_uid: CardUid) {
+    let idx = (card_uid.get() as usize).saturating_sub(1);
+    let Some(card) = state.cards.get_mut(idx) else {
+        return;
+    };
+    if card.has_enchantment(EnchantmentId::Glam) {
+        let bits = card.combat_var(VarKey::Generic) | GLAM_USED_BIT;
+        card.set_combat_var(VarKey::Generic, bits);
+    }
+}
+
 /// Returns `true` if any card in `pile` has at least one enchantment
 /// stack. The caller uses this for the per-channel empty-bus
 /// early-out — if the pile is enchantment-free the dispatch loop is
