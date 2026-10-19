@@ -278,9 +278,11 @@ enum Knob {
     EndTurnPrio,
     /// GitHub #720: which rollout policy runs the playout at all
     /// ([`MctsConfig::rollout_policy`]). `0` is the deployed
-    /// [`RolloutPolicyKind::Heuristic`] and `1` is
-    /// [`RolloutPolicyKind::Uniform`], so a grid of `0,1` carries its own
-    /// control like the backup knobs do.
+    /// [`RolloutPolicyKind::Heuristic`], `1` is
+    /// [`RolloutPolicyKind::Uniform`] and `2` is
+    /// [`RolloutPolicyKind::Learned`] (GH #805; needs
+    /// `STS2_ROLLOUT_PRIORITIES`), so a grid of `0,1` or `0,2` carries its
+    /// own control like the backup knobs do.
     ///
     /// This is the one knob that changes the estimator's *family* rather
     /// than a number inside it. The coverage gate (`COVERAGE_THRESHOLD`,
@@ -339,7 +341,11 @@ fn rollout_policy_kind(value: f32) -> RolloutPolicyKind {
     match value.round() as i32 {
         0 => RolloutPolicyKind::Heuristic,
         1 => RolloutPolicyKind::Uniform,
-        other => panic!("rollout_policy takes 0 (Heuristic, deployed) or 1 (Uniform); got {other}"),
+        // Reads the fitted table named by `STS2_ROLLOUT_PRIORITIES`.
+        2 => RolloutPolicyKind::Learned,
+        other => panic!(
+            "rollout_policy takes 0 (Heuristic, deployed), 1 (Uniform) or 2 (Learned); got {other}"
+        ),
     }
 }
 

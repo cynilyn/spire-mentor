@@ -39,62 +39,61 @@
   {
    "act": 1,
    "decision": "card_reward",
-   "delta_prev": -0.0729,
+   "delta_prev": -0.0697,
    "floor": 2,
    "idx": 36,
    "node_id": 36,
    "taken_label": "Take Flame Barrier",
-   "value": 0.9561
+   "value": 0.9593
   },
   {
    "act": 1,
    "decision": "card_reward",
-   "delta_prev": -0.0674,
+   "delta_prev": -0.0647,
    "floor": 3,
    "idx": 44,
    "node_id": 44,
    "taken_label": "Take Headbutt",
-   "value": 0.8887
+   "value": 0.8946
   },
   {
    "act": 1,
    "decision": "shop",
-   "delta_prev": -0.0277,
+   "delta_prev": -0.0256,
    "floor": 4,
    "idx": 46,
    "node_id": 46,
    "taken_label": "Buy Body Slam",
-   "value": 0.861
+   "value": 0.869
   },
   {
    "act": 1,
    "decision": "shop",
-   "delta_prev": -0.0229,
+   "delta_prev": -0.0223,
    "floor": 4,
    "idx": 47,
    "node_id": 47,
    "taken_label": "Buy Vulnerable Potion",
-   "value": 0.8381
+   "value": 0.8466
   },
   {
    "act": 1,
    "decision": "shop",
-   "delta_prev": 0.0222,
+   "delta_prev": 0.0188,
    "floor": 4,
    "idx": 48,
    "node_id": 48,
    "taken_label": "leave_room",
-   "value": 0.8603
+   "value": 0.8654
   }
  ],
  "summary": {
-  "biggest_drop": -0.0729,
-  "biggest_gain": 0.0222,
-  "final_value": 0.8603,
+  "biggest_drop": -0.0697,
+  "biggest_gain": 0.0188,
+  "final_value": 0.8654,
   "first_value": 1.0366,
   "n_points": 8,
-  "n_turning_points": 3,
-  "won": false
+  "n_turning_points": 3
  },
  "turning_points": [
   {
@@ -102,11 +101,11 @@
    "decision": "card_reward",
    "floor": 1,
    "idx": 19,
-   "message": "floor 1 (card_reward): after “Take Blood Wall” your outlook dropped -0.073 (1.029 → 0.956) (spans the fight that followed)",
+   "message": "floor 1 (card_reward): after “Take Blood Wall” your outlook dropped -0.070 (1.029 → 0.959) (spans the fight that followed)",
    "node_id": 19,
-   "swing": -0.0729,
+   "swing": -0.0697,
    "taken_label": "Take Blood Wall",
-   "value_after": 0.9561,
+   "value_after": 0.9593,
    "value_before": 1.029
   },
   {
@@ -114,24 +113,24 @@
    "decision": "card_reward",
    "floor": 2,
    "idx": 36,
-   "message": "floor 2 (card_reward): after “Take Flame Barrier” your outlook dropped -0.067 (0.956 → 0.889) (spans the fight that followed)",
+   "message": "floor 2 (card_reward): after “Take Flame Barrier” your outlook dropped -0.065 (0.959 → 0.895) (spans the fight that followed)",
    "node_id": 36,
-   "swing": -0.0674,
+   "swing": -0.0647,
    "taken_label": "Take Flame Barrier",
-   "value_after": 0.8887,
-   "value_before": 0.9561
+   "value_after": 0.8946,
+   "value_before": 0.9593
   },
   {
    "act": 1,
    "decision": "card_reward",
    "floor": 3,
    "idx": 44,
-   "message": "floor 3 (card_reward): after “Take Headbutt” your outlook dropped -0.028 (0.889 → 0.861) (spans the fight that followed)",
+   "message": "floor 3 (card_reward): after “Take Headbutt” your outlook dropped -0.026 (0.895 → 0.869) (spans the fight that followed)",
    "node_id": 44,
-   "swing": -0.0277,
+   "swing": -0.0256,
    "taken_label": "Take Headbutt",
-   "value_after": 0.861,
-   "value_before": 0.8887
+   "value_after": 0.869,
+   "value_before": 0.8946
   }
  ]
 }

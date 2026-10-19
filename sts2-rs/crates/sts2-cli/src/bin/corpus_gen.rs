@@ -207,11 +207,12 @@ struct Args {
     /// `Uniform`, while production MCTS defaults to `Heuristic` —
     /// that mismatch meant policy-head training targets reflected a
     /// different search process than the one running at inference.
-    /// Default is now `heuristic` (matches `MctsConfig::default()`);
-    /// set to `uniform` only if you specifically want to reproduce the
-    /// pre-#24 corpus.
-    #[arg(long, value_enum, default_value_t = CliRolloutPolicy::Heuristic)]
-    rollout_policy: CliRolloutPolicy,
+    /// Unset means the dialect's own policy: `heuristic` under `legacy`
+    /// (`MctsConfig::default()`), the playout net under `deployed`
+    /// ([`MctsConfig::apply_mode_dialect`]). An explicit value wins over the
+    /// dialect; set `uniform` only to reproduce the pre-#24 corpus.
+    #[arg(long, value_enum)]
+    rollout_policy: Option<CliRolloutPolicy>,
 
     /// Search dialect for the self-play teacher — see [`CliSearchDialect`].
     /// `legacy` (default) keeps every existing corpus recipe byte-stable;
@@ -590,8 +591,11 @@ enum CliRolloutPolicy {
     /// Uniform-random rollout — the pre-#24 corpus generator behavior.
     Uniform,
     /// Softmax over expert play priority. Matches
-    /// `MctsConfig::default()` and the production search.
+    /// `MctsConfig::default()`.
     Heuristic,
+    /// The playout net (`RolloutPolicyKind::Net`) — what the deployed
+    /// dialect runs.
+    Net,
 }
 
 impl From<CliRolloutPolicy> for RolloutPolicyKind {
@@ -599,6 +603,7 @@ impl From<CliRolloutPolicy> for RolloutPolicyKind {
         match value {
             CliRolloutPolicy::Uniform => RolloutPolicyKind::Uniform,
             CliRolloutPolicy::Heuristic => RolloutPolicyKind::Heuristic,
+            CliRolloutPolicy::Net => RolloutPolicyKind::Net,
         }
     }
 }
@@ -645,6 +650,24 @@ impl CliSearchDialect {
             cfg.hidden_info = HiddenInfoMode::BeliefDraw;
             cfg.apply_mode_dialect();
         }
+    }
+}
+
+/// The rollout policy the teacher actually runs: `--rollout-policy` when
+/// given, else the one `--search-dialect` selects.
+fn effective_rollout_policy(args: &Args) -> RolloutPolicyKind {
+    let mut cfg = MctsConfig::default();
+    apply_search(args, &mut cfg);
+    cfg.rollout_policy
+}
+
+/// Stamp `--search-dialect` onto `cfg`, then `--rollout-policy` over it.
+/// The order matters: the deployed dialect sets its own rollout policy, and
+/// an explicit flag must win over it (and be what the sidecar records).
+fn apply_search(args: &Args, cfg: &mut MctsConfig) {
+    args.search_dialect.apply(cfg);
+    if let Some(p) = args.rollout_policy {
+        cfg.rollout_policy = p.into();
     }
 }
 
@@ -2413,9 +2436,11 @@ fn main() -> ExitCode {
                     p.set_file_name(name);
                     p
                 };
-                let rollout_policy_str = match args.rollout_policy {
-                    CliRolloutPolicy::Uniform => "uniform",
-                    CliRolloutPolicy::Heuristic => "heuristic",
+                let rollout_policy_str = match effective_rollout_policy(&args) {
+                    RolloutPolicyKind::Uniform => "uniform",
+                    RolloutPolicyKind::Heuristic => "heuristic",
+                    RolloutPolicyKind::Learned => "learned",
+                    RolloutPolicyKind::Net => "net",
                 };
                 let policy_action_space_str = match args.policy_action_space {
                     CliPolicyActionSpace::Canonical => "canonical",
@@ -2603,10 +2628,9 @@ fn run_self_play(
                 max_rollout_depth: args.max_rollout_depth,
                 seed: combat_seed.wrapping_add(step_index),
                 use_transposition_table: false,
-                rollout_policy: args.rollout_policy.into(),
                 ..MctsConfig::default()
             };
-            args.search_dialect.apply(&mut cfg);
+            apply_search(args, &mut cfg);
             let cfg = cfg;
             // Wave-6 (qctu.6.x): capture the visit distribution from
             // the just-completed search BEFORE we apply the action.
@@ -2682,11 +2706,10 @@ fn run_self_play(
                         .wrapping_add(step_index)
                         .wrapping_mul(0xD1B5_4A32_D192_ED03),
                     use_transposition_table: false,
-                    rollout_policy: args.rollout_policy.into(),
                     ..MctsConfig::default()
                 };
                 let mut ref_cfg = ref_cfg;
-                args.search_dialect.apply(&mut ref_cfg);
+                apply_search(args, &mut ref_cfg);
                 let ref_cfg = ref_cfg;
                 let (_, _, ref_q) = if let Some(net) = args.embed_prior_net.as_ref() {
                     let mut ref_cfg = ref_cfg;
@@ -2743,7 +2766,7 @@ fn run_self_play(
             // `mark_combat_outcome_with_hp` at combat end (every row
             // emitted in this combat shares the same terminal_win).
             if args.mid_rollout_samples > 0 {
-                let policy_kind = args.rollout_policy.into();
+                let policy_kind = effective_rollout_policy(args);
                 for sample_idx in 0..args.mid_rollout_samples {
                     // Per-sample RNG: combine combat_seed + step + sample_idx so
                     // the (combat, decision-node, sample-slot) triple maps to a
@@ -2956,10 +2979,9 @@ fn runmanager_progress_action(
         max_rollout_depth: args.max_rollout_depth,
         seed,
         use_transposition_table: false,
-        rollout_policy: args.rollout_policy.into(),
         ..MctsConfig::default()
     };
-    args.search_dialect.apply(&mut cfg);
+    apply_search(args, &mut cfg);
     let cfg = cfg;
     let action = if let Some(net) = args.embed_prior_net.as_ref() {
         let mut cfg = cfg;

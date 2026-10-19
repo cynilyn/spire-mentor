@@ -61,6 +61,11 @@ pub fn realize_fixture(path: &std::path::Path, seed: u64) -> Result<CombatState,
         .unwrap_or(0);
     let mut state = sts2_cli::scenario_to_combat_state_with_ascension(&scenario, seed, ascension)
         .map_err(|e| format!("realize {}: {e}", path.display()))?;
+    // A characterless combat mis-simulates Defect's orb belt and silently
+    // disables every character-keyed search table (GH #805).
+    if state.player.character.is_none() {
+        return Err(format!("realize {}: no player character", path.display()));
+    }
     let _ = start_combat(&mut state);
     let _ = start_player_turn(&mut state);
     Ok(state)

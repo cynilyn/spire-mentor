@@ -239,6 +239,41 @@ fn snecko_rolled_cost_reverts_to_base_when_card_is_played() {
 }
 
 #[test]
+fn zero_delta_snecko_roll_releases_cost_flag_when_card_is_played() {
+    // GH #759: C# `AfterCardPlayedCleanup` drops the `WhenPlayed` Snecko
+    // modifier whatever it rolled (`CardEnergyCost.cs:341-345`). A roll equal
+    // to the prior cost banks a zero delta; the on-play expiry must still
+    // release the `CostAbsolutelySet` flag the roll raised.
+    use sts2_core::cards::VarKey;
+    let probe_state = build_handful(&[(CardId::StrikeIronclad, 6, 0, 1, TargetType::Enemy)]);
+    let mut probe = probe_state.clone();
+    probe.snecko_randomize_hand_costs();
+    let roll = probe.cards[0].cost;
+
+    let mut state = build_handful(&[(CardId::StrikeIronclad, 6, 0, roll, TargetType::Enemy)]);
+    state.snecko_randomize_hand_costs();
+    assert_eq!(
+        state.cards[0].cost, roll,
+        "fixture: roll equals the prior cost"
+    );
+    assert_eq!(state.cards[0].combat_var(VarKey::CostAbsolutelySet), 1);
+
+    let result = apply(
+        &mut state,
+        Action::PlayCard {
+            hand_index: 0,
+            target: Some(0),
+        },
+    );
+    assert_eq!(result, StepResult::Advanced);
+    assert_eq!(
+        state.cards[0].combat_var(VarKey::CostAbsolutelySet),
+        0,
+        "the played zero-delta roll must release the CostAbsolutelySet flag"
+    );
+}
+
+#[test]
 fn play_strike_with_no_target_is_invalid_target() {
     // Bead sts2-rs-vaq: a missing target on an Enemy card surfaces as
     // `InvalidTarget`, not a silent `Advanced` no-op.

@@ -191,6 +191,9 @@ pub struct Session {
     pub(crate) autobattle_prev_state: Option<Value>,
     pub(crate) autobattle_pending: Option<Value>,
     pub(crate) autobattle_autoplayed: u64,
+    /// The policy + run at the last human run-level choice, taken before it
+    /// applied (`session_choice`): what the choice coach grades against.
+    pub(crate) last_choice: Option<crate::session_choice::ChoiceSnapshot>,
     /// Pre-recorded node values consumed by `add_node` instead of the
     /// critic during a restore (`_restore_values`), and the read cursor.
     pub(crate) restore_values: Option<Vec<Option<f64>>>,
@@ -238,6 +241,7 @@ impl Session {
             autobattle_prev_state: None,
             autobattle_pending: None,
             autobattle_autoplayed: 0,
+            last_choice: None,
             restore_values: None,
             restore_idx: 0,
             ppo: None,

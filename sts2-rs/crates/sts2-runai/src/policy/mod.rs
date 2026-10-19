@@ -717,6 +717,7 @@ struct MctsKnobOverrides {
     loss_gradient: Option<bool>,
     root_guards: Option<bool>,
     chance_closed_stops_widening: Option<bool>,
+    rollout_policy: Option<sts2_mcts::RolloutPolicyKind>,
 }
 
 /// The full set of knob names [`parse_mcts_overrides`] accepts, kept as
@@ -726,7 +727,9 @@ const MCTS_OVERRIDE_KNOB_NAMES: &str = "chance_widening_c, chance_widening_alpha
     draw_widening_c, draw_widening_alpha, endturn_widening_c, endturn_widening_alpha, \
     tie_eps, c_puct, loss_w_removed, loss_w_hp, loss_w_turns, \
     loss_turns_half_life, loss_span, loot_weight, loss_gradient, root_guards, \
-    chance_closed_stops_widening (sims and depth are NOT \
+    chance_closed_stops_widening, rollout_policy (heuristic | uniform | net; net, the \
+    honest-mode default, plays the built-in Ironclad playout net, or the STS2_ROLLOUT_NET \
+    weights when set) (sims and depth are NOT \
     included here — combat budget is owned by CombatBudget / STS2_RUNAI_ROLLOUT_DEPTH)";
 
 impl MctsKnobOverrides {
@@ -787,6 +790,9 @@ impl MctsKnobOverrides {
         }
         if let Some(v) = self.chance_closed_stops_widening {
             config.chance_closed_stops_widening = v;
+        }
+        if let Some(v) = self.rollout_policy {
+            config.rollout_policy = v;
         }
     }
 }
@@ -868,6 +874,31 @@ fn parse_mcts_overrides(env_value: Option<&str>) -> MctsKnobOverrides {
             "root_guards" => out.root_guards = Some(bool_of(key, val)),
             "chance_closed_stops_widening" => {
                 out.chance_closed_stops_widening = Some(bool_of(key, val));
+            }
+            "rollout_policy" => {
+                out.rollout_policy = Some(match val {
+                    "heuristic" => sts2_mcts::RolloutPolicyKind::Heuristic,
+                    "uniform" => sts2_mcts::RolloutPolicyKind::Uniform,
+                    "net" => {
+                        // Load (or fail) a STS2_ROLLOUT_NET file now, at
+                        // policy construction, not inside the first rollout
+                        // of the first search.
+                        let _ = sts2_mcts::rollout_net::global_net();
+                        sts2_mcts::RolloutPolicyKind::Net
+                    }
+                    // The playout net was `learned` before #808 gave that
+                    // name to the fitted table. Fail rather than silently
+                    // run the other policy from an old command line.
+                    "learned" => panic!(
+                        "STS2_RUNAI_MCTS_OVERRIDES: rollout_policy=learned was renamed — the \
+                         playout net is `net` (the honest-mode default; STS2_ROLLOUT_NET swaps \
+                         its weights)"
+                    ),
+                    other => panic!(
+                        "STS2_RUNAI_MCTS_OVERRIDES: rollout_policy={other:?} — expected \
+                         heuristic, uniform or net"
+                    ),
+                });
             }
             other => panic!(
                 "STS2_RUNAI_MCTS_OVERRIDES: unknown knob {other:?} — typo? known knobs: \
@@ -1288,6 +1319,8 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
                 ties: 0,
                 value_sum: 0.0,
                 value_sq_sum: 0.0,
+                hp_sum: 0.0,
+                hp_n: 0,
                 mean_value: 0.0,
             };
             return self.surface_pick(only, vec![stub], actions);
@@ -2744,6 +2777,38 @@ mod tests {
         let _ = parse_mcts_overrides(Some("root_guards=maybe"));
     }
 
+    /// `rollout_policy` selects the playout policy by name.
+    #[test]
+    fn parse_mcts_overrides_rollout_policy() {
+        use sts2_mcts::RolloutPolicyKind;
+        for (v, kind) in [
+            ("uniform", RolloutPolicyKind::Uniform),
+            ("heuristic", RolloutPolicyKind::Heuristic),
+            ("net", RolloutPolicyKind::Net),
+        ] {
+            let o = parse_mcts_overrides(Some(&format!("rollout_policy={v}")));
+            assert_eq!(o.rollout_policy, Some(kind));
+            let mut config = MctsConfig::default();
+            o.apply(&mut config);
+            assert_eq!(config.rollout_policy, kind);
+        }
+    }
+
+    /// An unknown playout policy name panics.
+    #[test]
+    #[should_panic(expected = "expected heuristic, uniform or net")]
+    fn parse_mcts_overrides_bad_rollout_policy_panics() {
+        let _ = parse_mcts_overrides(Some("rollout_policy=greedy"));
+    }
+
+    /// The pre-#808 name of the playout net fails loudly instead of
+    /// selecting the fitted-table arm that now owns the name.
+    #[test]
+    #[should_panic(expected = "rollout_policy=learned was renamed")]
+    fn parse_mcts_overrides_old_learned_name_panics() {
+        let _ = parse_mcts_overrides(Some("rollout_policy=learned"));
+    }
+
     /// A token missing `=` panics rather than silently skipping.
     #[test]
     #[should_panic(expected = "is not \"key=value\"")]
@@ -3169,6 +3234,14 @@ mod tests {
         assert_eq!(
             config.endturn_widening_alpha, 0.436,
             "EndTurn-widening retune endturn_widening_alpha must be baked in"
+        );
+        // GH #777 playout net: +4.67pp pooled Ironclad full-run win rate
+        // (1,200 paired runs). The other characters fall back to the
+        // heuristic playout inside the policy, so it is set for all.
+        assert_eq!(
+            config.rollout_policy,
+            sts2_mcts::RolloutPolicyKind::Net,
+            "the playout net must be the honest-mode default"
         );
 
         // Every other resolved mode keeps the engine defaults untouched.

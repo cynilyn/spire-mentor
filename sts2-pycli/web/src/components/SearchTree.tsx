@@ -32,6 +32,9 @@ const ROW_GAP = 58;
 const PAD = 34;
 const MAX_R = 16;
 const SIM_CHOICES = [300, 1000, 3000, 10000, 50000, 150000];
+const ROOT_KEY = "r";
+// Hard cap on rendered rows: "expand all" on a 150k-sim DAG unfolds every path.
+const MAX_ROWS = 5000;
 
 function qColor(q: number): string {
   // q ∈ [-1,1] → red (loss) ⟶ amber ⟶ green (win).
@@ -72,15 +75,21 @@ export default function SearchTree({
   const setK = <K extends keyof MctsConfig>(k: K, v: MctsConfig[K]) =>
     setDraft((d) => ({ ...d, [k]: v }));
   const run = () => onRun(draft);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set([0]));
-  const [selected, setSelected] = useState<number>(0);
+  // Rows are identified by their PATH key, not their node id: the search graph
+  // is a DAG, so one node can appear under several parents (reached by a
+  // different action from each) and every appearance is its own row.
+  // "expand all" flips to open-unless-closed, so it never enumerates paths.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set([ROOT_KEY]));
+  const [allOpen, setAllOpen] = useState(false);
+  const [closed, setClosed] = useState<Set<string>>(new Set());
+  const [selectedKey, setSelectedKey] = useState<string>(ROOT_KEY);
   const [topK, setTopK] = useState(5);
   const [minVisits, setMinVisits] = useState(1);
   const [view, setView] = useState<"outline" | "graph">("outline");
   // Fold the chance layer so a decision connects straight to the modal outcome
   // through its action (PIMC-shaped). Off = full depth (the user's default).
   const [collapseChance, setCollapseChance] = useState(false);
-  const [hover, setHover] = useState<{ id: number; x: number; y: number } | null>(null);
+  const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null);
   // Zoom: "fit" auto-scales to the viewport (but never below a readable floor,
   // scrolling instead); a number is an explicit user zoom. Default fit.
   const [zoom, setZoom] = useState<number | "fit">("fit");
@@ -133,75 +142,124 @@ export default function SearchTree({
   // ── Display tree ────────────────────────────────────────────────────────
   // One central edge resolver routes ALL traversal (outline, graph layout, PV,
   // expand-all / best-line). A display edge keeps two ids apart: `displayId`
-  // (the node whose stats/label we render for this row) and `childId` (whose
+  // (the node whose stats we render for this row) and `childId` (whose
   // children we recurse into). They differ only for a FOLDED chance edge.
+  // The row is identified by `key` (its path), and its action label and
+  // visit count come from `info` — the EDGE — because a transposed node is
+  // reached by a different action from each parent, and its own `visits`
+  // sums the traffic of all of them.
+  type EdgeInfo = {
+    kind: string | null;
+    label: string | null;
+    target_index: number | null;
+    outcome_ordinal: number | null;
+    visits: number;           // traffic through THIS edge from this parent
+  };
   type DispEdge = {
+    key: string;              // path key: parent's key + "/" + edge index
+    parentId: number;         // the display parent (U term, outcome p)
     childId: number;          // recurse into this node's displayChildren
-    displayId: number;        // render this node's stats / label for the edge
+    displayId: number;        // render this node's stats for the row
+    info: EdgeInfo;
     viaChance?: number;       // chance node id folded into this edge (collapse on)
     outcome?: boolean;        // this edge is a chance OUTCOME (probability edge)
   };
-  // The recursion id for a visible displayId: a folded chance node recurses
-  // through its modal outcome; everything else recurses through itself.
-  function recurseIdFor(displayId: number): number {
-    const n = byId.get(displayId);
-    if (collapseChance && n && isChance(n)) return modalChild(n)?.id ?? displayId;
-    return displayId;
+  // Edge i of `node`: its serialized `edges[i]`, or — for dumps that predate
+  // per-edge data — the child's own incoming-edge fields.
+  function edgeInfo(node: SearchTreeNode, i: number): EdgeInfo {
+    const e = node.edges?.[i];
+    const c = byId.get(node.children[i]);
+    if (e) {
+      return { kind: e.kind, label: e.label, target_index: e.target_index,
+        outcome_ordinal: e.outcome_ordinal ?? null, visits: e.visits };
+    }
+    return { kind: c?.kind ?? null, label: c?.label ?? null, target_index: c?.target_index ?? null,
+      outcome_ordinal: c?.outcome_ordinal ?? null, visits: c?.visits ?? 0 };
   }
-  function displayChildren(id: number): DispEdge[] {
+  function displayChildren(id: number, parentKey: string): DispEdge[] {
     const node = byId.get(id);
     if (!node) return [];
     const edges: DispEdge[] = [];
-    for (const cid of node.children) {
+    node.children.forEach((cid, i) => {
       const c = byId.get(cid);
-      if (!c) continue;
+      if (!c) return;
+      const key = `${parentKey}/${i}`;
+      const info = edgeInfo(node, i);
       if (collapseChance && isChance(c)) {
         // Fold the dice: show the chance node (its action + E[V]) but recurse
         // into its modal outcome's children → one child per action, PIMC-shaped.
         const modal = modalChild(c);
-        edges.push({ childId: modal?.id ?? c.id, displayId: c.id, viaChance: c.id });
+        edges.push({ key, parentId: id, childId: modal?.id ?? c.id, displayId: c.id, info, viaChance: c.id });
       } else {
-        edges.push({ childId: cid, displayId: cid, outcome: c.kind === "outcome" });
+        edges.push({ key, parentId: id, childId: cid, displayId: cid, info, outcome: info.kind === "outcome" });
       }
-    }
+    });
     return edges;
   }
+  const isOpen = (key: string) => (allOpen ? !closed.has(key) : expanded.has(key));
 
-  // Principal variation = most-visited display-edge chain from the root.
+  // Principal variation = most-visited display-edge chain from the root, by
+  // the parent's own traffic through each edge.
   const pvSet = useMemo(() => {
-    const s = new Set<number>();
+    const s = new Set<string>([ROOT_KEY]);
     let recurseId: number = rootId;
-    let displayId: number = rootId;
-    while (byId.has(displayId) && !s.has(displayId)) {
-      s.add(displayId);
-      const edges = displayChildren(recurseId);
+    let key = ROOT_KEY;
+    const seen = new Set<number>([rootId]);
+    for (;;) {
+      const edges = displayChildren(recurseId, key);
       if (edges.length === 0) break;
       let best = edges[0];
-      for (const e of edges) {
-        if ((byId.get(e.displayId)?.visits ?? 0) > (byId.get(best.displayId)?.visits ?? 0)) best = e;
-      }
+      for (const e of edges) if (e.info.visits > best.info.visits) best = e;
+      if (seen.has(best.childId)) break;
+      seen.add(best.childId);
+      s.add(best.key);
       recurseId = best.childId;
-      displayId = best.displayId;
+      key = best.key;
     }
     return s;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [byId, rootId, collapseChance]);
 
-  // Display edges we actually render for an expanded node: the displayId node's
-  // visits ≥ filter, sorted by visits desc, capped at topK. + hidden count.
-  const shownDisplay = (recurseId: number): { edges: DispEdge[]; hidden: number } => {
-    const kids = displayChildren(recurseId)
-      .map((e) => ({ e, vn: byId.get(e.displayId) }))
-      .filter((x): x is { e: DispEdge; vn: SearchTreeNode } => !!x.vn && x.vn.visits >= minVisits)
-      .sort((a, b) => b.vn.visits - a.vn.visits);
-    return { edges: kids.slice(0, topK).map((x) => x.e), hidden: Math.max(0, kids.length - topK) };
+  // Display edges we actually render for an expanded node: edge visits ≥
+  // filter, sorted by edge visits desc, capped at topK. + hidden count.
+  const shownDisplay = (recurseId: number, parentKey: string): { edges: DispEdge[]; hidden: number } => {
+    const kids = displayChildren(recurseId, parentKey)
+      .filter((e) => e.info.visits >= minVisits)
+      .sort((a, b) => b.info.visits - a.info.visits);
+    return { edges: kids.slice(0, topK), hidden: Math.max(0, kids.length - topK) };
   };
 
-  // Probability of an outcome node = its visits / its chance-parent's visits.
-  function outcomeProb(n: SearchTreeNode): number | null {
-    const parent = n.parent != null ? byId.get(n.parent) : undefined;
-    if (!parent || parent.visits <= 0) return null;
-    return n.visits / parent.visits;
+  // Every visible row, in outline (DFS) order: the root, then each open row's
+  // shown children. Both views and every key lookup (selection, hover) read it.
+  type VisRow = { key: string; displayId: number; recurseId: number; edge?: DispEdge; depth: number };
+  type OutRow =
+    | ({ kind: "node" } & VisRow)
+    | { kind: "more"; key: string; parentKey: string; depth: number; count: number };
+  const { rows, rowByKey, truncated } = useMemo(() => {
+    const out: OutRow[] = [];
+    const byKey = new Map<string, VisRow>();
+    let cut = false;
+    const walk = (r: VisRow) => {
+      if (byKey.size >= MAX_ROWS) { cut = true; return; }
+      out.push({ kind: "node", ...r });
+      byKey.set(r.key, r);
+      if (!isOpen(r.key)) return;
+      const { edges, hidden } = shownDisplay(r.recurseId, r.key);
+      for (const e of edges) {
+        walk({ key: e.key, displayId: e.displayId, recurseId: e.childId, edge: e, depth: r.depth + 1 });
+      }
+      if (hidden > 0) out.push({ kind: "more", key: `more-${r.key}`, parentKey: r.key, depth: r.depth + 1, count: hidden });
+    };
+    if (byId.has(rootId)) walk({ key: ROOT_KEY, displayId: rootId, recurseId: rootId, depth: 0 });
+    return { rows: out, rowByKey: byKey, truncated: cut };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [byId, rootId, expanded, allOpen, closed, topK, minVisits, collapseChance]);
+
+  // Probability of an outcome row = its edge visits / its chance parent's visits.
+  function outcomeProb(r: VisRow): number | null {
+    const parent = r.edge ? byId.get(r.edge.parentId) : undefined;
+    if (!r.edge || !parent || parent.visits <= 0) return null;
+    return r.edge.info.visits / parent.visits;
   }
   // DPW sampling badge for a chance node: k sampled of cap, truncated/closed.
   function dpwInfo(n: SearchTreeNode) {
@@ -221,67 +279,49 @@ export default function SearchTree({
   // value label "E" for chance (expectimax), "Q" for a decision node.
   const valueKey = (n: SearchTreeNode) => (isChance(n) ? "E" : "Q");
 
-  // Lay out the visible subset (tidy tree: leaves take columns, parents center).
-  // Keyed by displayId; recurses via each frame's recurseId (see displayChildren).
+  // Lay out the visible rows (tidy tree: leaves take columns, parents center).
+  // Keyed by row key, so a transposed node gets one position per appearance.
   const built = useMemo(() => {
     if (!tree || !byId.has(rootId)) return null;
-    const childMap = new Map<number, number[]>();   // displayId → child displayIds
-    const hiddenMap = new Map<number, number>();
-    const edgeMap = new Map<number, DispEdge>();      // displayId → its incoming edge
-    const recurseMap = new Map<number, number>([[rootId, rootId]]);
-    const depth = new Map<number, number>([[rootId, 0]]);
-    const order: number[] = [];
-    const stack: { displayId: number; recurseId: number; phase: 0 | 1 }[] =
-      [{ displayId: rootId, recurseId: rootId, phase: 0 }];
-    const col = new Map<number, number>();
+    const childMap = new Map<string, string[]>();    // row key → child row keys
+    const hiddenMap = new Map<string, number>();
+    const depth = new Map<string, number>();
+    for (const r of rows) {
+      if (r.kind === "more") { hiddenMap.set(r.parentKey, r.count); continue; }
+      depth.set(r.key, r.depth);
+      childMap.set(r.key, []);
+      if (r.edge) childMap.get(r.key.slice(0, r.key.lastIndexOf("/")))?.push(r.key);
+    }
+    const col = new Map<string, number>();
     let nextLeaf = 0;
-    let maxDepth = 0;
-    while (stack.length) {
-      const f = stack[stack.length - 1];
-      maxDepth = Math.max(maxDepth, depth.get(f.displayId) ?? 0);
-      if (f.phase === 0) {
-        f.phase = 1;
-        if (expanded.has(f.displayId)) {
-          const { edges, hidden } = shownDisplay(f.recurseId);
-          childMap.set(f.displayId, edges.map((e) => e.displayId));
-          hiddenMap.set(f.displayId, hidden);
-          for (let i = edges.length - 1; i >= 0; i--) {
-            const e = edges[i];
-            depth.set(e.displayId, (depth.get(f.displayId) ?? 0) + 1);
-            edgeMap.set(e.displayId, e);
-            recurseMap.set(e.displayId, e.childId);
-            stack.push({ displayId: e.displayId, recurseId: e.childId, phase: 0 });
-          }
-        } else {
-          childMap.set(f.displayId, []);
-        }
-        continue;
-      }
-      stack.pop();
-      order.push(f.displayId);
-      const kids = childMap.get(f.displayId) ?? [];
-      if (kids.length === 0) col.set(f.displayId, nextLeaf++);
+    const place = (key: string) => {
+      const kids = childMap.get(key) ?? [];
+      kids.forEach(place);
+      if (kids.length === 0) col.set(key, nextLeaf++);
       else {
         const xs = kids.map((k) => col.get(k)!);
-        col.set(f.displayId, (Math.min(...xs) + Math.max(...xs)) / 2);
+        col.set(key, (Math.min(...xs) + Math.max(...xs)) / 2);
       }
-    }
-    const pos = new Map<number, { x: number; y: number }>();
-    for (const id of order) {
-      pos.set(id, { x: PAD + (col.get(id) ?? 0) * COL_GAP, y: PAD + (depth.get(id) ?? 0) * ROW_GAP });
+    };
+    if (childMap.has(ROOT_KEY)) place(ROOT_KEY);
+    const pos = new Map<string, { x: number; y: number }>();
+    for (const [key, c] of col) {
+      pos.set(key, { x: PAD + c * COL_GAP, y: PAD + (depth.get(key) ?? 0) * ROW_GAP });
     }
     const maxCol = Math.max(0, ...[...col.values()]);
+    const maxDepth = Math.max(0, ...[...depth.values()]);
     return {
-      pos, childMap, hiddenMap, edgeMap, recurseMap,
+      pos, childMap, hiddenMap,
       width: PAD + maxCol * COL_GAP + COL_GAP,
       height: PAD * 2 + maxDepth * ROW_GAP,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tree, byId, rootId, expanded, topK, minVisits, collapseChance]);
+  }, [tree, byId, rootId, rows]);
 
   const rootVisits = byId.get(rootId)?.visits ?? 1;
-  const radius = (n: SearchTreeNode) =>
-    Math.max(4, Math.min(MAX_R, 4 + 13 * Math.sqrt(n.visits / Math.max(1, rootVisits))));
+  // A row's visits: the parent's traffic through its edge (the root: its own).
+  const rowVisits = (r: VisRow) => r.edge?.info.visits ?? byId.get(r.displayId)?.visits ?? 0;
+  const radius = (r: VisRow) =>
+    Math.max(4, Math.min(MAX_R, 4 + 13 * Math.sqrt(rowVisits(r) / Math.max(1, rootVisits))));
 
   // Effective render scale. "fit" auto-scales to the viewport but never below a
   // readable floor (we scroll/pan past that); a number is the user's choice.
@@ -293,89 +333,80 @@ export default function SearchTree({
   const zoomBy = (f: number) =>
     setZoom((z) => Math.round(Math.max(0.3, Math.min(2, (z === "fit" ? scale : z) * f)) * 100) / 100);
 
-  function toggle(displayId: number) {
-    setSelected(displayId);
-    if (displayChildren(recurseIdFor(displayId)).length === 0) return;
-    setExpanded((cur) => {
+  const hasKids = (r: VisRow) => displayChildren(r.recurseId, r.key).length > 0;
+  function toggle(r: VisRow) {
+    setSelectedKey(r.key);
+    if (!hasKids(r)) return;
+    const flip = (cur: Set<string>) => {
       const next = new Set(cur);
-      if (next.has(displayId)) next.delete(displayId);
-      else next.add(displayId);
+      if (next.has(r.key)) next.delete(r.key);
+      else next.add(r.key);
       return next;
-    });
+    };
+    if (allOpen) setClosed(flip);
+    else setExpanded(flip);
   }
-  // Expand every node that can have display children. Modal outcomes that get
-  // folded away aren't display ids, so expanding their raw ids is just a no-op.
-  const expandAll = () =>
-    setExpanded(new Set((tree?.nodes ?? []).filter((nd) => nd.children.length > 0).map((nd) => nd.id)));
-  const collapseAll = () => setExpanded(new Set([rootId]));
+  // Expand everything: open-unless-closed, so no path set is enumerated.
+  const expandAll = () => { setAllOpen(true); setClosed(new Set()); };
+  const collapseAll = () => { setAllOpen(false); setClosed(new Set()); setExpanded(new Set([ROOT_KEY])); };
 
-  // Unfold ONLY the best line (most-visited display edge at each step) from
-  // `fromId` down `levels` deeper, without expanding any sibling branches.
-  function expandBestLine(fromId: number, levels = 10) {
-    setExpanded((cur) => {
-      const next = new Set(cur);
-      let displayId = fromId;
-      for (let i = 0; i < levels; i++) {
-        const edges = displayChildren(recurseIdFor(displayId));
-        if (edges.length === 0) break;
-        next.add(displayId); // reveal this node's children (incl. its best child)
-        let best = edges[0];
-        for (const e of edges) {
-          if ((byId.get(e.displayId)?.visits ?? 0) > (byId.get(best.displayId)?.visits ?? 0)) best = e;
-        }
-        displayId = best.displayId;
-      }
-      return next;
-    });
+  // Unfold ONLY the best line (most-traversed edge at each step) from row
+  // `from` down `levels` deeper, without expanding any sibling branches.
+  function expandBestLine(from: VisRow, levels = 10) {
+    const keys: string[] = [];
+    let key = from.key;
+    let recurseId = from.recurseId;
+    for (let i = 0; i < levels; i++) {
+      const edges = displayChildren(recurseId, key);
+      if (edges.length === 0) break;
+      keys.push(key); // reveal this row's children (incl. its best child)
+      let best = edges[0];
+      for (const e of edges) if (e.info.visits > best.info.visits) best = e;
+      key = best.key;
+      recurseId = best.childId;
+    }
+    if (allOpen) setClosed((cur) => new Set([...cur].filter((k) => !keys.includes(k))));
+    else setExpanded((cur) => new Set([...cur, ...keys]));
   }
 
-  // Display label for a node: resolve potion slots to the actual potion name,
-  // and surface a chance node by the stochastic action it resolves.
-  function labelOf(nd: SearchTreeNode): string {
-    if (nd.id === rootId) return "root";
-    if (isChance(nd)) return nd.chance_action ?? nd.label ?? "roll";
-    const base = nd.label ?? "?";
-    if (nd.kind === "potion" || nd.kind === "drink_potion") {
+  // Display label for a row: the action on its EDGE (a transposed node is
+  // reached by a different action from each parent), with potion slots
+  // resolved to the potion's name; a chance node shows the stochastic action
+  // it resolves.
+  function labelOf(r: VisRow): string {
+    const nd = byId.get(r.displayId);
+    if (!nd || r.key === ROOT_KEY) return "root";
+    if (isChance(nd)) return nd.chance_action ?? r.edge?.info.label ?? "roll";
+    const kind = r.edge?.info.kind ?? nd.kind;
+    const base = r.edge?.info.label ?? nd.label ?? "?";
+    if (kind === "potion" || kind === "drink_potion") {
       const m = (base.match(/s(\d+)/) ?? [])[1];
       const name = m != null ? potionNames?.[Number(m)] : undefined;
       if (name) return name;
     }
     return base;
   }
+  const targetOf = (r: VisRow) => r.edge?.info.target_index ?? null;
 
-  // Flattened visible rows for the outline view (DFS over expanded display
-  // edges). Each node row carries its incoming display edge (outcome / folded).
-  type OutRow =
-    | { kind: "node"; id: number; edge?: DispEdge; depth: number }
-    | { kind: "more"; key: string; depth: number; count: number };
-  function outlineRows(): OutRow[] {
-    const rows: OutRow[] = [];
-    const walk = (recurseId: number, displayId: number, edge: DispEdge | undefined, depth: number) => {
-      rows.push({ kind: "node", id: displayId, edge, depth });
-      if (!expanded.has(displayId)) return;
-      const { edges, hidden } = shownDisplay(recurseId);
-      for (const e of edges) walk(e.childId, e.displayId, e, depth + 1);
-      if (hidden > 0) rows.push({ kind: "more", key: `more-${displayId}`, depth: depth + 1, count: hidden });
-    };
-    if (byId.has(rootId)) walk(rootId, rootId, undefined, 0);
-    return rows;
-  }
-
-  const sel = byId.get(selected);
+  const selRow = rowByKey.get(selectedKey) ?? rowByKey.get(ROOT_KEY);
+  const sel = selRow ? byId.get(selRow.displayId) : undefined;
   const cPuct = tree?.c_puct ?? Math.SQRT2;
-  // UCT exploration term for the selected node vs. its parent.
+  // UCT exploration term for the selected edge vs. its parent.
   const selU = (() => {
-    if (!sel || sel.parent == null) return null;
-    const parent = byId.get(sel.parent);
-    if (!parent || sel.visits === 0) return null;
-    return cPuct * Math.sqrt(Math.log(Math.max(2, parent.visits)) / sel.visits);
+    if (!selRow?.edge) return null;
+    const parent = byId.get(selRow.edge.parentId);
+    const n = selRow.edge.info.visits;
+    if (!parent || n === 0) return null;
+    return cPuct * Math.sqrt(Math.log(Math.max(2, parent.visits)) / n);
   })();
 
   // Human-readable explanation of every stat on a node, for the hover card.
-  function tooltipContent(id: number) {
-    const n = byId.get(id);
+  function tooltipContent(r: VisRow) {
+    const n = byId.get(r.displayId);
     if (!n) return null;
-    const sharePct = Math.round((n.visits / Math.max(1, rootVisits)) * 100);
+    const visits = rowVisits(r);
+    const sharePct = Math.round((visits / Math.max(1, rootVisits)) * 100);
+    const tgt = targetOf(r);
     const sm = n.summary;
     const Row = ({ k, v, hint }: { k: string; v: ReactNode; hint?: string }) => (
       <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
@@ -386,17 +417,21 @@ export default function SearchTree({
     const chance = isChance(n);
     const spread = chance ? outcomeSpread(n) : null;
     const dpw = chance ? dpwInfo(n) : null;
-    const prob = !chance ? outcomeProb(n) : null; // p for an outcome child
+    const prob = r.edge?.outcome ? outcomeProb(r) : null; // p for an outcome child
     const fmt = (q: number) => `${q >= 0 ? "+" : ""}${q.toFixed(3)}`;
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
         <div style={{ fontWeight: 700, marginBottom: 2 }}>
           {chance && <span aria-hidden>🎲 </span>}
-          {id === rootId ? "Current position (root)" : labelOf(n)}
-          {n.target_index != null && <span style={{ color: "var(--muted)" }}> → {enemyName(n.target_index)}</span>}
+          {r.key === ROOT_KEY ? "Current position (root)" : labelOf(r)}
+          {tgt != null && <span style={{ color: "var(--muted)" }}> → {enemyName(tgt)}</span>}
         </div>
         {chance && <div style={{ color: "var(--muted)" }}>chance node — nature resolves a roll</div>}
-        <Row k="Visits" v={n.visits} hint={`(${sharePct}% of search)`} />
+        <Row k="Visits" v={visits} hint={`(${sharePct}% of search)`} />
+        {visits !== n.visits && (
+          <Row k="Visits, all paths" v={n.visits}
+            hint="this position is also reached by another move order; Q and W/T/L pool every path" />
+        )}
         {chance ? (
           <Row k="Expectimax E[V]" v={fmt(n.q)} hint="Σ p·V over outcomes" />
         ) : (
@@ -419,7 +454,7 @@ export default function SearchTree({
         {sm && (
           <>
             <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0 2px", paddingTop: 4, color: "var(--muted)" }}>
-              {id === rootId ? "Current state:" : "After this action:"}
+              {r.key === ROOT_KEY ? "Current state:" : "After this action:"}
             </div>
             <Row k="Player HP" v={`${sm.player_hp} / ${sm.player_max_hp}`} />
             {sm.player_block > 0 && <Row k="Block" v={sm.player_block} />}
@@ -433,11 +468,12 @@ export default function SearchTree({
       </div>
     );
   }
-  const hoverHandlers = (id: number) => ({
-    onMouseEnter: (e: ReactMouseEvent) => setHover({ id, x: e.clientX, y: e.clientY }),
-    onMouseMove: (e: ReactMouseEvent) => setHover({ id, x: e.clientX, y: e.clientY }),
-    onMouseLeave: () => setHover((h) => (h?.id === id ? null : h)),
+  const hoverHandlers = (key: string) => ({
+    onMouseEnter: (e: ReactMouseEvent) => setHover({ key, x: e.clientX, y: e.clientY }),
+    onMouseMove: (e: ReactMouseEvent) => setHover({ key, x: e.clientX, y: e.clientY }),
+    onMouseLeave: () => setHover((h) => (h?.key === key ? null : h)),
   });
+  const hoverRow = hover ? rowByKey.get(hover.key) : undefined;
 
   return (
     <div role="dialog" aria-label="Search tree" onClick={onClose}
@@ -508,7 +544,7 @@ export default function SearchTree({
               onChange={(v) => setMinVisits(v)} />
           </label>
           <span style={{ display: "inline-flex", gap: 4 }}>
-            <button onClick={() => expandBestLine(selected, 10)}
+            <button onClick={() => selRow && expandBestLine(selRow, 10)}
               title="unfold only the best (most-visited) line from the selected node, 10 levels deep"
               style={{ padding: "2px 8px", border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer" }}>best +10</button>
             <button onClick={expandAll} title="expand every node"
@@ -564,31 +600,38 @@ export default function SearchTree({
                 <span style={{ width: 90 }} title="this node's share of all search visits">search&nbsp;%</span>
                 <span style={{ width: 188 }} title="outcome after this action — ♥ player HP (+block) · ⚡ energy · r = round number · then each enemy's HP">outcome</span>
               </div>
-              {outlineRows().map((r) =>
+              {truncated && (
+                <div style={{ padding: "3px 12px", color: "var(--muted)", fontSize: 11 }}>
+                  showing the first {MAX_ROWS} rows — collapse or raise min visits to see the rest
+                </div>
+              )}
+              {rows.map((r) =>
                 r.kind === "more" ? (
                   <div key={r.key} style={{ paddingLeft: r.depth * 16 + 26, color: "var(--muted)", fontSize: 11, padding: "1px 0" }}>
                     ＋{r.count} more (raise top-K)
                   </div>
                 ) : (() => {
-                  const n = byId.get(r.id)!;
-                  const isSel = r.id === selected;
-                  const onPv = pvSet.has(r.id);
-                  const hasKids = displayChildren(recurseIdFor(r.id)).length > 0;
-                  const open = expanded.has(r.id);
-                  const share = Math.round((n.visits / Math.max(1, rootVisits)) * 100);
+                  const n = byId.get(r.displayId)!;
+                  const isSel = r.key === selRow?.key;
+                  const onPv = pvSet.has(r.key);
+                  const kids = hasKids(r);
+                  const open = isOpen(r.key);
+                  const visits = rowVisits(r);
+                  const share = Math.round((visits / Math.max(1, rootVisits)) * 100);
                   const chance = isChance(n);
                   const outcome = !!r.edge?.outcome;
                   const dpw = chance ? dpwInfo(n) : null;
-                  const prob = outcome ? outcomeProb(n) : null;
+                  const prob = outcome ? outcomeProb(r) : null;
+                  const tgt = targetOf(r);
                   return (
-                    <div key={r.id} onClick={() => toggle(r.id)} {...hoverHandlers(r.id)}
+                    <div key={r.key} onClick={() => toggle(r)} {...hoverHandlers(r.key)}
                       style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
                         paddingLeft: r.depth * 16 + 4, paddingRight: 12, height: 22,
                         borderLeft: `2px solid ${onPv ? "var(--accent, #d9a441)" : "transparent"}`,
                         fontStyle: chance || outcome ? "italic" : "normal",
                         background: isSel ? "var(--panel)" : "transparent" }}>
                       <span aria-hidden style={{ width: 12, color: "var(--muted)", flexShrink: 0 }}>
-                        {hasKids ? (open ? "▾" : "▸") : ""}
+                        {kids ? (open ? "▾" : "▸") : ""}
                       </span>
                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         color: chance || outcome ? "var(--muted)" : undefined,
@@ -597,24 +640,26 @@ export default function SearchTree({
                           <>
                             <span aria-hidden>⤳ </span>
                             p={prob != null ? `.${Math.round(prob * 100).toString().padStart(2, "0")}` : "?"}
-                            {n.outcome_ordinal != null && <span> ·#{n.outcome_ordinal}</span>}
+                            {r.edge?.info.outcome_ordinal != null && <span> ·#{r.edge.info.outcome_ordinal}</span>}
                           </>
                         ) : (
                           <>
                             {chance && <span aria-hidden>🎲 </span>}
-                            {labelOf(n)}
+                            {labelOf(r)}
                             {r.edge?.viaChance != null && <span aria-hidden title="a chance roll was folded into this action"> 🎲</span>}
                             {dpw && (
                               <span style={{ color: "var(--muted)", fontStyle: "normal" }}> {dpw.k}/{dpw.cap ?? "?"}
                                 {dpw.closed ? " closed" : dpw.truncated ? " trunc" : ""}</span>
                             )}
-                            {n.target_index != null && <span style={{ color: "var(--muted)" }}> → {enemyName(n.target_index)}</span>}
+                            {tgt != null && <span style={{ color: "var(--muted)" }}> → {enemyName(tgt)}</span>}
                             {n.proven_win && <span style={{ color: "#3ad17a" }}> ✓</span>}
                             {n.proven_loss && <span style={{ color: "#e0566f" }}> ✗</span>}
                           </>
                         )}
                       </span>
-                      <span style={{ width: 70, textAlign: "right", color: "var(--muted)", flexShrink: 0 }}>N {n.visits}</span>
+                      <span style={{ width: 70, textAlign: "right", color: "var(--muted)", flexShrink: 0 }}
+                        title={visits !== n.visits ? `${visits} via this move · ${n.visits} over every move order reaching this position` : undefined}>
+                        N {visits}{visits !== n.visits ? "*" : ""}</span>
                       <span style={{ width: 64, textAlign: "right", color: qColor(n.q), flexShrink: 0 }}>
                         {chance && <span style={{ color: "var(--muted)" }}>E</span>}{chance ? " " : ""}{n.q >= 0 ? "+" : ""}{n.q.toFixed(2)}
                       </span>
@@ -644,81 +689,84 @@ export default function SearchTree({
               <svg width={built.width} height={built.height}
                 style={{ position: "absolute", inset: 0 }}>
                 {/* edges */}
-                {[...built.childMap.entries()].flatMap(([pid, kids]) => {
-                  const p = built.pos.get(pid);
-                  const pn = byId.get(pid);
-                  if (!p || !pn) return [];
-                  return kids.map((cid) => {
-                    const c = built.pos.get(cid);
-                    const cn = byId.get(cid);
-                    if (!c || !cn) return null;
-                    const onPv = pvSet.has(pid) && pvSet.has(cid);
-                    const w = 1 + 5 * (cn.visits / Math.max(1, pn.visits));
+                {[...built.childMap.entries()].flatMap(([pk, kids]) => {
+                  const p = built.pos.get(pk);
+                  const pr = rowByKey.get(pk);
+                  if (!p || !pr) return [];
+                  const parentVisits = Math.max(1, rowVisits(pr));
+                  return kids.map((ck) => {
+                    const c = built.pos.get(ck);
+                    const cr = rowByKey.get(ck);
+                    if (!c || !cr) return null;
+                    const onPv = pvSet.has(pk) && pvSet.has(ck);
+                    const w = 1 + 5 * Math.min(1, rowVisits(cr) / parentVisits);
                     const my = (p.y + c.y) / 2;
                     return (
-                      <path key={`${pid}-${cid}`} d={`M ${p.x} ${p.y} C ${p.x} ${my}, ${c.x} ${my}, ${c.x} ${c.y}`}
+                      <path key={`${pk}>${ck}`} d={`M ${p.x} ${p.y} C ${p.x} ${my}, ${c.x} ${my}, ${c.x} ${c.y}`}
                         fill="none" stroke={onPv ? "var(--accent, #d9a441)" : "var(--border)"}
                         strokeWidth={onPv ? Math.max(2, w) : w} strokeOpacity={onPv ? 1 : 0.7} />
                     );
                   });
                 })}
                 {/* nodes: decisions are circles ●, chance nodes diamonds ◆ */}
-                {[...built.pos.entries()].map(([id, p]) => {
-                  const n = byId.get(id);
-                  if (!n) return null;
-                  const onPv = pvSet.has(id);
-                  const isSel = id === selected;
+                {[...built.pos.entries()].map(([key, p]) => {
+                  const r = rowByKey.get(key);
+                  const n = r ? byId.get(r.displayId) : undefined;
+                  if (!r || !n) return null;
+                  const onPv = pvSet.has(key);
+                  const isSel = key === selRow?.key;
                   const ring = n.proven_win ? "#3ad17a" : n.proven_loss ? "#e0566f" : onPv ? "var(--accent, #d9a441)" : "var(--border)";
                   const sw = isSel ? 3 : onPv || n.proven_win || n.proven_loss ? 2 : 1;
-                  const label = id === rootId ? "root" : labelOf(n);
+                  const label = labelOf(r);
                   const common = {
                     fill: qColor(n.q), stroke: isSel ? "var(--text)" : ring, strokeWidth: sw,
                     style: { cursor: busy ? "wait" : ("pointer" as const) },
-                    onClick: () => toggle(id), ...hoverHandlers(id),
+                    onClick: () => toggle(r), ...hoverHandlers(key),
                   };
                   if (isChance(n)) {
                     // A diamond = the same visit-sized radius rotated 45°.
-                    const r = radius(n);
-                    const h = r / Math.SQRT2; // half-side so corners reach r
+                    const rad = radius(r);
+                    const h = rad / Math.SQRT2; // half-side so corners reach rad
                     return (
-                      <rect key={id} x={p.x - h} y={p.y - h} width={2 * h} height={2 * h}
+                      <rect key={key} x={p.x - h} y={p.y - h} width={2 * h} height={2 * h}
                         transform={`rotate(45 ${p.x} ${p.y})`} aria-label={label} {...common} />
                     );
                   }
                   return (
-                    <circle key={id} cx={p.x} cy={p.y} r={radius(n)} aria-label={label} {...common} />
+                    <circle key={key} cx={p.x} cy={p.y} r={radius(r)} aria-label={label} {...common} />
                   );
                 })}
               </svg>
               {/* labels (non-interactive; clicks go to the circles) */}
-              {[...built.pos.entries()].map(([id, p]) => {
-                const n = byId.get(id);
-                if (!n) return null;
-                const hidden = built.hiddenMap.get(id) ?? 0;
-                const collapsedKids = !expanded.has(id) && displayChildren(recurseIdFor(id)).length > 0;
+              {[...built.pos.entries()].map(([key, p]) => {
+                const r = rowByKey.get(key);
+                const n = r ? byId.get(r.displayId) : undefined;
+                if (!r || !n) return null;
+                const hidden = built.hiddenMap.get(key) ?? 0;
+                const collapsedKids = !isOpen(key) && hasKids(r);
                 const chance = isChance(n);
-                const edge = built.edgeMap.get(id);
+                const edge = r.edge;
                 const outcome = !!edge?.outcome;
-                const prob = outcome ? outcomeProb(n) : null;
+                const prob = outcome ? outcomeProb(r) : null;
                 const labelText = outcome
                   ? `⤳ p=${prob != null ? `.${Math.round(prob * 100).toString().padStart(2, "0")}` : "?"}`
-                  : chance ? `🎲 ${labelOf(n)}` : labelOf(n);
+                  : chance ? `🎲 ${labelOf(r)}` : labelOf(r);
                 return (
-                  <div key={id} className="mono" style={{ position: "absolute",
+                  <div key={key} className="mono" style={{ position: "absolute",
                     left: p.x + MAX_R + 5, top: p.y, transform: "translateY(-50%)",
                     pointerEvents: "none", lineHeight: 1.15,
                     fontStyle: chance || outcome ? "italic" : "normal",
                     color: chance || outcome ? "var(--muted)" : undefined,
                     // Cap to the column so long names can't bleed into the next one.
                     maxWidth: COL_GAP - MAX_R - 12,
-                    fontWeight: id === selected ? 700 : pvSet.has(id) ? 600 : 400 }}>
+                    fontWeight: key === selRow?.key ? 700 : pvSet.has(key) ? 600 : 400 }}>
                     <div style={{ fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {labelText}
                       {edge?.viaChance != null && <span aria-hidden> 🎲</span>}
                       {collapsedKids && <span style={{ color: "var(--muted)" }}> ▸</span>}
                     </div>
                     <div style={{ fontSize: 9.5, color: "var(--muted)", whiteSpace: "nowrap" }}>
-                      N={n.visits} {chance ? "E" : "Q"}={n.q.toFixed(2)}
+                      N={rowVisits(r)} {chance ? "E" : "Q"}={n.q.toFixed(2)}
                       {hidden > 0 && <span> ＋{hidden}</span>}
                     </div>
                   </div>
@@ -733,9 +781,12 @@ export default function SearchTree({
         {sel && !tree?.error && (
           <div className="mono" style={{ display: "flex", gap: 16, flexWrap: "wrap",
             padding: "8px 16px", borderTop: "1px solid var(--border)", fontSize: 11.5, background: "var(--panel)" }}>
-            <b>{isChance(sel) && <span aria-hidden>🎲 </span>}{labelOf(sel)}</b>
-            {sel.target_index != null && <span style={{ color: "var(--muted)" }}>→ {enemyName(sel.target_index)}</span>}
-            <span>N <b>{sel.visits}</b></span>
+            <b>{isChance(sel) && <span aria-hidden>🎲 </span>}{selRow && labelOf(selRow)}</b>
+            {selRow && targetOf(selRow) != null && <span style={{ color: "var(--muted)" }}>→ {enemyName(targetOf(selRow)!)}</span>}
+            <span>N <b>{selRow ? rowVisits(selRow) : sel.visits}</b>
+              {selRow && rowVisits(selRow) !== sel.visits && (
+                <span style={{ color: "var(--muted)" }} title="this position is also reached by another move order; Q and W/T/L pool every path"> ({sel.visits} all paths)</span>
+              )}</span>
             <span>{valueKey(sel)} <b style={{ color: qColor(sel.q) }}>{sel.q.toFixed(3)}</b></span>
             {isChance(sel) && (() => {
               const sp = outcomeSpread(sel);
@@ -775,14 +826,14 @@ export default function SearchTree({
       </div>
 
       {/* Rich hover card: everything about the hovered node in plain English. */}
-      {hover && byId.has(hover.id) && (
+      {hover && hoverRow && (
         <div className="mono" style={{ position: "fixed", zIndex: 70, pointerEvents: "none",
           left: Math.min(hover.x + 14, window.innerWidth - 250),
           top: Math.min(hover.y + 14, window.innerHeight - 230),
           width: 232, padding: "8px 10px", fontSize: 11, lineHeight: 1.45,
           background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6,
           boxShadow: "0 8px 24px oklch(20% 0.03 255 / .5)" }}>
-          {tooltipContent(hover.id)}
+          {tooltipContent(hoverRow)}
         </div>
       )}
     </div>

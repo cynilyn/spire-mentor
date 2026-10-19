@@ -59,6 +59,10 @@ def _action_label(stable_idx: int, state: dict[str, Any]) -> str:
     return f"action {stable_idx}"
 
 
+def _opt_float(v: Any) -> float | None:
+    return None if v is None else float(v)
+
+
 def score(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return per-action MCTS scores or a graceful error payload.
 
@@ -89,6 +93,8 @@ def score(state: dict[str, Any], config: dict[str, Any] | None = None) -> dict[s
                 "q_saturated": bool(getattr(tag, "q_saturated", False)),
                 "low_confidence": bool(getattr(tag, "low_confidence", False)),
                 "target_index": getattr(tag, "target_index", None),
+                "mean_final_hp": _opt_float(getattr(tag, "mean_final_hp", None)),
+                "hp_n": int(getattr(tag, "hp_n", 0) or 0),
             }
         )
     rows.sort(key=lambda r: (not r["is_best"], -r["win_prob"]))
@@ -141,6 +147,8 @@ def rows_from_mcts(result: dict[str, Any], state: dict[str, Any]) -> list[dict[s
                 "wins": int(entry.get("wins", 0)),
                 "losses": int(entry.get("losses", 0)),
                 "ties": int(entry.get("ties", 0)),
+                "mean_final_hp": _opt_float(entry.get("mean_final_hp")),
+                "hp_n": int(entry.get("hp_n", 0) or 0),
             }
         )
     rows.sort(key=lambda r: (not r["is_best"], -r["win_prob"]))

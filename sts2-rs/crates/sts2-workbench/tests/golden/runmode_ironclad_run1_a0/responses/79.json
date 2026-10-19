@@ -204,38 +204,6 @@
   "enemies": [
    {
     "block": 0,
-    "hp": 3,
-    "image": "https://assets.test/monsters/shrinker_beetle.png",
-    "index": 0,
-    "intents": [
-     {
-      "damage": 13,
-      "intent_image": "https://assets.test/intent_atlas/attack/intent_attack_3.png",
-      "type": "Attack"
-     }
-    ],
-    "kind": "ShrinkerBeetle",
-    "max_hp": 39,
-    "move_state": "STOMP",
-    "name": "Shrinker Beetle",
-    "powers": [
-     {
-      "amount": 1,
-      "display_amount": 1,
-      "id": "VULNERABLE",
-      "image": "https://assets.test/power_atlas/vulnerable_power.png",
-      "image_big": "https://assets.test/power_big/vulnerable_power.png",
-      "name": "Vulnerable"
-     }
-    ],
-    "rig": "https://assets.test/monster_rigs/shrinker_beetle/shrinker_beetle",
-    "rig_bounds_h": 161.0,
-    "rig_bounds_w": 240.0,
-    "rig_scale": 0.25,
-    "uid": 2
-   },
-   {
-    "block": 0,
     "hp": 51,
     "image": "https://assets.test/monsters/fuzzy_wurm_crawler.png",
     "index": 1,
@@ -279,8 +247,7 @@
     "color": "red",
     "cost": 2,
     "damage_preview": {
-     "0": 8,
-     "1": 5
+     "1": 8
     },
     "description": "Deal 8 damage.\nApply 2 Vulnerable.",
     "description_rich": "Deal 8 damage.\nApply 2 [gold]Vulnerable[/gold].",
@@ -302,8 +269,7 @@
     "color": "red",
     "cost": 1,
     "damage_preview": {
-     "0": 9,
-     "1": 6
+     "1": 9
     },
     "description": "Deal 9 damage.\nPut a card from your Discard Pile on top of your Draw Pile.",
     "description_rich": "Deal 9 damage.\nPut a card from your [gold]Discard Pile[/gold] on top of your [gold]Draw Pile[/gold].",
@@ -325,8 +291,7 @@
     "color": "red",
     "cost": 1,
     "damage_preview": {
-     "0": 6,
-     "1": 4
+     "1": 6
     },
     "description": "Deal 6 damage.",
     "description_rich": "Deal 6 damage.",
@@ -348,8 +313,7 @@
     "color": "red",
     "cost": 1,
     "damage_preview": {
-     "0": 6,
-     "1": 4
+     "1": 6
     },
     "description": "Deal 6 damage.",
     "description_rich": "Deal 6 damage.",
@@ -574,7 +538,7 @@
     }
    ],
    "gold": 31,
-   "hp": 24,
+   "hp": 40,
    "image": "https://assets.test/character_sprites/ironclad.png",
    "max_hp": 80,
    "name": "Ironclad",
@@ -599,16 +563,7 @@
    "rig_bounds_w": 242.0,
    "rig_scale": 0.28
   },
-  "player_powers": [
-   {
-    "amount": -1,
-    "display_amount": -1,
-    "id": "SHRINK",
-    "image": "https://assets.test/power_atlas/shrink_power.png",
-    "image_big": "https://assets.test/power_big/shrink_power.png",
-    "name": "Shrink"
-   }
-  ],
+  "player_powers": [],
   "round": 5
  }
 }

@@ -23,7 +23,8 @@ recommended line has zero regret and is never a blunder.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import math
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 # Sentinel stable_idx values, mirrored from workbench.record /
@@ -36,6 +37,28 @@ _POTION_BASE = -100  # potion slot s -> -100 - s
 #: above MCTS sampling noise at the usual sim budget while still catching the
 #: "Strike-instead-of-Defend" class of mistake.
 DEFAULT_BLUNDER_DROP_PCT = 8.0
+
+#: Severity (win-prob points, or expected HP) below which a non-best move is a
+#: "tie" — within search noise.  Mirrored in the Rust advisor.
+TIE_PTS = 3.0
+#: Minimum resolved playouts (``hp_n``) on BOTH rows before the HP gap is used.
+HP_MIN_SAMPLES = 10
+#: Minimum MCTS visits on the played move before it can be graded at all.
+PLAYED_MIN_VISITS = 50
+
+
+def _round_half_up(x: float) -> int:
+    """Round half up: both twins compute ``floor(x + 0.5)``.
+
+    For ``x >= 0`` that is half-away-from-zero (2.5 -> 3, unlike Python's
+    banker's ``round``). The Rust advisor uses the same explicit formula, not
+    ``f64::round``, so the two stay bit-identical.
+    """
+    return int(math.floor(x + 0.5))
+
+
+def _hp_known(row: dict[str, Any]) -> bool:
+    return row.get("mean_final_hp") is not None and int(row.get("hp_n", 0) or 0) >= HP_MIN_SAMPLES
 
 
 def _win_prob(row: dict[str, Any]) -> float:
@@ -156,6 +179,12 @@ class DecisionRegret:
     matched_best: bool
     is_blunder: bool
     message: str
+    played_mean_hp: float | None = None
+    best_mean_hp: float | None = None
+    hp_drop: float | None = None  # clamped >= 0; None unless both rows have enough HP samples
+    severity: float = 0.0  # max(regret * 100, hp_drop or 0)
+    verdict: str = "best"  # best | uncertain | tie | blunder | slip
+    best_line: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -201,7 +230,25 @@ def assess_decision(
     ) == best.get("target_index")
     rank = sum(1 for r in rows if _win_prob(r) > played_wp)
     drop_pct = round(regret * 100.0)
-    is_blunder = (not matched_best) and (regret * 100.0) >= blunder_pct
+    played_hp: float | None = None
+    best_hp: float | None = None
+    hp_drop: float | None = None
+    if _hp_known(played) and _hp_known(best):
+        played_hp = float(played["mean_final_hp"])
+        best_hp = float(best["mean_final_hp"])
+        hp_drop = max(0.0, best_hp - played_hp)
+    severity = max(regret * 100.0, hp_drop or 0.0)
+    if matched_best:
+        verdict = "best"
+    elif int(played.get("visits", 0) or 0) < PLAYED_MIN_VISITS:
+        verdict = "uncertain"
+    elif severity < TIE_PTS:
+        verdict = "tie"
+    elif severity >= blunder_pct:
+        verdict = "blunder"
+    else:
+        verdict = "slip"
+    is_blunder = verdict == "blunder"
 
     meta = step.get("meta") or {}
     turn = meta.get("turn")
@@ -215,6 +262,8 @@ def assess_decision(
             f"Turn {turn}: {played_label} instead of {best_label} "
             f"dropped P(win) {_pct(best_wp)}%→{_pct(played_wp)}% (−{drop_pct} pts)"
         )
+        if hp_drop is not None and _round_half_up(hp_drop) >= 1:
+            message += f", ≈{_round_half_up(hp_drop)} HP"
 
     node_id_raw = step.get("node_id")
     return DecisionRegret(
@@ -235,19 +284,25 @@ def assess_decision(
         matched_best=matched_best,
         is_blunder=is_blunder,
         message=message,
+        played_mean_hp=played_hp,
+        best_mean_hp=best_hp,
+        hp_drop=hp_drop,
+        severity=severity,
+        verdict=verdict,
+        best_line=[str(x) for x in (step.get("best_line") or [])],
     )
 
 
 def summarize(decisions: list[DecisionRegret], *, top_n: int = 2) -> dict[str, Any]:
     """Aggregate per-decision regrets into the review payload.
 
-    ``blunders`` is the ``top_n`` costliest flagged decisions (regret
+    ``blunders`` is the ``top_n`` costliest flagged decisions (severity
     descending, ties broken by earlier turn — the mistake you could have fixed
     soonest first), matching the bead's "surface the 1–2 plays that cost the
     most win-prob".
     """
     flagged = [d for d in decisions if d.is_blunder]
-    flagged.sort(key=lambda d: (-d.regret, d.turn if d.turn is not None else 1 << 30, d.idx))
+    flagged.sort(key=lambda d: (-d.severity, d.turn if d.turn is not None else 1 << 30, d.idx))
     cumulative = sum(d.regret for d in decisions)
     return {
         "decisions": [d.to_dict() for d in decisions],
@@ -256,6 +311,9 @@ def summarize(decisions: list[DecisionRegret], *, top_n: int = 2) -> dict[str, A
             "total_decisions": len(decisions),
             "blunder_count": len(flagged),
             "cumulative_drop_pct": round(cumulative * 100.0),
+            "cumulative_hp_drop": _round_half_up(
+                sum(d.hp_drop for d in decisions if d.hp_drop is not None)
+            ),
             "worst_drop_pct": flagged[0].drop_pct if flagged else 0,
         },
     }

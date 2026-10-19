@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import CoachChip from "./components/CoachChip";
+import ChoiceChip from "./components/ChoiceChip";
 import "./theme.css";
 import "./game-skin.css";
 import "./responsive.css";
 import { encodePositionHash } from "./simlab/positionHash";
-import { api, DEFAULT_MCTS_CONFIG, NEAR_TIE_DROP_PCT, type Step, type Score, type TimelineEntry, type MapRow, type MapGraph, type FullMap, type LiveTimeline, type SaveMeta, type CombatState, type ResumeCapability, type ImportFidelity, type CapabilityFeatures } from "./api";
+import { api, DEFAULT_MCTS_CONFIG, type Step, type Score, type TimelineEntry, type MapRow, type MapGraph, type FullMap, type LiveTimeline, type SaveMeta, type CombatState, type ResumeCapability, type ImportFidelity, type CapabilityFeatures } from "./api";
 import Board from "./components/Board";
 import MapView from "./components/MapView";
 import MapOverlay from "./components/MapOverlay";
@@ -370,6 +372,11 @@ function AppBody() {
   // Live regret coach: after each combat move, flag it if it was a blunder.
   const [coachOn, setCoachOn] = useState(false);
   const [blunder, setBlunder] = useState<import("./api").DecisionRegret | null>(null);
+  // ...and after each run-level choice, how it compares with the AI's policy.
+  const [choiceGrade, setChoiceGrade] = useState<import("./api").ChoiceGrade | null>(null);
+  // Bumped by every move and seek: a coach reply for an older position is
+  // dropped, so a grade never lands on a branch it doesn't describe.
+  const coachGenRef = useRef(0);
   const [trend, setTrend] = useState<import("./api").TrendPoint[]>([]);
   const [treeOpen, setTreeOpen] = useState(false);
   const [searchTree, setSearchTree] = useState<import("./api").SearchTree | null>(null);
@@ -852,7 +859,7 @@ function AppBody() {
     } catch {
       setRegret({
         decisions: [], blunders: [],
-        summary: { total_decisions: 0, blunder_count: 0, cumulative_drop_pct: 0, worst_drop_pct: 0 },
+        summary: { total_decisions: 0, blunder_count: 0, cumulative_drop_pct: 0, worst_drop_pct: 0, cumulative_hp_drop: 0 },
       });
     }
   }
@@ -1212,6 +1219,8 @@ function AppBody() {
     autoHintedRef.current = false;
     setHintShown(false);
     setBlunder(null);
+    setChoiceGrade(null);
+    const coachGen = ++coachGenRef.current;
     // The autoplay's last search is about a position this action leaves behind.
     setLastSearch(null);
     // The cues that belong to the CHOICE rather than to its result — a shop
@@ -1228,6 +1237,18 @@ function AppBody() {
     setLiveError(error ?? null);
     // Illegal moves create no node; legal ones extend (or fork) the tree.
     if (!error) await refreshTimeline();
+    // Choice coach: a run-level choice is graded by agreement with the AI's
+    // policy at the position it was made from. Fetched BEFORE the autobattle
+    // advance below moves the active node; the endpoint 409s (null) for a
+    // combat move, a forced pick, or no loaded net.
+    if (coachOn && !error && !COMBAT_VERBS.has(action)) {
+      try {
+        const g = await api.live.lastChoiceGrade();
+        if (coachGen === coachGenRef.current) setChoiceGrade(g);
+      } catch {
+        setChoiceGrade(null);
+      }
+    }
     // Autobattle mode: the pick is committed, so the champion's is now safe to
     // reveal — then skip the combats up to the next run-level decision.
     if (autobattleOn && !error && !COMBAT_VERBS.has(action)) {
@@ -1245,6 +1266,7 @@ function AppBody() {
     if (coachOn && !error && COMBAT_VERBS.has(action)) {
       try {
         const r = await api.live.lastMoveRegret({});
+        if (coachGen !== coachGenRef.current) return error ? null : s;
         // Show after every assessable combat move — blunder, suboptimal, or
         // best — not only flagged blunders. The error payload (no MCTS scores)
         // carries no verdict, so skip it.
@@ -1315,6 +1337,8 @@ function AppBody() {
     setHintShown(false);
     setLiveError(null);
     setBlunder(null);
+    setChoiceGrade(null);
+    coachGenRef.current++;
     setSeekBusy(true);
     try {
       const { step } = await api.live.seek(nodeId);
@@ -1801,8 +1825,8 @@ function AppBody() {
               title: "autobattle mode: the agent plays the fights (watch them play out, or skip them) and you make only the run-level decisions — with a change-diff at each stop and the champion's pick revealed after you commit",
             } : undefined,
             coach: mode === "play" && live && advisors ? {
-              on: coachOn, toggle: () => { setCoachOn((v) => !v); setBlunder(null); },
-              title: "regret coach: warn right after a combat move that cost win-probability vs the MCTS line",
+              on: coachOn, toggle: () => { setCoachOn((v) => !v); setBlunder(null); setChoiceGrade(null); },
+              title: "regret coach: right after a move, compare it with the AI — combat moves by the MCTS line, run-level choices by the policy",
             } : undefined,
           }}
           replay={mode === "replay" ? {
@@ -2320,34 +2344,8 @@ function AppBody() {
                     onStop={() => { stopAutoRef.current = true; }}
                   />
                 )}
-                {blunder && (() => {
-                  // Four bands: best move, a tie ON the line (drop within the
-                  // near-tie/noise floor), a sub-threshold slip (amber ▽), or a
-                  // flagged blunder (red ⚠). Near-ties are NOT "suboptimal".
-                  const onLine = blunder.matched_best || blunder.drop_pct < NEAR_TIE_DROP_PCT;
-                  const tone = onLine ? "var(--accent-strong)"
-                    : blunder.is_blunder ? "var(--hp)" : "var(--warn, #c79a3a)";
-                  return (
-                    <div className="mono" style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 4,
-                      color: tone, border: `1px solid ${tone}`, background: "var(--field-bg)",
-                      fontSize: 11, display: "flex", gap: 8, alignItems: "baseline" }}>
-                      <span style={{ flex: 1 }}>
-                        {onLine ? (
-                          <>✓ {blunder.matched_best ? "best move" : "on the MCTS line"} — <b>{blunder.played_label}</b> ({Math.round(blunder.played_win_prob * 100)}%)</>
-                        ) : (
-                          <>
-                            {blunder.is_blunder ? "⚠ blunder" : "▽ suboptimal"} — <b>{blunder.played_label}</b> ({Math.round(blunder.played_win_prob * 100)}%)
-                            {" "}instead of <b>{blunder.best_label}</b> ({Math.round(blunder.best_win_prob * 100)}%),
-                            {" "}−{blunder.drop_pct} pts
-                          </>
-                        )}
-                      </span>
-                      <button type="button" onClick={() => setBlunder(null)} aria-label="Dismiss"
-                        style={{ font: "inherit", background: "none", border: "none", color: "var(--muted)",
-                          cursor: "pointer" }}>✕</button>
-                    </div>
-                  );
-                })()}
+                {blunder && <CoachChip regret={blunder} onDismiss={() => setBlunder(null)} />}
+                {choiceGrade && <ChoiceChip key={choiceGrade.node_id} grade={choiceGrade} onDismiss={() => setChoiceGrade(null)} />}
                 {liveTimeline && liveTimeline.nodes.length > 1 && (
                   <button type="button" onClick={() => setTreeOpen(true)}
                     title="open the branch tree" style={{ marginBottom: 12, padding: "3px 10px",

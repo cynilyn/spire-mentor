@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { NEAR_TIE_DROP_PCT, type RegretReview as Review, type DecisionRegret } from "../api";
+import { type RegretReview as Review, type DecisionRegret } from "../api";
 
 /**
  * Post-combat regret review — the learning engine, shown as a dock pinned to
@@ -42,14 +42,19 @@ function BlunderRow({ d, onSeek, tone = "var(--hp)" }: {
       }}
     >
       <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-        <span style={{ color: tone, fontWeight: 700 }}>−{d.drop_pct} pts</span>
+        <span style={{ color: tone, fontWeight: 700 }}>
+          −{d.drop_pct} pts{d.hp_drop != null && Math.round(d.hp_drop) >= 1 ? ` · ≈${Math.round(d.hp_drop)} HP` : ""}
+        </span>
         <span style={{ color: "var(--muted)", fontSize: 12 }}>
           turn {d.turn ?? "?"}{d.floor != null ? ` · floor ${d.floor}` : ""}
         </span>
       </div>
       <div style={{ marginTop: 4, fontSize: 13 }}>
-        played <b>{d.played_label}</b> ({pct(d.played_win_prob)}) instead of{" "}
-        <b style={{ color: "var(--accent-strong)" }}>{d.best_label}</b> ({pct(d.best_win_prob)})
+        played <b>{d.played_label}</b> instead of{" "}
+        <b style={{ color: "var(--accent-strong)" }}>{d.best_label}</b>{" "}
+        {pct(d.played_win_prob) === pct(d.best_win_prob)
+          ? `(${pct(d.best_win_prob)} either way)`
+          : `(${pct(d.played_win_prob)} vs ${pct(d.best_win_prob)})`}
       </div>
       <div style={{ marginTop: 3, color: "var(--muted)", fontSize: 11 }}>
         your move ranked #{d.player_rank + 1} of {d.n_actions} · {d.visits} MCTS visits on the top line
@@ -96,16 +101,17 @@ export default function RegretReview({
 
   const s = review?.summary;
   const lost = s?.cumulative_drop_pct ?? 0;
-  const blunders = review?.blunders ?? [];
-  // Sub-threshold slips the live coach also flags: meaningful (>= near-tie
-  // floor) drops that aren't blunders. Sorted worst-first. Drops below the
-  // floor are ties within MCTS search noise — not surfaced as mistakes, same as
-  // the coach.
+  const blunders = [...(review?.blunders ?? [])].sort((a, b) => b.severity - a.severity);
+  const uncertain = (review?.decisions ?? []).filter((d) => d.verdict === "uncertain").length;
+  // Slips the live coach also flags (server verdict), worst-first. Ties are
+  // not surfaced as mistakes.
   const slips = (review?.decisions ?? [])
-    .filter((d) => !d.is_blunder && d.drop_pct >= NEAR_TIE_DROP_PCT)
-    .sort((a, b) => b.drop_pct - a.drop_pct);
-  // Truly clean only when nothing was lost — not merely "no blunders".
-  const trulyClean = review != null && blunders.length === 0 && lost === 0;
+    .filter((d) => d.verdict === "slip")
+    .sort((a, b) => b.severity - a.severity);
+  // Truly clean only when nothing was lost (win-points OR HP), nothing slipped
+  // and nothing went ungraded.
+  const trulyClean = review != null && blunders.length === 0 && slips.length === 0
+    && lost === 0 && (s?.cumulative_hp_drop ?? 0) === 0 && uncertain === 0;
 
   return (
     <div ref={rootRef} className="mono" role="region" aria-label="Regret Review"
@@ -140,7 +146,8 @@ export default function RegretReview({
               <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
                 {s?.total_decisions ?? 0} decision(s) reviewed ·{" "}
                 {s?.blunder_count ?? 0} blunder(s) ·{" "}
-                {s?.cumulative_drop_pct ?? 0} total win-prob pts lost
+                {s?.cumulative_drop_pct ?? 0} total win-prob pts lost ·{" "}
+                {Math.round(s?.cumulative_hp_drop ?? 0)} HP lost
               </div>
               {trulyClean ? (
                 <div style={{ color: "var(--accent-strong)", fontSize: 13 }}>
@@ -171,7 +178,10 @@ export default function RegretReview({
                   {blunders.length === 0 && slips.length === 0 && (
                     <div style={{ color: "var(--accent-strong)", fontSize: 13 }}>
                       on the MCTS line — {lost} win-prob pt(s) lost across {s?.total_decisions ?? 0}{" "}
-                      decisions, all in near-tie moves within search noise (&lt;{NEAR_TIE_DROP_PCT} pts each). ✔
+                      decisions
+                      {uncertain > 0
+                        ? `; ${uncertain} move(s) ungraded (too few search samples).`
+                        : ", all toss-ups within search noise. ✔"}
                     </div>
                   )}
                 </>

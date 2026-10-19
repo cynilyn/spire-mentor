@@ -526,6 +526,10 @@ impl Workbench {
                 advisors::last_move_regret(self.live()?, &config_of(body))?
                     .ok_or_else(|| ApiError::new(409, "no prior combat move to assess"))
             }
+            ("POST", "/api/live/last-choice-grade") => self
+                .live()?
+                .last_choice_grade()?
+                .ok_or_else(|| ApiError::new(409, "no prior run-level choice to grade")),
             ("POST", "/api/live/regret-review") => {
                 Ok(advisors::review_run(self.live()?, &config_of(body))?)
             }
@@ -708,6 +712,9 @@ impl Workbench {
             }
             ("POST", "/api/live/decision-advisor/stream") => {
                 ("not at an advisable decision", advisors::advise_decision)
+            }
+            ("POST", "/api/live/last-choice-check/stream") => {
+                ("nothing to check", crate::session_choice::last_choice_check)
             }
             _ => {
                 match self.call(method, route, body) {
@@ -1113,7 +1120,9 @@ impl Workbench {
             .cloned()
             .filter(Value::is_object)
             .unwrap_or_else(empty_object);
-        let result = self.live()?.apply(&action, &args)?;
+        let sess = self.live()?;
+        sess.capture_choice();
+        let result = sess.apply(&action, &args)?;
         Ok(json!({
             "step": live_step(result.state, &self.ctx()),
             "error": result.error,

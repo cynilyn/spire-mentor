@@ -1340,6 +1340,7 @@ impl PyCombatState {
                 VarKey::StompCostReductionThisTurn,
                 VarKey::PinpointCostReductionThisTurn,
                 VarKey::SneckoCostDeltaThisTurn,
+                VarKey::SneckoRollLive,
                 VarKey::WireTransientCostThisTurn,
                 VarKey::WireCostExpiringOnPlay,
                 VarKey::WireCostStable,
@@ -2505,6 +2506,187 @@ fn build_git() -> &'static str {
 /// value/policy-net data, stamped at build time. See `sts2_core::SRC_HASH`.
 pub const SRC_HASH: &str = env!("STS2_PY_SRC_HASH");
 
+/// Playout-net training features at `state`
+/// ([`sts2_mcts::rollout_net::export_features`]): `{"state": [f32],
+/// "actions": [action dict], "keys": [str], "x": [[f32]]}`, one entry per
+/// legal action in `legal_actions` order — the order the playout sees. The
+/// action dicts have the shape search results carry
+/// (`combat_search["actions"][i]["action"]`), so a root's visit counts map
+/// onto them by equality.
+#[pyfunction]
+fn rollout_features<'py>(py: Python<'py>, state: &PyCombatState) -> PyResult<Bound<'py, PyDict>> {
+    let (s, rows) = sts2_mcts::rollout_net::export_features(state.inner_ref());
+    let d = PyDict::new(py);
+    d.set_item("state", s.to_vec())?;
+    let actions = PyList::empty(py);
+    let mut keys = Vec::with_capacity(rows.len());
+    let mut xs = Vec::with_capacity(rows.len());
+    for (a, k, x) in &rows {
+        actions.append(action_to_pydict(py, a)?)?;
+        keys.push(k.name());
+        xs.push(x.to_vec());
+    }
+    d.set_item("actions", actions)?;
+    d.set_item("keys", keys)?;
+    d.set_item("x", xs)?;
+    Ok(d)
+}
+
+/// Play `state` to the end of the combat with one playout policy and no
+/// search ([`sts2_mcts::rollout_net::playout`]) — what the search's
+/// playouts would do from here, measured on its own. `policy` is
+/// `"heuristic"` or `"net"`. `"net"` uses the `STS2_ROLLOUT_NET` weights, or
+/// else the built-in net for the fight's character
+/// ([`sts2_mcts::rollout_net::net_for`]); `temperature` defaults to that
+/// net's, and so does `no_early_end`, so the defaults measure exactly the
+/// playout the search runs. Returns `{"won", "hp", "round", "steps"}`.
+#[pyfunction]
+#[pyo3(signature = (state, policy = "heuristic", seed = 0, temperature = None, no_early_end = None, max_steps = 600))]
+fn playout<'py>(
+    py: Python<'py>,
+    state: &PyCombatState,
+    policy: &str,
+    seed: u64,
+    temperature: Option<f32>,
+    no_early_end: Option<bool>,
+    max_steps: u32,
+) -> PyResult<Bound<'py, PyDict>> {
+    use rand::SeedableRng;
+    use sts2_mcts::rollout_net::{net_for, playout, PlayoutPolicy};
+    let kind = match policy {
+        "heuristic" => PlayoutPolicy::Heuristic,
+        "net" => {
+            let net = net_for(state.inner_ref()).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "policy=net: no STS2_ROLLOUT_NET and no built-in net for this character",
+                )
+            })?;
+            PlayoutPolicy::Net {
+                temperature: temperature.unwrap_or(net.temperature),
+                no_early_end_turn: no_early_end.unwrap_or(net.no_early_end_turn),
+            }
+        }
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "policy {other:?}: expected heuristic or net"
+            )))
+        }
+    };
+    let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed);
+    let (end, steps) = py.allow_threads(|| playout(state.inner_ref(), kind, &mut rng, max_steps));
+    let d = PyDict::new(py);
+    d.set_item("won", end.player_won)?;
+    d.set_item("hp", end.player.current_hp.max(0))?;
+    d.set_item("round", end.round)?;
+    d.set_item("steps", steps)?;
+    Ok(d)
+}
+
+/// A learned playout policy held by Python, for training it on playout
+/// outcomes (`ppo.rollout_learn rl`). Independent of the search's
+/// process-wide `STS2_ROLLOUT_NET` policy.
+#[pyclass(name = "LearnedPlayout", module = "sts2_rs")]
+#[derive(Debug)]
+pub struct PyLearnedPlayout {
+    net: sts2_mcts::rollout_net::RolloutNet,
+}
+
+#[pymethods]
+impl PyLearnedPlayout {
+    #[new]
+    fn new(json_text: &str) -> PyResult<Self> {
+        sts2_mcts::rollout_net::RolloutNet::from_json(json_text)
+            .map(|net| Self { net })
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    /// Play every `(state, seed)` out in parallel at `temperature`, recording
+    /// each decision ([`sts2_mcts::rollout_net::playout_trajectories`]).
+    /// Returns little-endian byte buffers: per decision `state`
+    /// (f32 x STATE_DIM), `n_act` (u8), `chosen` (u8); per action `rows` (u32),
+    /// `x` (f32 x ACTION_DIM), `allowed` (u8); per playout `steps` (u32),
+    /// `won` (u8), `hp_frac`, `removed`, `round` (f32).
+    #[pyo3(signature = (states, seeds, temperature = 1.0, no_early_end = false, max_steps = 600))]
+    fn play_many<'py>(
+        &self,
+        py: Python<'py>,
+        states: Vec<PyRef<'py, PyCombatState>>,
+        seeds: Vec<u64>,
+        temperature: f32,
+        no_early_end: bool,
+        max_steps: u32,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if states.len() != seeds.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "states and seeds differ in length",
+            ));
+        }
+        let jobs: Vec<(CoreCombatState, u64)> = states
+            .iter()
+            .zip(&seeds)
+            .map(|(s, &seed)| (s.inner_ref().clone(), seed))
+            .collect();
+        let trajs = py.allow_threads(|| {
+            sts2_mcts::rollout_net::playout_trajectories(
+                &self.net,
+                &jobs,
+                temperature,
+                no_early_end,
+                max_steps,
+            )
+        });
+        let (mut st, mut n_act, mut chosen) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut rows, mut x, mut allowed) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut won, mut hp, mut removed, mut round) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for t in &trajs {
+            steps.extend(
+                u32::try_from(t.steps.len())
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            won.push(u8::from(t.won));
+            hp.extend(t.hp_frac.to_le_bytes());
+            removed.extend(t.removed.to_le_bytes());
+            round.extend(f32::from(t.round).to_le_bytes());
+            for step in &t.steps {
+                st.extend(step.state.iter().flat_map(|v| v.to_le_bytes()));
+                n_act.push(u8::try_from(step.rows.len()).unwrap_or(u8::MAX));
+                chosen.push(step.chosen);
+                for ((r, xx), ok) in step.rows.iter().zip(&step.x).zip(&step.allowed) {
+                    rows.extend(r.to_le_bytes());
+                    x.extend(xx.iter().flat_map(|v| v.to_le_bytes()));
+                    allowed.push(u8::from(*ok));
+                }
+            }
+        }
+        let d = PyDict::new(py);
+        for (k, v) in [
+            ("state", st),
+            ("n_act", n_act),
+            ("chosen", chosen),
+            ("rows", rows),
+            ("x", x),
+            ("allowed", allowed),
+            ("steps", steps),
+            ("won", won),
+            ("hp_frac", hp),
+            ("removed", removed),
+            ("round", round),
+        ] {
+            d.set_item(k, pyo3::types::PyBytes::new(py, &v))?;
+        }
+        Ok(d)
+    }
+}
+
+/// Embedding rows of the loaded learned rollout policy (`STS2_ROLLOUT_NET`),
+/// or `None` when none is loaded.
+#[pyfunction]
+fn rollout_net_rows() -> Option<usize> {
+    sts2_mcts::rollout_net::global_net().map(|n| n.rows)
+}
+
 /// Aggregate content hash of the whole engine: the compiled-in `SRC_HASH` const
 /// of every workspace crate linked into this extension plus the workspace
 /// inputs (`STS2_WORKSPACE_HASH` = the workspace Cargo.toml + Cargo.lock +
@@ -2908,6 +3090,8 @@ fn mcts_play_to_terminal(
 ///   'wins': u32,
 ///   'losses': u32,
 ///   'ties': u32,
+///   'mean_final_hp': f64|None, # mean player HP at playout end; None when hp_n == 0
+///   'hp_n': u32,            # resolved playouts behind mean_final_hp (<= visits)
 ///   'p_win': f64,           # wins / visits
 ///   'p_tie': f64,
 ///   'p_loss': f64,
@@ -2926,6 +3110,8 @@ pub(crate) fn action_score_pydict<'py>(
     losses: u32,
     ties: u32,
     value_sum: f32,
+    hp_sum: f32,
+    hp_n: u32,
     low_confidence: bool,
     q_saturated: bool,
     is_best: bool,
@@ -2939,6 +3125,8 @@ pub(crate) fn action_score_pydict<'py>(
             losses,
             ties,
             value_sum,
+            hp_sum,
+            hp_n,
             low_confidence,
             q_saturated,
             is_best,
@@ -2984,7 +3172,7 @@ pub(crate) fn action_score_pydict<'py>(
     seed = 0,
     threads = 8,
     fair = false,
-    rollout_policy = "heuristic",
+    rollout_policy = None,
     hidden_info = "beliefdraw",
     draw_widening_c = None,
     common_random_numbers = false,
@@ -3002,7 +3190,7 @@ fn mcts_recommend<'py>(
     seed: u64,
     threads: u32,
     fair: bool,
-    rollout_policy: &str,
+    rollout_policy: Option<&str>,
     hidden_info: &str,
     draw_widening_c: Option<f32>,
     common_random_numbers: bool,
@@ -3026,6 +3214,9 @@ fn mcts_recommend<'py>(
     // `endturn_widening_c` / `endturn_widening_alpha` are ablation knobs:
     // `None` keeps what the mode deploys (`MctsConfig::apply_mode_dialect`,
     // the run agent's PR #467 values under beliefdraw — GH #758).
+    // `rollout_policy` likewise: `None` keeps the mode's playout (the playout
+    // net under beliefdraw), a named one ("heuristic" / "uniform" / "net")
+    // always runs.
     let hidden_info = parse_hidden_info(hidden_info, "mcts_recommend")?;
     let (c_puct, draw_widening_c) =
         resolve_search_constants(hidden_info, c_puct, draw_widening_c, sims);
@@ -3036,11 +3227,10 @@ fn mcts_recommend<'py>(
         seed,
         threads,
         fair,
-        rollout_policy: sts2_wire::emit::mcts::parse_rollout_policy(
-            rollout_policy,
-            "mcts_recommend",
-        )
-        .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        rollout_policy: rollout_policy
+            .map(|p| sts2_wire::emit::mcts::parse_rollout_policy(p, "mcts_recommend"))
+            .transpose()
+            .map_err(pyo3::exceptions::PyValueError::new_err)?,
         hidden_info,
         draw_widening_c,
         endturn_widening_c,
@@ -3082,7 +3272,7 @@ fn mcts_recommend<'py>(
     c_puct = None,
     depth = 200,
     seed = 0,
-    rollout_policy = "heuristic",
+    rollout_policy = None,
     hidden_info = "beliefdraw",
     draw_widening_c = None,
     endturn_widening_c = None,
@@ -3097,7 +3287,7 @@ fn mcts_search_tree<'py>(
     c_puct: Option<f32>,
     depth: u32,
     seed: u64,
-    rollout_policy: &str,
+    rollout_policy: Option<&str>,
     hidden_info: &str,
     draw_widening_c: Option<f32>,
     endturn_widening_c: Option<f32>,
@@ -3112,11 +3302,10 @@ fn mcts_search_tree<'py>(
         depth,
         c_puct,
         seed,
-        rollout_policy: sts2_wire::emit::mcts::parse_rollout_policy(
-            rollout_policy,
-            "mcts_search_tree",
-        )
-        .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        rollout_policy: rollout_policy
+            .map(|p| sts2_wire::emit::mcts::parse_rollout_policy(p, "mcts_search_tree"))
+            .transpose()
+            .map_err(pyo3::exceptions::PyValueError::new_err)?,
         hidden_info,
         draw_widening_c,
         endturn_widening_c,
@@ -3160,6 +3349,10 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_git, m)?)?;
     m.add_function(wrap_pyfunction!(projection_hp_table, m)?)?;
     m.add_function(wrap_pyfunction!(src_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(rollout_features, m)?)?;
+    m.add_function(wrap_pyfunction!(rollout_net_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(playout, m)?)?;
+    m.add_class::<PyLearnedPlayout>()?;
     m.add_function(wrap_pyfunction!(recompute_src_hash, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(deterministic_hash_code, m)?)?;

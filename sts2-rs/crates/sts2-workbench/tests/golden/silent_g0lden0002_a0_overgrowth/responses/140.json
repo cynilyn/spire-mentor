@@ -5,7 +5,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -20,6 +19,40 @@
     2,
     3,
     4
+   ],
+   "edges": [
+    {
+     "child": 1,
+     "kind": "play",
+     "label": "Survivor",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 12
+    },
+    {
+     "child": 2,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 12
+    },
+    {
+     "child": 3,
+     "kind": "play",
+     "label": "StrikeSilent",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 12
+    },
+    {
+     "child": 4,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 12
+    }
    ],
    "id": 0,
    "is_terminal": false,
@@ -68,6 +101,40 @@
     12,
     14
    ],
+   "edges": [
+    {
+     "child": 6,
+     "kind": "choose",
+     "label": "Choose 0",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 9,
+     "kind": "choose",
+     "label": "Choose 1",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 12,
+     "kind": "choose",
+     "label": "Choose 2",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    },
+    {
+     "child": 14,
+     "kind": "choose",
+     "label": "Choose 3",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 1,
    "is_terminal": false,
    "kind": "play",
@@ -115,6 +182,40 @@
     5,
     13
    ],
+   "edges": [
+    {
+     "child": 7,
+     "kind": "play",
+     "label": "Survivor",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 4
+    },
+    {
+     "child": 8,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 3
+    },
+    {
+     "child": 5,
+     "kind": "play",
+     "label": "StrikeSilent",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 13,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 3
+    }
+   ],
    "id": 2,
    "is_terminal": false,
    "kind": "play",
@@ -160,6 +261,24 @@
     5,
     11
    ],
+   "edges": [
+    {
+     "child": 5,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 5
+    },
+    {
+     "child": 11,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 6
+    }
+   ],
    "id": 3,
    "is_terminal": false,
    "kind": "play",
@@ -202,6 +321,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 4,
    "is_terminal": true,
    "kind": "end_turn",
@@ -247,6 +367,24 @@
     15,
     19
    ],
+   "edges": [
+    {
+     "child": 15,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 2
+    },
+    {
+     "child": 19,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 5,
    "is_terminal": false,
    "kind": "play",
@@ -291,6 +429,24 @@
    "children": [
     17,
     26
+   ],
+   "edges": [
+    {
+     "child": 17,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 26,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
    ],
    "id": 6,
    "is_terminal": false,
@@ -338,6 +494,32 @@
     22,
     21
    ],
+   "edges": [
+    {
+     "child": 17,
+     "kind": "choose",
+     "label": "Choose 0",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 22,
+     "kind": "choose",
+     "label": "Choose 1",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 21,
+     "kind": "choose",
+     "label": "Choose 2",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 7,
    "is_terminal": false,
    "kind": "play",
@@ -383,6 +565,24 @@
     18,
     15
    ],
+   "edges": [
+    {
+     "child": 18,
+     "kind": "play",
+     "label": "Survivor",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    },
+    {
+     "child": 15,
+     "kind": "play",
+     "label": "StrikeSilent",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
+   ],
    "id": 8,
    "is_terminal": false,
    "kind": "play",
@@ -426,6 +626,16 @@
    "chance_draws": 3,
    "children": [
     10
+   ],
+   "edges": [
+    {
+     "child": 10,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 3
+    }
    ],
    "id": 9,
    "is_terminal": false,
@@ -472,6 +682,24 @@
     16,
     24
    ],
+   "edges": [
+    {
+     "child": 16,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 24,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 10,
    "is_terminal": false,
    "kind": "outcome",
@@ -514,6 +742,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 11,
    "is_terminal": true,
    "kind": "end_turn",
@@ -559,6 +788,24 @@
     20,
     28
    ],
+   "edges": [
+    {
+     "child": 20,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    },
+    {
+     "child": 28,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 12,
    "is_terminal": false,
    "kind": "choose",
@@ -601,6 +848,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 13,
    "is_terminal": true,
    "kind": "end_turn",
@@ -644,6 +892,16 @@
    "chance_draws": 0,
    "children": [
     21
+   ],
+   "edges": [
+    {
+     "child": 21,
+     "kind": "play",
+     "label": "Shiv",
+     "outcome_ordinal": null,
+     "target_index": 1,
+     "visits": 1
+    }
    ],
    "id": 14,
    "is_terminal": false,
@@ -689,10 +947,20 @@
    "children": [
     23
    ],
+   "edges": [
+    {
+     "child": 23,
+     "kind": "end_turn",
+     "label": "End turn",
+     "outcome_ordinal": null,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 15,
    "is_terminal": false,
    "kind": "play",
-   "label": "StrikeSilent",
+   "label": "Shiv",
    "losses": 3,
    "node_kind": "decision",
    "outcome_cap": 0,
@@ -731,14 +999,15 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 16,
    "is_terminal": false,
-   "kind": "outcome",
-   "label": "outcome #0",
+   "kind": "play",
+   "label": "Shiv",
    "losses": 2,
    "node_kind": "decision",
    "outcome_cap": 0,
-   "outcome_ordinal": 0,
+   "outcome_ordinal": null,
    "parent": 10,
    "proven_loss": false,
    "proven_win": false,
@@ -762,7 +1031,7 @@
     "player_max_hp": 70,
     "round": 6
    },
-   "target_index": null,
+   "target_index": 1,
    "ties": 0,
    "value_sum": -2.4151,
    "visits": 2,
@@ -773,6 +1042,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 17,
    "is_terminal": false,
    "kind": "choose",
@@ -815,6 +1085,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 18,
    "is_terminal": false,
    "kind": "play",
@@ -857,6 +1128,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 19,
    "is_terminal": true,
    "kind": "end_turn",
@@ -899,6 +1171,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 20,
    "is_terminal": false,
    "kind": "play",
@@ -941,6 +1214,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 21,
    "is_terminal": false,
    "kind": "play",
@@ -985,6 +1259,16 @@
    "children": [
     16
    ],
+   "edges": [
+    {
+     "child": 16,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 22,
    "is_terminal": false,
    "kind": "choose",
@@ -1027,6 +1311,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 23,
    "is_terminal": true,
    "kind": "end_turn",
@@ -1071,6 +1356,16 @@
    "children": [
     25
    ],
+   "edges": [
+    {
+     "child": 25,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 1
+    }
+   ],
    "id": 24,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1113,6 +1408,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 25,
    "is_terminal": false,
    "kind": "outcome",
@@ -1157,6 +1453,16 @@
    "children": [
     27
    ],
+   "edges": [
+    {
+     "child": 27,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
+   ],
    "id": 26,
    "is_terminal": false,
    "kind": "end_turn",
@@ -1199,6 +1505,7 @@
    "chance_closed": false,
    "chance_draws": 0,
    "children": [],
+   "edges": [],
    "id": 27,
    "is_terminal": false,
    "kind": "outcome",
@@ -1242,6 +1549,16 @@
    "chance_draws": 1,
    "children": [
     27
+   ],
+   "edges": [
+    {
+     "child": 27,
+     "kind": "outcome",
+     "label": "outcome #0",
+     "outcome_ordinal": 0,
+     "target_index": null,
+     "visits": 2
+    }
    ],
    "id": 28,
    "is_terminal": false,

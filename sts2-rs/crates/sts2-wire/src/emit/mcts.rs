@@ -49,7 +49,10 @@ pub struct RecommendParams {
     pub threads: u32,
     /// Per-action independent searches instead of one root search.
     pub fair: bool,
-    pub rollout_policy: RolloutPolicyKind,
+    /// Explicit playout policy. `None` keeps what the mode deploys
+    /// ([`MctsConfig::apply_mode_dialect`]: the playout net under
+    /// BeliefDraw, the heuristic otherwise); a named policy always wins.
+    pub rollout_policy: Option<RolloutPolicyKind>,
     pub hidden_info: HiddenInfoMode,
     /// `None` keeps the mode default (`MctsConfig::default().draw_widening_c`).
     pub draw_widening_c: Option<f32>,
@@ -73,7 +76,7 @@ impl Default for RecommendParams {
             seed: 0,
             threads: 1,
             fair: false,
-            rollout_policy: RolloutPolicyKind::Heuristic,
+            rollout_policy: None,
             // The DEPLOYED honest search, not the leaky one. These three are
             // one setting: see `resolve_mode_constants`.
             hidden_info: HiddenInfoMode::BeliefDraw,
@@ -86,14 +89,15 @@ impl Default for RecommendParams {
     }
 }
 
-/// `rollout_policy` string → kind; the same two spellings `mcts_recommend`
+/// `rollout_policy` string → kind; the same spellings `mcts_recommend`
 /// accepts, the same rejection for anything else.
 pub fn parse_rollout_policy(s: &str, fn_name: &str) -> Result<RolloutPolicyKind, String> {
     match s {
         "heuristic" => Ok(RolloutPolicyKind::Heuristic),
         "uniform" => Ok(RolloutPolicyKind::Uniform),
+        "net" => Ok(RolloutPolicyKind::Net),
         other => Err(format!(
-            "{fn_name}: rollout_policy must be 'heuristic' or 'uniform', got {other:?}"
+            "{fn_name}: rollout_policy must be 'heuristic', 'uniform' or 'net', got {other:?}"
         )),
     }
 }
@@ -161,7 +165,7 @@ impl RecommendParams {
             p.fair = v;
         }
         if let Some(v) = obj.get("rollout_policy").and_then(Value::as_str) {
-            p.rollout_policy = parse_rollout_policy(v, fn_name)?;
+            p.rollout_policy = Some(parse_rollout_policy(v, fn_name)?);
         }
         if let Some(v) = obj.get("hidden_info").and_then(Value::as_str) {
             p.hidden_info = parse_hidden_info(v, fn_name)?;
@@ -226,14 +230,14 @@ impl RecommendParams {
     /// call the run agent's `sts2-runai::policy::mcts_config_for` makes), the
     /// deployed-search knobs pinned (no transposition table, regularized π
     /// temperature 0.1, uniform PUCT prior), then this call's parameters —
-    /// an explicit `c_puct` / widening value wins over the dialect.
+    /// an explicit `c_puct` / widening value / rollout policy wins over the
+    /// dialect.
     #[must_use]
     pub fn mcts_config(&self) -> MctsConfig {
         let mut cfg = MctsConfig {
             max_simulations: self.sims,
             max_rollout_depth: self.depth,
             seed: self.seed,
-            rollout_policy: self.rollout_policy,
             use_transposition_table: false,
             regularized_pi_temperature: 0.1,
             use_puct_prior: false,
@@ -243,6 +247,9 @@ impl RecommendParams {
             ..MctsConfig::default()
         };
         cfg.apply_mode_dialect();
+        if let Some(p) = self.rollout_policy {
+            cfg.rollout_policy = p;
+        }
         cfg.c_puct = self.c_puct;
         cfg.draw_widening_c = self
             .draw_widening_c
@@ -272,6 +279,11 @@ pub struct RecommendScore {
     /// Sum of continuous leaf values; `value_sum / visits` is the Q used
     /// for action ranking.
     pub value_sum: f32,
+    /// Sum of the player's final HP over the resolved playouts through this
+    /// action (a death reads 0), and how many playouts that is
+    /// (`hp_n <= visits`). `hp_sum / hp_n` is the mean final HP.
+    pub hp_sum: f32,
+    pub hp_n: u32,
     /// This action ends the combat in a WIN immediately (fair-eval only).
     /// Ranked above a merely equal-valued continuation (GH#296).
     pub terminal_win: bool,
@@ -286,6 +298,8 @@ impl From<RootOutcome> for RecommendScore {
             losses: o.losses,
             ties: o.ties,
             value_sum: o.value_sum,
+            hp_sum: o.hp_sum,
+            hp_n: o.hp_n,
             terminal_win: false,
         }
     }
@@ -303,24 +317,34 @@ pub fn q_of(s: &RecommendScore) -> f32 {
     }
 }
 
-/// Sum `(visits, wins, losses, ties, value_sum)` across every root child of
-/// a post-action search. The per-child counters sum to the root node's own
-/// counters because every simulation backpropagates through the root.
+/// Counters summed across every root child of a post-action search.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RootAggregate {
+    pub visits: u32,
+    pub wins: u32,
+    pub losses: u32,
+    pub ties: u32,
+    pub value_sum: f32,
+    pub hp_sum: f32,
+    pub hp_n: u32,
+}
+
+/// Sum the counters across every root child of a post-action search. The
+/// per-child counters sum to the root node's own counters because every
+/// simulation backpropagates through the root.
 #[must_use]
-pub fn aggregate_root(outs: &[RootOutcome]) -> (u32, u32, u32, u32, f32) {
-    let mut v = 0u32;
-    let mut w = 0u32;
-    let mut l = 0u32;
-    let mut t = 0u32;
-    let mut vs = 0.0_f32;
+pub fn aggregate_root(outs: &[RootOutcome]) -> RootAggregate {
+    let mut a = RootAggregate::default();
     for o in outs {
-        v += o.visits;
-        w += o.wins;
-        l += o.losses;
-        t += o.ties;
-        vs += o.value_sum;
+        a.visits += o.visits;
+        a.wins += o.wins;
+        a.losses += o.losses;
+        a.ties += o.ties;
+        a.value_sum += o.value_sum;
+        a.hp_sum += o.hp_sum;
+        a.hp_n += o.hp_n;
     }
-    (v, w, l, t, vs)
+    a
 }
 
 /// One per-action score dict (`mcts_recommend()["actions"][i]`).
@@ -333,6 +357,8 @@ pub fn action_score_value(
     losses: u32,
     ties: u32,
     value_sum: f32,
+    hp_sum: f32,
+    hp_n: u32,
     low_confidence: bool,
     q_saturated: bool,
     is_best: bool,
@@ -357,12 +383,17 @@ pub fn action_score_value(
     };
     #[allow(clippy::cast_possible_truncation)]
     let bucket = hint::win_prob_bucket(p_win as f32);
+    // Mean player HP at the end of the resolved playouts; null when none
+    // resolved (never 0 — a death is a real 0, no sample is not).
+    let mean_final_hp = (hp_n > 0).then(|| f64::from(hp_sum) / f64::from(hp_n));
     json!({
         "action": combat_action_to_value(action),
         "visits": visits,
         "value": q_bucket,
         "value_sum": value_sum,
         "q": q_cont,
+        "mean_final_hp": mean_final_hp,
+        "hp_n": hp_n,
         "wins": wins,
         "losses": losses,
         "ties": ties,
@@ -423,6 +454,8 @@ pub fn recommend_output_value(
                 s.losses,
                 s.ties,
                 s.value_sum,
+                s.hp_sum,
+                s.hp_n,
                 s.visits < low_visit_threshold,
                 q_saturated,
                 idx == 0,
@@ -439,6 +472,122 @@ pub fn recommend_output_value(
         "threads": threads,
         "intent_damage_known": intent_damage_known,
     })
+}
+
+/// Score ONE action the way one iteration of the fair branch of
+/// [`recommend_value`] does: apply it to a clone, then search the post-state
+/// (an already-terminal post-state is one synthesized outcome).
+fn score_action_raw(
+    state: &CombatState,
+    params: &RecommendParams,
+    action: &Action,
+) -> RecommendScore {
+    let cfg = params.mcts_config();
+    let policy = SharedPolicy::uniform();
+    let mut post = state.clone();
+    let _ = apply(&mut post, action.clone());
+    if legal_actions(&post).is_empty() {
+        // Already terminal — encode as a single-sample outcome bucketed by
+        // terminal value, on the SAME scale as the sibling searches
+        // (`cfg.terminal_eval_mode`, GH#296).
+        let v = sts2_mcts::terminal_state_value(
+            &post,
+            cfg.terminal_eval_mode,
+            &LeafEval::default(),
+            cfg.loss_gradient,
+        );
+        let (w, l, t) = if v > 0.5 {
+            (1u32, 0u32, 0u32)
+        } else if v < -0.5 {
+            (0, 1, 0)
+        } else {
+            (0, 0, 1)
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let hp = post.player.current_hp.max(0) as f32;
+        return RecommendScore {
+            action: action.clone(),
+            visits: 1,
+            wins: w,
+            losses: l,
+            ties: t,
+            value_sum: v,
+            hp_sum: hp,
+            hp_n: 1,
+            terminal_win: post.player_won,
+        };
+    }
+    let agg = if params.threads <= 1 {
+        let mut m = Mcts::with_policy(post, cfg, policy);
+        let _ = m.search();
+        aggregate_root(&m.root_outcomes())
+    } else {
+        let r = par_search_with_policy(post, cfg, params.threads, policy, LeafEval::default());
+        aggregate_root(&r.outcomes)
+    };
+    RecommendScore {
+        action: action.clone(),
+        visits: agg.visits,
+        wins: agg.wins,
+        losses: agg.losses,
+        ties: agg.ties,
+        value_sum: agg.value_sum,
+        hp_sum: agg.hp_sum,
+        hp_n: agg.hp_n,
+        terminal_win: false,
+    }
+}
+
+/// One action dict, same shape as a `recommend_value` `actions[i]` row
+/// (`is_best`, `low_confidence`, `q_saturated` all false), computed by the
+/// exact code the fair branch runs per action.
+#[must_use]
+pub fn score_action(state: &CombatState, params: &RecommendParams, action: &Action) -> Value {
+    let s = score_action_raw(state, params, action);
+    action_score_value(
+        &s.action,
+        s.visits,
+        s.wins,
+        s.losses,
+        s.ties,
+        s.value_sum,
+        s.hp_sum,
+        s.hp_n,
+        false,
+        false,
+        false,
+    )
+}
+
+/// Price ONE move from the position it is chosen FROM: a single-threaded
+/// search rooted at `state` under `params` (same config and hidden-info mode
+/// as [`recommend_value`]) with every simulation pinned to `action`
+/// ([`Mcts::search_forced`]). Unlike [`score_action`], which searches the
+/// post-state reached with `state`'s real RNG, a drawing / turn-ending move
+/// passes a chance node that re-deals per simulation, so the row never
+/// prices the realized draw. Same row shape as [`score_action`]; `None` when
+/// `action` is not a root action of `state` (or the root is terminal).
+#[must_use]
+pub fn score_action_forced(
+    state: &CombatState,
+    params: &RecommendParams,
+    action: &Action,
+) -> Option<Value> {
+    let mut m = Mcts::with_policy(state.clone(), params.mcts_config(), SharedPolicy::uniform());
+    let o = m.search_forced(action, params.sims)?;
+    Some(action_score_value(
+        action,
+        o.visits,
+        o.wins,
+        o.losses,
+        o.ties,
+        o.value_sum,
+        o.hp_sum,
+        o.hp_n,
+        false,
+        false,
+        false,
+    ))
 }
 
 /// Run the search `mcts_recommend` runs and return its result dict.
@@ -467,60 +616,7 @@ pub fn recommend_value(
     } else if params.fair {
         let mut scores: Vec<RecommendScore> = Vec::with_capacity(legal.len());
         for action in &legal {
-            let mut post = state.clone();
-            let _ = apply(&mut post, action.clone());
-            let post_acts = legal_actions(&post);
-            if post_acts.is_empty() {
-                // Already terminal — encode as a single-sample outcome
-                // bucketed by terminal value, on the SAME scale as the
-                // sibling searches (`cfg.terminal_eval_mode`, GH#296).
-                let v = sts2_mcts::terminal_state_value(
-                    &post,
-                    cfg.terminal_eval_mode,
-                    &LeafEval::default(),
-                    cfg.loss_gradient,
-                );
-                let (w, l, t) = if v > 0.5 {
-                    (1u32, 0u32, 0u32)
-                } else if v < -0.5 {
-                    (0, 1, 0)
-                } else {
-                    (0, 0, 1)
-                };
-                scores.push(RecommendScore {
-                    action: action.clone(),
-                    visits: 1,
-                    wins: w,
-                    losses: l,
-                    ties: t,
-                    value_sum: v,
-                    terminal_win: post.player_won,
-                });
-                continue;
-            }
-            let (visits, wins, losses, ties, value_sum) = if params.threads <= 1 {
-                let mut m = Mcts::with_policy(post, cfg, policy.clone());
-                let _ = m.search();
-                aggregate_root(&m.root_outcomes())
-            } else {
-                let r = par_search_with_policy(
-                    post,
-                    cfg,
-                    params.threads,
-                    policy.clone(),
-                    LeafEval::default(),
-                );
-                aggregate_root(&r.outcomes)
-            };
-            scores.push(RecommendScore {
-                action: action.clone(),
-                visits,
-                wins,
-                losses,
-                ties,
-                value_sum,
-                terminal_win: false,
-            });
+            scores.push(score_action_raw(state, params, action));
         }
         // No PV for the fair case — each action has its own tree.
         (scores, Vec::new())
@@ -603,7 +699,10 @@ pub fn edge_descr(edge: &EdgeAction) -> (String, String, Option<u8>) {
 ///
 /// Each node carries `id, parent, visits, q (= value_sum/visits),
 /// value_sum, wins/losses/ties, is_terminal, proven_win, proven_loss,
-/// children[], the incoming edge (kind/label/target_index)`, the chance-node
+/// children[], edges[]` (one `{child, kind, label, target_index,
+/// outcome_ordinal, visits}` per child, in `children` order — the per-edge
+/// action and traffic; the graph is a DAG, so these are NOT properties of the
+/// child), `the incoming edge from parent (kind/label/target_index)`, the chance-node
 /// metadata (`node_kind ∈ {"decision","chance"}`, `chance_action`,
 /// `outcome_cap`, `chance_draws`, `chance_closed`, `outcome_ordinal`) and a
 /// `summary` of the state after the node's action. For a chance node
@@ -620,23 +719,63 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
         let _ = m.search();
         pv = m.get_pv().into_iter().take(PV_MAX_DEPTH).collect();
         let arena = &m.tree.arena;
-        // Incoming-edge labels, stamped from each parent: decision parents
-        // label the edge with the chosen action; chance parents label it as
-        // an "outcome" carrying the DPW ordinal.
-        let mut edges: Vec<(Option<String>, Option<String>, Option<u8>, Option<u32>)> =
-            vec![(None, None, None, None); arena.len()];
-        for n in arena {
-            for (edge, cid) in &n.children {
-                let (kind, label, tgt) = edge_descr(edge);
-                edges[cid.0 as usize] = (Some(kind), Some(label), tgt, None);
-            }
-            for outcome in &n.chance_outcomes {
-                edges[outcome.child.0 as usize] = (
-                    Some("outcome".to_string()),
-                    Some(format!("outcome #{}", outcome.n)),
-                    None,
-                    Some(outcome.n),
-                );
+        // The transposition table is always on, so the search graph is a DAG:
+        // one node can hang under several parents, reached by a different
+        // action from each (Zap→BeamCell and BeamCell→Zap merge). An edge's
+        // label and visit count therefore belong to the (parent, child) pair,
+        // not to the child — serialize them per edge, parallel to `children`.
+        // Decision edges carry `child_visits[i]`, the parent's own traffic
+        // through that edge (the child's `visits` sums every parent's);
+        // outcome edges carry the outcome child's `visits`, the statistic the
+        // engine itself samples outcomes by.
+        let edge_lists: Vec<Vec<Value>> = arena
+            .iter()
+            .map(|n| {
+                if matches!(n.kind, NodeKind::Chance) {
+                    n.chance_outcomes
+                        .iter()
+                        .map(|o| {
+                            json!({
+                                "child": o.child.0,
+                                "kind": "outcome",
+                                "label": format!("outcome #{}", o.n),
+                                "target_index": Value::Null,
+                                "outcome_ordinal": o.n,
+                                "visits": arena[o.child.0 as usize].visits,
+                            })
+                        })
+                        .collect()
+                } else {
+                    n.children
+                        .iter()
+                        .enumerate()
+                        .map(|(k, (edge, cid))| {
+                            let (kind, label, tgt) = edge_descr(edge);
+                            json!({
+                                "child": cid.0,
+                                "kind": kind,
+                                "label": label,
+                                "target_index": tgt,
+                                "outcome_ordinal": Value::Null,
+                                "visits": n.child_visits.get(k).copied().unwrap_or(0),
+                            })
+                        })
+                        .collect()
+                }
+            })
+            .collect();
+        // The node-level incoming edge (kind/label/target_index/
+        // outcome_ordinal) is the one from the node's allocating `parent`,
+        // so it agrees with the `parent` field. Under a shared node it is
+        // only ONE of its incoming edges; readers that walk from the root
+        // should use the parent's `edges` instead.
+        let mut incoming: Vec<Option<&Value>> = vec![None; arena.len()];
+        for (pid, list) in edge_lists.iter().enumerate() {
+            for e in list {
+                let cid = e["child"].as_u64().unwrap_or(0) as usize;
+                if arena[cid].parent.map(|p| p.0 as usize) == Some(pid) {
+                    incoming[cid] = Some(e);
+                }
             }
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
@@ -645,11 +784,10 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             // A chance node's subtree lives in `chance_outcomes`, NOT
             // `children` (empty for chance nodes); flatten both so the
             // serialized tree stays connected.
-            let children: Vec<u32> = if is_chance {
-                n.chance_outcomes.iter().map(|o| o.child.0).collect()
-            } else {
-                n.children.iter().map(|(_, cid)| cid.0).collect()
-            };
+            let children: Vec<u32> = edge_lists[i]
+                .iter()
+                .map(|e| e["child"].as_u64().unwrap_or(0) as u32)
+                .collect();
             // DPW outcome cap at the node's current visits — the engine's
             // own class selection (EndTurn > Draw > Default) and formula.
             let outcome_cap = if is_chance {
@@ -662,7 +800,13 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             } else {
                 0.0
             };
-            let (kind, label, target_index, outcome_ordinal) = edges[i].clone();
+            let field = |k: &str| incoming[i].map_or(Value::Null, |e| e[k].clone());
+            let (kind, label, target_index, outcome_ordinal) = (
+                field("kind"),
+                field("label"),
+                field("target_index"),
+                field("outcome_ordinal"),
+            );
             let enemies: Vec<Value> = n
                 .snapshot
                 .enemies
@@ -682,6 +826,7 @@ pub fn search_tree_value(state: &CombatState, params: &RecommendParams) -> Value
             d.insert("proven_win".into(), json!(n.proven_win));
             d.insert("proven_loss".into(), json!(n.proven_loss));
             d.insert("children".into(), json!(children));
+            d.insert("edges".into(), json!(edge_lists[i]));
             d.insert("kind".into(), json!(kind));
             d.insert("label".into(), json!(label));
             d.insert("target_index".into(), json!(target_index));
@@ -815,6 +960,116 @@ mod tests {
         );
     }
 
+    /// A small real combat: Ironclad starter-ish deck vs a weak encounter.
+    fn fixture() -> CombatState {
+        let deck: Vec<String> = [
+            "STRIKE_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "DEFEND_IRONCLAD",
+            "BASH",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        crate::scenario::build_scenario_state(
+            7,
+            "Ironclad",
+            &deck,
+            60,
+            80,
+            &[],
+            &[],
+            "NIBBITS_WEAK",
+            0,
+            None,
+            None,
+        )
+        .expect("scenario builds")
+    }
+
+    fn small_params(fair: bool) -> RecommendParams {
+        RecommendParams {
+            sims: 24,
+            threads: 1,
+            fair,
+            seed: 3,
+            ..RecommendParams::default()
+        }
+    }
+
+    #[test]
+    fn action_rows_carry_mean_final_hp() {
+        let st = fixture();
+        for fair in [false, true] {
+            let out = recommend_value(&st, &small_params(fair), true);
+            let rows = out["actions"].as_array().unwrap();
+            assert!(!rows.is_empty());
+            assert!(
+                rows.iter()
+                    .any(|r| r["hp_n"].as_u64().unwrap() > 0 && r["mean_final_hp"].is_f64()),
+                "fair={fair}: {rows:?}"
+            );
+            for r in rows {
+                assert!(r["hp_n"].as_u64().unwrap() <= r["visits"].as_u64().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn mean_final_hp_null_without_samples() {
+        let v = action_score_value(
+            &Action::EndTurn,
+            10,
+            5,
+            5,
+            0,
+            1.0,
+            0.0,
+            0,
+            false,
+            false,
+            false,
+        );
+        assert!(v["mean_final_hp"].is_null());
+        assert_eq!(v["hp_n"], json!(0));
+        let v = action_score_value(
+            &Action::EndTurn,
+            10,
+            5,
+            5,
+            0,
+            1.0,
+            30.0,
+            4,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(v["mean_final_hp"], json!(7.5));
+    }
+
+    #[test]
+    fn score_action_matches_fair_row() {
+        let st = fixture();
+        let p = small_params(true);
+        let out = recommend_value(&st, &p, true);
+        for row in out["actions"].as_array().unwrap() {
+            let mut expect = row.clone();
+            let a = legal_actions(&st)
+                .into_iter()
+                .find(|a| combat_action_to_value(a) == row["action"])
+                .expect("row action is legal");
+            for k in ["is_best", "low_confidence", "q_saturated"] {
+                expect[k] = json!(false);
+            }
+            let mut got = score_action(&st, &p, &a);
+            for k in ["is_best", "low_confidence", "q_saturated"] {
+                got[k] = json!(false);
+            }
+            assert_eq!(got, expect);
+        }
+    }
+
     #[test]
     fn bad_modes_are_rejected_loudly() {
         let e = RecommendParams::from_config(&json!({"hidden_info": "psychic"}), "mcts_recommend")
@@ -823,6 +1078,32 @@ mod tests {
         let e =
             RecommendParams::from_config(&json!({"rollout_policy": "greedy"}), "x").unwrap_err();
         assert!(e.contains("rollout_policy"), "{e}");
+    }
+
+    #[test]
+    fn an_explicit_rollout_policy_wins_over_the_dialect() {
+        let honest = |extra: Value| {
+            let mut c = json!({"hidden_info": "beliefdraw"});
+            c.as_object_mut()
+                .expect("object")
+                .extend(extra.as_object().expect("object").clone());
+            RecommendParams::from_config(&c, "x")
+                .expect("parses")
+                .mcts_config()
+                .rollout_policy
+        };
+        assert_eq!(honest(json!({})), RolloutPolicyKind::Net, "mode default");
+        for (name, kind) in [
+            ("heuristic", RolloutPolicyKind::Heuristic),
+            ("uniform", RolloutPolicyKind::Uniform),
+            ("net", RolloutPolicyKind::Net),
+        ] {
+            assert_eq!(honest(json!({"rollout_policy": name})), kind, "{name}");
+        }
+        let leaky = RecommendParams::from_config(&json!({"hidden_info": "clairvoyant"}), "x")
+            .expect("parses")
+            .mcts_config();
+        assert_eq!(leaky.rollout_policy, RolloutPolicyKind::Heuristic);
     }
 
     #[test]
@@ -838,6 +1119,8 @@ mod tests {
                 losses: visits - wins,
                 ties: 0,
                 value_sum,
+                hp_sum: 0.0,
+                hp_n: 0,
                 terminal_win,
             };
         let out = recommend_output_value(

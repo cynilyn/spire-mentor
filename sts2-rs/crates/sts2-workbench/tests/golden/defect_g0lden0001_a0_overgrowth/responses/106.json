@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "TURBO",
+   "hp_n": 16,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 43.0,
    "q": 1.1534,
    "q_saturated": true,
    "stable_idx": 1,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Strike",
+   "hp_n": 16,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 43.0,
    "q": 1.1534,
    "q_saturated": true,
    "stable_idx": 0,
@@ -41,9 +44,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 16,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 43.0,
    "q": 1.1534,
    "q_saturated": true,
    "stable_idx": -1,

@@ -2915,10 +2915,11 @@ if __name__ == "__main__":
     )
     hint_group.add_argument(
         "--mcts-rollout",
-        choices=("heuristic", "uniform"),
-        default="heuristic",
-        help="MCTS rollout policy. 'heuristic' (default) = softmax over "
-        "expert play priorities; 'uniform' = unbiased random.",
+        choices=("heuristic", "uniform", "net"),
+        default=None,
+        help="MCTS rollout policy. Default: what the hidden-info mode deploys "
+        "(the playout net under beliefdraw). 'heuristic' = softmax over expert "
+        "play priorities; 'uniform' = unbiased random; 'net' = the playout net.",
     )
     hint_group.add_argument(
         "--mcts-log",

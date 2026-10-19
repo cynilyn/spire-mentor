@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Survivor",
+   "hp_n": 12,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 61.0833,
    "q": 1.218,
    "q_saturated": false,
    "stable_idx": 4,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Neutralize",
+   "hp_n": 12,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 59.8333,
    "q": 1.2135,
    "q_saturated": false,
    "stable_idx": 1,
@@ -41,9 +44,11 @@
   },
   {
    "action": "Strike",
+   "hp_n": 12,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 54.3333,
    "q": 1.1939,
    "q_saturated": false,
    "stable_idx": 0,
@@ -55,9 +60,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 12,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 50.9167,
    "q": 1.1817,
    "q_saturated": false,
    "stable_idx": -1,

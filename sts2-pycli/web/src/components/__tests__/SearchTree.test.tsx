@@ -239,3 +239,49 @@ describe("SearchTree (graph view)", () => {
     expect(screen.getByText("100%")).toBeInTheDocument();
   });
 });
+
+// The search graph is a DAG: Zap→BeamCell and BeamCell→Zap reach ONE node (3),
+// allocated under BeamCell (so its own label is "Zap"). Each appearance must be
+// labelled and counted by its own edge, and expand independently.
+const dag: Tree = {
+  nodes: [
+    n({ id: 0, visits: 100, children: [1, 2],
+      edges: [
+        { child: 1, kind: "play", label: "Zap", target_index: null, visits: 60 },
+        { child: 2, kind: "play", label: "BeamCell", target_index: 0, visits: 40 },
+      ] }),
+    n({ id: 1, parent: 0, visits: 60, label: "Zap", kind: "play", children: [3],
+      edges: [{ child: 3, kind: "play", label: "BeamCell", target_index: 0, visits: 20 }] }),
+    n({ id: 2, parent: 0, visits: 40, label: "BeamCell", kind: "play", target_index: 0, children: [3],
+      edges: [{ child: 3, kind: "play", label: "Zap", target_index: null, visits: 30 }] }),
+    n({ id: 3, parent: 2, visits: 50, wins: 50, label: "Zap", kind: "play", children: [4],
+      edges: [{ child: 4, kind: "end_turn", label: "End turn", target_index: null, visits: 45 }] }),
+    n({ id: 4, parent: 3, visits: 45, label: "End turn", kind: "end_turn", children: [] }),
+  ],
+  root: 0, pv: [], sims: 100, c_puct: 2.5,
+};
+
+describe("SearchTree (transposed DAG)", () => {
+  it("labels a shared node by the edge that reaches it, with that edge's visits", () => {
+    render(<SearchTree tree={dag} config={cfg(100)} onRun={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Zap"));
+    // Under Zap the shared node reads "BeamCell" (not its own "Zap" label)...
+    expect(screen.getAllByText("BeamCell")).toHaveLength(2);
+    // ...counted by Zap's traffic through that edge, flagged as shared.
+    expect(screen.getByText("N 20*")).toBeInTheDocument();
+  });
+
+  it("expands each appearance of a shared node independently", () => {
+    render(<SearchTree tree={dag} config={cfg(100)} onRun={() => {}} onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Zap"));
+    // Rows are DFS-ordered: root, Zap, its BeamCell (the shared node), BeamCell.
+    fireEvent.click(screen.getAllByText("BeamCell")[0]);
+    expect(screen.getAllByText("End turn")).toHaveLength(1);
+    // Opening the root's BeamCell reveals the shared node again — as "Zap",
+    // with BeamCell's traffic — still folded: its subtree is not shown twice.
+    fireEvent.click(screen.getAllByText("BeamCell")[1]);
+    expect(screen.getAllByText("Zap")).toHaveLength(2);
+    expect(screen.getByText("N 30*")).toBeInTheDocument();
+    expect(screen.getAllByText("End turn")).toHaveLength(1);
+  });
+});

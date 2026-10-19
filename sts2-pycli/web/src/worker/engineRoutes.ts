@@ -139,6 +139,7 @@ const WASM_ROUTES = new Set([
   "POST /api/live/choice-ranker",
   "POST /api/live/auto-action",
   "POST /api/live/last-move-regret",
+  "POST /api/live/last-choice-grade",
   "POST /api/live/regret-review",
   "POST /api/live/card-advisor",
   "POST /api/live/decision-advisor",
@@ -199,6 +200,7 @@ const STEP_ROUTE = /^\/api\/step\/\d+(\/deck-analysis)?$/;
 const STREAM_ROUTES = new Set([
   "POST /api/live/card-advisor/stream",
   "POST /api/live/decision-advisor/stream",
+  "POST /api/live/last-choice-check/stream",
 ]);
 
 /** Calls after which the live run must be re-persisted (or dropped). */

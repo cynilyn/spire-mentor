@@ -540,7 +540,37 @@ impl PartialEq for Creature {
 
 impl Eq for Creature {}
 
+/// Enemy HP at or above this is C#'s `SetMaxAndCurrentHp(999999999)`
+/// sentinel ([`Creature::is_beaten_sentinel`]).
+pub const SENTINEL_HP_MIN: i32 = 1_000_000;
+
 impl Creature {
+    /// Whether this is an enemy that has already been killed but is kept in
+    /// combat at sentinel HP. Only the Waterfall Giant does this: a death
+    /// with `SteamEruption` stacks is interrupted, the giant sits at
+    /// 999,999,999 HP through ABOUT_TO_BLOW, and EXPLODE then kills it
+    /// (`WaterfallGiant.TriggerAboutToBlowState`). Read raw, every enemy-HP
+    /// reader scores that beaten giant as a fresh full-HP enemy, so they go
+    /// through [`Self::scored_hp`] instead.
+    #[must_use]
+    pub fn is_beaten_sentinel(&self) -> bool {
+        self.max_hp >= SENTINEL_HP_MIN || self.current_hp >= SENTINEL_HP_MIN
+    }
+
+    /// `(current_hp, max_hp)` as a scorer should read them: the raw pair,
+    /// except that a beaten sentinel ([`Self::is_beaten_sentinel`]) reads as
+    /// 0 HP left of its spawn max HP ([`MonsterKind::min_initial_hp`]; min =
+    /// max for the giant), i.e. fully removed with its real weight. A
+    /// species-less creature at sentinel HP weighs 0.
+    #[must_use]
+    pub fn scored_hp(&self, ascension: u8) -> (i32, i32) {
+        if self.is_beaten_sentinel() {
+            (0, self.species.map_or(0, |k| k.min_initial_hp(ascension)))
+        } else {
+            (self.current_hp, self.max_hp)
+        }
+    }
+
     /// Increase `max_hp` by `amount` and grow `current_hp` by the same
     /// amount (clamped at the new `max_hp`). Returns the **signed delta**
     /// applied to `max_hp` (always `>= 0`; negative / zero `amount` is a
@@ -8039,10 +8069,13 @@ impl CombatState {
         // the bit every banked delta reads 0 and the walk below is a pure
         // no-op — skip it. (The old gate, "every `combat_vars` empty", stayed
         // open for the whole combat once any card var was written, zeros
-        // included.)
+        // included.) A zero-delta roll banks nothing, so the live-roll marker
+        // must open the gate too (GH #759).
         if !self.cards.iter().any(|c| {
             c.combat_vars
                 .maybe_nonzero(crate::cards::VarKey::SneckoCostDeltaThisTurn)
+                || c.combat_vars
+                    .maybe_nonzero(crate::cards::VarKey::SneckoRollLive)
         }) {
             #[cfg(debug_assertions)]
             self.shadow_skipped_card_sweep(
@@ -8057,14 +8090,7 @@ impl CombatState {
     /// The ungated arena walk of [`Self::restore_snecko_costs_for_turn_start`].
     fn restore_snecko_costs_walk(&mut self) {
         for c in &mut self.cards {
-            let banked = c.combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn);
-            if banked != 0 {
-                c.cost = c.cost.saturating_sub(banked as i8);
-                c.set_combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn, 0);
-                // The expiring Snecko roll was the absolute modifier the
-                // upgrade-clamp flag tracks; the cost is base-owned again.
-                c.set_combat_var(crate::cards::VarKey::CostAbsolutelySet, 0);
-            }
+            c.expire_snecko_roll();
         }
     }
 
@@ -8201,7 +8227,19 @@ impl CombatState {
                 // Absolute(0) in the ordered walk).
                 card.set_combat_var(VarKey::FreeThisTurn, 0);
                 // The roll is an ABSOLUTE local modifier — flag it so an in-combat
-                // upgrade clamps it per C# `CardEnergyCost.UpgradeBy`.
+                // upgrade clamps it per C# `CardEnergyCost.UpgradeBy`. Mark the
+                // roll live (a zero delta banks nothing) and record whether
+                // the flag was already owned, so its expiry releases only what
+                // this roll raised (GH #759). A second roll this turn keeps
+                // the first roll's answer.
+                if card.combat_var(VarKey::SneckoRollLive) == 0 {
+                    let owner = if card.combat_var(VarKey::CostAbsolutelySet) != 0 {
+                        crate::cards::SNECKO_ROLL_FLAG_PREOWNED
+                    } else {
+                        crate::cards::SNECKO_ROLL_RAISED_FLAG
+                    };
+                    card.set_combat_var(VarKey::SneckoRollLive, owner);
+                }
                 card.set_combat_var(VarKey::CostAbsolutelySet, 1);
             }
         }
@@ -10549,17 +10587,19 @@ fn nonminion_enemy_hp_totals(state: &CombatState) -> (i32, i32, u32) {
                 .iter()
                 .any(|p| p.id == puid.0 && p.kind == PowerKind::Minion)
         });
+        // A beaten sentinel reads as a dead enemy of its spawn max HP.
+        let (cur, max) = c.scored_hp(state.ascension);
         if is_minion {
-            minion_cur += c.current_hp.max(0);
-            minion_max += c.max_hp.max(0);
-            if c.current_hp > 0 {
+            minion_cur += cur.max(0);
+            minion_max += max.max(0);
+            if cur > 0 {
                 minion_alive += 1;
             }
             continue;
         }
-        cur_total += c.current_hp.max(0);
-        max_total += c.max_hp.max(0);
-        if c.current_hp > 0 {
+        cur_total += cur.max(0);
+        max_total += max.max(0);
+        if cur > 0 {
             alive += 1;
         }
     }
@@ -15034,6 +15074,31 @@ mod tests {
     }
 
     #[test]
+    fn a_beaten_waterfall_giant_scores_as_a_dead_enemy() {
+        let giant_uid = NonZeroU32::new(2).expect("non-zero");
+        let other_uid = NonZeroU32::new(3).expect("non-zero");
+        let mut giant = mg_creature(giant_uid, 999_999_999, 999_999_999);
+        giant.species = Some(MonsterKind::WaterfallGiant);
+        let spawn_max = MonsterKind::WaterfallGiant.min_initial_hp(0);
+        assert!(giant.is_beaten_sentinel());
+        assert_eq!(giant.scored_hp(0), (0, spawn_max));
+        let live = mg_creature(other_uid, 30, 50);
+        assert!(!live.is_beaten_sentinel());
+        assert_eq!(live.scored_hp(0), (30, 50));
+
+        let mut s = CombatState::default();
+        s.creatures.push(giant);
+        s.creatures.push(live);
+        s.enemy_uids.push(CreatureUid(giant_uid));
+        s.enemy_uids.push(CreatureUid(other_uid));
+        assert_eq!(
+            nonminion_enemy_hp_totals(&s),
+            (30, spawn_max + 50, 1),
+            "the giant is fully removed, not a fresh 999,999,999-HP enemy"
+        );
+    }
+
+    #[test]
     fn nonminion_enemy_hp_totals_minion_fallback_edges() {
         let live_uid = NonZeroU32::new(2).expect("non-zero");
         let minion_uid = NonZeroU32::new(3).expect("non-zero");
@@ -15730,6 +15795,82 @@ mod tests {
             c.combat_var(crate::cards::VarKey::CostAbsolutelySet),
             0,
             "the expiring Snecko roll must release the CostAbsolutelySet flag"
+        );
+    }
+
+    /// One hand card at `cost`, ready for `snecko_randomize_hand_costs`.
+    fn snecko_hand_state(cost: i8) -> CombatState {
+        let mut state = CombatState::default();
+        let uid = CardUid::new(1).expect("nz");
+        let mut card = Card {
+            card_id: crate::cards::CardId::StrikeIronclad,
+            cost,
+            ..Card::pod_defaults()
+        };
+        card.uid = uid;
+        state.cards.push(card);
+        state.player.hand.push(uid);
+        state
+    }
+
+    /// The cost the next Snecko roll of `state`'s RNG lands on.
+    fn next_snecko_roll(state: &CombatState) -> i8 {
+        let mut probe = state.clone();
+        probe.snecko_randomize_hand_costs();
+        probe.cards[0].cost
+    }
+
+    /// GH #759: C# `SetThisTurnOrUntilPlayed` adds its Absolute modifier
+    /// whatever the roll (`CardEnergyCost.cs:197-203`) and `EndOfTurnCleanup`
+    /// drops it unconditionally (`:331-335`). A roll equal to the current
+    /// cost banks a zero delta, which the turn-start restore used to skip —
+    /// leaving `CostAbsolutelySet` stuck at 1 for the rest of combat.
+    #[test]
+    fn zero_delta_snecko_roll_releases_cost_flag_at_turn_start() {
+        use crate::cards::VarKey;
+        let roll = next_snecko_roll(&snecko_hand_state(1));
+        let mut state = snecko_hand_state(roll);
+        state.snecko_randomize_hand_costs();
+        assert_eq!(
+            state.cards[0].cost, roll,
+            "fixture: roll equals the prior cost"
+        );
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::SneckoCostDeltaThisTurn),
+            0
+        );
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::CostAbsolutelySet),
+            1,
+            "the live roll is an absolute modifier"
+        );
+
+        state.restore_snecko_costs_for_turn_start();
+        assert_eq!(state.cards[0].cost, roll);
+        assert_eq!(
+            state.cards[0].combat_var(VarKey::CostAbsolutelySet),
+            0,
+            "the expired zero-delta roll must release the CostAbsolutelySet flag"
+        );
+    }
+
+    /// GH #759: under Confused (SneckoEye) the card already carries C#
+    /// `SetThisCombat(roll)` (`ConfusedPower.cs:42`). Snecko Oil's modifier
+    /// expiring removes only its own modifier, so the Confused one still owns
+    /// the cost and the flag must survive the Snecko expiry.
+    #[test]
+    fn snecko_expiry_keeps_cost_flag_owned_by_confused() {
+        use crate::cards::VarKey;
+        let mut state = snecko_hand_state(2);
+        state.cards[0].set_combat_var(VarKey::CostAbsolutelySet, 1);
+        state.snecko_randomize_hand_costs();
+        state.restore_snecko_costs_for_turn_start();
+        let c = &state.cards[0];
+        assert_eq!(c.cost, 2, "the Confused roll is back in force");
+        assert_eq!(
+            c.combat_var(VarKey::CostAbsolutelySet),
+            1,
+            "Confused's absolute modifier outlives the Snecko roll"
         );
     }
 

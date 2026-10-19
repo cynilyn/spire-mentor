@@ -288,7 +288,29 @@ pub enum VarKey {
     /// so downstream beads don't need to extend this enum just for a
     /// one-off; collisions are caller-managed.
     Generic,
+    /// A Snecko Oil roll (C# `SetThisTurnOrUntilPlayed`) is live on this card,
+    /// and who owns [`VarKey::CostAbsolutelySet`] when it expires:
+    /// [`SNECKO_ROLL_RAISED_FLAG`] or [`SNECKO_ROLL_FLAG_PREOWNED`].
+    ///
+    /// `SneckoCostDeltaThisTurn` cannot carry this, because a roll equal to
+    /// the prior cost banks a zero delta and looks exactly like "no roll". C#
+    /// adds the Absolute modifier whatever the roll (`CardEnergyCost.cs:197-
+    /// 203`) and drops it at either expiry edge (`:331-345`), so the zero-delta
+    /// roll must release the flag too (GH #759). Under Confused (SneckoEye) the
+    /// card already carries `SetThisCombat(roll)`, which outlives the Snecko
+    /// modifier, so the flag stays when it was set before the roll.
+    ///
+    /// Appended after `Generic` so no existing discriminant moves.
+    SneckoRollLive,
 }
+
+/// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
+/// its expiry clears the flag.
+pub const SNECKO_ROLL_RAISED_FLAG: i32 = 1;
+/// [`VarKey::SneckoRollLive`]: another absolute modifier (Confused's
+/// `SetThisCombat`) already owned `CostAbsolutelySet`, so the flag outlives
+/// the Snecko roll.
+pub const SNECKO_ROLL_FLAG_PREOWNED: i32 = 2;
 
 // Bead sts2-rs-k2y (P6-8): persistent card enchantments (`Card::enchantments`).
 // Mirrors `sts2_env/cards/enchantments.py` at pin `01c094d` — these survive
@@ -781,9 +803,9 @@ impl crate::inline_kv::InlineKvKey for EnchantmentId {
 /// the PROVABLE worst case, not just the typical one: slots are never
 /// reclaimed (clearing a var writes 0 in place — the live prefix is
 /// equality/hash-visible), so a card accumulates one slot per distinct key
-/// it EVER touches in a combat. The maximum distinct-key set is 15: the 10
+/// it EVER touches in a combat. The maximum distinct-key set is 16: the 11
 /// generic flags any card can carry (`FreeThisTurn`, `EtherealThisCombat`,
-/// `StarCostFreeThisCombat`, `SneckoCostDeltaThisTurn`,
+/// `StarCostFreeThisCombat`, `SneckoCostDeltaThisTurn`, `SneckoRollLive`,
 /// `CostAbsolutelySet`, `IsDupe`, `GeneratedInCombat`,
 /// `PendingBatchAutoPlay`, `DampenDowngradedMarker`, `Generic`) + the
 /// wire-reconstruction cost trio + at most 2 card-specific keys on one
@@ -1004,6 +1026,28 @@ impl Card {
         self.combat_vars.set(key, value);
     }
 
+    /// Expire this card's Snecko Oil roll, if one is live: C#'s
+    /// `SetThisTurnOrUntilPlayed` modifier dropping at `EndOfTurnCleanup` or
+    /// `AfterCardPlayedCleanup` (`CardEnergyCost.cs:331-345`). Subtracts the
+    /// banked delta (possibly 0) and releases `CostAbsolutelySet` unless
+    /// another absolute modifier owned it before the roll (GH #759).
+    ///
+    /// A bank without the [`VarKey::SneckoRollLive`] marker (a state that
+    /// predates it) expires as a roll that raised the flag.
+    pub fn expire_snecko_roll(&mut self) {
+        let live = self.combat_var(VarKey::SneckoRollLive);
+        let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
+        if live == 0 && banked == 0 {
+            return;
+        }
+        self.cost = self.cost.saturating_sub(banked as i8);
+        self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
+        self.set_combat_var(VarKey::SneckoRollLive, 0);
+        if live != SNECKO_ROLL_FLAG_PREOWNED {
+            self.set_combat_var(VarKey::CostAbsolutelySet, 0);
+        }
+    }
+
     /// Look up an enchantment stack, returning the current amount or 0.
     #[inline]
     #[must_use]
@@ -1158,7 +1202,9 @@ impl Card {
                     if cost_delta < 0 {
                         let new_base = upgraded.cost.max(0);
                         self.cost = self.cost.min(new_base);
-                        if self.combat_var(VarKey::SneckoCostDeltaThisTurn) != 0 {
+                        if self.combat_var(VarKey::SneckoRollLive) != 0
+                            || self.combat_var(VarKey::SneckoCostDeltaThisTurn) != 0
+                        {
                             self.set_combat_var(
                                 VarKey::SneckoCostDeltaThisTurn,
                                 i32::from(self.cost) - i32::from(new_base),
@@ -3552,7 +3598,7 @@ mod tests {
     /// equality/hash-visible, see `inline_kv` module docs) — so over a long
     /// combat a single card can collect every generic flag it ever touched
     /// (`FreeThisTurn`, `EtherealThisCombat`, `StarCostFreeThisCombat`,
-    /// `SneckoCostDeltaThisTurn`, `CostAbsolutelySet`, `IsDupe`,
+    /// `SneckoCostDeltaThisTurn`, `SneckoRollLive`, `CostAbsolutelySet`, `IsDupe`,
     /// `GeneratedInCombat`, `PendingBatchAutoPlay`,
     /// `DampenDowngradedMarker`, `Generic`) PLUS the wire-reconstruction
     /// cost trio PLUS its card-specific keys (Thrash carries two). At the
@@ -3560,12 +3606,13 @@ mod tests {
     /// seed 41100016, `CostAbsolutelySet` via net_search forks).
     #[test]
     fn combat_vars_capacity_holds_worst_case_distinct_key_set() {
-        // 15 keys: 10 generic + 3 wire trio + Thrash's pair.
+        // 16 keys: 11 generic + 3 wire trio + Thrash's pair.
         let worst_case = [
             VarKey::FreeThisTurn,
             VarKey::EtherealThisCombat,
             VarKey::StarCostFreeThisCombat,
             VarKey::SneckoCostDeltaThisTurn,
+            VarKey::SneckoRollLive,
             VarKey::CostAbsolutelySet,
             VarKey::IsDupe,
             VarKey::GeneratedInCombat,
