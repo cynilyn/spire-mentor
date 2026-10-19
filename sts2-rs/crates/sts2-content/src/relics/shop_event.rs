@@ -4282,7 +4282,11 @@ fn listener_glitter_card_reward(
         return EffectResult::NotImplemented;
     }
     for card in cards {
-        card.add_enchantment(EnchantmentId::Glam, 1);
+        // `glam.CanEnchant(card)` (`Glitter.cs:28`): an already-enchanted offer is
+        // rejected (no reapplication, `EnchantmentModel.cs:289`).
+        if crate::enchantments::glam_can_enchant_offered_card(card) {
+            card.set_enchantment(EnchantmentId::Glam, 1);
+        }
     }
     EffectResult::Resolved
 }
