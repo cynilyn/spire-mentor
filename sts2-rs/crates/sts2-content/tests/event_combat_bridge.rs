@@ -319,6 +319,7 @@ fn dense_vegetation_rest_opens_fight_page_and_fight_stages_no_resume_combat() {
     let req = rs.event_combat.as_ref().expect("combat staged");
     assert!(!req.resume, "shouldResumeAfterCombat: false");
     assert!(req.victory_rewards.is_empty(), "no extra rewards");
+    assert!(req.monster_room_rewards, "normal Monster-room rewards follow");
     assert_eq!(req.encounter, EventEncounter::DenseVegetation);
     assert_eq!(rs.current_event, Some(EventId::DenseVegetation));
 }

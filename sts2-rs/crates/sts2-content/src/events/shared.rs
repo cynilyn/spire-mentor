@@ -1111,11 +1111,17 @@ fn dense_vegetation_rest(state: &mut RunState) -> EventOutcome {
 /// event finishes when the fight resolves. Returns a NOT-finished outcome so
 /// the dispatcher keeps the event room open across the combat.
 fn dense_vegetation_fight(state: &mut RunState) -> EventOutcome {
-    state.event_combat = Some(EventCombatRequest::no_resume(
-        EventEncounter::DenseVegetation,
-        EventId::DenseVegetation,
-        Vec::new(),
-    ));
+    // C# passes no extra rewards, but the encounter is a Monster room with
+    // `ShouldGiveRewards` true, so the normal combat rewards (gold 10-20,
+    // potion roll, 3-card reward) follow the fight (`RewardsCmd.cs:26`).
+    state.event_combat = Some(
+        EventCombatRequest::no_resume(
+            EventEncounter::DenseVegetation,
+            EventId::DenseVegetation,
+            Vec::new(),
+        )
+        .with_monster_room_rewards(),
+    );
     EventOutcome {
         finished: false,
         description: "The wrigglers burst out. Fight!".to_string(),

@@ -1525,6 +1525,37 @@ mod tests {
         );
     }
 
+    /// B12: DenseVegetation's event combat offers the normal Monster-room
+    /// rewards (C# `RewardsCmd.OfferForRoomEnd`, encounter `RoomType.Monster`,
+    /// `ShouldGiveRewards` true). The run manager runs the gold/potion step with
+    /// `RoomType::Monster` and then rolls the card reward while `current_room`
+    /// is still the EVENT room. This pins that the result (gold, potion, the 3
+    /// card options, and every `Rewards`-stream cursor afterwards) is identical
+    /// to a map Monster fight on the same seed.
+    #[test]
+    fn event_room_monster_rewards_match_a_map_monster_fight() {
+        use sts2_core::runstate::Room;
+        crate::relics::dispatch::ensure_installed();
+        let run = |room: RoomType| {
+            let mut rm =
+                new_run_manager_for_character(42, CharacterId::Ironclad).with_neow_start();
+            initialize_run_setup(&mut rm);
+            let rs = &mut rm.run_state;
+            rs.current_room = Some(Room::new(room));
+            rs.last_combat_gold_proportion = 1.0;
+            rs.gold = 0;
+            apply_combat_gold_and_potion(rs, RoomType::Monster);
+            let cards = generate_card_reward_options(rs);
+            let next = rs.rng.rewards.next_int(0, 1_000_000);
+            (rs.gold, rs.potions.clone(), cards, next)
+        };
+        let event = run(RoomType::Event);
+        let monster = run(RoomType::Monster);
+        assert_eq!(event, monster, "event-room rewards == Monster-room rewards");
+        assert!((10..=20).contains(&event.0), "gold in [10,20], got {}", event.0);
+        assert_eq!(event.2.len(), 3, "3-card reward");
+    }
+
     /// Task #19 end-to-end: `generate_boss_relic_pool` returns the NEXT
     /// act's Ancient-event offers (3 distinct relics) for an initialized
     /// run, not the flat shop_event stand-in. Bead `sts2-rs-40ikw`.

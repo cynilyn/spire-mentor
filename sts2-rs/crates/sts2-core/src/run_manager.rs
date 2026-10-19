@@ -3806,6 +3806,20 @@ impl RunManager {
         // the no-resume combat room exit). `exit_event_room` clears
         // `current_event` + `event_state`; `event_combat` is already taken.
         self.run_state.exit_event_room();
+        // B12: an event combat whose encounter is a normal Monster room
+        // (`ShouldGiveRewards` true) offers the standard combat rewards, in the
+        // same `Rewards`-stream order as a map Monster fight (C#
+        // `RewardsSet.GenerateRewardsFor`, `RewardsSet.cs:224-230`):
+        // potion-odds float, gold, potion contents, then the 3-card reward.
+        // Extra rewards (`victory_rewards`) were already queued above and sit
+        // after them in C# (`RewardsSet.WithRewardsFromRoom`, `:96-98`).
+        if req.monster_room_rewards && clean_victory {
+            let room_type = crate::runstate::RoomType::Monster;
+            if let Some(apply) = self.callbacks.apply_combat_gold_and_potion {
+                apply(&mut self.run_state, room_type);
+            }
+            self.enter_card_reward_phase();
+        }
         self.route_after_event_rewards()
     }
 
@@ -9255,6 +9269,72 @@ mod tests {
         assert!(rm.run_state.event_combat.is_none(), "request consumed");
         assert!(rm.run_state.current_event.is_none(), "event closed");
         assert_ne!(rm.phase(), Phase::Event, "event not resumed");
+    }
+
+    /// Test doubles for the monster-room reward step: record the room type
+    /// the gold/potion callback was given, mark the order with gold amounts,
+    /// and offer a one-card reward.
+    fn apply_gold_potion_marker(rs: &mut RunState, room_type: crate::runstate::RoomType) {
+        assert_eq!(room_type, crate::runstate::RoomType::Monster);
+        rs.gain_gold(11);
+    }
+    fn card_options_marker(rs: &mut RunState) -> Vec<crate::cards::CardId> {
+        // The gold/potion step must already have run (C# populate order).
+        assert!(rs.gold >= 11, "gold/potion before the card reward");
+        vec![crate::cards::CardId::StrikeIronclad]
+    }
+
+    fn resolve_dense_vegetation_fight_with_rewards(rs: &mut RunState, _idx: usize) -> bool {
+        rs.event_combat = Some(
+            EventCombatRequest::no_resume(
+                EventEncounter::DenseVegetation,
+                EventId::DenseVegetation,
+                Vec::new(),
+            )
+            .with_monster_room_rewards(),
+        );
+        true
+    }
+
+    #[test]
+    fn monster_room_rewards_flag_grants_gold_potion_then_card_reward() {
+        let mut cb = bridge_callbacks(resolve_dense_vegetation_fight_with_rewards);
+        cb.apply_combat_gold_and_potion = Some(apply_gold_potion_marker);
+        cb.generate_card_reward_options = Some(card_options_marker);
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+        let gold_before = rm.run_state.gold;
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(rm.phase(), Phase::Combat);
+
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let _ = rm.exit_combat_and_transition();
+        assert_eq!(rm.run_state.gold, gold_before + 11, "gold/potion step ran");
+        assert_eq!(rm.phase(), Phase::CardReward, "3-card reward screen");
+        assert_eq!(rm.card_reward_options.len(), 1);
+        assert!(rm.run_state.current_event.is_none(), "event closed");
+        assert!(rm.run_state.event_combat.is_none());
+    }
+
+    #[test]
+    fn event_combat_without_the_flag_grants_no_monster_room_rewards() {
+        let mut cb = bridge_callbacks(resolve_stages_no_resume_knight);
+        cb.apply_combat_gold_and_potion = Some(apply_gold_potion_marker);
+        cb.generate_card_reward_options = Some(card_options_marker);
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.enter_event_room(EventId::TheLanternKey);
+        rm.set_phase(Phase::Event);
+        let gold_before = rm.run_state.gold;
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let _ = rm.exit_combat_and_transition();
+        // Existing bridge behaviour is unchanged for the other event combats.
+        assert_eq!(rm.run_state.gold, gold_before, "no normal rewards (gap)");
     }
 
     #[test]
