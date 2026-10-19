@@ -778,8 +778,8 @@ def map_parity(base: str, character: str, ascension: int, n: int) -> int:
             ok += 1
         else:
             ck, rk = set(cn), set(rn)
-            print(f"[{seed}] DIFF only_cs={sorted(ck - rk)[:5]} only_rs={sorted(rk - ck)[:5]}")
-            for k in sorted(ck & rk):
+            print(f"[{seed}] DIFF only_cs={sorted(ck - rk, key=str)[:5]} only_rs={sorted(rk - ck, key=str)[:5]}")
+            for k in sorted(ck & rk, key=str):
                 if cn[k] != rn[k]:
                     print(f"    {k}: cs={cn[k]} rs={rn[k]}")
     print(f"\nmap-graph parity (node-types + edges + boss): {ok}/{n} seeds")
