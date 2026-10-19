@@ -204,7 +204,11 @@ impl Session {
         let probs: Vec<f64> = options.iter().map(|o| o.prob).collect();
         let g = grade_choice(&probs, played);
         let mut ranked: Vec<&ChoiceOption> = options.iter().collect();
-        ranked.sort_by(|a, b| b.prob.partial_cmp(&a.prob).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.prob
+                .partial_cmp(&a.prob)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let (you, top) = (&options[played], &options[g.top]);
         Ok(Some(json!({
             "node_id": node.id,

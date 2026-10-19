@@ -575,7 +575,10 @@ fn choice_grade_after_a_neow_pick() {
     let g = call(&mut wb, "POST", "/api/live/last-choice-grade", json!({}));
     assert_eq!(g["decision"], json!("event_choice"));
     assert_eq!(g["kind"], json!("Event"));
-    assert!(matches!(g["verdict"].as_str(), Some("flag" | "tossup")), "{g}");
+    assert!(
+        matches!(g["verdict"].as_str(), Some("flag" | "tossup")),
+        "{g}"
+    );
     assert_eq!(g["played"]["rank"], json!(opts.len()));
     assert_eq!(g["n_options"], json!(opts.len()));
     assert_eq!(g["top"]["label"], opts[0]["label"]);
@@ -601,7 +604,8 @@ fn choice_check_streams_you_vs_ai() {
     let opts = ranked_options(&mut wb);
     take(&mut wb, opts.last().unwrap());
     let g = call(&mut wb, "POST", "/api/live/last-choice-grade", json!({}));
-    let config = json!({"node_id": g["node_id"], "rollouts": 1, "sims": 0, "max_steps": 4, "seed": 1});
+    let config =
+        json!({"node_id": g["node_id"], "rollouts": 1, "sims": 0, "max_steps": 4, "seed": 1});
     let mut frames = Vec::new();
     wb.call_stream(
         "POST",
@@ -635,5 +639,8 @@ fn choice_check_streams_you_vs_ai() {
         &json!({"config": {"node_id": g["node_id"]}}),
         &mut |f| frames.push(f.clone()),
     );
-    assert_eq!(frames, vec![json!({"type": "error", "error": "nothing to check"})]);
+    assert_eq!(
+        frames,
+        vec![json!({"type": "error", "error": "nothing to check"})]
+    );
 }

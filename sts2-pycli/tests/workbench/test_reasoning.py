@@ -117,14 +117,20 @@ def test_rows_from_mcts_passes_final_hp():
 
     raw = {
         "actions": [
-            {"action": {"action": "end_turn"}, "visits": 10, "p_win": 1.0,
-             "mean_final_hp": 61.5, "hp_n": 30, "is_best": True},
+            {
+                "action": {"action": "end_turn"},
+                "visits": 10,
+                "p_win": 1.0,
+                "mean_final_hp": 61.5,
+                "hp_n": 30,
+                "is_best": True,
+            },
             {"action": {"action": "play", "card_index": 0}, "visits": 5, "p_win": 1.0},
         ]
     }
     rows = rows_from_mcts(raw, {"hand": [{"index": 0, "name": "Strike"}]})
     by = {r["stable_idx"]: r for r in rows}
-    assert by[-1]["mean_final_hp"] == 61.5 and by[-1]["hp_n"] == 30
+    assert by[-1]["mean_final_hp"] == pytest.approx(61.5) and by[-1]["hp_n"] == 30
     assert by[0]["mean_final_hp"] is None and by[0]["hp_n"] == 0
 
 

@@ -54,7 +54,7 @@ def _round_half_up(x: float) -> int:
     banker's ``round``). The Rust advisor uses the same explicit formula, not
     ``f64::round``, so the two stay bit-identical.
     """
-    return int(math.floor(x + 0.5))
+    return math.floor(x + 0.5)
 
 
 def _hp_known(row: dict[str, Any]) -> bool:
