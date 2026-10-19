@@ -208,7 +208,7 @@ pub fn scenario_to_combat_state_with_ascension(
     let resolved_potions = if file_potions.is_empty() {
         Vec::new()
     } else {
-        let mut potion_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
+        let mut potion_rng = scenario_stream_rng(seed);
         resolve_potions(&PotionInput::Inline(file_potions.to_vec()), &mut potion_rng)
             .map_err(|e| ScenarioBuildError::Potions(e.to_string()))?
     };
@@ -256,10 +256,34 @@ pub fn scenario_to_combat_state_with_ascension(
     Ok(state)
 }
 
+/// The auxiliary RNG (potion rolls, encounter resolution) the scenario CLI
+/// derives from `--seed`. The full `u64` seed is used: two seeds that differ
+/// only in the high 32 bits must give different streams (this used to truncate
+/// to `u32`). Shared by the library entry point and `main.rs`.
+#[must_use]
+pub fn scenario_stream_rng(seed: u64) -> sts2_core::dotnet_rng::Rng {
+    sts2_core::dotnet_rng::Rng::new(seed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sts2_core::monsters::Intent;
+
+    #[test]
+    fn scenario_stream_rng_keeps_the_high_32_bits() {
+        let lo = 9_u64;
+        let hi = lo + (1_u64 << 32);
+        assert_eq!(scenario_stream_rng(hi).seed(), hi);
+        assert_ne!(
+            scenario_stream_rng(lo).seed(),
+            scenario_stream_rng(hi).seed()
+        );
+        assert_ne!(
+            scenario_stream_rng(lo).state(),
+            scenario_stream_rng(hi).state()
+        );
+    }
 
     /// A9 `DeadlyEnemies` attack scaling reaches the library entry
     /// point: a lone Nibbit's opening move is deterministically BUTT

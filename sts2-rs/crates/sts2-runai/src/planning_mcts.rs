@@ -854,6 +854,17 @@ impl<'a> RunPlanner<'a> {
             .collect()
     }
 
+    /// Test probe: `(action, kind)` for every root child, so a test can assert
+    /// the node kind of a SPECIFIC action instead of an unordered set.
+    #[cfg(test)]
+    fn root_child_kind_by_action(&self) -> Vec<(RunAction, RunNodeKind)> {
+        self.root_node()
+            .children
+            .iter()
+            .map(|&(a, cid)| (a, self.arena[cid].kind))
+            .collect()
+    }
+
     /// Test probe: `(action, chance_node_id)` for every root child that
     /// allocated a `Chance` node. Lets tests reach into a specific chance
     /// node's DPW state (`chance_outcomes.len()`, `chance_draws`,
@@ -943,44 +954,74 @@ mod tests {
             win_prob: 1.0,
             hp_frac_lost: 0.1,
         };
-        // Which Neow offer the first option is, and whether picking its relic
-        // draws from the run-draw streams, both depend on the seed (the 0.111.0
-        // seed derivation moved seed 1 onto a relic whose pickup is
-        // deterministic). Take the first small seed whose opening choice leads to
-        // the `[PickRelicReward, SkipRelic]` decision AND whose pickup is
-        // stochastic, then assert the node kinds on it.
+        // Fixed fixture: seed 5. It was chosen WITHOUT the planner, from a plain
+        // `RunManager` property: after the opening Neow choice the decision is
+        // `[PickRelicReward, SkipRelic]`, picking the relic advances the run-draw
+        // streams and skipping does not. (Seed 1, the pre-0.111.0 fixture, no
+        // longer has a stochastic pickup under the new seed derivation.) The
+        // guard below re-checks that property directly, so a drifting engine
+        // fails here rather than being masked by a seed search.
+        const SEED: i32 = 5;
+        let mut probe = fresh_ironclad_run(SEED);
+        let first = probe.get_available_actions()[0];
+        probe.take_action(first);
+        assert_eq!(
+            probe.get_available_actions(),
+            vec![RunAction::PickRelicReward, RunAction::SkipRelic],
+            "fixture drifted: expected the post-Neow relic-reward decision"
+        );
+        let before = probe.run_state.rng.run_draw_counter_fingerprint();
+        let mut picked = probe.clone();
+        picked.take_action(RunAction::PickRelicReward);
+        let mut skipped = probe.clone();
+        skipped.take_action(RunAction::SkipRelic);
+        assert_ne!(
+            picked.run_state.rng.run_draw_counter_fingerprint(),
+            before,
+            "fixture drifted: picking the relic must draw from the run-draw streams"
+        );
+        assert_eq!(
+            skipped.run_state.rng.run_draw_counter_fingerprint(),
+            before,
+            "fixture drifted: skipping must not draw"
+        );
+
+        let rm = fresh_ironclad_run(SEED);
+        let mut pr = PlanningRun::new(rm, &stub, 0x5EED_5EED);
+        let opening = pr.legal_actions();
+        pr.apply(opening[0], 0);
+        let legal = pr.legal_actions();
+        assert_eq!(
+            legal,
+            vec![RunAction::PickRelicReward, RunAction::SkipRelic]
+        );
+
         let leaf = StubLeafEval { v: 0.5 };
-        let kinds = (1..200)
-            .find_map(|seed| {
-                let rm = fresh_ironclad_run(seed);
-                let mut pr = PlanningRun::new(rm, &stub, 0x5EED_5EED);
-                let opening = pr.legal_actions();
-                pr.apply(opening[0], 0);
-                let legal = pr.legal_actions();
-                if legal != vec![RunAction::PickRelicReward, RunAction::SkipRelic] {
-                    return None;
-                }
-                let cfg = RunMctsConfig {
-                    max_simulations: legal.len() as u32,
-                    max_depth: 1,
-                    seed: 11,
-                    ..Default::default()
-                };
-                let mut planner = RunPlanner::new(&pr, cfg);
-                planner.run_search(&leaf, &UniformPriors);
-                let kinds = planner.root_child_kinds();
-                kinds.contains(&RunNodeKind::Chance).then_some(kinds)
-            })
-            .expect(
-                "no seed in 1..200 reaches a post-Neow relic decision with a stochastic pickup",
-            );
-        assert_eq!(kinds.len(), 2, "both root actions must be expanded");
-        assert!(
-            kinds.contains(&RunNodeKind::Chance),
+        let cfg = RunMctsConfig {
+            max_simulations: legal.len() as u32,
+            max_depth: 1,
+            seed: 11,
+            ..Default::default()
+        };
+        let mut planner = RunPlanner::new(&pr, cfg);
+        planner.run_search(&leaf, &UniformPriors);
+        let by_action = planner.root_child_kind_by_action();
+        assert_eq!(by_action.len(), 2, "both root actions must be expanded");
+        let kind_of = |a: RunAction| {
+            by_action
+                .iter()
+                .find(|(x, _)| *x == a)
+                .map(|(_, k)| *k)
+                .expect("action expanded")
+        };
+        assert_eq!(
+            kind_of(RunAction::PickRelicReward),
+            RunNodeKind::Chance,
             "PickRelicReward (draws from the run-draw RNG) must allocate a Chance node"
         );
-        assert!(
-            kinds.contains(&RunNodeKind::Decision),
+        assert_eq!(
+            kind_of(RunAction::SkipRelic),
+            RunNodeKind::Decision,
             "SkipRelic (no draw) must stay a Decision node"
         );
     }

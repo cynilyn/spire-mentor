@@ -227,6 +227,12 @@ def test_replay_recovers_a_play_that_KILLED_the_enemy_it_targeted() -> None:
                 != "advanced"
             ):
                 break
+            # An unaffordable play (0 energy) is reported "advanced" but changes
+            # nothing; without this guard the loop never ends on seeds where the
+            # hand runs out of energy first (a 600 s pytest-timeout under the
+            # 0.111.0 seed derivation).
+            if len(sts2_rs.state_to_dict(world)["deck"]["hand"]) >= len(hand):
+                break
             if sts2_rs.state_to_dict(world)["encounter"][1]["hp"] <= 9:
                 break
         d = sts2_rs.state_to_dict(world)

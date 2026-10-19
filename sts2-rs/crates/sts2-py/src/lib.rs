@@ -256,8 +256,8 @@ fn build_encounter_state(
         deferred_draw_order: false,
     };
 
-    let rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
-    let mut run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32));
+    let rng = sts2_core::dotnet_rng::Rng::new(seed);
+    let mut run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(seed);
     let mut creatures = Vec::new();
     let mut enemy_uids: SmallVec<[CreatureUid; 8]> = SmallVec::new();
     let mut taken_hp: HashSet<i32> = HashSet::new();
@@ -5226,6 +5226,19 @@ kind = "VANTOM"
         assert_eq!(card_type_python_name(CardType::Power), "Power");
         assert_eq!(card_type_python_name(CardType::Status), "Status");
         assert_eq!(card_type_python_name(CardType::Curse), "Curse");
+    }
+
+    /// Two seeds that differ ONLY in the high 32 bits must not collide (the
+    /// constructor used to truncate the u64 seed to u32).
+    #[test]
+    fn build_seeded_state_keeps_the_high_32_bits() {
+        let lo = 7_u64;
+        let hi = lo + (1_u64 << 32);
+        let (a, b) = (build_seeded_state(lo, 0), build_seeded_state(hi, 0));
+        assert_ne!(a.rng.seed(), b.rng.seed());
+        assert_eq!(b.rng.seed(), hi);
+        assert_ne!(a.run_rng.seed, b.run_rng.seed);
+        assert_ne!(a.run_rng.up_front.seed(), b.run_rng.up_front.seed());
     }
 
     #[test]

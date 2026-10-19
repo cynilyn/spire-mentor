@@ -593,6 +593,35 @@ mod tests {
         )
     }
 
+    /// Seeds that differ only in the high 32 bits must give different combat
+    /// RNGs (the spawn used to truncate the u64 seed).
+    #[test]
+    fn scenario_spawn_keeps_the_high_32_bits_of_the_seed() {
+        let at = |seed: u64| {
+            super::build_scenario_state(
+                seed,
+                "Ironclad",
+                &["STRIKE_IRONCLAD".to_string()],
+                70,
+                80,
+                &[],
+                &[],
+                "SHRINKER_BEETLE_WEAK",
+                0,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let lo = 5_u64;
+        let hi = lo + (1_u64 << 32);
+        let (a, b) = (at(lo), at(hi));
+        assert_eq!(b.rng.seed(), hi);
+        assert_ne!(a.rng.seed(), b.rng.seed());
+        assert_ne!(a.run_rng.seed, b.run_rng.seed);
+        assert_ne!(a.run_rng.niche.seed(), b.run_rng.niche.seed());
+    }
+
     #[test]
     fn enchantment_suffix_enchants_the_card() {
         // GH #777: "ID[+1]@ENCHANTMENT[:amount]" rebuilds a human deck's

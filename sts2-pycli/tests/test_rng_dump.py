@@ -136,3 +136,13 @@ def test_bad_schedule_and_n_raise():
         rm.rng_dump(schedule=[{"call": "Bogus", "args": []}])
     with pytest.raises(ValueError):
         rm.rng_dump(n=10_001)
+
+
+def test_python_combat_constructor_keeps_the_high_32_bits_of_the_seed():
+    """Two seeds that differ only in the high word must not collide (the constructor used to truncate)."""
+    lo = 7
+    hi = lo + (1 << 32)
+    a = sts2_rs.state_to_dict(sts2_rs.CombatState(seed=lo))["rng"]
+    b = sts2_rs.state_to_dict(sts2_rs.CombatState(seed=hi))["rng"]
+    assert (a["run_seed"], b["run_seed"]) == (lo, hi)
+    assert a["player_seed"] != b["player_seed"]

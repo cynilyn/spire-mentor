@@ -406,7 +406,7 @@ fn run_combat(mut args: CombatArgs, matches: &ArgMatches) -> ExitCode {
     } else {
         PotionInput::None
     };
-    let mut potion_rng = sts2_core::dotnet_rng::Rng::new(u64::from((args.seed) as u32));
+    let mut potion_rng = sts2_cli::scenario_stream_rng(args.seed);
     let resolved_potions = match resolve_potions(&potion_input, &mut potion_rng) {
         Ok(p) => p,
         Err(e) => {
@@ -445,7 +445,7 @@ fn run_combat(mut args: CombatArgs, matches: &ArgMatches) -> ExitCode {
             }
         }
     } else {
-        let mut enc_rng = sts2_core::dotnet_rng::Rng::new(u64::from((args.seed) as u32));
+        let mut enc_rng = sts2_cli::scenario_stream_rng(args.seed);
         match resolve_encounter(&args.encounter, &mut enc_rng) {
             Ok(m) => m,
             Err(e) => {

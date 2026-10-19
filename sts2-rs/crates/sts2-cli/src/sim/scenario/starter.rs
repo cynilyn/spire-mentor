@@ -155,8 +155,8 @@ pub fn build_state_with_ascension(
         phase: CombatPhase::Setup,
         round: 0,
         side: Side::Player,
-        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32)),
-        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
+        rng: sts2_core::dotnet_rng::Rng::new(seed),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(seed),
         creatures: Vec::new(),
         cards: cards_arena.into(),
         powers: Vec::new().into(),
@@ -276,6 +276,32 @@ mod tests {
             },
             args: MonsterSpawnArgs::None,
         }])
+    }
+
+    /// Seeds differing only in the high 32 bits must give different RNGs (the
+    /// starter state used to truncate the u64 seed to u32).
+    #[test]
+    fn build_state_keeps_the_high_32_bits_of_the_seed() {
+        let lo = 7_u64;
+        let hi = lo + (1_u64 << 32);
+        let a = build_state(
+            &nibbit_scenario(),
+            lo,
+            PlayerClass::Ironclad,
+            Some(20),
+            Some(80),
+        );
+        let b = build_state(
+            &nibbit_scenario(),
+            hi,
+            PlayerClass::Ironclad,
+            Some(20),
+            Some(80),
+        );
+        assert_eq!(b.rng.seed(), hi);
+        assert_ne!(a.rng.seed(), b.rng.seed());
+        assert_ne!(a.run_rng.seed, b.run_rng.seed);
+        assert_ne!(a.run_rng.niche.seed(), b.run_rng.niche.seed());
     }
 
     /// Bead `sts2-rs-f3g0`: with separate `hp_override` and
