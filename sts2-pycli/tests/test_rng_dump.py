@@ -146,3 +146,12 @@ def test_python_combat_constructor_keeps_the_high_32_bits_of_the_seed():
     b = sts2_rs.state_to_dict(sts2_rs.CombatState(seed=hi))["rng"]
     assert (a["run_seed"], b["run_seed"]) == (lo, hi)
     assert a["player_seed"] != b["player_seed"]
+
+
+def test_python_rollouts_keep_the_high_32_bits_of_the_seed():
+    """`sts2_rs.rollouts` seeds playout k with seed+k; two seeds differing only in the high word must not replay each other."""
+    lo = 7
+    hi = lo + (1 << 32)
+    a = sts2_rs.rollouts(sts2_rs.CombatState(seed=lo, encounter="Nibbit"), n=300)
+    b = sts2_rs.rollouts(sts2_rs.CombatState(seed=hi, encounter="Nibbit"), n=300)
+    assert (a["wins"], a["avg_turns"]) != (b["wins"], b["avg_turns"])

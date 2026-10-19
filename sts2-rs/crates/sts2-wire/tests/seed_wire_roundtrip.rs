@@ -18,15 +18,17 @@ use sts2_wire::state_from_json;
 
 fn state_with_seed(seed: &str, rewards_reads: u32, shuffle_reads: u32) -> CombatState {
     let b = seed_bases(seed);
-    let mut state = CombatState::default();
-    state.run_rng = RunRngSet::new(b.run_seed, b.player_seed).with_seed_string(seed);
+    let mut run_rng = RunRngSet::new(b.run_seed, b.player_seed).with_seed_string(seed);
     for _ in 0..rewards_reads {
-        let _ = state.run_rng.rewards.next_int(0, 999);
+        let _ = run_rng.rewards.next_int(0, 999);
     }
     for _ in 0..shuffle_reads {
-        let _ = state.run_rng.shuffle.next_int(0, 999);
+        let _ = run_rng.shuffle.next_int(0, 999);
     }
-    state
+    CombatState {
+        run_rng,
+        ..CombatState::default()
+    }
 }
 
 #[test]

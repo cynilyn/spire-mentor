@@ -387,7 +387,7 @@ fn make_row(
     // Ascension (implemented A0–A10) — widens the difficulty distribution.
     let ascension = *rng.pick(ascensions);
     let mut rm =
-        new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension)
+        new_run_manager_for_character_with_ascension(u64::from(seed), character, ascension)
             .with_neow_start();
     initialize_run_setup(&mut rm);
 

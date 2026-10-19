@@ -788,8 +788,7 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
             let seed_string = match extract_optional(&rng_dict, "seed_string") {
                 Some(v) => Some(
                     v.as_str()
-                        .ok_or_else(|| schema_err("$.rng.seed_string", "must be a string"))?
-                        .to_owned(),
+                        .ok_or_else(|| schema_err("$.rng.seed_string", "must be a string"))?,
                 ),
                 None => None,
             };

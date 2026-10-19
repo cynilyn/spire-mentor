@@ -1173,6 +1173,25 @@ pub struct RolloutConfig {
     pub seed: i64,
 }
 
+/// Default Monte-Carlo seed of an advisor request that does not send one.
+///
+/// Not an engine path: it only seeds the advisor's non-parity rollouts and is
+/// echoed to the frontend as JSON, so it is kept to 31 bits (JS-safe,
+/// non-negative). It folds the HIGH 32 bits of the run seed into the low ones
+/// first, so run seeds that differ only in the high word do not get the same
+/// default (the plain `& 0x7FFF_FFFF` mask used to drop them).
+fn default_advisor_seed(run_seed: u64) -> i64 {
+    let folded = (run_seed ^ (run_seed >> 32)) & 0x7FFF_FFFF;
+    i64::try_from(folded).unwrap_or(0) ^ 0x5EED
+}
+
+/// The run RNG a rollout installs for rollout seed `seed`: the whole 64-bit
+/// value (reinterpreted, not truncated).
+#[allow(clippy::cast_sign_loss)]
+fn rollout_run_rng(seed: i64) -> RunRngSet {
+    RunRngSet::from_run_seed(seed as u64)
+}
+
 impl RolloutConfig {
     fn from_config(config: &Value, rm: &RunManager) -> Self {
         let get = |k: &str| config.get(k).and_then(Value::as_i64);
@@ -1183,8 +1202,7 @@ impl RolloutConfig {
             sims: u(get("sims"), DEFAULT_SIMS).min(MAX_SIMS),
             threads: u(get("threads"), DEFAULT_THREADS),
             max_steps: u(get("max_steps"), DEFAULT_MAX_STEPS),
-            seed: get("seed")
-                .unwrap_or_else(|| i64::try_from(rm.seed & 0x7FFF_FFFF).unwrap_or(0) ^ 0x5EED),
+            seed: get("seed").unwrap_or_else(|| default_advisor_seed(rm.seed)),
         }
     }
 
@@ -1398,10 +1416,7 @@ fn evaluate_candidate(
         // Paired across candidates: the same run seed + policy seed per
         // rollout `r`, so the only difference is the option taken.
         let seed = cfg.seed.wrapping_add(i64::from(r));
-        // The whole 64-bit rollout seed (reinterpreted, not truncated to 32 bits).
-        #[allow(clippy::cast_sign_loss)]
-        let run_seed = seed as u64;
-        sim.run_state.rng = RunRngSet::from_run_seed(run_seed);
+        sim.run_state.rng = rollout_run_rng(seed);
         #[allow(clippy::cast_sign_loss)]
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed as u64);
         #[allow(clippy::cast_sign_loss)]
@@ -1719,6 +1734,26 @@ pub fn wpa_review_unavailable() -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// Seeds that differ only in the high 32 bits must not collide on the two
+    /// advisor-rollout seed paths.
+    #[test]
+    fn advisor_seeds_keep_the_high_32_bits() {
+        let lo = 7_u64;
+        let hi = lo + (1_u64 << 32);
+        assert_ne!(
+            super::default_advisor_seed(lo),
+            super::default_advisor_seed(hi)
+        );
+        assert!(super::default_advisor_seed(hi) >= 0);
+        let (a, b) = (
+            super::rollout_run_rng(lo as i64),
+            super::rollout_run_rng(hi as i64),
+        );
+        assert_eq!(b.seed, hi);
+        assert_ne!(a.seed, b.seed);
+        assert_ne!(a.niche.seed(), b.niche.seed());
+    }
+
     use super::*;
 
     #[test]

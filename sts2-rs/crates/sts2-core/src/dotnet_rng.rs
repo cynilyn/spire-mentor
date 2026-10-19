@@ -1072,7 +1072,11 @@ mod tests {
             let mut r = Rng::with_name(run_seed, name);
             assert_eq!(r.seed(), seed, "{name} seed");
             assert_eq!(r.next_int_exclusive(0, 100), a, "{name} NextInt(0,100)");
-            assert_eq!(r.next_float(1.0) as f32, f, "{name} NextFloat()");
+            assert_eq!(
+                (r.next_float(1.0) as f32).to_bits(),
+                f.to_bits(),
+                "{name} NextFloat()"
+            );
             assert_eq!(r.next_int_exclusive(0, 100), b, "{name} NextInt(100)");
         }
     }

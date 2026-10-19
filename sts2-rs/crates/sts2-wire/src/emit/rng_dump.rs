@@ -192,15 +192,12 @@ fn stream(
     set(&mut d, "seed", seed);
     d.insert("initial".to_owned(), state_value(&initial));
     d.insert("draws".to_owned(), draws(&initial, n, sch));
-    match live {
-        Some(l) => {
-            d.insert("current".to_owned(), state_value(l));
-            d.insert("next_draws".to_owned(), draws(l, n, sch));
-        }
-        None => {
-            d.insert("current".to_owned(), Value::Null);
-            d.insert("next_draws".to_owned(), Value::Null);
-        }
+    if let Some(l) = live {
+        d.insert("current".to_owned(), state_value(l));
+        d.insert("next_draws".to_owned(), draws(l, n, sch));
+    } else {
+        d.insert("current".to_owned(), Value::Null);
+        d.insert("next_draws".to_owned(), Value::Null);
     }
     Value::Object(d)
 }
@@ -429,18 +426,15 @@ pub fn rng_dump(
 
     let mut top = obj();
     set(&mut top, "type", "rng_trace");
-    match seed_string {
-        Some(raw) => {
-            let b = sts2_core::seed_bases(raw);
-            set(&mut top, "seed_string", raw);
-            set(&mut top, "input_seed", &raw[b.prefix.len()..]);
-            set(&mut top, "prefix", b.prefix);
-        }
-        None => {
-            top.insert("seed_string".to_owned(), Value::Null);
-            top.insert("input_seed".to_owned(), Value::Null);
-            top.insert("prefix".to_owned(), Value::Null);
-        }
+    if let Some(raw) = seed_string {
+        let b = sts2_core::seed_bases(raw);
+        set(&mut top, "seed_string", raw);
+        set(&mut top, "input_seed", &raw[b.prefix.len()..]);
+        set(&mut top, "prefix", b.prefix);
+    } else {
+        top.insert("seed_string".to_owned(), Value::Null);
+        top.insert("input_seed".to_owned(), Value::Null);
+        top.insert("prefix".to_owned(), Value::Null);
     }
     set(&mut top, "run_seed", run_seed);
     set(&mut top, "player_seed", player_seed);

@@ -1639,7 +1639,7 @@ mod tests {
         // `sts2-rs-RP14`.
         for seed in 0..400u32 {
             let mut rs = rs_with_gold(500);
-            rs.rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32));
+            rs.rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed));
             let cost = luminous_choir_rolled_cost(&rs);
             assert!(
                 (100..=149).contains(&cost),

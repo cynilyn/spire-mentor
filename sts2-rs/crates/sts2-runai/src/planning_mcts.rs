@@ -840,20 +840,6 @@ impl<'a> RunPlanner<'a> {
         max_depth
     }
 
-    /// Test probe: the `RunNodeKind` of each of the root's expanded
-    /// children, in expansion order (matching `root_node().children`).
-    /// Lets `stochastic_transition_makes_a_chance_node` assert a
-    /// stochastic root action allocated a `Chance` node while a
-    /// deterministic sibling stayed `Decision`.
-    #[cfg(test)]
-    fn root_child_kinds(&self) -> Vec<RunNodeKind> {
-        self.root_node()
-            .children
-            .iter()
-            .map(|&(_, cid)| self.arena[cid].kind)
-            .collect()
-    }
-
     /// Test probe: `(action, kind)` for every root child, so a test can assert
     /// the node kind of a SPECIFIC action instead of an unordered set.
     #[cfg(test)]

@@ -3115,7 +3115,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn rng() -> crate::dotnet_rng::Rng {
-        crate::dotnet_rng::Rng::new(u64::from(0x00C0_FFEE_u32 as u32))
+        crate::dotnet_rng::Rng::new(u64::from(0x00C0_FFEE_u32))
     }
 
     /// Empty card store for tests that drive draw/reshuffle on bare
@@ -3977,7 +3977,7 @@ mod tests {
             .count();
         assert_eq!(middle_count, 0, "test premise: middle must be empty");
 
-        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xDEAD_BEEF_u32 as u32));
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xDEAD_BEEF_u32));
         shuffle(&mut p, &mut r);
 
         // Result is deterministic: top ++ middle ++ bot
@@ -3986,7 +3986,7 @@ mod tests {
 
         // Re-shuffling with a different seed produces the same result —
         // confirms no RNG influence when middle is empty.
-        let mut r2 = crate::dotnet_rng::Rng::new(u64::from(0xBADF00D_u32 as u32));
+        let mut r2 = crate::dotnet_rng::Rng::new(u64::from(0xBADF00D_u32));
         shuffle(&mut p, &mut r2);
         assert_eq!(
             p.draw.as_slice(),
@@ -4007,7 +4007,7 @@ mod tests {
         pin_top(&mut p, uid(7));
         // pinned_top is in draw-order: index 0 = next-drawn = uid(7), then uid(3).
         assert_eq!(p.pinned_top.as_slice(), &[uid(7), uid(3)]);
-        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xDEAD_BEEF_u32 as u32));
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xDEAD_BEEF_u32));
         shuffle(&mut p, &mut r);
         assert_eq!(p.draw.first().copied(), Some(uid(7)));
         assert_eq!(p.draw.get(1).copied(), Some(uid(3)));
@@ -4025,7 +4025,7 @@ mod tests {
         assert!(!p.draw.contains(&stale));
         pin_bottom(&mut p, stale);
         assert_eq!(p.pinned_bottom.as_slice(), &[stale]);
-        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xC0FFEE_u32 as u32));
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xC0FFEE_u32));
         shuffle(&mut p, &mut r);
         assert!(
             p.pinned_bottom.is_empty(),
@@ -4048,7 +4048,7 @@ mod tests {
         // Silently accepted into pinned_top.
         assert_eq!(p.pinned_top.as_slice(), &[stale]);
         // First shuffle: retain drops stale (not in draw).
-        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xC0FFEE_u32 as u32));
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xC0FFEE_u32));
         shuffle(&mut p, &mut r);
         assert!(
             p.pinned_top.is_empty(),

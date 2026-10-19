@@ -940,8 +940,8 @@ mod tests {
         // ... and the shuffle read cost itself: a Fisher-Yates over n items costs n-1 reads.
         let mut a = Rng::with_name(12345, "up_front");
         let mut b = Rng::with_name(12345, "up_front");
-        a.shuffle(&mut vec![0_u8; 13 + 18]);
-        b.shuffle(&mut vec![0_u8; 10 + 18]);
+        a.shuffle(&mut [0_u8; 13 + 18]);
+        b.shuffle(&mut [0_u8; 10 + 18]);
         assert_eq!(
             a.counter() - b.counter(),
             3,
