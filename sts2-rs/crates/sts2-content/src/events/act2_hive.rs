@@ -807,7 +807,7 @@ pub const JUNGLE_MAZE_ADVENTURE: EventSpec = EventSpec {
 pub const LUMINOUS_CHOIR_TRIBUTE_BASE_COST: i32 = 149;
 /// `Id.Entry` for LuminousChoir's own RNG stream. NON-shared event, so the
 /// C# event-Rng seed is `RunState.Rng.Seed + NetId + hash(Entry)`; mirror via
-/// `Rng::with_name(seed + NetId, Entry)` (same convention as SunkenStatue).
+/// `Rng::with_name(run_seed, Entry)` (slot 0; same convention as SunkenStatue).
 pub const LUMINOUS_CHOIR_STREAM: &str = "LUMINOUS_CHOIR";
 /// Fallback when the relic grab bag is exhausted — C# `RelicFactory.FallbackRelic`.
 pub const LUMINOUS_CHOIR_FALLBACK_RELIC: RelicId = RelicId::Circlet;

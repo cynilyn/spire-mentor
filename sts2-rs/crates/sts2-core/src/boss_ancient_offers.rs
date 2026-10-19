@@ -5,9 +5,10 @@
 //! (`ActModel.cs:297`; identity captured in
 //! [`crate::run_room_gen::GeneratedActRooms::ancient`]). Each ancient's
 //! `GenerateInitialOptions` rolls 3 relic offers off a per-event RNG seeded
-//! per `EventModel.cs:193`:
-//!   `Rng(RunState.Rng.Seed + NetId + deterministic_hash_code_old(Id.Entry))`
-//! (single-player `NetId = 1`), i.e. `with_name(seed + 1, ancient.entry())`.
+//! per v0.111.0 `EventModel.cs:197`:
+//!   `Rng(RunState.Rng.Seed + slot + XxHash64(Id.Entry))`
+//! with `slot == GetPlayerSlotIndex(Owner) == 0` in single-player (the old
+//! `+ NetId` term is gone), i.e. `with_name(run_seed, ancient.entry())`.
 //! The per-event RNG is ISOLATED from `up_front`, so an imperfect
 //! deck-condition predicate only changes that one event's offer identities —
 //! it never desyncs the global counter.
@@ -321,7 +322,7 @@ mod tests {
     /// Corpus-anchored RNG-faithfulness: for real scraped v0.103.2 Ironclad
     /// runs, our per-event roll reproduces the EXACT 3 relics the game
     /// offered at the act-2/3 Ancient room. This pins the whole pipeline —
-    /// master RNG → `event_rng` seed (`with_name(master + 1, entry)`) → the
+    /// master RNG → `event_rng` seed (`with_name(master, entry)`, slot 0) → the
     /// per-event `NextItem` / `NextFloat` / `UnstableShuffle` call sequence.
     /// Anchors are the deck-INDEPENDENT ancients (Tezcatara / Orobas / Vakuu)
     /// so no deck snapshot is needed; offer sets extracted from
@@ -329,7 +330,7 @@ mod tests {
     /// (`map_point_history[*][*].player_stats[0].ancient_choice`).
     ///
     /// CAVEAT — these are the scraped seeds whose run-master derives correctly
-    /// from the display string via `deterministic_hash_code_old(canonicalize_seed)`.
+    /// from the display string via the legacy 32-bit hash (`deterministic_hash_code_old(canonicalize_seed)`).
     /// ~20% of scraped string seeds do NOT round-trip through that
     /// canonicalization (verified: those same seeds also mis-derive the
     /// deterministic Neow act-1 offers — a per-seed master-derivation gap, not

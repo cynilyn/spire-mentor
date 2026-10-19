@@ -112,7 +112,7 @@ pub const LOST_WISP: EventSpec = EventSpec {
 /// `GetPlayerSlotIndex(Owner) == Players.IndexOf(Owner) == 0` (`RunState.cs:620`),
 /// so the additive player term is **0** — v0.103.2 used `Owner.NetId == 1` here
 /// (`EventModel.cs:193`); the v0.107.1 change from `NetId` to `GetPlayerSlotIndex`
-/// drops it. [`Rng::with_name`] folds in `deterministic_hash_code_old(entry)`, matching
+/// drops it. [`Rng::with_name`] folds in `XxHash64(entry)` (v0.111.0), matching
 /// the C# hash term exactly. `entry` is the event's `Id.Entry` (its L10N key root,
 /// e.g. `"TRASH_HEAP"`).
 fn event_rng(state: &RunState, entry: &str) -> sts2_core::dotnet_rng::Rng {
@@ -921,7 +921,7 @@ fn rng_next_item<T: Copy>(rng: &mut sts2_core::dotnet_rng::Rng, items: &[T]) -> 
 /// (one `NextItem` per surviving set, then the shuffle, then the `NextBool`)
 /// must match C# exactly so the harness sees identical relics per slot.
 ///
-/// Seed = `RunState.Rng.Seed + NetId(1) + hash("DARV")` ([`event_rng`]).
+/// Seed = `RunState.Rng.Seed + slot 0 + XxHash64("DARV")` ([`event_rng`]).
 fn darv_relic_options(state: &RunState) -> [RelicId; 3] {
     // The 9 ValidRelicSets in C# declaration order. `keep` mirrors each
     // set's `filter(Owner)`. Sets 4/7/8 are conditional; the rest are

@@ -800,7 +800,7 @@ fn build_combat_for_room(
     // `EncounterModel.GenerateMonstersWithSlots` (`EncounterModel.cs:201`)
     // seeds the roster Rng `new Rng(Seed + TotalFloor + hash(Id.Entry))` ==
     // `Rng::with_name(Seed + TotalFloor, enc.id)` (`with_name` adds
-    // `deterministic_hash_code_old(name)`; `Id.Entry == Slugify(className) ==
+    // `XxHash64(name)`; v0.111.0 `EncounterModel.cs:209`; `Id.Entry == Slugify(className) ==
     // EncounterDef.id`); `CombatState.CreateCreature` then rolls each enemy's
     // HP off `RunState.Rng.Niche`.
     //
@@ -906,7 +906,7 @@ pub fn dump_roster_for_encounter(
     // seeds it `new Rng((uint)(runState.Rng.Seed + TotalFloor + GetDeterministicHashCode(Id.Entry)))`
     // where `Id.Entry == Slugify(className) == EncounterDef.id`. That is
     // exactly `Rng::with_name(Seed + TotalFloor, id)` (with_name adds
-    // `deterministic_hash_code_old(name)` to the base). niche is consumed ONLY
+    // `XxHash64(name)` to the base, v0.111.0). niche is consumed ONLY
     // by the per-creature HP roll below — keeping the two streams separate
     // is what makes the randomizer rows' HP line up (rolling the roster off
     // niche shifted the HP cursor by the roster reads).

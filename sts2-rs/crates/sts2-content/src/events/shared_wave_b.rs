@@ -650,8 +650,8 @@ pub const SUNKEN_STATUE_GOLD_VARIANCE: i32 = 10;
 pub const SUNKEN_STATUE_DIVE_DAMAGE: i32 = 7;
 /// `Id.Entry` for the event's own RNG stream. NON-shared event
 /// (`EventModel.IsShared` default false), so the C# event-Rng seed is
-/// `RunState.Rng.Seed + NetId + hash(Entry)`; mirror that as
-/// `Rng::with_name(seed + NetId, Entry)`.
+/// `RunState.Rng.Seed + slot 0 + XxHash64(Entry)`; mirror that as
+/// `Rng::with_name(run_seed, Entry)`.
 pub const SUNKEN_STATUE_STREAM: &str = "SUNKEN_STATUE";
 
 /// The `CalculateVars` gold roll: `111 + NextInt(-10, 11)` = read #1 of
@@ -783,8 +783,8 @@ pub const TABLET_OF_TRUTH_SMASH_HEAL: i32 = 20;
 pub const TABLET_OF_TRUTH_FIRST_DECIPHER_COST: i32 = 3;
 /// `Id.Entry` for the event's own RNG stream. NON-shared event
 /// (`EventModel.IsShared` default false), so the C# event-Rng seed is
-/// `RunState.Rng.Seed + NetId + hash(Entry)`; mirror that as
-/// `Rng::with_name(seed + NetId, Entry)` (same pattern as Sunken Statue).
+/// `RunState.Rng.Seed + slot 0 + XxHash64(Entry)`; mirror that as
+/// `Rng::with_name(run_seed, Entry)` (same pattern as Sunken Statue).
 pub const TABLET_OF_TRUTH_STREAM: &str = "TABLET_OF_TRUTH";
 
 fn tablet_of_truth_smash(state: &mut RunState) -> EventOutcome {
@@ -1342,9 +1342,9 @@ pub const THIS_OR_THAT_PLAIN_GOLD: i32 = 55;
 
 /// `ThisOrThat` Plain gold — C# `CalculateVars` rolls `Rng.NextInt(41, 69)`
 /// (max-exclusive ⇒ 41..=68) on the event's OWN RNG, which is an INDEPENDENT
-/// per-event stream `Rng(RunState.Rng.Seed + NetId + hash(Id.Entry))`
-/// (`EventModel.cs:193`; default `IsShared == false` ⇒ the single-player NetId
-/// offset of 1 applies, same as Neow). Because the stream is independent, this
+/// per-event stream `Rng(RunState.Rng.Seed + slot 0 + XxHash64(Id.Entry))`
+/// (`EventModel.cs:197`; default `IsShared == false` ⇒ the player-slot term,
+/// 0 in single-player, applies, same as Neow). Because the stream is independent, this
 /// only sets the gold VALUE — it does NOT consume the shared run RNG, so no
 /// downstream desync. The earlier port used a fixed `55`, diverging the gold
 /// total (seed PARITY11: gold cs=178 rs=167). Bead `sts2-rs-thisorthat-gold`.

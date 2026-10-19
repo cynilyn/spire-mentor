@@ -3,15 +3,15 @@
 //! Ports `sts2-rl-agent@01c094d:sts2_env/run/run_state.py:1340-1370`
 //! (`class RunRngSet`). Each named stream is an independent
 //! [`crate::dotnet_rng::Rng`] seeded by mixing a per-stream salt into
-//! the run's master seed via [`crate::dotnet_rng::deterministic_hash_code_old`],
-//! exactly as Python does. Streams are *not* derived from one another —
+//! the run's seed base via [`crate::dotnet_rng::xxhash64_utf8`]
+//! (`base + XxHash64(name)`, v0.111.0; run streams use the run base, the
+//! three player streams the player base). Streams are *not* derived from one another —
 //! advancing `rewards` never perturbs `encounter`, so a fixture that
 //! shifts which stream rolls first stays parity-stable.
 //!
 //! ## Why this matters for parity
 //!
-//! Python's `Rng(seed, name)` calls `deterministic_hash_code_old(name)` to
-//! mix the salt into `seed`, producing an independent sample sequence
+//! `Rng(seed, name)` hashes `name` (XxHash64) to mix the salt into `seed`, producing an independent sample sequence
 //! per stream. If `sts2-rs` collapses every roll into a single stream
 //! (the old `rewards_rng_seed: u64` Xoshiro shim), every fixture that
 //! mixes a `card_reward` and an `encounter` roll diverges from Python

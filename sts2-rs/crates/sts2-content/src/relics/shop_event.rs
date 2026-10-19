@@ -4402,12 +4402,12 @@ fn listener_fur_coat_after_obtained(rs: &mut RunState) -> EffectResult {
 ///    rewrite changes node types, in which case the listener
 ///    re-rolls).
 ///
-/// RNG: the Python pin derives a per-relic stream
-/// (`Rng(seed + player_id + hash("FurCoat"))`). The Rust port uses
-/// [`sts2_core::dotnet_rng::Rng::with_name`] with the same
-/// `"FurCoat"` name so the named-stream seed-mixing matches; the
-/// `player_id` term is omitted because the Rust port is
-/// single-player at this pin. Sampling: shuffle the candidate
+/// RNG: v0.111.0 `FurCoat.cs:90` builds `Rng(Owner, Id, 0)` =
+/// `run_seed + slot + XxHash64(Id.Entry)`, and `Id.Entry` is
+/// `Slugify("FurCoat") == "FUR_COAT"` (not the Python name `"FurCoat"` the
+/// old pin hashed). The Rust port uses [`sts2_core::dotnet_rng::Rng::with_name`]
+/// with `"FUR_COAT"`; the slot term is 0 in single-player. The shuffle
+/// itself is still the Rust `shuffle`, not C# `UnstableShuffle` (unverified). Sampling: shuffle the candidate
 /// `room_points` and take the first 7 (Fisher-Yates via the dotnet
 /// Rng's `shuffle` method — same shape Python uses).
 ///
@@ -4442,7 +4442,7 @@ fn listener_fur_coat_modify_generated_map_late(
     if candidates.is_empty() {
         return EffectResult::NotImplemented;
     }
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, "FurCoat");
+    let mut rng = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, "FUR_COAT");
     rng.shuffle(&mut candidates);
     let needed = FUR_COAT_COMBATS.saturating_sub(existing_marks);
     let to_mark: Vec<MapCoord> = candidates.into_iter().take(needed).collect();

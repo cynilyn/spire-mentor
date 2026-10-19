@@ -64,8 +64,8 @@ pub const ENCOUNTER_GOLD_LOW_BOSS: i32 = 100;
 pub const ENCOUNTER_GOLD_HIGH_BOSS: i32 = 100;
 
 /// Stream-name salt for the Neow event's per-event RNG. Mirrors C#
-/// `EventModel.cs:193` which mixes
-/// `deterministic_hash_code_old(base.Id.Entry)` into the run-master seed;
+/// `EventModel.cs:197` which mixes
+/// `XxHash64(base.Id.Entry)` into the run seed base;
 /// `Id.Entry` for the Neow event resolves to the class name "Neow"
 /// in v0.103.2. Parity sub-bead `sts2-rs-k8z6m` re-confirms against
 /// the scraped corpus; if it diverges the name moves here.
@@ -664,9 +664,8 @@ pub struct PendingDeckTransform {
     /// callback (NewLeaf shape).
     pub fixed_target: Option<Card>,
     /// `Some((entry_name, skip_reads))` — roll the replacement off the
-    /// event's own non-shared stream (`Rng(uint(seed + NetId +
-    /// hash(entry_name)))`, NetId = 1 in single-player per
-    /// `EventModel.cs:193` / `NGame.cs:884`) instead of `Rng.Niche`,
+    /// event's own non-shared stream (`Rng(seed + slot 0 +
+    /// XxHash64(entry_name))`, `EventModel.cs:197`) instead of `Rng.Niche`,
     /// discarding `skip_reads` small-range reads first — C#
     /// `CalculateVars` rolls consume the stream head at event entry
     /// (WhisperingHollow Hug: gold roll = read #1, transform = read #2).
@@ -2449,12 +2448,10 @@ impl RunState {
     /// `AncientEventModel._generatedOptions` caching at
     /// `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models/AncientEventModel.cs`.
     ///
-    /// The Neow event RNG is seeded per `EventModel.cs:193`:
-    /// `Rng(uint(RunState.Rng.Seed + NetId + deterministic_hash_code_old(Id.Entry)))`.
-    /// For single-player runs `NetId == 0` is assumed (parity sub-bead
-    /// `sts2-rs-k8z6m` will verify against the scraped corpus and tune
-    /// the seed formula here if the assumption is off — see the
-    /// `NEOW_EVENT_RNG_NAME` constant below).
+    /// The Neow event RNG is seeded per v0.111.0 `EventModel.cs:197`:
+    /// `Rng(ulong(RunState.Rng.Seed + slot) + XxHash64(Id.Entry))` with
+    /// `slot == 0` in single-player (non-shared event) and
+    /// `Id.Entry == "NEOW"` (see `NEOW_EVENT_RNG_NAME` below).
     ///
     /// Bead `sts2-rs-14cid` (R3.1.2 under `sts2-rs-nr8l4`).
     pub fn roll_neow_offers_if_needed(&mut self) {
@@ -2478,7 +2475,7 @@ impl RunState {
         //   `NetSingleplayerGameService.cs:21`); v0.107.1 swapped `NetId` for
         //   `GetPlayerSlotIndex` and thereby dropped the +1 (bead `sts2-rs-ms8mm`).
         //
-        // `DotNetRng::with_name(s, n) = Rng(s + deterministic_hash_code_old(n))`
+        // `DotNetRng::with_name(s, n) = Rng(s + XxHash64(n))` (u64 wrapping),
         // (modulo u32 wrap), matching the C# seed with a 0 player term.
         let mut event_rng = crate::DotNetRng::with_name(self.rng.seed, NEOW_EVENT_RNG_NAME);
         self.neow_offers = Some(crate::roll_neow_offers(&mut event_rng));

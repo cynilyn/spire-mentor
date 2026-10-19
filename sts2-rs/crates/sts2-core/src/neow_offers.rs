@@ -6,8 +6,8 @@
 //! (`Neow.GenerateInitialOptions`, no-modifiers branch).
 //!
 //! Pure function: [`roll_neow_offers`] takes a per-event RNG (seeded
-//! per `EventModel.cs:193` — `RunState.Rng.Seed + NetId +
-//! deterministic_hash_code_old(Id.Entry)`; wiring lives in sub-bead
+//! per v0.111.0 `EventModel.cs:197` — `RunState.Rng.Seed + slot 0 +
+//! XxHash64("NEOW")`; wiring lives in sub-bead
 //! `sts2-rs-14cid`) and returns the 3 relic offers, RNG-faithful to
 //! the C# algorithm (same `next_int` / `next_bool` / `shuffle` call
 //! sequence).
