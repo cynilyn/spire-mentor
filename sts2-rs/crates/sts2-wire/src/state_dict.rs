@@ -234,9 +234,9 @@ pub struct ParsedState {
     /// int, "ascension": int}}` block; both fields are optional in this
     /// bead's surface — T2 owns translating them into the state.
     pub rng_seed: Option<u64>,
-    /// The RUN's master seed (`$.rng.run_seed`), once-hashed exactly as C#
-    /// `RunRngSet.Seed` is — the value [`sts2_core::run_rng_set::RunRngSet::new`]
-    /// takes.
+    /// The RUN's seed base (`$.rng.run_seed`, a u64), exactly as C#
+    /// `RunRngSet.Seed` is (v0.111.0) — the first value
+    /// [`sts2_core::run_rng_set::RunRngSet::new`] takes.
     ///
     /// Distinct from [`Self::rng_seed`], which is the *search* seed and has
     /// nothing to do with the game's dice. Without this the reconstruction's
@@ -244,7 +244,20 @@ pub struct ParsedState {
     /// every enemy intent and every reshuffle it predicts is a guess — and a
     /// guess that misses is not evidence of anything, because the value was
     /// never knowable from the state.
-    pub run_seed: Option<i32>,
+    pub run_seed: Option<u64>,
+    /// The player stream base (`$.rng.player_seed`, u64): `H(full seed
+    /// string) + slot`. Differs from [`Self::run_seed`] for `old` seed strings,
+    /// so the run base alone cannot restore the player streams.
+    pub player_seed: Option<u64>,
+    /// The seed string (`$.rng.seed_string`), when the producer carries it.
+    /// If `player_seed` is absent it is the only way to recover the player
+    /// base (via [`sts2_core::seed_bases`]).
+    pub seed_string: Option<String>,
+    /// `true` when `run_seed` came without `player_seed` or `seed_string`:
+    /// the pre-0.109 single-u32 wire. The run streams restore; the player
+    /// streams (`rewards`, `shops`, `transformations`) are NOT recoverable and
+    /// a counter naming one is a hard error (no silent guess).
+    pub legacy_u32: bool,
     /// Per-stream read counts (`$.rng.counters`), keyed by the same wire
     /// names `state_to_dict` emits. Applied on top of the streams derived
     /// from [`Self::run_seed`], which puts the reconstruction on the exact
@@ -731,7 +744,7 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
     }
 
     // Optional `rng` block. Every key inside is optional individually.
-    let (rng_seed, ascension, run_seed, rng_counters) = if let Some(rng_val) =
+    let (rng_seed, ascension, run_seed, player_seed, seed_string, rng_counters) = if let Some(rng_val) =
         extract_optional(d, "rng")
     {
         let rng_dict = as_dict(&rng_val, "$.rng")?;
@@ -757,14 +770,27 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         // the exact roll the world is about to make; one that doesn't leaves
         // the streams unrelated to the game's, and every intent the state
         // predicts is a guess.
+        // v0.111.0 `RunRngSet.Seed` and the player base are `ulong`: parse
+        // unsigned (`as_u64`), a value above `i64::MAX` is ordinary.
         let run_seed = match extract_optional(&rng_dict, "run_seed") {
             Some(v) => Some(
-                // C# `RunRngSet.Seed` is a uint; the Rust constructor takes
-                // the same 32 bits as i32.
-                v.as_i64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| schema_err("$.rng.run_seed", "must be a u32"))?
-                    as i32,
+                v.as_u64()
+                    .ok_or_else(|| schema_err("$.rng.run_seed", "must be a u64"))?,
+            ),
+            None => None,
+        };
+        let player_seed = match extract_optional(&rng_dict, "player_seed") {
+            Some(v) => Some(
+                v.as_u64()
+                    .ok_or_else(|| schema_err("$.rng.player_seed", "must be a u64"))?,
+            ),
+            None => None,
+        };
+        let seed_string = match extract_optional(&rng_dict, "seed_string") {
+            Some(v) => Some(
+                v.as_str()
+                    .ok_or_else(|| schema_err("$.rng.seed_string", "must be a string"))?
+                    .to_owned(),
             ),
             None => None,
         };
@@ -779,10 +805,11 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
             }
             counters.sort();
         }
-        (seed, asc, run_seed, counters)
+        (seed, asc, run_seed, player_seed, seed_string, counters)
     } else {
-        (None, 0u8, None, Vec::new())
+        (None, 0u8, None, None, None, Vec::new())
     };
+    let legacy_u32 = run_seed.is_some() && player_seed.is_none() && seed_string.is_none();
 
     let player_val = get_item(d, "$", "player")?;
     let player_dict = as_dict(&player_val, "$.player")?;
@@ -824,6 +851,9 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         combat_id,
         rng_seed,
         run_seed,
+        player_seed,
+        seed_string,
+        legacy_u32,
         rng_counters,
         ascension,
         intent_damage_known,
@@ -2938,7 +2968,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             parsed
                 .rng_seed
                 .unwrap_or(0)
-                .wrapping_add(u64::try_from(parsed.turn).unwrap_or(0)) as i32,
+                .wrapping_add(u64::try_from(parsed.turn).unwrap_or(0)),
         ),
         ascension: parsed.ascension,
         is_elite: parsed.is_elite,
@@ -2962,12 +2992,44 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // root-blindfolded clone whose invariance to this cursor is asserted
     // mechanically (sts2-mcts `root_blindfold` tests).
     if let Some(run_seed) = parsed.run_seed {
-        state.run_rng = sts2_core::run_rng_set::RunRngSet::new(run_seed);
+        // Both bases are needed (they differ for `old` seed strings). Take
+        // `player_seed` from the wire, else recover it from `seed_string`
+        // (which must agree with `run_seed`), else this is the legacy
+        // single-u32 wire: run streams only.
+        let player_seed = match (parsed.player_seed, parsed.seed_string.as_deref()) {
+            (Some(p), _) => Some(p),
+            (None, Some(s)) => {
+                let b = sts2_core::seed_bases(s);
+                if b.run_seed != run_seed {
+                    return Err(schema_err(
+                        "$.rng.seed_string",
+                        "does not hash to $.rng.run_seed",
+                    ));
+                }
+                Some(b.player_seed)
+            }
+            (None, None) => None,
+        };
+        state.run_rng = sts2_core::run_rng_set::RunRngSet::new(
+            run_seed,
+            // Legacy wire: no player base on the wire. The player streams
+            // below are unusable and any counter naming one is rejected.
+            player_seed.unwrap_or(run_seed),
+        );
+        let player_streams_known = player_seed.is_some();
         for (name, counter) in &parsed.rng_counters {
             // One shared name→stream table (`RunRngSet::stream_mut`), also
             // used by the run-level live-state import. An unknown stream
             // name is a producer/engine vocabulary mismatch, not a value to
             // guess at.
+            if !player_streams_known
+                && matches!(name.as_str(), "rewards" | "shops" | "transformations")
+            {
+                return Err(schema_err(
+                    format!("$.rng.counters.{name}"),
+                    "player stream cannot be restored from a legacy u32-only run_seed                      (send `player_seed` or `seed_string`)",
+                ));
+            }
             let Some(stream) = state.run_rng.stream_mut(name.as_str()) else {
                 return Err(schema_err(
                     format!("$.rng.counters.{name}"),

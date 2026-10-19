@@ -288,6 +288,12 @@ impl MegaRandom {
         }
     }
 
+    /// The four state words `[s0, s1, s2, s3]` (read-only, for dumps).
+    #[must_use]
+    pub const fn state(&self) -> [u64; 4] {
+        [self.s0, self.s1, self.s2, self.s3]
+    }
+
     /// Core Xoshiro256\*\* step (`MegaRandom.NextULongInner`). Returns the next
     /// 64 random bits and advances the state.
     #[inline]
@@ -446,7 +452,7 @@ impl DotNetRandom {
 /// the sequence (used by `_map_point_type_counts` in the generator).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rng {
-    seed: u32,
+    seed: u64,
     base: MegaRandom,
     counter: u32,
 }
@@ -454,14 +460,14 @@ pub struct Rng {
 impl Rng {
     /// Construct an unnamed RNG from `seed` (counter starts at 0).
     ///
-    /// v0.107.1: the seed is zero-extended `u32 -> u64` and fed to
-    /// [`MegaRandom`] (`new MegaRandom((uint)seed)` in C#).
+    /// v0.111.0: the seed is a full `u64` fed straight to [`MegaRandom`]
+    /// (`new MegaRandom(seed)` in C#). Legacy callers holding a signed 32-bit
+    /// seed convert with `u64::from(x as u32)` (never sign-extend).
     #[must_use]
-    pub fn new(seed: i32) -> Self {
-        let seed_u32 = seed as u32;
+    pub fn new(seed: u64) -> Self {
         Self {
-            seed: seed_u32,
-            base: MegaRandom::new(u64::from(seed_u32)),
+            seed,
+            base: MegaRandom::new(seed),
             counter: 0,
         }
     }
@@ -489,8 +495,7 @@ impl Rng {
     #[must_use]
     pub fn from_search_seed(seed: u64) -> Self {
         Self {
-            #[allow(clippy::cast_possible_truncation)]
-            seed: seed as u32,
+            seed,
             // v0.107.1: MegaRandom is itself splitmix64-seeded, so a full-u64
             // seed feeds it directly (no separate non-parity warmup needed).
             base: MegaRandom::new(seed),
@@ -498,11 +503,12 @@ impl Rng {
         }
     }
 
-    /// Construct a named-stream RNG; `name` is hashed into the seed so
-    /// independent streams under the same base seed don't collide.
+    /// Construct a named-stream RNG: `Rng(ulong seed, string name)` =
+    /// `seed + XxHash64(name)` (u64 wrapping), so independent streams under
+    /// the same base seed don't collide. v0.111.0 `Rng.cs`.
     #[must_use]
-    pub fn with_name(base_seed: i32, name: &str) -> Self {
-        let combined = (base_seed as u32).wrapping_add(deterministic_hash_code_old(name) as u32);
+    pub fn with_name(base_seed: u64, name: &str) -> Self {
+        let combined = base_seed.wrapping_add(xxhash64_utf8(name));
         if rng_trace_enabled() {
             // `seed` matches C#'s `Rng.Seed` (base + DeterministicHashCode),
             // so the symmetric C#/Rust `RNGTRACE` logs align by seed. The
@@ -511,7 +517,7 @@ impl Rng {
         }
         Self {
             seed: combined,
-            base: MegaRandom::new(u64::from(combined)),
+            base: MegaRandom::new(combined),
             counter: 0,
         }
     }
@@ -520,7 +526,7 @@ impl Rng {
     ///
     /// Useful for replaying a partial RNG sequence to a known position.
     #[must_use]
-    pub fn with_counter(seed: i32, counter: u32) -> Self {
+    pub fn with_counter(seed: u64, counter: u32) -> Self {
         let mut rng = Self::new(seed);
         rng.fast_forward_counter(counter);
         rng
@@ -528,8 +534,15 @@ impl Rng {
 
     /// Resulting seed (after name mixing if any).
     #[must_use]
-    pub const fn seed(&self) -> u32 {
+    pub const fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// The four xoshiro256** state words of the live generator (dump/debug
+    /// accessor; the stream position, not the seed).
+    #[must_use]
+    pub const fn state(&self) -> [u64; 4] {
+        self.base.state()
     }
 
     /// Number of public `next_*` calls so far.
@@ -709,13 +722,14 @@ impl Rng {
         }
     }
 
-    /// Fork a child RNG. Reseeds with `next_int(0, INT_MAX_EXCLUSIVE-1)`
-    /// of self. (The returned child is independent — the caller is
-    /// expected to use it.)
+    /// Fork a child RNG (Rust-only helper: the C# `Rng` has no fork). Draws
+    /// once from `self` over the **inclusive** range `[0, i32::MAX]` (counter
+    /// +1) and seeds the child with that value zero-extended to `u64`. This is
+    /// *not* C#'s no-argument `NextInt()` (that excludes `i32::MAX`).
     #[must_use]
     pub fn fork(&mut self) -> Self {
-        let seed = self.next_int(0, (INT_MAX_EXCLUSIVE - 1) as i32);
-        Self::new(seed)
+        let draw = self.next_int(0, (INT_MAX_EXCLUSIVE - 1) as i32);
+        Self::new(u64::from(draw as u32))
     }
 }
 
@@ -767,7 +781,7 @@ mod tests {
             (2026, [57, 28, 81, 89, 81, 78, 83, 82]),
         ];
         for (seed, expected) in cases {
-            let mut rng = Rng::new(seed);
+            let mut rng = Rng::new(u64::from(seed as u32));
             let got: Vec<i32> = (0..8).map(|_| rng.next_int(0, 99)).collect();
             assert_eq!(got, expected, "seed {seed}");
             assert_eq!(rng.counter(), 8);
@@ -778,7 +792,7 @@ mod tests {
     #[test]
     fn rng_next_bool_matches_oracle() {
         let bools = |seed: i32| -> Vec<bool> {
-            let mut r = Rng::new(seed);
+            let mut r = Rng::new(u64::from(seed as u32));
             (0..8).map(|_| r.next_bool()).collect()
         };
         let b = |bits: [u8; 8]| bits.map(|x| x == 1).to_vec();
@@ -1041,23 +1055,44 @@ mod tests {
         assert_eq!(dirs, vec![-1, 1, 0]);
     }
 
-    /// Named streams seed as `base + deterministic_hash_code_old(name)` (unchanged
-    /// from v0.103.2) and feed MegaRandom. Oracle: `Rng(0,name).Seed` +
-    /// first `NextInt(0,1000)`.
+    /// v0.111.0 named streams: `Rng(seed, name).Seed = seed + XxHash64(name)`
+    /// (u64 wrapping), then 3 draws of the default W4 schedule
+    /// `NextInt(0,100)`, `NextFloat()`, `NextInt(100)`.
+    /// Vectors: sts2_bot `logs/engine/p0/stage1_vectors.json` (sha256
+    /// 5267538d84c1a1468b68656b82bdd270e4a4e21b60a251366beb475786aa8976,
+    /// oracle f79d3a9, seed `P0A0`: run_seed 10883704133362413376).
     #[test]
     fn named_stream_seed_and_first_draw_match_oracle() {
-        let cases: [(&str, u32, i32); 5] = [
-            ("monster", 3_068_719_756, 497),
-            ("event", 1_055_454_690, 797),
-            ("rewards", 3_835_919_258, 510),
-            ("up_front", 3_060_220_251, 438),
-            ("niche", 497_466_721, 287),
+        let run_seed: u64 = 10_883_704_133_362_413_376;
+        let cases: [(&str, u64, i32, f32, i32); 2] = [
+            ("up_front", 12_796_180_781_041_495_488, 59, 0.256_277_53, 39),
+            ("shuffle", 13_969_188_266_847_569_492, 13, 0.777_039_6, 45),
         ];
-        for (name, seed, first) in cases {
-            let mut r = Rng::with_name(0, name);
+        for (name, seed, a, f, b) in cases {
+            let mut r = Rng::with_name(run_seed, name);
             assert_eq!(r.seed(), seed, "{name} seed");
-            assert_eq!(r.next_int(0, 999), first, "{name} first draw");
+            assert_eq!(r.next_int_exclusive(0, 100), a, "{name} NextInt(0,100)");
+            assert_eq!(r.next_float(1.0) as f32, f, "{name} NextFloat()");
+            assert_eq!(r.next_int_exclusive(0, 100), b, "{name} NextInt(100)");
         }
+    }
+
+    /// `fork()` is a Rust-only helper: one inclusive `[0, i32::MAX]` draw
+    /// (counter +1) zero-extended into the child's `u64` seed.
+    #[test]
+    fn fork_draws_once_inclusive_and_seeds_child_with_the_draw() {
+        let mut parent = Rng::new(12345);
+        let mut shadow = Rng::new(12345);
+        let draw = shadow.next_int(0, i32::MAX);
+        let child = parent.fork();
+        assert_eq!(parent.counter(), 1, "fork consumes exactly one draw");
+        assert_eq!(parent.counter(), shadow.counter());
+        assert_eq!(child.seed(), u64::from(draw as u32));
+        assert_eq!(child.counter(), 0);
+        // Same parent state -> same child stream.
+        let mut again = Rng::new(12345).fork();
+        let mut child2 = child.clone();
+        assert_eq!(again.next_int(0, 1_000_000), child2.next_int(0, 1_000_000));
     }
 
     #[test]

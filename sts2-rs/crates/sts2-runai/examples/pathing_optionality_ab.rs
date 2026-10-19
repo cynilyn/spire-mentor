@@ -279,7 +279,7 @@ fn sweep_hp(n_seeds: i32, opt: &OptionalityWeights, hp_fracs: &[f64]) -> AbResul
         scenarios: 0,
     };
     for seed in 1..=n_seeds {
-        let rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+        let rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
         let base_view = VisibleRunView::from_run_manager(&rm);
         if base_view.map.is_none() {
             continue;
@@ -535,7 +535,7 @@ fn run_ev_ab(n_seeds: i32, samples: u32) {
     let (mut det, mut ev) = (Agg::default(), Agg::default());
     let (mut ev_only, mut det_only) = (0u32, 0u32);
     for seed in 1..=n_seeds {
-        let rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+        let rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
         let base = VisibleRunView::from_run_manager(&rm);
         if base.map.is_none() {
             continue;
@@ -618,7 +618,7 @@ fn room_glyph(t: MapPointType) -> char {
 
 fn render(seed: i32) -> String {
     let v = HeuristicV::default();
-    let rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+    let rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
     let mut view = VisibleRunView::from_run_manager(&rm);
     // Act-3 costs + a wounded start so the elite-skip option is live.
     view.act_index = 2;

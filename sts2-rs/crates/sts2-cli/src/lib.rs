@@ -208,7 +208,7 @@ pub fn scenario_to_combat_state_with_ascension(
     let resolved_potions = if file_potions.is_empty() {
         Vec::new()
     } else {
-        let mut potion_rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+        let mut potion_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
         resolve_potions(&PotionInput::Inline(file_potions.to_vec()), &mut potion_rng)
             .map_err(|e| ScenarioBuildError::Potions(e.to_string()))?
     };

@@ -100,8 +100,8 @@ const DECK: &[CardId] = &[
 fn combat(layout: &[(K, bool)], seed: u64) -> CombatState {
     let seed_i32 = i32::try_from(seed).expect("small seed");
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(seed_i32),
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(seed_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed_i32 as u32)),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(seed),
         ..Default::default()
     };
     state.player.character = Some(CharacterId::Ironclad);

@@ -32,7 +32,7 @@ pub fn respawn_legacy(state: &mut CombatState, specs: &[MonsterSpec], seed: u64)
     // The positional `ai_args` the builder read, as `Scenario::from_monsters`
     // fixes them up.
     let specs = Scenario::from_monsters(specs.to_vec()).monsters;
-    let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
     for (i, spec) in specs.iter().enumerate() {
         let hp = spec.hp_override.map_or_else(
             || spec.kind.starting_hp(&mut rng, state.ascension),
@@ -72,5 +72,5 @@ pub fn respawn_legacy(state: &mut CombatState, specs: &[MonsterSpec], seed: u64)
         }
     }
     state.rng = rng;
-    state.run_rng.niche = RunRngSet::new(seed as i32).niche;
+    state.run_rng.niche = RunRngSet::from_run_seed(u64::from(seed as u32)).niche;
 }

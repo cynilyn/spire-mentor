@@ -145,7 +145,7 @@ fn list_encounters<W: Write>(out: &mut W, filter: ListFilter) -> io::Result<()> 
         // randomized aliases will still render their seed=0
         // composition here, which is what `--seed 0 --encounter
         // <alias>` would produce.
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         writeln!(out, "# legacy aliases ({} entries)", ENCOUNTERS.len())?;
         for (alias, builder) in ENCOUNTERS {
             let specs = builder(&mut rng);

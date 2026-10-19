@@ -567,7 +567,7 @@ mod tests {
             let mut greedy = HeuristicPolicy::new();
             let greedy_idx = greedy.choose(&rm, &actions).expect("greedy pick");
 
-            let mut sampled = SampledDeckPolicy::new(Weights::default(), seed, 0);
+            let mut sampled = SampledDeckPolicy::new(Weights::default(), seed as i32, 0);
             set_temp(&mut sampled, 0.0);
             let sampled_idx = sampled.choose(&rm, &actions).expect("sampled pick");
 
@@ -597,7 +597,7 @@ mod tests {
 
         let rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
         let actions = rm.get_available_actions();
-        let mut sampled = SampledDeckPolicy::new(Weights::default(), seed, 0);
+        let mut sampled = SampledDeckPolicy::new(Weights::default(), seed as i32, 0);
         set_temp(&mut sampled, 5.0);
 
         let mut seen = std::collections::BTreeSet::new();
@@ -616,7 +616,7 @@ mod tests {
     /// Build a run-manager with `n` forced deck removals pending, plus a
     /// curse appended so the offer order is non-trivial.
     fn rm_with_forced_removal(seed: i32) -> RunManager {
-        let mut rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+        let mut rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
         let curse = sts2_content::cards::spec_index::card_pod_from_id(CardId::Decay, false)
             .expect("curse pod");
         rm.run_state.master_deck.push(curse);
@@ -676,7 +676,7 @@ mod tests {
     /// spaces shift apart and the tests below actually discriminate between
     /// them (GH #399 review — an untouched starter deck cannot).
     fn rm_with_upgrade_preempt(seed: i32) -> RunManager {
-        let mut rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+        let mut rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
         let curse = sts2_content::cards::spec_index::card_pod_from_id(CardId::Decay, false)
             .expect("curse pod");
         rm.run_state.master_deck.insert(0, curse);
@@ -981,7 +981,7 @@ mod tests {
         // Seeds that panicked before the fix (all hit GrantDeckCard during MapChoice).
         for seed in [5_i32, 6, 11, 24, 34] {
             ensure_content_installed();
-            let rm = new_run_manager_for_character_with_ascension(seed, CharacterId::Ironclad, 0);
+            let rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), CharacterId::Ironclad, 0);
             let mut rm = rm.with_neow_start();
             initialize_run_setup(&mut rm);
             let mut policy = SampledDeckPolicy::new(Weights::default(), seed, 0);

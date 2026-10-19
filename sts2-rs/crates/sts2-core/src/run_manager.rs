@@ -606,8 +606,13 @@ pub struct RunManager {
     pub run_state: RunState,
     /// Live combat state during [`Phase::Combat`], `None` otherwise.
     pub combat: Option<CombatState>,
-    /// Master seed for this run. Mirrors Python's `_seed`.
-    pub seed: i32,
+    /// Run seed base for this run (`RunRngSet.Seed`).
+    pub seed: u64,
+    /// Player stream base (`H(full string) + slot 0`); equals [`Self::seed`]
+    /// for numeric-seed runs and differs for `old` seed strings.
+    pub player_seed: u64,
+    /// `H(full seed string)`: base of the `act_selection` stream.
+    pub act_seed: u64,
     /// Character class. Mirrors Python's `_character_id` (string in
     /// Python, typed here).
     pub character_id: CharacterId,
@@ -696,7 +701,7 @@ impl RunManager {
     /// - Multi-stream [`crate::RunRngSet`] integration onto
     ///   [`RunState`] (deferred follow-up to bead `sts2-rs-ewm6b`).
     #[must_use]
-    pub fn new(seed: i32, character_id: CharacterId) -> Self {
+    pub fn new(seed: u64, character_id: CharacterId) -> Self {
         Self::with_ascension(seed, character_id, 0)
     }
 
@@ -713,7 +718,24 @@ impl RunManager {
     /// via the run's `CardRarityOdds`, `sts2-rs-brq2l`), and A10
     /// DoubleBoss (set `has_double_boss = true`, `sts2-rs-oyzw5`).
     #[must_use]
-    pub fn with_ascension(seed: i32, character_id: CharacterId, ascension_level: u8) -> Self {
+    pub fn with_ascension(seed: u64, character_id: CharacterId, ascension_level: u8) -> Self {
+        Self::with_seed_bases(seed, seed, seed, character_id, ascension_level)
+    }
+
+    /// Full constructor from the three seed bases of a seed string
+    /// ([`crate::seed_bases`]): `run_seed` (run streams, maps, events),
+    /// `player_seed` (rewards/shops/transformations) and `act_seed`
+    /// (`H(full string)`, the `act_selection` base). [`Self::with_ascension`]
+    /// is the single-base form (all three equal).
+    #[must_use]
+    pub fn with_seed_bases(
+        run_seed: u64,
+        player_seed: u64,
+        act_seed: u64,
+        character_id: CharacterId,
+        ascension_level: u8,
+    ) -> Self {
+        let seed = run_seed;
         let starter: CharacterStarter = character_starter(character_id);
         let mut run_state = RunState::new();
 
@@ -793,14 +815,14 @@ impl RunManager {
         // Seed the legacy single-stream RNG so deterministic tests can
         // rely on a non-zero seed. The named-stream bundle on
         // RunState itself lands in the ewm6b follow-up.
-        run_state.rewards_rng_seed = u64::from(seed as u32);
+        run_state.rewards_rng_seed = seed;
         // Bead `sts2-rs-4d93v`: re-seed the multi-stream RunRngSet from
         // the caller's seed. Without this, `RunState::new()` defaults
-        // to `RunRngSet::new(0)` and every map/encounter/reward roll
+        // to `RunRngSet::from_run_seed(0)` and every map/encounter/reward roll
         // uses the same fixed seed regardless of what the caller
         // passes. Discovered via R3.2 map-parity script: 3 different
         // string seeds produced byte-identical act maps.
-        run_state.rng = crate::run_rng_set::RunRngSet::new(seed);
+        run_state.rng = crate::run_rng_set::RunRngSet::new(run_seed, player_seed);
         // Grant the starter relic. Mirrors Python's
         // `player.obtain_relic(config["starter_relic"])`.
         run_state.relics.push(starter.starter_relic);
@@ -823,6 +845,8 @@ impl RunManager {
             run_state,
             combat: None,
             seed,
+            player_seed,
+            act_seed,
             character_id,
             ascension_level,
             heal_after_combat: starter.heal_after_combat,
@@ -867,7 +891,7 @@ impl RunManager {
     #[must_use]
     pub fn with_rolled_act1(self) -> Self {
         let acts = crate::act_selection::roll_acts(
-            self.seed,
+            self.act_seed,
             &crate::act_selection::ActSelectionUnlocks::test_mode_on(true),
         );
         self.with_act1(acts[0])
@@ -6209,7 +6233,7 @@ mod tests {
         // part in a debug build, so cap the sweep rather than probe
         // hundreds of layouts.
         for seed in 0..24_i32 {
-            let rm = RunManager::new(seed, CharacterId::Ironclad);
+            let rm = RunManager::new(u64::from(seed as u32), CharacterId::Ironclad);
             assert_eq!(rm.phase(), Phase::MapChoice, "seed {seed}");
 
             let offered: Vec<i32> = rm
@@ -6245,7 +6269,7 @@ mod tests {
             // combat callback, which is irrelevant to the map resolution
             // under test.
             for &col in &offered {
-                let mut probe = RunManager::new(seed, CharacterId::Ironclad);
+                let mut probe = RunManager::new(u64::from(seed as u32), CharacterId::Ironclad);
                 let _ = probe.do_map_move(col);
                 let landed = probe
                     .run_state
@@ -8050,7 +8074,7 @@ mod tests {
             let mut rm = RunManager::new(7, CharacterId::Ironclad);
             // Reset the rng to a clean RunRngSet seed to avoid
             // CharacterStarter side effects on the rewards stream.
-            rm.run_state.rng = crate::run_rng_set::RunRngSet::new(7);
+            rm.run_state.rng = crate::run_rng_set::RunRngSet::from_run_seed(7);
             let common = vec![RelicId::Akabeko, RelicId::Anchor];
             let uncommon = vec![RelicId::BloodVial];
             let rare = vec![RelicId::Sozu];
@@ -8071,7 +8095,7 @@ mod tests {
     #[test]
     fn roll_treasure_relic_rarity_uses_treasure_room_stream_deterministically() {
         let mk = || crate::runstate::RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0x1234),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0x1234),
             ..crate::runstate::RunState::default()
         };
         let mut a = mk();
@@ -8378,7 +8402,7 @@ mod tests {
             let mut rm = RunManager::new(99, CharacterId::Ironclad);
             // Reset the RNG bundle to a clean seed so the rewards
             // stream draws from the CharacterStarter don't desync.
-            rm.run_state.rng = crate::run_rng_set::RunRngSet::new(99);
+            rm.run_state.rng = crate::run_rng_set::RunRngSet::from_run_seed(99);
             enter_boss_room(&mut rm);
             rm
         };

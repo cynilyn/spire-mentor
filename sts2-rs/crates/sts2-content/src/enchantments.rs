@@ -845,7 +845,7 @@ mod tests {
         // pile commands move CardUids, not Card structs.
         player.draw.push(card_uid);
 
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(0);
         let cards = sts2_core::cards::CardStore::new();
         for _ in 0..3 {
             // Draw to hand.

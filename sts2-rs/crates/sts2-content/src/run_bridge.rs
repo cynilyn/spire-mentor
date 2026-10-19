@@ -2225,7 +2225,7 @@ mod tests {
     fn enter_combat_from_roster_carries_run_rng_streams() {
         const SEED: i32 = 0x5EED;
         let rs = RunState {
-            rng: sts2_core::run_rng_set::RunRngSet::new(SEED),
+            rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(SEED as u32)),
             ..fresh_run()
         };
         let roster = [(MonsterKind::FuzzyWurmCrawler, MonsterSpawnArgs::None, 57)];
@@ -2233,13 +2233,14 @@ mod tests {
 
         // `run_rng` field present → clone of rs.rng, NOT the default seed-0 set.
         assert_eq!(
-            state.run_rng.seed, SEED,
+            state.run_rng.seed,
+            u64::from(SEED as u32),
             "run_rng must be the run's RNG bundle (seed carried in), not the default seed-0 set"
         );
         // `rng` field present → `Rng::new(rs.rng.seed)`, NOT the default seed-0.
         assert_eq!(
             state.rng.seed(),
-            SEED as u32,
+            u64::from(SEED as u32),
             "legacy combat rng must be seeded from the run's master seed, not 0"
         );
     }

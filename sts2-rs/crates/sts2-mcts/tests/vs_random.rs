@@ -24,7 +24,7 @@ const MAX_MOVES_PER_COMBAT: u32 = 50;
 
 fn run_random(seed: u64) -> bool {
     let mut state = build_vertical_slice_hp(seed, PLAYER_HP, CULTIST_HP);
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0xDEAD_BEEF) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xDEAD_BEEF) as u32));
     let mut moves = 0u32;
     while !is_terminal(&state) && moves < MAX_MOVES_PER_COMBAT {
         let acts = legal_actions(&state);

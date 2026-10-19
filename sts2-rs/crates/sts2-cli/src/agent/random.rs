@@ -26,7 +26,7 @@ impl RandomAgent {
     #[must_use]
     pub fn with_step_cap(seed: u64, steps: u32) -> Self {
         Self {
-            rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+            rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
             remaining_steps: if steps == 0 { None } else { Some(steps) },
         }
     }

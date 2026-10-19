@@ -32,7 +32,7 @@ fn state_with_card_in_hand(card_id: CardId) -> (CombatState, CardUid) {
     // POD factory, which lives on its own OnceLock. Idempotent.
     sts2_core::register_card_factory(sts2_content::cards::spec_index::card_pod_from_id);
     let mut state = CombatState {
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(4242_i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(4242),
         ..Default::default()
     };
     state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);

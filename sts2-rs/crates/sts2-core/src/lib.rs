@@ -3998,7 +3998,7 @@ impl Default for CombatState {
             round: 0,
             side: Side::Player,
             rng: crate::dotnet_rng::Rng::new(0),
-            run_rng: crate::run_rng_set::RunRngSet::new(0),
+            run_rng: crate::run_rng_set::RunRngSet::from_run_seed(0),
 
             creatures: CreatureStore::new(),
             cards: CardStore::new(),

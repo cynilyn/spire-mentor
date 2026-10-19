@@ -183,7 +183,7 @@ fn pile_ops_preserve_multiset_and_invariants(tc: TestCase) {
         .assert_invariants()
         .expect("seed state passes invariants");
 
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     let ops: Vec<Op> = (0..n_ops).map(|_| arb_op(&tc)).collect();
 
     for (step, op) in ops.iter().copied().enumerate() {
@@ -215,7 +215,7 @@ fn empty_state_ops_are_noops(tc: TestCase) {
     let mut state = CombatState::default();
     state.player.current_hp = 50;
     state.player.max_hp = 50;
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     cards::shuffle(&mut state.player, &mut rng);
     let drew = cards::draw(&mut state.player, 5, &state.cards, &mut rng);
     cards::discard_pile_into_draw_pile(&mut state.player, &state.cards, &mut rng);

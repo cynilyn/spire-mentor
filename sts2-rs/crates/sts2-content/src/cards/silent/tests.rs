@@ -33,7 +33,7 @@ use sts2_core::{Creature, IntentHistory, MonsterId, MonsterKind};
 
 fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatState, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     // Alive player -- a dead one trips the C# IsOverOrEnding select guard
@@ -1425,7 +1425,7 @@ fn poison_multiply_stack_invariant() {
 fn three_enemy_ricochet_state(seed: u64) -> CombatState {
     install_pool();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
         ..Default::default()
     };
     // 3 enemies with 50 HP each so a 3-dmg hit doesn't kill anyone.
@@ -1542,7 +1542,7 @@ fn random_target_routing_breaks_when_board_clears() {
 
     install_pool();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     let id = NonZeroU32::new(1).expect("nz");
@@ -2448,7 +2448,7 @@ fn play_precise_cut_negative_base_clamps_after_strength() {
 fn grand_finale_aoe_locks_damage_before_mid_aoe_shrink_removal() {
     install_pool();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     // Enemy 0 = ShrinkerBeetle @ 21 HP — the applier of the player's Shrink.
@@ -2542,7 +2542,7 @@ fn grand_finale_aoe_locks_damage_before_mid_aoe_shrink_removal() {
 fn grand_finale_deals_damage_with_nonempty_draw_pile() {
     install_pool();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     let enemy_id = NonZeroU32::new(1).expect("nz");
@@ -2614,7 +2614,7 @@ fn knife_trap_auto_plays_each_exhaust_shiv_as_real_card_play() {
     install_pool();
     super::super::status::install_pool(); // registers Shiv's dispatch + EXHAUST
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     let enemy_id = NonZeroU32::new(1).expect("nz");
@@ -2685,7 +2685,7 @@ fn knife_trap_auto_plays_each_exhaust_shiv_as_real_card_play() {
 fn calculated_gamble_auto_plays_single_turn_sly_discard() {
     install_pool();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     let enemy_id = NonZeroU32::new(1).expect("nz");
@@ -2775,7 +2775,7 @@ fn reflex_discarded_via_helper_draws_two_not_four() {
     // directly so `card_sly(Reflex)` is true (idiom from `tactician_*` test).
     sts2_core::card_effects::register_card_sly(CardId::Reflex);
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     // REFLEX (uid 1) in hand — `Sly` keyword (registered above).

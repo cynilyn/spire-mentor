@@ -17,7 +17,7 @@ use sts2_content::cards::dispatch as content_dispatch;
 
 fn fresh_state_with_enemy() -> (CombatState, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     let enemy_id = NonZeroU32::new(1).expect("nz");

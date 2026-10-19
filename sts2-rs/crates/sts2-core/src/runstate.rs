@@ -1656,9 +1656,9 @@ pub struct RunState {
     /// one stream never perturbs another. Bead `sts2-rs-ewm6b`
     /// (P9.1.g).
     ///
-    /// Defaults to `RunRngSet::new(0)` for deterministic golden tests.
+    /// Defaults to `RunRngSet::from_run_seed(0)` for deterministic golden tests.
     /// Tests / production code that need a non-zero master seed should
-    /// construct the run with `RunState { rng: RunRngSet::new(seed),
+    /// construct the run with `RunState { rng: RunRngSet::from_run_seed(seed),
     /// ..Default::default() }` or mutate `rs.rng` directly. The legacy
     /// [`Self::rewards_rng_seed`] / [`Self::rewards_rng`] surface is
     /// kept in place; downstream migration beads move per-call-site
@@ -1928,7 +1928,7 @@ impl Default for RunState {
             // Bead sts2-rs-ewm6b (P9.1.g): per-stream named RNGs
             // seeded from master 0 by default. Tests overriding seed
             // can reassign `rng` post-construction.
-            rng: crate::run_rng_set::RunRngSet::new(0),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0),
             // Bead `sts2-rs-597ws` (P9.1.f): relic grab-bag + boss-relic
             // pool default to empty; populator wires them at run-start.
             relic_grab_bag: Vec::new(),
@@ -6894,7 +6894,7 @@ mod tests {
     #[test]
     fn append_encounter_gold_drop_monster_rolls_in_range_10_to_20() {
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0x1234),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0x1234),
             ..RunState::default()
         };
         let amount = rs
@@ -6910,7 +6910,7 @@ mod tests {
     #[test]
     fn append_encounter_gold_drop_elite_rolls_in_range_35_to_45() {
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0xabcd),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0xabcd),
             ..RunState::default()
         };
         let amount = rs
@@ -6925,7 +6925,7 @@ mod tests {
     #[test]
     fn append_encounter_gold_drop_boss_rolls_exactly_100() {
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0xdead),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0xdead),
             ..RunState::default()
         };
         let amount = rs
@@ -6969,7 +6969,7 @@ mod tests {
         // C# `EncounterModel.MinGoldReward` truncates: Monster
         // (10, 20) × 0.75 = (7.5, 15.0) → `(int)` = (7, 15).
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0xc0ffee),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0xc0ffee),
             ascension_level: 3,
             ..RunState::default()
         };
@@ -6990,7 +6990,7 @@ mod tests {
         // rolls: every value must stay within [26, 33] and both bounds
         // must be reachable.
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0xdead),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0xdead),
             ascension_level: 3,
             ..RunState::default()
         };
@@ -7020,7 +7020,7 @@ mod tests {
         // but leave Elite/Boss gold at full value (and Elite/Boss must still
         // roll even when the proportion is 0 — they don't short-circuit).
         let new_rs = || RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0x901d),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0x901d),
             ..RunState::default()
         };
 
@@ -7064,7 +7064,7 @@ mod tests {
     #[test]
     fn append_encounter_gold_drop_poverty_inactive_below_asc_3() {
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0xc0ffee),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0xc0ffee),
             ascension_level: 2,
             ..RunState::default()
         };
@@ -7079,7 +7079,7 @@ mod tests {
     fn append_encounter_gold_drop_monster_proportion_scales_range() {
         // Monster (10, 20) × 0.5 = (5, 10).
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0xfeed),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0xfeed),
             ..RunState::default()
         };
         let amount = rs
@@ -7092,7 +7092,7 @@ mod tests {
     fn append_encounter_gold_drop_is_deterministic_under_same_seed() {
         let build = |seed: i32| {
             let mut rs = RunState {
-                rng: crate::run_rng_set::RunRngSet::new(seed),
+                rng: crate::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
                 ..RunState::default()
             };
             for _ in 0..5 {
@@ -7116,7 +7116,7 @@ mod tests {
     #[test]
     fn append_encounter_gold_drop_grows_pending_rewards_by_one() {
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0x55),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0x55),
             ..RunState::default()
         };
         let before = rs.pending_rewards.len();
@@ -7813,7 +7813,7 @@ mod tests {
         // untouched (the typed variant uses `niche`, not `rewards`).
         let build = || {
             let mut rs = RunState {
-                rng: crate::run_rng_set::RunRngSet::new(0x42),
+                rng: crate::run_rng_set::RunRngSet::from_run_seed(0x42),
                 ..RunState::default()
             };
             for i in 0..6 {
@@ -7869,7 +7869,7 @@ mod tests {
         ];
         let build = |order: &[CardId]| {
             let mut rs = RunState {
-                rng: crate::run_rng_set::RunRngSet::new(0x1011),
+                rng: crate::run_rng_set::RunRngSet::from_run_seed(0x1011),
                 ..RunState::default()
             };
             for &id in order {
@@ -7986,7 +7986,7 @@ mod tests {
     fn transform_cards_is_deterministic_under_same_seed() {
         let build = || {
             let mut rs = RunState {
-                rng: crate::run_rng_set::RunRngSet::new(0x42),
+                rng: crate::run_rng_set::RunRngSet::from_run_seed(0x42),
                 ..RunState::default()
             };
             for i in 0..8 {
@@ -8167,7 +8167,7 @@ mod tests {
         // and does no sampling of its own, so it must not perturb the
         // niche RNG stream — callers control sampling externally.
         let mut rs = RunState {
-            rng: crate::run_rng_set::RunRngSet::new(0x99),
+            rng: crate::run_rng_set::RunRngSet::from_run_seed(0x99),
             ..RunState::default()
         };
         rs.master_deck

@@ -3252,7 +3252,7 @@ mod tests {
     /// this: it admits the Uncommon pool on every NON-Uncommon roll, so
     /// nearly every roll yields a card and the slate balloons.
     ///
-    /// v0.107.1: re-seeded to `RunRngSet::new(2)` (the default seed 0 now
+    /// v0.107.1: re-seeded to `RunRngSet::from_run_seed(2)` (the default seed 0 now
     /// rolls 7/12 Uncommon under MegaRandom — Common no longer dominates that
     /// seed, which would invert the discrimination). Seed 2 produces 1 card
     /// under the correct filter; we assert `<= 5` (well under the ~11 the
@@ -3270,7 +3270,7 @@ mod tests {
             "need a large distinct Uncommon pool so the mutant can balloon the slate"
         );
         let mut rs = RunState::new();
-        rs.rng = sts2_core::run_rng_set::RunRngSet::new(2);
+        rs.rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(2);
         let opts = sts2_core::runstate::CardRewardGenerationOptions {
             has_custom_card_pool: true,
             custom_card_ids: uncommons,

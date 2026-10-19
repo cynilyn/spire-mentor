@@ -6332,7 +6332,7 @@ mod tests {
 
             // Mirror the per-sim seed derivation in `Mcts::one_simulation`.
             let seed = 0x2au64 ^ u64::from(sim_index).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             sts2_core::cards::shuffle(&mut player, &mut rng);
 
             assert_eq!(
@@ -6448,9 +6448,9 @@ mod tests {
                 phase: CombatPhase::Setup,
                 round: 0,
                 side: Side::Player,
-                rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+                rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
 
-                run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
+                run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
                 creatures: vec![cultist],
                 cards: Vec::new().into(),
                 powers: Vec::new().into(),
@@ -6725,9 +6725,9 @@ mod tests {
             phase: CombatPhase::Setup,
             round: 0,
             side: Side::Player,
-            rng: sts2_core::dotnet_rng::Rng::new(0x0006_8b17_i32),
+            rng: sts2_core::dotnet_rng::Rng::new(u64::from(0x0006_8b17_i32 as u32)),
 
-            run_rng: sts2_core::run_rng_set::RunRngSet::new(0x0006_8b17_i32),
+            run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(0x0006_8b17),
             creatures: vec![cultist],
             cards: vec![strike_card, curse_card].into(),
             powers: Vec::new().into(),
@@ -7078,9 +7078,9 @@ mod tests {
                 phase: CombatPhase::Setup,
                 round: 0,
                 side: Side::Player,
-                rng: sts2_core::dotnet_rng::Rng::new(0x00cb_2eed_i32),
+                rng: sts2_core::dotnet_rng::Rng::new(u64::from(0x00cb_2eed_i32 as u32)),
 
-                run_rng: sts2_core::run_rng_set::RunRngSet::new(0x00cb_2eed_i32),
+                run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(0x00cb_2eed),
                 creatures: vec![cultist],
                 cards: vec![strike_card, curse_card].into(),
                 powers: Vec::new().into(),
@@ -7268,9 +7268,9 @@ mod tests {
             phase: CombatPhase::Setup,
             round: 0,
             side: Side::Player,
-            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+            rng: sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32)),
 
-            run_rng: sts2_core::run_rng_set::RunRngSet::new(0_i32),
+            run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(0),
             creatures: vec![cultist],
             cards: Vec::new().into(),
             powers: Vec::new().into(),
@@ -7439,9 +7439,9 @@ mod tests {
             phase: CombatPhase::Setup,
             round: 0,
             side: Side::Player,
-            rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+            rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
 
-            run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
+            run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
             creatures: vec![cultist],
             cards: Vec::new().into(),
             powers: Vec::new().into(),
@@ -10367,7 +10367,7 @@ mod tests {
             round: 1,
             side: Side::Player,
             rng: sts2_core::dotnet_rng::Rng::new(1),
-            run_rng: sts2_core::run_rng_set::RunRngSet::new(1),
+            run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(1),
             creatures: vec![cultist],
             cards: cards.into(),
             powers: Vec::new().into(),
@@ -11169,7 +11169,7 @@ mod endturn_prefix_tests {
         let mut rs = RunState {
             current_hp: 70,
             max_hp: 80,
-            rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
             character_id: CharacterId::Ironclad,
             ..RunState::default()
         };

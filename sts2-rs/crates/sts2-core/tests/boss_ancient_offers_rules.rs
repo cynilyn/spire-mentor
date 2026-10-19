@@ -158,7 +158,7 @@ fn universe(a: AncientId) -> Vec<RelicId> {
 fn seen(a: AncientId, c: &AncientConditions, seeds: i32) -> std::collections::HashSet<RelicId> {
     let mut acc = std::collections::HashSet::new();
     for seed in 0..seeds {
-        let mut rng = event_rng(seed, a);
+        let mut rng = event_rng(u64::from(seed as u32), a);
         acc.extend(roll_offers(a, &mut rng, c));
     }
     acc
@@ -189,7 +189,7 @@ fn offers_stay_inside_each_ancients_universe() {
     for a in ALL_ANCIENTS {
         let uni = universe(a);
         for seed in 0..96i32 {
-            let mut rng = event_rng(seed, a);
+            let mut rng = event_rng(u64::from(seed as u32), a);
             for r in roll_offers(a, &mut rng, &c) {
                 assert!(uni.contains(&r), "{a:?} offered out-of-pool {r:?}");
             }
@@ -293,7 +293,7 @@ fn orobas_variant_is_appended_last_and_gated_at_one_third() {
     let mut saw_glass = false;
     for seed in 0..256i32 {
         // Mirror the C# read order on an independent stream.
-        let mut r = event_rng(seed, AncientId::Orobas);
+        let mut r = event_rng(u64::from(seed as u32), AncientId::Orobas);
         let _char_pick = r.next_int_exclusive(0, 4);
         let variant = if r.next_float(1.0) < 0.333_333_3_f64 {
             PrismaticGem
@@ -303,7 +303,7 @@ fn orobas_variant_is_appended_last_and_gated_at_one_third() {
         let list = [ElectricShrymp, GlassEye, SandCastle, variant];
         let expected0 = list[r.next_int_exclusive(0, 4) as usize];
 
-        let mut rng = event_rng(seed, AncientId::Orobas);
+        let mut rng = event_rng(u64::from(seed as u32), AncientId::Orobas);
         let offers = roll_offers(AncientId::Orobas, &mut rng, &c);
         assert_eq!(offers[0], expected0, "seed {seed}");
         saw_gem |= variant == PrismaticGem;
@@ -321,11 +321,11 @@ fn orobas_skips_exactly_one_draw_without_other_characters() {
     c0.num_other_characters = 0;
     let c4 = cond();
     for seed in 0..64i32 {
-        let mut with_pre = event_rng(seed, AncientId::Orobas);
+        let mut with_pre = event_rng(u64::from(seed as u32), AncientId::Orobas);
         let _ = with_pre.next_int_exclusive(0, 4);
         let a = roll_offers(AncientId::Orobas, &mut with_pre, &c0);
 
-        let mut fresh = event_rng(seed, AncientId::Orobas);
+        let mut fresh = event_rng(u64::from(seed as u32), AncientId::Orobas);
         let b = roll_offers(AncientId::Orobas, &mut fresh, &c4);
         assert_eq!(a, b, "seed {seed}: char pick is not exactly one draw");
     }
@@ -383,11 +383,11 @@ fn pael_option2_list_is_doubled_before_growth_is_appended() {
         c.removable_count = removable;
         for seed in 0..96i32 {
             // Mirror the read order: pool1 pick, then the pool2 pick.
-            let mut r = event_rng(seed, AncientId::Pael);
+            let mut r = event_rng(u64::from(seed as u32), AncientId::Pael);
             let _pool1 = r.next_int_exclusive(0, 3);
             let idx = r.next_int_exclusive(0, expected.len() as i32) as usize;
 
-            let mut rng = event_rng(seed, AncientId::Pael);
+            let mut rng = event_rng(u64::from(seed as u32), AncientId::Pael);
             let offers = roll_offers(AncientId::Pael, &mut rng, &c);
             assert_eq!(
                 offers[1], expected[idx],
@@ -496,7 +496,7 @@ fn vakuu_takes_one_relic_from_each_pool_in_order() {
     let c = cond();
     let mut hit: [std::collections::HashSet<RelicId>; 3] = Default::default();
     for seed in 0..256i32 {
-        let mut rng = event_rng(seed, AncientId::Vakuu);
+        let mut rng = event_rng(u64::from(seed as u32), AncientId::Vakuu);
         let offers = roll_offers(AncientId::Vakuu, &mut rng, &c);
         for (i, pool) in pools.iter().enumerate() {
             assert!(pool.contains(&offers[i]), "seed {seed} slot {i}");
@@ -533,7 +533,7 @@ fn darv_dusty_tome_branch_appends_last() {
     let mut with_tome = 0;
     let mut without_tome = 0;
     for seed in 0..256i32 {
-        let mut rng = event_rng(seed, AncientId::Darv);
+        let mut rng = event_rng(u64::from(seed as u32), AncientId::Darv);
         let offers = roll_offers(AncientId::Darv, &mut rng, &c);
         assert_eq!(offers.len(), 3);
         if let Some(pos) = offers.iter().position(|r| *r == RelicId::DustyTome) {
@@ -567,7 +567,7 @@ fn darv_paired_relic_sets_contribute_at_most_one_offer() {
         let mut saw_a = false;
         let mut saw_b = false;
         for seed in 0..512i32 {
-            let mut rng = event_rng(seed, AncientId::Darv);
+            let mut rng = event_rng(u64::from(seed as u32), AncientId::Darv);
             let offers = roll_offers(AncientId::Darv, &mut rng, &c);
             let a = offers.contains(&pair.0);
             let b = offers.contains(&pair.1);
@@ -614,7 +614,7 @@ fn any_conditions_yield_three_distinct_reproducible_offers(tc: TestCase) {
     let seed = tc.draw(gs::integers::<i32>());
     let c = arb_conditions(&tc);
     for a in ALL_ANCIENTS {
-        let mut r1 = event_rng(seed, a);
+        let mut r1 = event_rng(u64::from(seed as u32), a);
         let offers = roll_offers(a, &mut r1, &c);
         tc.note(&format!("{a:?} seed={seed} offers={offers:?}"));
         assert_eq!(offers.len(), 3, "{a:?}");
@@ -626,7 +626,7 @@ fn any_conditions_yield_three_distinct_reproducible_offers(tc: TestCase) {
         for r in &offers {
             assert!(uni.contains(r), "{a:?} offered out-of-pool {r:?}");
         }
-        let mut r2 = event_rng(seed, a);
+        let mut r2 = event_rng(u64::from(seed as u32), a);
         assert_eq!(
             roll_offers(a, &mut r2, &c),
             offers,
@@ -653,7 +653,7 @@ fn event_streams_are_salted_per_ancient(tc: TestCase) {
         AncientId::Vakuu,
         AncientId::Darv,
     ] {
-        let rng = event_rng(seed, a);
+        let rng = event_rng(u64::from(seed as u32), a);
         assert!(
             seeds.insert(rng.seed()),
             "{a:?} collides with another ancient's stream at master {seed}"

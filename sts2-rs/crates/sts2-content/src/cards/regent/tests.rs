@@ -36,7 +36,7 @@ use sts2_core::{Creature, IntentHistory, MonsterId, MonsterKind};
 
 fn fresh_state_with_enemy(hp: i32) -> (CombatState, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     state.player.current_hp = 80;
@@ -391,7 +391,7 @@ fn venerate_grants_two_stars() {
 
 fn fresh_state_with_two_enemies(hp_a: i32, hp_b: i32) -> (CombatState, CreatureUid, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     state.player.current_hp = 80;
@@ -2134,7 +2134,7 @@ fn bombardment_auto_plays_from_exhaust_at_turn_start() {
 fn bombardment_follows_rampart_block() {
     crate::cards::dispatch::install_default_registry();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     state.player.current_hp = 80;

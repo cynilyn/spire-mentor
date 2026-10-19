@@ -429,7 +429,7 @@ pub fn build_obs(rm: &RunManager, phase: &str, surface: Option<&str>) -> PpoObs 
     let mut obs = PpoObs {
         phase: phase.to_string(),
         surface: surface.map(str::to_string),
-        seed: i64::from(rm.seed),
+        seed: i64::from_ne_bytes(rm.seed.to_ne_bytes()),
         ascension: i64::from(rs.ascension_level),
         deck,
         relics,

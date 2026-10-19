@@ -276,7 +276,7 @@ pub fn run_label_cell(
     let started = std::time::Instant::now();
 
     let mut rm = sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(
-        spec.seed,
+        u64::from((spec.seed) as u32),
         spec.character,
         spec.ascension,
     )

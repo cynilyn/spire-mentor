@@ -487,7 +487,7 @@ mod tests {
         use sts2_core::dotnet_rng::Rng;
         let mut saw_base = [false; 3];
         for seed in 0..64i32 {
-            let mut rng = Rng::with_name(seed, "DECIMILLIPEDE_ELITE");
+            let mut rng = Rng::with_name(u64::from(seed as u32), "DECIMILLIPEDE_ELITE");
             let roster = randomize_decimillipede_elite(&mut rng);
             assert_eq!(roster.len(), 3, "seed {seed}: roster size");
             let idxs: Vec<u8> = roster
@@ -552,7 +552,7 @@ mod tests {
             .collect();
         let mut seen_worker: HashSet<MonsterKind> = HashSet::new();
         for seed in 0..64u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_bowlbugs_weak(&mut rng);
             assert_eq!(roster.len(), 2, "bowlbugs_weak always returns 2 monsters");
             assert_eq!(roster[0].0, MonsterKind::BowlbugRock, "slot 0 is the rock");
@@ -579,7 +579,7 @@ mod tests {
         .collect();
         let mut seen_workers: HashSet<MonsterKind> = HashSet::new();
         for seed in 0..64u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_bowlbugs_normal(&mut rng);
             assert_eq!(roster.len(), 3, "bowlbugs_normal always returns 3 monsters");
             assert_eq!(roster[0].0, MonsterKind::BowlbugRock, "slot 0 is the rock");

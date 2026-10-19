@@ -4889,7 +4889,7 @@ mod tests {
 
     fn fresh_state_with_one_enemy() -> (CombatState, CreatureUid) {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let id = NonZeroU32::new(1).expect("non-zero");
@@ -5278,7 +5278,7 @@ mod tests {
     fn q6bix_fasten_adds_block_on_defend_tagged_card() {
         use crate::cards::CardTag;
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 80;
@@ -5308,7 +5308,7 @@ mod tests {
     #[test]
     fn q6bix_fasten_skips_non_defend_card() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 80;
@@ -5353,7 +5353,7 @@ mod tests {
     #[test]
     fn apply_power_to_creature_targets_player_slot() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 50;
@@ -5740,7 +5740,7 @@ mod tests {
         for seed in 0..200_i32 {
             let (mut state, _enemy) = fresh_state_with_one_enemy();
             state.player.orbs = crate::orbs::OrbSlots::with_capacity(3);
-            state.run_rng.combat_orbs = crate::dotnet_rng::Rng::with_name(seed, "combat_orbs");
+            state.run_rng.combat_orbs = crate::dotnet_rng::Rng::with_name(u64::from(seed as u32), "combat_orbs");
             grant_player_power(&mut state, PowerKind::TrashToTreasure, 1);
             state.player.play.push(CardUid::new(999).expect("nz"));
             let _ = spawn_card_into_pile(
@@ -5883,7 +5883,7 @@ mod tests {
     #[test]
     fn spawn_card_into_each_pile_assigns_uid_and_enqueues() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let u_draw = spawn_card_into_pile(
@@ -5929,7 +5929,7 @@ mod tests {
     #[test]
     fn search_pile_filters_by_predicate_and_preserves_order() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let u1 = spawn_card_into_pile(
@@ -5965,7 +5965,7 @@ mod tests {
     #[test]
     fn spawn_card_into_hand_appends_when_hand_under_cap() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // Pre-seed two cards in hand to verify append-order, not overwrite.
@@ -5993,7 +5993,7 @@ mod tests {
     #[test]
     fn spawn_card_into_hand_routes_to_discard_when_at_cap() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // Fill hand to HAND_LIMIT (10).
@@ -6021,7 +6021,7 @@ mod tests {
     #[test]
     fn spawn_card_into_hand_increments_generated_counter() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         assert_eq!(state.count_player_generated_cards_this_combat(), 0);
@@ -6048,7 +6048,7 @@ mod tests {
     #[test]
     fn deal_damage_to_all_alive_enemies_hits_each_alive_and_skips_dead() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // Player Creature is required by the damage pipeline (dealer
@@ -6089,7 +6089,7 @@ mod tests {
     #[test]
     fn osty_dealer_attacks_then_kill_retains_corpse_for_revive() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 80;
@@ -6169,7 +6169,7 @@ mod tests {
     #[test]
     fn calcify_boosts_osty_attack_not_player_attack() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 80;
@@ -6214,7 +6214,7 @@ mod tests {
     #[test]
     fn pick_random_alive_enemy_filters_dead_and_samples_alive() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(42_i32),
+            rng: crate::dotnet_rng::Rng::new(42),
             ..Default::default()
         };
         // Slots: alive / dead / alive.
@@ -6276,7 +6276,7 @@ mod tests {
     #[test]
     fn scan_piles_and_move_to_hand_pulls_from_all_three_piles() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let player_uid = state.init_player_creature();
@@ -6330,7 +6330,7 @@ mod tests {
     #[test]
     fn scan_piles_and_move_to_hand_no_match_returns_zero() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let player_uid = state.init_player_creature();
@@ -6358,7 +6358,7 @@ mod tests {
     #[test]
     fn scan_piles_and_move_to_hand_skips_hand_pile_when_excluded() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let player_uid = state.init_player_creature();
@@ -6384,7 +6384,7 @@ mod tests {
     #[test]
     fn find_card_pile_locates_in_each_pile_and_misses_unknown() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let h = spawn_card_into_pile(
@@ -6419,7 +6419,7 @@ mod tests {
     #[test]
     fn move_card_to_pile_relocates_and_reports_source() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let u = spawn_card_into_pile(
@@ -6445,7 +6445,7 @@ mod tests {
     #[test]
     fn move_card_to_hand_overflows_to_discard_at_cap() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // Fill hand to HAND_LIMIT.
@@ -6517,7 +6517,7 @@ mod tests {
     #[test]
     fn move_card_to_draw_random_position_uses_rng() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // Pre-seed draw with 5 anchor cards.
@@ -6544,7 +6544,7 @@ mod tests {
         // Determinism check: same seed reproduces the same insert
         // index on a fresh state.
         let mut state2 = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         for _ in 0..5 {
@@ -6575,7 +6575,7 @@ mod tests {
     #[test]
     fn move_card_to_draw_random_position_respects_deferred_order_layout() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // 4 anchor cards in draw, then pin first-to-top / last-to-bottom.
@@ -6661,7 +6661,7 @@ mod tests {
         register_after_card_exhausted(RelicId::BlackBlood, h_relic as AfterCardExhaustedFn);
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.init_player_creature();
@@ -6701,7 +6701,7 @@ mod tests {
     #[test]
     fn transform_card_in_place_reuses_pile_slot() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // Hand: [Shiv, Burn, Slimed]. Transform Burn → Hotfix; the
@@ -6748,7 +6748,7 @@ mod tests {
     #[test]
     fn upgrade_and_downgrade_card_uid_flip_flag_idempotently() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let u = spawn_card_into_pile(
@@ -6779,7 +6779,7 @@ mod tests {
     #[test]
     fn remove_card_from_any_pile_walks_canonical_order() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let u = spawn_card_into_pile(
@@ -6803,7 +6803,7 @@ mod tests {
     #[test]
     fn late_effects_empty_bus_is_noop() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let _ = state.init_player_creature();
@@ -6841,7 +6841,7 @@ mod tests {
         PROBE_COUNT.store(0, Ordering::SeqCst);
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let _ = state.init_player_creature();
@@ -6892,7 +6892,7 @@ mod tests {
         PROBE_COUNT.store(0, Ordering::SeqCst);
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let _ = state.init_player_creature();
@@ -6946,7 +6946,7 @@ mod tests {
         register_late_effect(crate::cards::CardId::Burn, probe as LateEffectFn);
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let _ = state.init_player_creature();
@@ -7046,7 +7046,7 @@ mod tests {
     fn apply_power_sets_skip_next_tick_for_vuln_weak_frail_on_fresh_apply() {
         for kind in [PowerKind::Vulnerable, PowerKind::Weak, PowerKind::Frail] {
             let mut state = CombatState {
-                rng: crate::dotnet_rng::Rng::new(0_i32),
+                rng: crate::dotnet_rng::Rng::new(0),
                 ..Default::default()
             };
             state.player.current_hp = 50;
@@ -7143,7 +7143,7 @@ mod tests {
         use std::num::NonZeroU32;
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let uid = NonZeroU32::new(1).expect("nz");
@@ -7191,7 +7191,7 @@ mod tests {
         use std::num::NonZeroU32;
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let uid = NonZeroU32::new(1).expect("nz");
@@ -7827,7 +7827,7 @@ mod should_owner_death_trigger_fatal_tests {
 
     fn fresh() -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 70;

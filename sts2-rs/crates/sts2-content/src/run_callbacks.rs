@@ -830,7 +830,7 @@ fn build_combat_for_room(
     let mut enc_rng = Rng::with_name(
         rs.rng
             .seed
-            .wrapping_add(rs.total_floor + i32::from(act_index)),
+            .wrapping_add(u64::from((rs.total_floor + i32::from(act_index)) as u32)),
         enc.id,
     );
     let roster_kinds = enc.roster(&mut enc_rng);
@@ -922,7 +922,12 @@ pub fn dump_roster_for_encounter(
     // `build_combat_for_room` path will instead read the run's real
     // post-entry `total_floor` when step-c wires it onto this stream.
     let mut enc_rng =
-        sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed.wrapping_add(rs.total_floor + 1), enc.id);
+        sts2_core::dotnet_rng::Rng::with_name(
+            rs.rng
+                .seed
+                .wrapping_add(u64::from((rs.total_floor + 1) as u32)),
+            enc.id,
+        );
     let roster_kinds = enc.roster(&mut enc_rng);
     // Per-monster HP off niche via the shared two-pass roller — C#'s
     // creation-then-finalize split (raw side-wide exclusion in pass 1, the
@@ -1007,14 +1012,14 @@ pub fn populate_starter_deck(rs: &mut RunState, character: CharacterId) {
 /// (10-char alphanumeric, e.g. `"3ACCFREXKR"` as emitted by the scraped
 /// run files at `../sts2_run_scraper/data/files/the-ironclad/*.run`).
 ///
-/// Pipeline mirrors the C# game exactly:
+/// Pipeline mirrors the C# game (v0.111.0):
 /// 1. `canonicalize_seed` — uppercase, fold `O→0` and `I→1`, trim. Same
 ///    rule as `SeedHelper.CanonicalizeSeed` in C#.
-/// 2. `deterministic_hash_code_old` — port of
-///    `StringHelper.GetDeterministicHashCode`. Returns `i32`.
-/// 3. `RunManager::new(int_seed, Ironclad)` — `RunRngSet::new(int_seed)`
-///    derives every per-stream RNG from the same seed via
-///    `deterministic_hash_code_old(stream_name)`.
+/// 2. [`sts2_core::seed_bases`] — `XxHash64` of the string: the run base, the
+///    player base and the `act_selection` base (they differ for lowercase
+///    `old`-prefixed seeds).
+/// 3. `RunManager::with_seed_bases` — `RunRngSet::new(run, player)` derives
+///    every per-stream RNG as `base + H(stream_name)`.
 ///
 /// Match-up with the C# init at `StartRunLobby.cs:407`:
 ///
@@ -1023,9 +1028,7 @@ pub fn populate_starter_deck(rs: &mut RunState, character: CharacterId) {
 /// Bead `sts2-rs-8xlqe` (corpus replay follow-up).
 #[must_use]
 pub fn new_ironclad_run_manager_from_string_seed(seed: &str) -> RunManager {
-    let canonical = sts2_core::canonicalize_seed(seed);
-    let int_seed = sts2_core::deterministic_hash_code_old(&canonical);
-    new_ironclad_run_manager(int_seed)
+    new_run_manager_for_character_from_string_seed(seed, CharacterId::Ironclad)
 }
 
 /// Build an Ironclad `RunManager` at the given `ascension_level`.
@@ -1036,7 +1039,7 @@ pub fn new_ironclad_run_manager_from_string_seed(seed: &str) -> RunManager {
 /// is added on top of any ascension-injected cards (e.g. the A5
 /// AscendersBane curse).
 #[must_use]
-pub fn new_ironclad_run_manager_with_ascension(seed: i32, ascension_level: u8) -> RunManager {
+pub fn new_ironclad_run_manager_with_ascension(seed: u64, ascension_level: u8) -> RunManager {
     crate::cards::dispatch::ensure_installed();
 
     let mut rm = RunManager::with_ascension(seed, CharacterId::Ironclad, ascension_level)
@@ -1046,7 +1049,7 @@ pub fn new_ironclad_run_manager_with_ascension(seed: i32, ascension_level: u8) -
 }
 
 #[must_use]
-pub fn new_ironclad_run_manager(seed: i32) -> RunManager {
+pub fn new_ironclad_run_manager(seed: u64) -> RunManager {
     new_run_manager_for_character(seed, CharacterId::Ironclad)
 }
 
@@ -1074,7 +1077,7 @@ pub fn new_ironclad_run_manager(seed: i32) -> RunManager {
 ///
 /// Bead `sts2-rs-livck` (G5 — PyO3 character-callback wiring).
 #[must_use]
-pub fn new_run_manager_for_character(seed: i32, character: CharacterId) -> RunManager {
+pub fn new_run_manager_for_character(seed: u64, character: CharacterId) -> RunManager {
     // Bead `sts2-rs-fyp7w`: install the card-effects dispatch registry
     // before constructing the run. Without this, every Strike / Defend
     // / Bash dispatches as `EffectResult::NotImplemented` — energy and
@@ -1098,9 +1101,29 @@ pub fn new_run_manager_for_character_from_string_seed(
     seed: &str,
     character: CharacterId,
 ) -> RunManager {
-    let canonical = sts2_core::canonicalize_seed(seed);
-    let int_seed = sts2_core::deterministic_hash_code_old(&canonical);
-    new_run_manager_for_character(int_seed, character)
+    new_run_manager_for_character_from_string_seed_with_ascension(seed, character, 0)
+}
+
+/// [`new_run_manager_for_character_from_string_seed`] at an explicit
+/// ascension level (0 = plain), keeping all three seed bases of the string.
+#[must_use]
+pub fn new_run_manager_for_character_from_string_seed_with_ascension(
+    seed: &str,
+    character: CharacterId,
+    ascension_level: u8,
+) -> RunManager {
+    crate::cards::dispatch::ensure_installed();
+    let b = sts2_core::seed_bases(seed);
+    let mut rm = RunManager::with_seed_bases(
+        b.run_seed,
+        b.player_seed,
+        b.full_hash,
+        character,
+        ascension_level,
+    )
+    .with_content_callbacks(ironclad_content_callbacks());
+    populate_starter_deck(&mut rm.run_state, character);
+    rm
 }
 
 /// Character-parameterised counterpart of
@@ -1110,7 +1133,7 @@ pub fn new_run_manager_for_character_from_string_seed(
 /// `sts2-rs-livck`.
 #[must_use]
 pub fn new_run_manager_for_character_with_ascension(
-    seed: i32,
+    seed: u64,
     character: CharacterId,
     ascension_level: u8,
 ) -> RunManager {
@@ -1141,7 +1164,7 @@ pub fn new_run_manager_for_character_with_ascension(
 /// at the moment but kept `pub` (not `pub(crate)`) because the
 /// acceptance test lives in `sts2-cli` and crosses the crate boundary.
 #[must_use]
-pub fn new_ironclad_run_manager_with_deck(seed: i32, deck: Vec<CardId>) -> RunManager {
+pub fn new_ironclad_run_manager_with_deck(seed: u64, deck: Vec<CardId>) -> RunManager {
     new_ironclad_run_manager_with_deck_and_hp(seed, deck, None)
 }
 
@@ -1153,14 +1176,44 @@ pub fn new_ironclad_run_manager_with_deck(seed: i32, deck: Vec<CardId>) -> RunMa
 /// reach `Phase::BossRelic` end-to-end.
 #[must_use]
 pub fn new_ironclad_run_manager_with_deck_and_hp(
-    seed: i32,
+    seed: u64,
     deck: Vec<CardId>,
     max_hp_override: Option<i32>,
 ) -> RunManager {
     crate::cards::dispatch::ensure_installed();
 
-    let mut rm = RunManager::new(seed, CharacterId::Ironclad)
+    let rm = RunManager::new(seed, CharacterId::Ironclad)
         .with_content_callbacks(ironclad_content_callbacks());
+    finish_ironclad_deck_run_manager(rm, deck, max_hp_override)
+}
+
+/// [`new_ironclad_run_manager_with_deck_and_hp`] from a seed **string**
+/// (all three seed bases kept, see [`sts2_core::seed_bases`]).
+#[must_use]
+pub fn new_ironclad_run_manager_with_deck_and_hp_from_string_seed(
+    seed: &str,
+    deck: Vec<CardId>,
+    max_hp_override: Option<i32>,
+) -> RunManager {
+    crate::cards::dispatch::ensure_installed();
+
+    let b = sts2_core::seed_bases(seed);
+    let rm = RunManager::with_seed_bases(
+        b.run_seed,
+        b.player_seed,
+        b.full_hash,
+        CharacterId::Ironclad,
+        0,
+    )
+    .with_content_callbacks(ironclad_content_callbacks());
+    finish_ironclad_deck_run_manager(rm, deck, max_hp_override)
+}
+
+fn finish_ironclad_deck_run_manager(
+    mut rm: RunManager,
+    deck: Vec<CardId>,
+    max_hp_override: Option<i32>,
+) -> RunManager {
     for card_id in deck {
         let pod = crate::cards::spec_index::card_pod_from_id(card_id, false)
             .unwrap_or_else(|| panic!("no spec registered for {card_id:?}"));
@@ -2516,7 +2569,7 @@ mod tests {
         let mut set = std::collections::HashSet::new();
         for enc in ACT1_ENCOUNTERS.iter().filter(|e| e.tier == tier) {
             for seed in 0..64_i32 {
-                let mut rng = Rng::new(seed);
+                let mut rng = Rng::new(u64::from(seed as u32));
                 for (kind, _) in enc.roster(&mut rng) {
                     set.insert(kind);
                 }
@@ -2781,9 +2834,9 @@ mod tests {
     fn select_encounter_is_deterministic_under_same_seed() {
         use sts2_core::RunRngSet;
         let mut a = RunState::new();
-        a.rng = RunRngSet::new(12345);
+        a.rng = RunRngSet::from_run_seed(12345);
         let mut b = RunState::new();
-        b.rng = RunRngSet::new(12345);
+        b.rng = RunRngSet::from_run_seed(12345);
         for room_type in [RoomType::Monster, RoomType::Elite, RoomType::Boss] {
             for act in 1u8..=3 {
                 let pa = select_encounter_act1_to_3(&mut a, act, room_type);
@@ -2806,7 +2859,7 @@ mod tests {
         let mut names = std::collections::HashSet::new();
         for seed in 0..64_i32 {
             let mut rs = RunState::new();
-            rs.rng = RunRngSet::new(seed);
+            rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
             let spec = select_encounter_act1_to_3(&mut rs, 2, RoomType::Monster);
             names.insert(spec.name);
         }
@@ -3005,7 +3058,7 @@ mod tests {
         let pool_len = act2_boss_pool().len();
         for seed in 0..200_i32 {
             let mut rs = RunState::new();
-            rs.rng = RunRngSet::new(seed);
+            rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
             rs.act_index = 2;
             // No generated_rooms → raw run_manager roll exercises `len - 1`.
             pre_roll_act_boss(&mut rs);
@@ -3302,7 +3355,7 @@ mod tests {
         let mut saw_normal_only_on_fourth = false;
         for seed in 0..64_i32 {
             let mut rs = RunState::new();
-            rs.rng = RunRngSet::new(seed);
+            rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
             // Fights 1-3: every spawned species must be Weak-tier.
             for _ in 0..3 {
                 let combat = build_combat_for_room(&mut rs, 1, RoomType::Monster).unwrap();
@@ -3498,7 +3551,7 @@ mod tests {
         use sts2_core::RunRngSet;
         for seed in 0..200_i32 {
             let mut rs = RunState::new();
-            rs.rng = RunRngSet::new(seed);
+            rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
             rs.act_index = 1;
             // No pin, no generated_rooms → the `_ =>` boss fallback rolls
             // `next_int(0, len - 1)` and indexes `pool[idx]`.
@@ -3547,14 +3600,14 @@ mod tests {
         let live_kinds: Vec<_> = combat.creatures.iter().filter_map(|c| c.species).collect();
 
         // Reproduce the roster the `+ act_index` formula prescribes.
-        let roster_for = |base: i32| -> Vec<sts2_core::MonsterKind> {
+        let roster_for = |base: u64| -> Vec<sts2_core::MonsterKind> {
             let mut rng = Rng::with_name(base, enc.id);
             enc.roster(&mut rng).iter().map(|&(k, _)| k).collect()
         };
         // total_floor == 0, act_index == 1.
-        let plus = roster_for(seed.wrapping_add(0_i32.wrapping_add(1)));
-        let times = roster_for(seed.wrapping_add(0_i32.wrapping_mul(1)));
-        let minus = roster_for(seed.wrapping_add(0_i32.wrapping_sub(1)));
+        let plus = roster_for(seed.wrapping_add(u64::from((0_i32.wrapping_add(1)) as u32)));
+        let times = roster_for(seed.wrapping_add(u64::from((0_i32.wrapping_mul(1)) as u32)));
+        let minus = roster_for(seed.wrapping_add(u64::from((0_i32.wrapping_sub(1)) as u32)));
         assert_eq!(
             live_kinds, plus,
             "live builder must use total_floor + act_index"
@@ -3583,7 +3636,7 @@ mod tests {
         let dumped = dump_roster_for_encounter(&mut rs, "SLIMES_WEAK").expect("known encounter");
         let dumped_ids: Vec<&'static str> = dumped.iter().map(|&(id, _, _)| id).collect();
 
-        let kinds_for = |base: i32| -> Vec<&'static str> {
+        let kinds_for = |base: u64| -> Vec<&'static str> {
             let mut rng = Rng::with_name(base, enc.id);
             enc.roster(&mut rng)
                 .iter()
@@ -3636,7 +3689,7 @@ mod tests {
         for seed in 0..32_i32 {
             let mut rs = RunState::new();
             rs.character_id = CharacterId::Ironclad;
-            rs.rng = RunRngSet::new(seed);
+            rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
             rs.current_room = None; // → "regular" context
             if !all_rare(&mut rs) {
                 any_non_rare = true;
@@ -3666,7 +3719,7 @@ mod tests {
             for seed in 0..200_i32 {
                 let mut rs = RunState::new();
                 rs.character_id = CharacterId::Ironclad;
-                rs.rng = RunRngSet::new(seed);
+                rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
                 rs.current_room = room.map(|rt| {
                     let mut r = sts2_core::runstate::Room::new(rt);
                     r.room_type = rt;

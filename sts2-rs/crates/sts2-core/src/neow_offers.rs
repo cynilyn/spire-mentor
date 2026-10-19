@@ -554,7 +554,7 @@ mod tests {
         // then mix the "NEOW" salt via with_name. Pins:
         // `EventModel.cs:193`, `NGame.cs:884` (NetId=1uL in SP).
         const NET_ID: i32 = 1;
-        let mut rng = Rng::with_name(master.wrapping_add(NET_ID), "NEOW");
+        let mut rng = Rng::with_name(u64::from((master.wrapping_add(NET_ID)) as u32), "NEOW");
         let offers = roll_neow_offers(&mut rng);
         assert_eq!(offers.positive_1, NeowRelic::PhialHolster);
         assert_eq!(offers.positive_2, NeowRelic::LostCoffer);

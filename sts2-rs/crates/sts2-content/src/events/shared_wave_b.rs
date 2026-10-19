@@ -3456,14 +3456,14 @@ mod tests {
         let master = CSHARP_EVENT_SEED.wrapping_sub(hash) as i32;
 
         let mut rs = fresh_state();
-        rs.rng.seed = master;
+        rs.rng.seed = u64::from(master as u32);
         rs.enter_event_room(EventId::TinkerTime);
 
         // Page 0 → card-type draw. Rust's event stream MUST seed identically.
         crate::events::dispatch::resolve(&mut rs, "choose_card_type").unwrap();
         assert_eq!(
             rs.event_state.rng.as_ref().unwrap().seed(),
-            CSHARP_EVENT_SEED,
+            u64::from(CSHARP_EVENT_SEED),
             "Rust event RNG stream seeds identically to the C# engine",
         );
 

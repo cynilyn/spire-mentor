@@ -45,7 +45,7 @@ const ENCOUNTERS: [&str; 4] = [
 /// `mcts_realistic_profile::random_deck`'s sampling.
 fn deck_with_ftl(seed: u64) -> Vec<CardSpec> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as u32));
     let mut deck: Vec<CardSpec> = (0..DECK_SIZE - FTL_COPIES)
         .map(|_| {
             #[allow(

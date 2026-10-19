@@ -31,7 +31,7 @@ fn state_with_toolbox(draw_pile_size: usize) -> CombatState {
     sts2_content::relics::dispatch::ensure_installed();
     content_dispatch::install_default_registry();
     let mut state = CombatState {
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(12345_i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(12345),
         ..Default::default()
     };
     state.player.character = Some(CharacterId::Ironclad);

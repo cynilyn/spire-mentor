@@ -31,7 +31,7 @@ fn install() {
 fn state_with(relic: RelicKind, hand: &[CardId], energy: i8) -> CombatState {
     let mut state = CombatState {
         rng: sts2_core::dotnet_rng::Rng::new(7),
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(7),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(7),
         ..Default::default()
     };
     state.player.character = Some(CharacterId::Ironclad);

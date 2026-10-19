@@ -21,7 +21,7 @@ fn main() {
     let mut checksum: u64 = 0;
     let start = Instant::now();
     for seed in 0..seeds {
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
         let map = generate_act_map(15, &mut rng, 0, false, 0, None);
         checksum = checksum
             .wrapping_mul(31)

@@ -26,7 +26,7 @@ use sts2_core::{CombatState, Power, PowerKind, PowerUid};
 /// and a seeded combat-card-generation stream.
 fn state_with_hello_world(amount: i32) -> CombatState {
     let mut state = CombatState {
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(12345_i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(12345),
         ..Default::default()
     };
     state.player.character = Some(CharacterId::Defect);

@@ -21,7 +21,7 @@
 //! differences from the live path are deliberate (§2.5 rule 3):
 //!
 //! 1. **Synthetic RNG.** The cloned `RunState`'s `rng` is replaced with
-//!    `RunRngSet::new(synthetic_seed)` and the roster randomizer rolls
+//!    `RunRngSet::from_run_seed(synthetic_seed)` and the roster randomizer rolls
 //!    off `Rng::with_name(synthetic_seed, enc.id)` — never the run's
 //!    actual upcoming streams, so the agent can't become clairvoyant
 //!    about its real next fight.
@@ -759,13 +759,13 @@ fn probe_one(
     // set — the probe must not read (or advance a clone of) the run's
     // actual upcoming streams.
     let mut rs = rs_base.clone();
-    rs.rng = RunRngSet::new(seed);
+    rs.rng = RunRngSet::from_run_seed(u64::from(seed as u32));
     rs.current_hp = entry_hp.clamp(1, rs.max_hp.max(1));
 
     // Roster identity + composition off the synthetic streams, the
     // same two-stream shape as the live builder
     // (`run_callbacks::build_combat_for_room`).
-    let mut enc_rng = Rng::with_name(seed, enc.id);
+    let mut enc_rng = Rng::with_name(u64::from(seed as u32), enc.id);
     let roster_kinds = enc.roster(&mut enc_rng);
     let kinds: Vec<MonsterKind> = roster_kinds.iter().map(|&(k, _)| k).collect();
     let hps =

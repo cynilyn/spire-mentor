@@ -668,8 +668,8 @@ mod tests {
 
     #[test]
     fn random_n_encounters_are_deterministic_and_correct_size() {
-        let mut rng_a = sts2_core::dotnet_rng::Rng::new(11_i32);
-        let mut rng_b = sts2_core::dotnet_rng::Rng::new(11_i32);
+        let mut rng_a = sts2_core::dotnet_rng::Rng::new(u64::from(11_i32 as u32));
+        let mut rng_b = sts2_core::dotnet_rng::Rng::new(u64::from(11_i32 as u32));
         let a = resolve_encounter("random-4", &mut rng_a).unwrap();
         let b = resolve_encounter("random-4", &mut rng_b).unwrap();
         assert_eq!(a.len(), 4);
@@ -685,9 +685,9 @@ mod tests {
 
     #[test]
     fn random_pair_and_triple_aliases() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         assert_eq!(resolve_encounter("random-pair", &mut rng).unwrap().len(), 2);
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         assert_eq!(
             resolve_encounter("random-triple", &mut rng).unwrap().len(),
             3
@@ -696,9 +696,9 @@ mod tests {
 
     #[test]
     fn random_n_out_of_range_errors() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         assert!(resolve_encounter("random-6", &mut rng).is_err());
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         assert!(resolve_encounter("random-0", &mut rng).is_err());
     }
 
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn resolve_known_aliases() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         for (alias, _) in ENCOUNTERS {
             let result = resolve_encounter(alias, &mut rng);
             assert!(result.is_ok(), "alias {alias} must resolve");
@@ -773,14 +773,14 @@ mod tests {
         // Sanity: an act1 registry encounter resolves via its display
         // string (the legacy aliases for STS1 monsters are gone — the
         // act1 registry is the canonical multi-monster surface).
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         let result = resolve_encounter("nibbit", &mut rng);
         assert!(result.is_ok(), "nibbit must resolve as a legacy alias");
     }
 
     #[test]
     fn resolve_case_and_separator_insensitive() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         assert!(resolve_encounter("Nibbit", &mut rng).is_ok());
         assert!(resolve_encounter("NIBBIT", &mut rng).is_ok());
         assert!(resolve_encounter("shrinker_beetle", &mut rng).is_ok());
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn resolve_unknown_returns_suggestion_when_close() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         let err = resolve_encounter("nibbt", &mut rng).unwrap_err();
         assert_eq!(err.suggestion, Some("nibbit"));
         let msg = err.to_string();
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn resolve_unknown_no_suggestion_when_far() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32));
         let err = resolve_encounter("xyzzy-foobar", &mut rng).unwrap_err();
         assert!(err.suggestion.is_none());
     }

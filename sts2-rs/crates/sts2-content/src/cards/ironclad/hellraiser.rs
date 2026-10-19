@@ -55,7 +55,7 @@ mod tests {
         crate::cards::ironclad::install_pool();
         install_default_registry();
         let mut state = CombatState {
-            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+            rng: sts2_core::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 80;
@@ -232,14 +232,14 @@ mod tests {
         // while still pinning the rolled-target behaviour.
         let seed = (0_i32..10_000)
             .find(|&s| {
-                let mut probe = sts2_core::run_rng_set::RunRngSet::new(s);
+                let mut probe = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(s as u32));
                 probe.combat_targets.next_int_exclusive(0, 2) == 1
             })
             .expect("a seed exists whose first 2-element CombatTargets roll is slot 1");
 
         let mut state = CombatState {
-            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
-            run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            rng: sts2_core::dotnet_rng::Rng::new(0),
+            run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
             ..Default::default()
         };
         state.player.current_hp = 80;
@@ -374,7 +374,7 @@ mod tests {
         crate::cards::ironclad::install_pool();
         install_default_registry();
         let mut state = CombatState {
-            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+            rng: sts2_core::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.current_hp = 80;

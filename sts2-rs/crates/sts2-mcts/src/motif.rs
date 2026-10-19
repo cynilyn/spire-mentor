@@ -319,7 +319,7 @@ mod tests {
             phase: CombatPhase::PlayerPlayPhase,
             round: 1,
             side: Side::Player,
-            rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+            rng: sts2_core::dotnet_rng::Rng::new(u64::from(0_i32 as u32)),
             creatures,
             cards: cards.into(),
             enemy_uids,

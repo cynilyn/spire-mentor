@@ -36,7 +36,7 @@ const MAX_ACTIONS_PER_FIGHT: u32 = 400;
 /// (deterministic, host-independent). Mirrors `mcts_realistic_profile`.
 fn random_deck(seed: u64, size: usize) -> Vec<CardSpec> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as u32));
     (0..size)
         .map(|_| {
             #[allow(

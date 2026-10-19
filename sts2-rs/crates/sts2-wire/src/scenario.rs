@@ -314,7 +314,7 @@ pub fn build_scenario_state(
         deferred_draw_order: false,
     };
 
-    let rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     // Build the per-stream RNG bundle up-front. Monster HP rolls below
     // consume from `run_rng.niche`, mirroring C#
     // `CombatState.CreateCreature` (`SetUniqueMonsterHpValue(...,
@@ -322,7 +322,7 @@ pub fn build_scenario_state(
     // RNG, so a shuffle won't perturb the next HP roll and vice versa.
     // Bead `sts2-rs-943w7`. The bundle is moved into `state.run_rng`
     // after the HP-roll loop completes.
-    let mut run_rng = sts2_core::run_rng_set::RunRngSet::new(seed as i32);
+    let mut run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32));
 
     // sts2-rs-3010t: when the harness passes an explicit monster_list
     // (resolved on the C# side post-EnterRoom), use it verbatim so

@@ -215,9 +215,9 @@ fn make_combat(
         phase: CombatPhase::Setup,
         round: 0,
         side: Side::Player,
-        rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
 
-        run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         creatures,
         cards: cards_arena.into(),
         powers: Vec::new().into(),

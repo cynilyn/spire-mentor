@@ -264,7 +264,7 @@ impl Act1Choice {
             Self::Overgrowth => ActVariant::Overgrowth,
             Self::Underdocks => ActVariant::Underdocks,
             Self::Roll => {
-                sts2_core::act_selection::roll_acts(seed, &ActSelectionUnlocks::test_mode_on(true))
+                sts2_core::act_selection::roll_acts(u64::from(seed as u32), &ActSelectionUnlocks::test_mode_on(true))
                     [0]
             }
         }
@@ -1056,7 +1056,7 @@ pub(crate) fn new_arena_run_manager(
     // skipping it both forfeits the opening bonus and shifts the act-1
     // event cursor) — 2026-06-12 anomaly triage on the M1 sweeps.
     let mut rm =
-        new_run_manager_for_character_with_ascension(seed, character, ascension).with_neow_start();
+        new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension).with_neow_start();
     rm.run_state.interactive_card_removal = true;
     rm.run_state.interactive_card_upgrade = true;
     rm.run_state.interactive_card_transform = true;

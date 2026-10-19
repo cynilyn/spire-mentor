@@ -1959,7 +1959,7 @@ mod tests {
                 thread::spawn(move || {
                     let rm =
                         sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(
-                            1000 + t as i32,
+                            u64::from((1000 + t) as u32),
                             sts2_core::potions::CharacterId::Ironclad,
                             0,
                         );

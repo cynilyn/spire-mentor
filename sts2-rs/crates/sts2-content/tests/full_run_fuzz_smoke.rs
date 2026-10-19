@@ -23,7 +23,7 @@ fn drive(seed: &str) -> (sts2_core::FullRunReport, u64) {
 
 fn drive_with(seed: &str, cfg: FullRunConfig) -> (sts2_core::FullRunReport, u64) {
     let mut rm = new_run_manager_for_character_from_string_seed(seed, CharacterId::Ironclad);
-    let mut policy = RandomPolicy::from_run_seed(rm.seed);
+    let mut policy = RandomPolicy::from_run_seed(rm.seed as i32);
     let report = drive_full_run(&mut rm, &mut policy, &cfg);
     let final_hash = run_hash(&rm);
     (report, final_hash)

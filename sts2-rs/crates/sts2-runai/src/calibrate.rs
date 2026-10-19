@@ -99,7 +99,7 @@ pub fn collect_decision_points(
             break;
         }
         let mut rm = sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(
-            seed, character, ascension,
+            u64::from(seed as u32), character, ascension,
         )
         .with_neow_start();
         // C#-faithful run setup (relic bags + room generation), matching the

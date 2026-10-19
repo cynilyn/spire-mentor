@@ -409,7 +409,7 @@ mod tests {
     fn ybtmu_scrolls_weak_rotation_invariants() {
         let mut seen_bases: std::collections::HashSet<u8> = std::collections::HashSet::new();
         for seed in 0..64_i32 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_scrolls_of_biting_weak(&mut rng);
             assert_eq!(roster.len(), 3);
             let idxs: Vec<u8> = roster.iter().map(|(_, a)| scroll_idx(a)).collect();
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn ybtmu_scrolls_normal_rotation_invariants() {
         for seed in 0..64_i32 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_scrolls_of_biting_normal(&mut rng);
             assert_eq!(roster.len(), 4);
             let idxs: Vec<u8> = roster.iter().map(|(_, a)| scroll_idx(a)).collect();
@@ -451,7 +451,7 @@ mod tests {
         for id in ["SCROLLS_OF_BITING_WEAK", "SCROLLS_OF_BITING_NORMAL"] {
             let enc = find(id).expect("registered");
             assert!(enc.randomize.is_some(), "{id} must randomize");
-            let mut rng = sts2_core::dotnet_rng::Rng::new(11_i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(11);
             let roster = enc.roster(&mut rng);
             assert_eq!(roster.len(), enc.monsters.len());
             // Static fallback is the idx=0 permutation (0/1/2[/2]).

@@ -78,7 +78,7 @@ const MAX_SEQUENCES_PER_POSITION: usize = 4096;
 
 fn random_deck(seed: u64) -> Vec<CardSpec> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as u32));
     (0..DECK_SIZE)
         .map(|_| {
             #[allow(

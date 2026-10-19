@@ -32,14 +32,12 @@
 
 use std::collections::BTreeMap;
 
-#[cfg(test)]
-use crate::dotnet_rng::deterministic_hash_code_old;
 use crate::dotnet_rng::Rng;
 
 /// Mirrors Python `RUN_MANAGER_RNG_SEED_OFFSET = 9999` at
 /// `sts2-rl-agent@01c094d:sts2_env/run/run_manager.py:108`. Added to
 /// the master seed (no salt-hash mixing) to seed [`RunRngSet::run_manager`].
-pub const RUN_MANAGER_RNG_SEED_OFFSET: i32 = 9999;
+pub const RUN_MANAGER_RNG_SEED_OFFSET: u64 = 9999;
 
 /// Number of combat-relevant RNG streams that chance-node MCTS detects on
 /// and reseeds.
@@ -147,10 +145,15 @@ const RUN_DRAW_STREAM_SALTS: [u64; RUN_DRAW_STREAM_COUNT] = [
 /// that stream's counter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunRngSet {
-    /// `deterministic_hash_code_old(str(master_seed))` — the hashed master
-    /// seed all per-stream salts mix into. Stored so per-act map RNGs
-    /// can be created lazily.
-    pub seed: i32,
+    /// `RunRngSet.Seed` (v0.111.0): the run base all run-scoped stream names
+    /// mix into (`seed + H(name)`). For `old`-prefixed seed strings it is the
+    /// legacy 32-bit hash, zero-extended; otherwise `XxHash64(seed string)`.
+    /// Stored so per-act map RNGs can be created lazily.
+    pub seed: u64,
+    /// Base of the three player-scoped streams: `XxHash64(full seed string)
+    /// + player slot (0)`. Equal to [`Self::seed`] except for `old` seeds,
+    /// where the player base hashes the whole string (prefix included).
+    pub player_seed: u64,
 
     // --- Run-scoped, derived from `seed` -------------------------------
     pub up_front: Rng,
@@ -201,38 +204,18 @@ pub struct RunRngSet {
 }
 
 impl RunRngSet {
-    /// Construct a fresh `RunRngSet` from `master_seed`.
+    /// Construct a fresh `RunRngSet` from the two seed bases (v0.111.0).
     ///
-    /// The hash applied to `str(master_seed)` matches Python's
-    /// `deterministic_hash_code_old(str(master_seed))`, so a Rust caller
-    /// passing `0_i32` and a Python caller passing `0` produce
-    /// byte-identical opening sequences on every named stream.
+    /// `run_seed` seeds the 12 run streams, `player_seed` the 3 player
+    /// streams (`rewards`, `shops`, `transformations`); they differ for `old`
+    /// seed strings (see [`crate::dotnet_rng::seed_bases`]). `run_manager`
+    /// is Rust-only (no C# analog) and stays on the run base.
     #[must_use]
-    pub fn new(master_seed: i32) -> Self {
-        // C# `RunRngSet(string seed)` (v0.103.2 RunRngSet.cs:54-63) does
-        // ONE hash from the string seed: `Seed = (uint)GetDeterministicHashCode(seed)`.
-        // The string entrypoint takes the canonicalised seed (e.g.
-        // "BK9KTUB5Z1") and the integer seed is the result of that single
-        // hash. The Python pin's `RunRngSet.__init__` re-hashes via
-        // `deterministic_hash_code_old(str(master_seed))` — a SECOND hash on
-        // the integer-stringified seed — which produces a totally
-        // different stream and prevented corpus map-gen parity with C#.
-        //
-        // The Rust port previously mirrored Python verbatim. Bead
-        // `sts2-rs-5hsqp` corpus parity investigation 2026-05-23 traced
-        // this as the smoking gun: PathGenerate produced correct start
-        // cols against Python (which has the same double-hash bug) but
-        // diverged from the C# scraped corpus. Treat the i32 argument
-        // here as already-hashed-once (i.e. the result of
-        // `deterministic_hash_code_old(canonical_string_seed)`).
-        let seed = master_seed;
-        // v0.107.1 `Player.cs:329`: PlayerRngSet seed = hash(seed) +
-        // GetPlayerSlotIndex(this), and GetPlayerSlotIndex == 0 in
-        // single-player. v0.103.2 used `+ NetId` (== 1); the stale `+1`
-        // desynced the player reward streams. Bead `sts2-rs-ms8mm` family.
-        let player_seed = seed;
+    pub fn new(run_seed: u64, player_seed: u64) -> Self {
+        let seed = run_seed;
         Self {
             seed,
+            player_seed,
             up_front: Rng::with_name(seed, "up_front"),
             shuffle: Rng::with_name(seed, "shuffle"),
             unknown_map_point: Rng::with_name(seed, "unknown_map_point"),
@@ -245,14 +228,22 @@ impl RunRngSet {
             niche: Rng::with_name(seed, "niche"),
             combat_orbs: Rng::with_name(seed, "combat_orbs"),
             treasure_room: Rng::with_name(seed, "treasure_room_relics"),
-            // Python `self._rng = Rng(seed + 9999)` — direct int offset,
-            // no salt-hash mixing. Bead `sts2-rs-lakuh`.
+            // Rust-only stream (no C# analog); raw offset, no name hash.
             run_manager: Rng::new(seed.wrapping_add(RUN_MANAGER_RNG_SEED_OFFSET)),
             rewards: Rng::with_name(player_seed, "rewards"),
             shops: Rng::with_name(player_seed, "shops"),
             transformations: Rng::with_name(player_seed, "transformations"),
             map_rngs: BTreeMap::new(),
         }
+    }
+
+    /// Single-base constructor for tests, benches and scenario spawners that
+    /// have one numeric seed and no seed string: both bases are `seed`.
+    /// Equivalent to `new(seed, seed)`; real runs go through
+    /// [`crate::dotnet_rng::seed_bases`] + [`Self::new`].
+    #[must_use]
+    pub fn from_run_seed(seed: u64) -> Self {
+        Self::new(seed, seed)
     }
 
     /// Borrow the `combat_potion` alias. Mirrors Python's
@@ -441,9 +432,9 @@ impl RunRngSet {
 }
 
 impl Default for RunRngSet {
-    /// Default to `RunRngSet::new(0)` — deterministic golden-test seed.
+    /// Default to `RunRngSet::from_run_seed(0)` — deterministic golden-test seed.
     fn default() -> Self {
-        Self::new(0)
+        Self::from_run_seed(0)
     }
 }
 
@@ -453,7 +444,7 @@ mod tests {
 
     #[test]
     fn stream_mut_names_every_stream_a_producer_can_carry() {
-        let mut set = RunRngSet::new(7);
+        let mut set = RunRngSet::from_run_seed(7);
         // The names SpireMentor emits (`SimStateExtractor.RngState`) plus the
         // two the engine's own `state_to_dict` adds. Every one must resolve,
         // or a restore silently drops that stream's lineage.
@@ -488,54 +479,87 @@ mod tests {
 
     #[test]
     fn stream_mut_hands_back_the_stream_itself() {
-        let mut set = RunRngSet::new(7);
+        let mut set = RunRngSet::from_run_seed(7);
         set.stream_mut("shuffle").unwrap().fast_forward_counter(5);
         assert_eq!(set.shuffle.counter(), 5);
     }
 
+    /// Stream-seed vectors from the v0.111.0 oracle: sts2_bot
+    /// `logs/engine/p0/stage1_vectors.json` (sha256
+    /// 5267538d84c1a1468b68656b82bdd270e4a4e21b60a251366beb475786aa8976,
+    /// oracle f79d3a9). (seed string, stream name, expected `Rng.Seed`).
+    const STREAM_SEED_VECTORS: [(&str, &str, u64); 8] = [
+        ("P0A0", "up_front", 12796180781041495488),
+        ("P0A0", "rewards", 13258155933778369267),
+        ("P0A0", "treasure_room_relics", 17675555273941917206),
+        ("P0A0", "act_1_map", 12035390033565789506),
+        ("oldP0A0", "up_front", 1912476647952774221),
+        ("oldP0A0", "rewards", 18051137715866029030),
+        ("oldP0A0", "treasure_room_relics", 6791851140853195939),
+        ("oldP0A0", "act_1_map", 1151685900477068239),
+    ];
+
+    fn set_for(seed: &str) -> RunRngSet {
+        let b = crate::dotnet_rng::seed_bases(seed);
+        RunRngSet::new(b.run_seed, b.player_seed)
+    }
+
     #[test]
     fn seed_is_master_directly() {
-        // After bead `sts2-rs-5hsqp` parity fix, `RunRngSet::new(i)` no
-        // longer re-hashes `str(i)`. The caller is responsible for
-        // hashing the canonical string seed before passing it in.
-        let set = RunRngSet::new(0);
+        // `from_run_seed(s)` stores `s` untouched as both bases; string seeds
+        // go through `seed_bases` first.
+        let set = RunRngSet::from_run_seed(0);
         assert_eq!(set.seed, 0);
+        assert_eq!(set.player_seed, 0);
+        let two = RunRngSet::new(5, 9);
+        assert_eq!((two.seed, two.player_seed), (5, 9));
     }
 
     #[test]
     fn run_scoped_streams_share_seed_base() {
-        // All run-scoped streams should mix `seed` (not `seed + 1`)
-        // with their salt — verify by reconstructing the expected seed
-        // for one stream and checking the underlying Rng's seed.
-        let set = RunRngSet::new(0);
-        let expected = (set.seed as u32).wrapping_add(deterministic_hash_code_old("up_front") as u32);
-        assert_eq!(set.up_front.seed(), expected);
+        // Oracle: run streams are `run_seed + H(name)`, also for `old` seeds
+        // (run base = legacy hash there).
+        for (seed, name, expected) in STREAM_SEED_VECTORS {
+            if name == "up_front" || name == "treasure_room_relics" {
+                let set = set_for(seed);
+                let got = match name {
+                    "up_front" => set.up_front.seed(),
+                    _ => set.treasure_room.seed(),
+                };
+                assert_eq!(got, expected, "{seed} {name}");
+            }
+        }
     }
 
     #[test]
     fn player_scoped_streams_use_player_seed() {
-        // v0.107.1: PlayerRngSet seed = hash(seed) + GetPlayerSlotIndex,
-        // which is 0 in single-player, so the player streams share the
-        // run-seed base (NO `+1` NetId offset). Bead `sts2-rs-ms8mm` family.
-        let set = RunRngSet::new(0);
-        let player_seed = set.seed;
-        let expected = (player_seed as u32).wrapping_add(deterministic_hash_code_old("rewards") as u32);
-        assert_eq!(set.rewards.seed(), expected);
+        // Player streams are `player_seed + H(name)` with the player base
+        // `H(full string)`, which differs from the run base for `old` seeds.
+        for (seed, name, expected) in STREAM_SEED_VECTORS {
+            if name == "rewards" {
+                let set = set_for(seed);
+                assert_eq!(set.rewards.seed(), expected, "{seed} {name}");
+            }
+        }
+        let old = set_for("oldP0A0");
+        assert_ne!(old.seed, old.player_seed);
     }
 
     #[test]
     fn treasure_room_uses_long_salt() {
-        // The Python attribute is `treasure_room` but the salt string
-        // is `"treasure_room_relics"`. Parity demands the long form.
-        let set = RunRngSet::new(0);
-        let expected =
-            (set.seed as u32).wrapping_add(deterministic_hash_code_old("treasure_room_relics") as u32);
+        // The attribute is `treasure_room` but the salt string is
+        // `"treasure_room_relics"` (vector above is for the long form).
+        let set = set_for("P0A0");
+        let expected = set
+            .seed
+            .wrapping_add(crate::dotnet_rng::xxhash64_utf8("treasure_room_relics"));
         assert_eq!(set.treasure_room.seed(), expected);
+        assert_eq!(set.treasure_room.seed(), 17675555273941917206);
     }
 
     #[test]
     fn streams_are_independent() {
-        let mut set = RunRngSet::new(42);
+        let mut set = RunRngSet::from_run_seed(42);
         let r0 = set.rewards.next_int(0, 1_000);
         // Drawing from `encounter`-equivalent streams must NOT shift
         // the `rewards` sequence.
@@ -548,7 +572,7 @@ mod tests {
         // different at this granularity; the point is r1 matches the
         // value rewards.next_int would have produced regardless of any
         // intervening draws from other streams.
-        let mut fresh = RunRngSet::new(42);
+        let mut fresh = RunRngSet::from_run_seed(42);
         let f0 = fresh.rewards.next_int(0, 1_000);
         let f1 = fresh.rewards.next_int(0, 1_000);
         assert_eq!(r0, f0);
@@ -557,7 +581,7 @@ mod tests {
 
     #[test]
     fn combat_potion_aliases_combat_potion_generation() {
-        let mut set = RunRngSet::new(7);
+        let mut set = RunRngSet::from_run_seed(7);
         let alias_seed = set.combat_potion().seed();
         let direct_seed = set.combat_potion_generation.seed();
         assert_eq!(alias_seed, direct_seed);
@@ -565,14 +589,14 @@ mod tests {
         // Mutating via the alias is observable on the field.
         let v = set.combat_potion_mut().next_int(0, 100);
         let _ = set; // shut up unused
-        let mut set2 = RunRngSet::new(7);
+        let mut set2 = RunRngSet::from_run_seed(7);
         let direct_v = set2.combat_potion_generation.next_int(0, 100);
         assert_eq!(v, direct_v);
     }
 
     #[test]
     fn map_rng_is_lazy_and_per_act() {
-        let mut set = RunRngSet::new(0);
+        let mut set = RunRngSet::from_run_seed(0);
         assert!(set.map_rngs.is_empty());
 
         let act0_seed = set.map_rng(0).seed();
@@ -592,26 +616,26 @@ mod tests {
 
     #[test]
     fn map_rng_salt_uses_one_based_act_number() {
-        // Python: `f"act_{act_index + 1}_map"` — index 0 → "act_1_map".
-        let mut set = RunRngSet::new(0);
-        let master_seed = set.seed;
-        let r = set.map_rng(0);
-        let expected =
-            (master_seed as u32).wrapping_add(deterministic_hash_code_old("act_1_map") as u32);
-        assert_eq!(r.seed(), expected);
+        // `act_N_map` is 1-based: act index 0 -> "act_1_map" (run base).
+        for (seed, name, expected) in STREAM_SEED_VECTORS {
+            if name == "act_1_map" {
+                let mut set = set_for(seed);
+                assert_eq!(set.map_rng(0).seed(), expected, "{seed}");
+            }
+        }
     }
 
     #[test]
     fn default_matches_new_zero() {
         let a = RunRngSet::default();
-        let b = RunRngSet::new(0);
+        let b = RunRngSet::from_run_seed(0);
         assert_eq!(a.seed, b.seed);
         assert_eq!(a.rewards.seed(), b.rewards.seed());
     }
 
     #[test]
     fn combat_fingerprint_tracks_only_combat_streams() {
-        let mut set = RunRngSet::new(7);
+        let mut set = RunRngSet::from_run_seed(7);
         let fp0 = set.combat_counter_fingerprint();
         // Advancing a non-combat stream must NOT change the fingerprint.
         let _ = set.rewards.next_int(0, 100);
@@ -632,7 +656,7 @@ mod tests {
 
     #[test]
     fn reseed_resets_combat_cursors_and_varies_by_n() {
-        let mut a = RunRngSet::new(0);
+        let mut a = RunRngSet::from_run_seed(0);
         // Advance some combat streams, then reseed: cursors must reset.
         let _ = a.shuffle.next_int(0, 100);
         let _ = a.monster_ai.next_int(0, 100);
@@ -644,14 +668,14 @@ mod tests {
         );
 
         // Same (base, n) reseed is reproducible; different n diverges.
-        let mut b = RunRngSet::new(999);
+        let mut b = RunRngSet::from_run_seed(999);
         b.reseed_combat_streams(0xDEAD_BEEF, 0);
         assert_eq!(
             a.shuffle.seed(),
             b.shuffle.seed(),
             "same (base,n) yields identical stream seeds regardless of master seed"
         );
-        let mut c = RunRngSet::new(0);
+        let mut c = RunRngSet::from_run_seed(0);
         c.reseed_combat_streams(0xDEAD_BEEF, 1);
         assert_ne!(
             a.shuffle.seed(),
@@ -690,7 +714,7 @@ mod tests {
         // fingerprint slot. Advance exactly the idx-th reseed-order stream
         // and assert exactly the idx-th fingerprint slot moves.
         for idx in 0..COMBAT_STREAM_COUNT {
-            let mut set = RunRngSet::new(0);
+            let mut set = RunRngSet::from_run_seed(0);
             let fp0 = set.combat_counter_fingerprint();
             {
                 let streams = set.combat_streams_mut();
@@ -715,7 +739,7 @@ mod tests {
 
     #[test]
     fn clone_preserves_stream_state() {
-        let mut a = RunRngSet::new(123);
+        let mut a = RunRngSet::from_run_seed(123);
         let _ = a.rewards.next_int(0, 1_000);
         let _ = a.rewards.next_int(0, 1_000);
         let b = a.clone();
@@ -728,7 +752,7 @@ mod tests {
 
     #[test]
     fn run_draw_fingerprint_moves_only_when_a_draw_stream_advances() {
-        let mut set = RunRngSet::new(42);
+        let mut set = RunRngSet::from_run_seed(42);
         let fp0 = set.run_draw_counter_fingerprint();
         // Advancing a NON-draw stream (up_front) must not change the fingerprint.
         let _ = set.up_front.next_int(0, 100);
@@ -748,8 +772,8 @@ mod tests {
 
     #[test]
     fn reseed_run_draw_streams_is_deterministic_and_n_varies() {
-        let mut a = RunRngSet::new(7);
-        let mut b = RunRngSet::new(7);
+        let mut a = RunRngSet::from_run_seed(7);
+        let mut b = RunRngSet::from_run_seed(7);
         a.reseed_run_draw_streams(0xABCD, 1);
         b.reseed_run_draw_streams(0xABCD, 1);
         assert_eq!(
@@ -770,7 +794,7 @@ mod tests {
             b.treasure_room.next_int(0, 1_000_000),
             "same (base,n) must reproduce for treasure_room"
         );
-        let mut c = RunRngSet::new(7);
+        let mut c = RunRngSet::from_run_seed(7);
         c.reseed_run_draw_streams(0xABCD, 2);
         // Different n → (almost surely) a different first draw.
         assert_ne!(
@@ -801,7 +825,7 @@ mod tests {
         // and assert exactly the idx-th fingerprint slot moves. Mirrors the
         // combat-side `fingerprint_and_reseed_share_one_canonical_order` proof.
         for idx in 0..RUN_DRAW_STREAM_COUNT {
-            let mut set = RunRngSet::new(0);
+            let mut set = RunRngSet::from_run_seed(0);
             let fp0 = set.run_draw_counter_fingerprint();
             {
                 let streams = set.run_draw_streams_mut();

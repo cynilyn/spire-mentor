@@ -2133,7 +2133,7 @@ mod tests {
             motif_sims: None,
             leaf: LeafKind::TexelWide,
         };
-        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed);
+        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed as i32);
         let idx = policy.choose(&rm, &actions).expect("combat pick");
         assert!(idx < actions.len(), "index {idx} out of range");
 
@@ -2198,7 +2198,7 @@ mod tests {
             motif_sims: None,
             leaf: LeafKind::TexelWide,
         };
-        let mut policy = MctsCombatPolicy::new(HeuristicPolicy::default(), budget, seed);
+        let mut policy = MctsCombatPolicy::new(HeuristicPolicy::default(), budget, seed as i32);
         let actions = rm.get_available_actions();
         let idx = policy.choose(&rm, &actions).expect("combat pick");
         let rec = policy.last_combat_search().expect("combat search recorded");
@@ -2223,7 +2223,7 @@ mod tests {
     fn auditing_policy_records_decisions() {
         let seed = 5;
         let mut rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
-        let mut policy = AuditingPolicy::new(FirstOptionPolicy, seed, "first".to_string());
+        let mut policy = AuditingPolicy::new(FirstOptionPolicy, seed as i32, "first".to_string());
         for _ in 0..5 {
             if rm.is_over() {
                 break;
@@ -2239,7 +2239,7 @@ mod tests {
         assert!(!records.is_empty());
         assert_eq!(records[0].step, 0);
         assert_eq!(records[0].chosen_idx, 0);
-        assert_eq!(records[0].seed, seed);
+        assert_eq!(records[0].seed, seed as i32);
         assert_eq!(records[0].policy, "first");
     }
 
@@ -2277,7 +2277,7 @@ mod tests {
             motif_sims: None,
             leaf: LeafKind::TexelWide,
         };
-        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed);
+        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed as i32);
         let idx = policy
             .choose(&rm, &actions)
             .expect("combat pick under root blindfold");
@@ -2319,7 +2319,7 @@ mod tests {
             motif_sims: None,
             leaf: LeafKind::TexelWide,
         };
-        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed);
+        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed as i32);
         let idx = policy
             .choose(&rm, &actions)
             .expect("combat pick under draws-as-chance");
@@ -2361,7 +2361,7 @@ mod tests {
             motif_sims: None,
             leaf: LeafKind::TexelWide,
         };
-        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed);
+        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed as i32);
         let idx = policy
             .choose(&rm, &actions)
             .expect("combat pick under belief-pile deferred draws");
@@ -2405,7 +2405,7 @@ mod tests {
             motif_sims: None,
             leaf: LeafKind::TexelWide,
         };
-        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed);
+        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, seed as i32);
         // Panics inside `choose` -> `mcts_pick` when it reads the
         // unrecognized "bogus" value.
         let _ = policy.choose(&rm, &actions);
@@ -3024,8 +3024,8 @@ mod tests {
         CombatState {
             phase: CombatPhase::PlayerPlayPhase,
             round: 1,
-            rng: sts2_core::dotnet_rng::Rng::new(seed),
-            run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32)),
+            run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
             creatures: vec![cultist],
             cards: cards.into(),
             player: PlayerCombatState {
@@ -3084,7 +3084,7 @@ mod tests {
 
         // Deployed side: `mcts_pick` on the same combat state. The rm is
         // only consulted for the boss-room check (fresh run: not a boss).
-        let rm = new_run_manager_for_character(run_seed, CharacterId::Ironclad);
+        let rm = new_run_manager_for_character(u64::from(run_seed as u32), CharacterId::Ironclad);
         let budget = CombatBudget {
             sims,
             boss_sims: sims,
@@ -3139,7 +3139,7 @@ mod tests {
             &[Action::EndTurn]
         );
 
-        let rm = new_run_manager_for_character(run_seed, CharacterId::Ironclad);
+        let rm = new_run_manager_for_character(u64::from(run_seed as u32), CharacterId::Ironclad);
         let budget = CombatBudget {
             sims,
             boss_sims: sims,

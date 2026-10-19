@@ -1442,7 +1442,7 @@ fn two_cost_banks_without_the_stable_cost_are_refused() {
 fn the_runs_dice_round_trip_to_the_same_next_roll() {
     Python::with_gil(|py| {
         let mut s1 = build_seeded_state(py, 5, 0).expect("seed=5 must build");
-        s1.run_rng = sts2_core::run_rng_set::RunRngSet::new(1234);
+        s1.run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(1234);
         // Burn an uneven number of reads so a rebuild that forgets the cursor
         // (or the seed) cannot accidentally agree.
         for _ in 0..7 {

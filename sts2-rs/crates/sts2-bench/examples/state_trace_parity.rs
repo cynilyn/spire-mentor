@@ -53,7 +53,7 @@ impl Sm64 {
 
 fn build_state(encounter: &str, seed: u64, with_loadout: bool) -> CombatState {
     let deck = random_deck(seed, 25, sts2_content::names::PlayerClassHint::Ironclad);
-    let mut enc_rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+    let mut enc_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
     let monsters = resolve_encounter(encounter, &mut enc_rng).expect("encounter resolves");
     let mut state = build_starter_state_from_monsters(
         seed,
@@ -64,7 +64,7 @@ fn build_state(encounter: &str, seed: u64, with_loadout: bool) -> CombatState {
         Some(deck),
     );
     if with_loadout {
-        let mut potion_rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+        let mut potion_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
         let potions = resolve_potions(&PotionInput::Preset("random-3".into()), &mut potion_rng)
             .expect("potions resolve");
         for kind in &potions {

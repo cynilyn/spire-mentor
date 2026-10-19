@@ -410,6 +410,7 @@ fn hash_entries_by_key<K: Copy + Ord + Hash, H: Hasher>(entries: &[(K, i32)], h:
 /// (run-side `RunState.rng`).
 fn hash_run_rng_set<H: Hasher>(rr: &RunRngSet, h: &mut H) {
     rr.seed.hash(h);
+    rr.player_seed.hash(h);
     for stream in [
         &rr.up_front,
         &rr.shuffle,
@@ -1107,7 +1108,7 @@ mod tests {
         let h0 = state_hash(&a);
         let _ = a.run_rng.shuffle.next_int(0, 100);
         let _ = a.run_rng.monster_ai.next_int(0, 100);
-        a.rng = crate::dotnet_rng::Rng::with_counter(a.rng.seed() as i32, a.rng.counter() + 3);
+        a.rng = crate::dotnet_rng::Rng::with_counter(a.rng.seed(), a.rng.counter() + 3);
         assert_eq!(search_hash(&a), s0, "search_hash must ignore RNG cursor");
         assert_ne!(state_hash(&a), h0, "state_hash must track RNG cursor");
     }

@@ -3115,7 +3115,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn rng() -> crate::dotnet_rng::Rng {
-        crate::dotnet_rng::Rng::new(0x00C0_FFEE_u32 as i32)
+        crate::dotnet_rng::Rng::new(u64::from(0x00C0_FFEE_u32 as u32))
     }
 
     /// Empty card store for tests that drive draw/reshuffle on bare
@@ -3906,7 +3906,7 @@ mod tests {
             }
             // Pin uid(7) to top.
             pin_top(&mut p, pinned);
-            let mut r = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut r = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             shuffle(&mut p, &mut r);
             assert_eq!(
                 p.draw.first().copied(),
@@ -3934,7 +3934,7 @@ mod tests {
                 p.draw.push(uid(n));
             }
             pin_bottom(&mut p, pinned);
-            let mut r = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut r = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             shuffle(&mut p, &mut r);
             assert_eq!(
                 p.draw.last().copied(),
@@ -3977,7 +3977,7 @@ mod tests {
             .count();
         assert_eq!(middle_count, 0, "test premise: middle must be empty");
 
-        let mut r = crate::dotnet_rng::Rng::new(0xDEAD_BEEF_u32 as i32);
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xDEAD_BEEF_u32 as u32));
         shuffle(&mut p, &mut r);
 
         // Result is deterministic: top ++ middle ++ bot
@@ -3986,7 +3986,7 @@ mod tests {
 
         // Re-shuffling with a different seed produces the same result —
         // confirms no RNG influence when middle is empty.
-        let mut r2 = crate::dotnet_rng::Rng::new(0xBADF00D_u32 as i32);
+        let mut r2 = crate::dotnet_rng::Rng::new(u64::from(0xBADF00D_u32 as u32));
         shuffle(&mut p, &mut r2);
         assert_eq!(
             p.draw.as_slice(),
@@ -4007,7 +4007,7 @@ mod tests {
         pin_top(&mut p, uid(7));
         // pinned_top is in draw-order: index 0 = next-drawn = uid(7), then uid(3).
         assert_eq!(p.pinned_top.as_slice(), &[uid(7), uid(3)]);
-        let mut r = crate::dotnet_rng::Rng::new(0xDEAD_BEEF_u32 as i32);
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xDEAD_BEEF_u32 as u32));
         shuffle(&mut p, &mut r);
         assert_eq!(p.draw.first().copied(), Some(uid(7)));
         assert_eq!(p.draw.get(1).copied(), Some(uid(3)));
@@ -4025,7 +4025,7 @@ mod tests {
         assert!(!p.draw.contains(&stale));
         pin_bottom(&mut p, stale);
         assert_eq!(p.pinned_bottom.as_slice(), &[stale]);
-        let mut r = crate::dotnet_rng::Rng::new(0xC0FFEE_u32 as i32);
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xC0FFEE_u32 as u32));
         shuffle(&mut p, &mut r);
         assert!(
             p.pinned_bottom.is_empty(),
@@ -4048,7 +4048,7 @@ mod tests {
         // Silently accepted into pinned_top.
         assert_eq!(p.pinned_top.as_slice(), &[stale]);
         // First shuffle: retain drops stale (not in draw).
-        let mut r = crate::dotnet_rng::Rng::new(0xC0FFEE_u32 as i32);
+        let mut r = crate::dotnet_rng::Rng::new(u64::from(0xC0FFEE_u32 as u32));
         shuffle(&mut p, &mut r);
         assert!(
             p.pinned_top.is_empty(),
@@ -4067,7 +4067,7 @@ mod tests {
         // whether the pinned uid is in any pile.
         p.pinned_top.push(uid(99));
         p.pinned_bottom.push(uid(88));
-        let mut r = crate::dotnet_rng::Rng::new(42_i32);
+        let mut r = crate::dotnet_rng::Rng::new(42);
         discard_pile_into_draw_pile(&mut p, &empty_store(), &mut r);
         assert!(p.pinned_top.is_empty(), "pinned_top must be cleared");
         assert!(p.pinned_bottom.is_empty(), "pinned_bottom must be cleared");
@@ -4095,7 +4095,7 @@ mod tests {
             let top_snapshot = p.pinned_top.clone();
             let bot_snapshot = p.pinned_bottom.clone();
 
-            let mut r = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut r = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             shuffle(&mut p, &mut r);
 
             // The first |top_snapshot| draw entries must equal top_snapshot.
@@ -4183,7 +4183,7 @@ mod tests {
         let mut p = PlayerCombatState::default();
         p.draw.extend([uid(1)]); // Single card; will draw it whether pinned bot or top.
         pin_bottom(&mut p, uid(1));
-        let mut r = crate::dotnet_rng::Rng::new(7_i32);
+        let mut r = crate::dotnet_rng::Rng::new(7);
         let moved = draw(&mut p, 1, &empty_store(), &mut r);
         assert_eq!(moved, 1);
         assert!(p.pinned_bottom.is_empty());
@@ -4196,7 +4196,7 @@ mod tests {
     fn draw_signaling_reports_zero_shuffles_when_draw_pile_has_cards() {
         let mut p = PlayerCombatState::default();
         p.draw.extend([uid(1), uid(2), uid(3)]);
-        let mut rng = crate::dotnet_rng::Rng::new(1_i32);
+        let mut rng = crate::dotnet_rng::Rng::new(1);
         let (moved, shuffles) = draw_signaling(&mut p, 2, &empty_store(), &mut rng);
         assert_eq!(moved, 2);
         assert_eq!(shuffles, 0, "no auto-reshuffle needed");
@@ -4213,7 +4213,7 @@ mod tests {
         // Empty draw; one card in discard. Drawing 1 forces a
         // reshuffle, which moves discard→draw before the draw.
         p.discard.push(uid(7));
-        let mut rng = crate::dotnet_rng::Rng::new(2_i32);
+        let mut rng = crate::dotnet_rng::Rng::new(2);
         let (moved, shuffles) = draw_signaling(&mut p, 1, &empty_store(), &mut rng);
         assert_eq!(moved, 1);
         assert_eq!(shuffles, 1, "auto-reshuffle must bump the counter");
@@ -4237,7 +4237,7 @@ mod tests {
     #[test]
     fn shuffle_fuzz_preserves_multiset_and_pin_ordering() {
         for seed in 0u64..1000 {
-            let mut rng = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut rng = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             // Random pile size 0..50.
             let n = (rng.next_int_exclusive(0, 50_i32) as u64) as u32;
             let mut p = PlayerCombatState::default();
@@ -4327,7 +4327,7 @@ mod tests {
     #[test]
     fn jg5wh_draw_conserves_pile_sum_and_return_value() {
         for seed in 0u64..1000 {
-            let mut seed_rng = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut seed_rng = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             let draw_count = (seed_rng.next_int_exclusive(0, 60_i32) as u32) as usize;
             let discard_count = (seed_rng.next_int_exclusive(0, 60_i32) as u32) as usize;
             let hand_count = (seed_rng.next_int_exclusive(0, 11_i32) as u32) as usize; // can already be at HAND_LIMIT
@@ -4350,7 +4350,7 @@ mod tests {
             let total_before = p.draw.len() + p.discard.len() + p.hand.len();
             let hand_before = p.hand.len();
 
-            let mut draw_rng = crate::dotnet_rng::Rng::new((seed.wrapping_mul(31)) as i32);
+            let mut draw_rng = crate::dotnet_rng::Rng::new(u64::from((seed.wrapping_mul(31)) as u32));
             let moved = draw(&mut p, request, &empty_store(), &mut draw_rng);
 
             let total_after = p.draw.len() + p.discard.len() + p.hand.len();
@@ -4579,7 +4579,7 @@ mod tests {
     #[test]
     fn jzz78atw_reshuffle_conserves_pile_sum_and_signals_correctly() {
         for seed in 0u64..500 {
-            let mut seed_rng = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut seed_rng = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             let draw_n = (seed_rng.next_int_exclusive(0, 31_i32) as u32) as usize;
             let discard_n = (seed_rng.next_int_exclusive(0, 31_i32) as u32) as usize;
 
@@ -4598,7 +4598,7 @@ mod tests {
             let total_before = draw_before.len() + discard_before.len();
             let expect_signal = draw_before.is_empty() && !discard_before.is_empty();
 
-            let mut rng = crate::dotnet_rng::Rng::new((seed.wrapping_mul(127)) as i32);
+            let mut rng = crate::dotnet_rng::Rng::new(u64::from((seed.wrapping_mul(127)) as u32));
             let signal = discard_pile_into_draw_pile_signaling(&mut p, &empty_store(), &mut rng);
             assert_eq!(
                 signal, expect_signal,
@@ -4646,7 +4646,7 @@ mod tests {
         for n in 1u32..=4 {
             p.discard.push(uid(n));
         }
-        let mut rng = crate::dotnet_rng::Rng::new(7_i32);
+        let mut rng = crate::dotnet_rng::Rng::new(7);
         discard_pile_into_draw_pile(&mut p, &empty_store(), &mut rng);
         assert_eq!(p.discard.len(), 0);
         assert_eq!(p.draw.len(), 4);
@@ -4756,7 +4756,7 @@ mod tests {
         for n in 1u32..=5 {
             p.discard.push(uid(n));
         }
-        let mut rng = crate::dotnet_rng::Rng::new(11_i32);
+        let mut rng = crate::dotnet_rng::Rng::new(11);
         let (moved, shuffles) = draw_signaling(&mut p, 10, &empty_store(), &mut rng);
         assert_eq!(moved, 5, "moved == |discard| when request exceeds total");
         assert_eq!(
@@ -4782,7 +4782,7 @@ mod tests {
         for n in 10u32..=13 {
             p.discard.push(uid(n));
         }
-        let mut rng = crate::dotnet_rng::Rng::new(13_i32);
+        let mut rng = crate::dotnet_rng::Rng::new(13);
         let (moved, shuffles) = draw_signaling(&mut p, 10, &empty_store(), &mut rng);
         assert_eq!(moved, 7);
         assert_eq!(shuffles, 1, "one reshuffle when draw drains mid-loop");
@@ -4796,7 +4796,7 @@ mod tests {
     #[test]
     fn kq1d7_draw_signaling_returns_zero_zero_on_empty_state() {
         let mut p = PlayerCombatState::default();
-        let mut rng = crate::dotnet_rng::Rng::new(17_i32);
+        let mut rng = crate::dotnet_rng::Rng::new(17);
         let (moved, shuffles) = draw_signaling(&mut p, 5, &empty_store(), &mut rng);
         assert_eq!(moved, 0);
         assert_eq!(shuffles, 0);
@@ -5134,7 +5134,7 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for seed in 0..64i32 {
             let mut p = deferred_player_with_draw(&[10, 20]);
-            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            let mut rng = crate::dotnet_rng::Rng::new(u64::from(seed as u32));
             seen.insert(pop_next_card(&mut p, &mut rng).get());
         }
         assert_eq!(

@@ -35,8 +35,8 @@ fn install() {
 /// A player state with one 300-HP Nibbit and no cards yet.
 fn bare_state(character: CharacterId, seed: i32) -> CombatState {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(seed),
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32)),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         ..Default::default()
     };
     state.player.character = Some(character);

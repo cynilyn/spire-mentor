@@ -690,7 +690,7 @@ mod tests {
         let mut seen_small_perms: HashSet<(MonsterKind, MonsterKind)> = HashSet::new();
         let mut seen_medium: HashSet<MonsterKind> = HashSet::new();
         for seed in 0..64u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             let roster = randomize_slimes_weak(&mut rng);
             assert_eq!(roster.len(), 3, "slimes_weak always returns 3");
             assert!(small_set.contains(&roster[0].0), "slot 0 is a small");
@@ -722,7 +722,7 @@ mod tests {
         .collect();
         let mut seen_picks: HashSet<MonsterKind> = HashSet::new();
         for seed in 0..64u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             let roster = randomize_ruby_raiders_normal(&mut rng);
             assert_eq!(roster.len(), 3);
             let ids: HashSet<MonsterKind> = roster.iter().map(|(k, _)| *k).collect();
@@ -743,7 +743,7 @@ mod tests {
     /// `sts2-rs-6inu`.
     #[test]
     fn vyh_6inu_encounterdef_roster_routes_correctly() {
-        let mut rng = sts2_core::dotnet_rng::Rng::new(42_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(42);
         let slimes = find("SLIMES_WEAK").expect("registered");
         let roster = slimes.roster(&mut rng);
         assert_eq!(roster.len(), 3);
@@ -773,7 +773,7 @@ mod tests {
     fn slimes_normal_roster_shape_and_both_orders() {
         let mut seen_small_perms: HashSet<(MonsterKind, MonsterKind)> = HashSet::new();
         for seed in 0..64u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_slimes_normal(&mut rng);
             assert_eq!(roster.len(), 4, "slimes_normal always returns 4 monsters");
             assert_eq!(roster[0].0, MonsterKind::TwigSlimeM);
@@ -798,7 +798,7 @@ mod tests {
             .collect();
         let mut seen_medium: HashSet<MonsterKind> = HashSet::new();
         for seed in 0..64u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_flyconid_normal(&mut rng);
             assert_eq!(roster.len(), 2, "flyconid_normal always returns 2 monsters");
             assert!(
@@ -833,7 +833,7 @@ mod tests {
         let mut saw_medium = false;
         let mut saw_smalls = false;
         for seed in 0..256u64 {
-            let mut rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             let roster = randomize_slithering_strangler_normal(&mut rng);
             // Strangler is always appended last.
             assert_eq!(roster.last().unwrap().0, MonsterKind::SlitheringStrangler);

@@ -1293,7 +1293,7 @@ mod tests {
     fn act1_variants_share_one_map_point_type_roll() {
         // `NextGaussianInt(7, 1, 6, 7)` + `StandardRandomUnknownCount` —
         // verbatim from Overgrowth.cs:127-129 AND Underdocks.cs:112-114.
-        for seed in [1, 7, 12345, -99] {
+        for seed in [1_u64, 7, 12345, u64::from((-99_i32) as u32)] {
             for asc in [0, 1, 10] {
                 let mut expected_rng = crate::dotnet_rng::Rng::with_name(seed, "map");
                 let rests = expected_rng.next_gaussian_int(7.0, 1.0, 6, 7);
@@ -1440,7 +1440,7 @@ mod tests {
         // Hive: rests ∈ [6, 7], unknowns ∈ [9, 13] (gauss [10,14] − 1).
         // Sample a handful of seeds and assert the per-call ranges hold.
         for seed in [1i32, 7, 42, 99, 314, 2026] {
-            let mut rng = Rng::new(seed);
+            let mut rng = Rng::new(u64::from(seed as u32));
             let c = map_point_type_counts(&mut rng, 0, 2);
             assert!(
                 (6..=7).contains(&c.num_rests),
@@ -1461,7 +1461,7 @@ mod tests {
     fn act_3_counts_match_glory_pin() {
         // Glory: rests ∈ {5, 6} (NextInt half-open), unknowns ∈ [9, 13].
         for seed in [1i32, 7, 42, 99, 314, 2026] {
-            let mut rng = Rng::new(seed);
+            let mut rng = Rng::new(u64::from(seed as u32));
             let c = map_point_type_counts(&mut rng, 0, 3);
             assert!(
                 (5..=6).contains(&c.num_rests),
@@ -1489,9 +1489,9 @@ mod tests {
         // act_2 once and confirm a parallel rng advanced by 2 explicit
         // gaussians lands in the same state.
         for seed in [1i32, 99, 2026] {
-            let mut rng_a = Rng::new(seed);
+            let mut rng_a = Rng::new(u64::from(seed as u32));
             let _ = map_point_type_counts(&mut rng_a, 0, 2);
-            let mut rng_b = Rng::new(seed);
+            let mut rng_b = Rng::new(u64::from(seed as u32));
             let _ = rng_b.next_gaussian_int(6.0, 1.0, 6, 7);
             let _ = rng_b.next_gaussian_int(12.0, 1.0, 10, 14);
             assert_eq!(
@@ -1506,9 +1506,9 @@ mod tests {
     fn act_3_rng_footprint_is_one_int_one_gauss() {
         // Glory: one NextInt + one gauss on main rng.
         for seed in [1i32, 99, 2026] {
-            let mut rng_a = Rng::new(seed);
+            let mut rng_a = Rng::new(u64::from(seed as u32));
             let _ = map_point_type_counts(&mut rng_a, 0, 3);
-            let mut rng_b = Rng::new(seed);
+            let mut rng_b = Rng::new(u64::from(seed as u32));
             let _ = rng_b.next_int_exclusive(5, 7);
             let _ = rng_b.next_gaussian_int(12.0, 1.0, 10, 14);
             assert_eq!(
@@ -1616,7 +1616,7 @@ mod tests {
         // expectations. The actual assertion is weak by design.
         let mut monster_counts = Vec::new();
         for seed in [0_i32, 1, 7, 42, 99, 256, 2026, 12345] {
-            let mut rng = Rng::new(seed);
+            let mut rng = Rng::new(u64::from(seed as u32));
             let m = generate_act_map(15, &mut rng, 0, false, 0, None);
             let monsters = m
                 .points

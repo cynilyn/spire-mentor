@@ -372,12 +372,19 @@ pub const fn act1(rm: &RunManager) -> &'static str {
     }
 }
 
-/// `RunManager.run_seed` — the run's own hashed master seed, as `u32`: the
-/// value every RNG stream salts from, and the one the wire spells
-/// `$.rng.run_seed` (C# `RunRngSet.Seed` is a uint).
+/// `RunManager.run_seed` — the run base as `u64` (v0.111.0 `RunRngSet.Seed`):
+/// the value every run-scoped RNG stream salts from, and the one the wire
+/// spells `$.rng.run_seed`.
 #[must_use]
-pub fn run_seed(rm: &RunManager) -> u32 {
-    u32::from_ne_bytes(rm.run_state.rng.seed.to_ne_bytes())
+pub fn run_seed(rm: &RunManager) -> u64 {
+    rm.run_state.rng.seed
+}
+
+/// The player stream base as `u64` (`H(full seed string) + slot 0`), the wire's
+/// `$.rng.player_seed`. Differs from [`run_seed`] for `old` seed strings.
+#[must_use]
+pub fn player_seed(rm: &RunManager) -> u64 {
+    rm.run_state.rng.player_seed
 }
 
 /// `RunManager.gold` — while a fight is ACTIVE, the combat-time gold mirror
@@ -1286,10 +1293,8 @@ mod tests {
         assert!(potions(&rm).is_empty());
         assert_eq!(act1(&rm), "overgrowth");
         assert_eq!(gold(&rm), rm.run_state.gold);
-        assert_eq!(
-            run_seed(&rm),
-            u32::from_ne_bytes(rm.run_state.rng.seed.to_ne_bytes())
-        );
+        assert_eq!(run_seed(&rm), rm.run_state.rng.seed);
+        assert_eq!(player_seed(&rm), rm.run_state.rng.player_seed);
         assert_eq!(
             keys(&rng_counters(&rm)),
             [

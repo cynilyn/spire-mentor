@@ -44,7 +44,7 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let mut rm =
-        sts2_content::run_callbacks::new_run_manager_for_character(seed, CharacterId::Ironclad);
+        sts2_content::run_callbacks::new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
     let meta = HeuristicPolicy::new();
     let mut policy = Tracing(MctsCombatPolicy::new(
         meta,

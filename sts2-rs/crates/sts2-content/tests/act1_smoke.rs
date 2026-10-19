@@ -54,7 +54,7 @@ fn make_combat(seed: u64, monsters: &[(MonsterKind, MonsterSpawnArgs)]) -> Comba
         });
     }
 
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     let mut creatures = Vec::with_capacity(monsters.len());
     let mut enemy_uids: SmallVec<[CreatureUid; 8]> = SmallVec::new();
     let alone = monsters.len() == 1;
@@ -129,9 +129,9 @@ fn make_combat(seed: u64, monsters: &[(MonsterKind, MonsterSpawnArgs)]) -> Comba
         phase: CombatPhase::Setup,
         round: 0,
         side: Side::Player,
-        rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
 
-        run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         creatures,
         cards: cards_arena.into(),
         powers: Vec::new().into(),
@@ -256,7 +256,7 @@ fn every_act1_monsterkind_drives_random_play_without_panic() {
     for kind in kinds {
         let monsters = [(kind, MonsterSpawnArgs::None)];
         let mut state = make_combat(0, &monsters);
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0xa11ce_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0xa11ce_i32 as u32));
         run_random(&mut state, &mut rng, &format!("solo {kind:?}"));
     }
 }
@@ -266,7 +266,7 @@ fn every_act1_encounter_drives_random_play_without_panic() {
     assert_eq!(ACT1_ENCOUNTERS.len(), 22);
     for enc in ACT1_ENCOUNTERS {
         let mut state = make_combat(0, enc.monsters);
-        let mut rng = sts2_core::dotnet_rng::Rng::new(0xbee_i32);
+        let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(0xbee_i32 as u32));
         run_random(&mut state, &mut rng, enc.id);
     }
 }

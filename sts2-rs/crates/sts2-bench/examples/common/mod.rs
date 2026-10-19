@@ -269,7 +269,7 @@ pub fn build_ironclad_state_with_deck(
         draw.push(uid);
     }
 
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     let group_len = enc.monsters.len();
     let mut creatures: Vec<Creature> = Vec::with_capacity(group_len);
     let mut enemy_uids: SmallVec<[CreatureUid; 8]> = SmallVec::new();
@@ -349,7 +349,7 @@ pub fn build_ironclad_state_with_deck(
         round: 0,
         side: Side::Player,
         rng,
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(seed as i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         creatures,
         cards: cards_arena.into(),
         powers: Vec::new().into(),
@@ -418,7 +418,7 @@ pub fn build_ironclad_state_with_deck(
 /// that's fine, the encounter id + the rolled-back state are still
 /// reproducible across runs from the same seed.
 pub fn warmup_random(state: &mut CombatState, warmup_seed: u64, turns: u32) {
-    let mut policy_rng = sts2_core::dotnet_rng::Rng::new((warmup_seed) as i32);
+    let mut policy_rng = sts2_core::dotnet_rng::Rng::new(u64::from(warmup_seed as i32 as u32));
     let mut turns_played: u32 = 0;
     // Safety cap so a misbehaving fixture can't infinite-loop the
     // generator. 512 actions across 3 turns is generous.
@@ -484,7 +484,7 @@ pub fn warmup_plies(state: &mut CombatState, seed: u64, max_plies: u32) {
         return;
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0x5EED_1F1E) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0x5EED_1F1E) as u32));
     let n = rng.next_int_exclusive(0, max_plies as i32 + 1);
     for _ in 0..n {
         if state.is_over || state.phase != CombatPhase::PlayerPlayPhase {

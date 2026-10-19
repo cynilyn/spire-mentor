@@ -1579,7 +1579,7 @@ fn random_full_pool_deck(
     size: usize,
     specs: &'static [fn() -> CardSpec],
 ) -> Vec<CardSpec> {
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as u32));
     (0..size)
         .map(|_| {
             let idx = rng.next_int_exclusive(0, specs.len() as i32) as usize;
@@ -1922,7 +1922,7 @@ fn main() -> ExitCode {
         }
 
         let mut enc_rng =
-            sts2_core::dotnet_rng::Rng::new((combat_seed ^ 0x5151_5151_5151_5151) as i32);
+            sts2_core::dotnet_rng::Rng::new(u64::from((combat_seed ^ 0x5151_5151_5151_5151) as u32));
         let enc_idx =
             encounter_pool[enc_rng.next_int_exclusive(0, encounter_pool.len() as i32) as usize];
         let enc = &ACT1_ENCOUNTERS[enc_idx];
@@ -3017,7 +3017,7 @@ fn drive_god_run_to_target(
     use sts2_core::runstate::RoomType;
 
     let mut rm = new_run_manager_for_character_with_ascension(
-        run_seed as i32,
+        u64::from(run_seed as u32),
         args.character.character_id(),
         args.runmanager_ascension,
     );
@@ -3281,7 +3281,7 @@ fn build_combat_state(
     deck_specs: &[CardSpec],
     character: CliCharacter,
 ) -> CombatState {
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     let max_hp: i32 = character.max_hp();
 
     let mut cards_arena: Vec<Card> = Vec::with_capacity(deck_specs.len());
@@ -3386,9 +3386,9 @@ fn build_combat_state(
         phase: CombatPhase::Setup,
         round: 0,
         side: Side::Player,
-        rng: sts2_core::dotnet_rng::Rng::new(seed.wrapping_add(0x9e37_79b9) as i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from((seed.wrapping_add(0x9e37_79b9)) as u32)),
 
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(seed.wrapping_add(0x9e37_79b9) as i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from((seed.wrapping_add(0x9e37_79b9)) as u32)),
         creatures,
         cards: cards_arena.into(),
         powers: Vec::new().into(),

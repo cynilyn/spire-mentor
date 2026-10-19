@@ -57,7 +57,7 @@
 //! roll *is* purely seed-driven. [`ActSelectionUnlocks::test_mode_on`] models
 //! that; [`ActSelectionUnlocks::live_game`] models a real save.
 
-use crate::dotnet_rng::{canonicalize_seed, deterministic_hash_code_old, Rng};
+use crate::dotnet_rng::{seed_bases, Rng};
 
 /// One act model, identified by its C# `ModelId.Entry` slug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -173,13 +173,13 @@ const fn is_discovered(act: ActVariant, unlocks: &ActSelectionUnlocks) -> bool {
 /// Roll the run's act list from an **already-hashed** seed, mirroring
 /// `ActModel.GetRandomList` read-for-read.
 ///
-/// `seed_hash` is `deterministic_hash_code_old(canonicalize_seed(display_seed))` —
-/// the same single hash `RunRngSet` takes. Use [`roll_acts_for_seed`] to go
+/// `seed_hash` is `H(full seed string)` (`seed_bases(display_seed).full_hash`),
+/// the base `StartRunLobby` feeds `Rng(seed, "act_selection")`. Use [`roll_acts_for_seed`] to go
 /// straight from the display seed.
 ///
 /// Returns the act chosen for index 0, 1, 2 in order.
 #[must_use]
-pub fn roll_acts(seed_hash: i32, unlocks: &ActSelectionUnlocks) -> [ActVariant; 3] {
+pub fn roll_acts(seed_hash: u64, unlocks: &ActSelectionUnlocks) -> [ActVariant; 3] {
     let mut rng = Rng::with_name(seed_hash, "act_selection");
     roll_acts_with(&mut rng, unlocks)
 }
@@ -225,10 +225,10 @@ pub fn roll_acts_with(rng: &mut Rng, unlocks: &ActSelectionUnlocks) -> [ActVaria
 /// the game's canonicalisation + hash first.
 #[must_use]
 pub fn roll_acts_for_seed(display_seed: &str, unlocks: &ActSelectionUnlocks) -> [ActVariant; 3] {
-    roll_acts(
-        deterministic_hash_code_old(&canonicalize_seed(display_seed)),
-        unlocks,
-    )
+    // `StartRunLobby.BeginRunLocally`: the base is `H(full seed string)`
+    // (xxhash of the canonical string; for `old` seeds the whole string
+    // including the prefix) — NOT the run base.
+    roll_acts(seed_bases(display_seed).full_hash, unlocks)
 }
 
 /// The Act-1 variant a seed rolls — the single number the act-parity gate

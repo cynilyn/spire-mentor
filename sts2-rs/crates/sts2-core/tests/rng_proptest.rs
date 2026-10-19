@@ -31,7 +31,7 @@ proptest! {
         span in 0i32..2_000_000,
     ) {
         let high = low + span;
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
         for _ in 0..64 {
             let v = rng.next_int(low, high);
             prop_assert!(v >= low && v <= high, "{v} not in [{low}, {high}]");
@@ -46,7 +46,7 @@ proptest! {
         span in 1i32..2_000_000,
     ) {
         let high = low + span;
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
         for _ in 0..64 {
             let v = rng.next_int_exclusive(low, high);
             prop_assert!(v >= low && v < high, "{v} not in [{low}, {high})");
@@ -62,7 +62,7 @@ proptest! {
         width in 0.0f64..1_000.0,
     ) {
         let hi = lo + width;
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
         for _ in 0..64 {
             let d = rng.next_double();
             prop_assert!((0.0..1.0).contains(&d), "next_double {d} not in [0, 1)");
@@ -74,7 +74,7 @@ proptest! {
     /// The public counter ticks exactly once per logical `next_*` call.
     #[test]
     fn counter_tracks_calls(seed in any::<i32>(), n in 0u32..500) {
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
         prop_assert_eq!(rng.counter(), 0);
         for i in 0..n {
             rng.next_int(0, 100);
@@ -89,13 +89,13 @@ proptest! {
     /// underlying stream identically, or replay-from-counter desyncs.
     #[test]
     fn fast_forward_matches_stepwise(seed in any::<i32>(), n in 0u32..500) {
-        let mut stepwise = Rng::new(seed);
+        let mut stepwise = Rng::new(u64::from(seed as u32));
         for _ in 0..n {
             // Small range => exactly one internal sample, matching one
             // fast-forward step.
             stepwise.next_int(0, 7);
         }
-        let mut jumped = Rng::with_counter(seed, n);
+        let mut jumped = Rng::with_counter(u64::from(seed as u32), n);
 
         prop_assert_eq!(stepwise.counter(), jumped.counter());
         // Next draws from both must agree, and so must the counters after.
@@ -107,8 +107,8 @@ proptest! {
     /// continuation. This is the determinism guarantee the whole sim leans on.
     #[test]
     fn determinism_and_clone(seed in any::<i32>(), warmup in 0u32..50) {
-        let mut a = Rng::new(seed);
-        let mut b = Rng::new(seed);
+        let mut a = Rng::new(u64::from(seed as u32));
+        let mut b = Rng::new(u64::from(seed as u32));
         for _ in 0..warmup {
             prop_assert_eq!(a.next_int(0, 999), b.next_int(0, 999));
         }
@@ -130,8 +130,8 @@ proptest! {
         let original = data.clone();
         let mut other = data.clone();
 
-        let mut rng_a = Rng::new(seed);
-        let mut rng_b = Rng::new(seed);
+        let mut rng_a = Rng::new(u64::from(seed as u32));
+        let mut rng_b = Rng::new(u64::from(seed as u32));
         rng_a.shuffle(&mut data);
         rng_b.shuffle(&mut other);
 
@@ -156,8 +156,8 @@ proptest! {
     ) {
         let max = min + width;
         let mean = f64::from(min + max) / 2.0;
-        let mut rng = Rng::new(seed);
-        let mut check = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
+        let mut check = Rng::new(u64::from(seed as u32));
         for _ in 0..32 {
             let v = rng.next_gaussian_int(mean, 5.0, min, max);
             prop_assert!(v >= min && v <= max, "{v} not in [{min}, {max}]");
@@ -170,8 +170,8 @@ proptest! {
     /// stream is fully determined by the parent's state at fork time.
     #[test]
     fn fork_is_deterministic(seed in any::<i32>(), warmup in 0u32..20) {
-        let mut parent_a = Rng::new(seed);
-        let mut parent_b = Rng::new(seed);
+        let mut parent_a = Rng::new(u64::from(seed as u32));
+        let mut parent_b = Rng::new(u64::from(seed as u32));
         for _ in 0..warmup {
             parent_a.next_int(0, 50);
             parent_b.next_int(0, 50);

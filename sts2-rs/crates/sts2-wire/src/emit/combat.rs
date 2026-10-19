@@ -1055,11 +1055,10 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // read count. Emitting them makes a Rust-produced wire carry the same RNG
     // lineage the C# producers carry, so the native-engine oracle exercises
     // the identical restore path the DLL mirror uses.
-    set(
-        &mut rng,
-        "run_seed",
-        u32::from_ne_bytes(state.run_rng.seed.to_ne_bytes()),
-    );
+    // v0.111.0: both bases are u64 and differ for `old` seed strings, so
+    // both are carried (the import restores `RunRngSet::new(run, player)`).
+    set(&mut rng, "run_seed", state.run_rng.seed);
+    set(&mut rng, "player_seed", state.run_rng.player_seed);
     rng.insert("counters".to_owned(), run_rng_counters(state));
     d.insert("rng".to_owned(), Value::Object(rng));
 
@@ -1463,7 +1462,7 @@ mod tests {
         assert_eq!(v["encounter"], serde_json::json!([]));
         assert_eq!(
             keys(&v["rng"]),
-            ["ascension", "counters", "run_seed", "seed"]
+            ["ascension", "counters", "player_seed", "run_seed", "seed"]
         );
         // The diagnostic copy and the load-bearing copy come from one
         // definition.

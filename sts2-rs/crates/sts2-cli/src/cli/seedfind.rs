@@ -334,14 +334,14 @@ pub struct ActSnapshot {
 /// do: construct → `with_neow_start` → `initialize_run_setup`. This pre-rolls
 /// every act's rooms (encounters / boss / event pool / ancient) off `up_front`
 /// and rolls the Neow offers, all deterministically from `seed`.
-fn ready_run_manager(seed: i32, character: CharacterId, ascension: u8) -> RunManager {
+fn ready_run_manager(seed: u64, character: CharacterId, ascension: u8) -> RunManager {
     let mut rm =
         new_run_manager_for_character_with_ascension(seed, character, ascension).with_neow_start();
     initialize_run_setup(&mut rm);
     rm
 }
 
-fn snapshot(seed: i32, character: CharacterId, ascension: u8) -> Snapshot {
+fn snapshot(seed: u64, character: CharacterId, ascension: u8) -> Snapshot {
     let mut rm = ready_run_manager(seed, character, ascension);
 
     let neow_offers = rm
@@ -640,7 +640,7 @@ impl RunPolicy for CollectingPolicy {
 
 /// Drive `paths` random full runs for one seed and collect each path's trace.
 fn collect_driven(
-    seed: i32,
+    seed: u64,
     character: CharacterId,
     ascension: u8,
     paths: u32,
@@ -656,7 +656,7 @@ fn collect_driven(
     for path in 0..paths.max(1) {
         // Vary the policy seed per path so distinct paths are sampled, while
         // keeping the run seed (and thus the content) fixed.
-        let policy_seed = seed.wrapping_add(path.wrapping_mul(0x9E37_79B9) as i32);
+        let policy_seed = (seed.wrapping_add(u64::from(path).wrapping_mul(0x9E37_79B9)) as u32) as i32;
         let mut rm = ready_run_manager(seed, character, ascension);
         let mut policy = CollectingPolicy::from_run_seed(policy_seed);
         let _ = drive_full_run(&mut rm, &mut policy, &cfg);
@@ -694,11 +694,12 @@ fn index_to_seed_string(mut i: u64) -> String {
     String::from_utf8(out).expect("seed alphabet is ASCII")
 }
 
-/// A candidate seed: its numeric `i32` (what the engine consumes) and the
+/// A candidate seed: its numeric `u64` run seed (what the engine consumes;
+/// v0.111.0 `XxHash64` of the canonical string in string mode) and the
 /// human-facing label (game seed string, or the integer itself).
 #[derive(Debug, Clone)]
 struct Candidate {
-    numeric: i32,
+    numeric: u64,
     label: String,
 }
 
@@ -706,12 +707,11 @@ fn candidate(mode: SeedMode, index: u64) -> Candidate {
     match mode {
         SeedMode::String => {
             let s = index_to_seed_string(index);
-            let numeric = sts2_core::deterministic_hash_code_old(&sts2_core::canonicalize_seed(&s));
+            let numeric = sts2_core::seed_bases(&s).run_seed;
             Candidate { numeric, label: s }
         }
         SeedMode::Int => {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-            let numeric = index as i32;
+            let numeric = index;
             Candidate {
                 numeric,
                 label: numeric.to_string(),
@@ -749,7 +749,7 @@ struct PathReport {
 #[derive(Debug, Clone, Serialize)]
 struct Match {
     seed: String,
-    numeric_seed: i32,
+    numeric_seed: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ancient_offers: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -891,15 +891,14 @@ pub fn run<W: Write>(args: SeedfindArgs, out: &mut W) -> io::Result<usize> {
     if let Some(dump) = &args.dump {
         let cand = match args.mode {
             SeedMode::String => {
-                let numeric =
-                    sts2_core::deterministic_hash_code_old(&sts2_core::canonicalize_seed(dump));
+                let numeric = sts2_core::seed_bases(dump).run_seed;
                 Candidate {
                     numeric,
                     label: dump.clone(),
                 }
             }
             SeedMode::Int => {
-                let numeric: i32 = dump.parse().map_err(|_| {
+                let numeric: u64 = dump.parse().map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("bad --dump int: {dump}"),

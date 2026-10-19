@@ -192,7 +192,7 @@ mod tests {
         for seed in 0..N {
             // Engine arm: concrete shuffle, drain front-to-back.
             let mut v = cards;
-            DotNetRng::new(seed).shuffle(&mut v);
+            DotNetRng::new(u64::from(seed as u32)).shuffle(&mut v);
             let key = [v[0].get(), v[1].get(), v[2].get(), v[3].get()];
             *engine.entry(key).or_insert(0) += 1;
 

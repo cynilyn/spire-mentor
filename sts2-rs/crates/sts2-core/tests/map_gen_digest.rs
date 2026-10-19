@@ -41,7 +41,7 @@ fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
 /// Hash every observable field of the generated map, in deterministic
 /// (grid-iteration) order, plus the number of RNG draws consumed.
 fn map_digest(seed: i32, ascension: i32, act_index: i32, replace_treasure: bool) -> u64 {
-    let mut rng = Rng::new(seed);
+    let mut rng = Rng::new(u64::from(seed as u32));
     let map = generate_act_map(15, &mut rng, ascension, replace_treasure, act_index, None);
 
     let mut h: u64 = 0xCBF2_9CE4_8422_2325;

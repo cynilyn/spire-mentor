@@ -36,8 +36,8 @@ fn install() {
 /// A player with 70 HP facing one Nibbit per entry of `enemy_hp`.
 fn bare_state(character: CharacterId, seed: i32, enemy_hp: &[i32]) -> CombatState {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(seed),
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32)),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         ..Default::default()
     };
     state.player.character = Some(character);

@@ -28189,7 +28189,7 @@ mod tests {
         };
 
         for seed in 0u64..500 {
-            let mut rng = crate::dotnet_rng::Rng::new((seed) as i32);
+            let mut rng = crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             // Random base in [-1_000_000, 1_000_000] plus some extreme
             // boundary picks to exercise saturation.
             let base = match seed % 5 {

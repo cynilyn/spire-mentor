@@ -90,7 +90,12 @@ fn character_display_name(character_id: &str) -> Option<&'static str> {
 /// in the wire's own order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RngBlock {
-    pub run_seed: i64,
+    /// `$.rng.run_seed` (v0.111.0: u64).
+    pub run_seed: u64,
+    /// `$.rng.player_seed` (u64) when the producer sends it; absent on the
+    /// legacy single-u32 wire.
+    #[serde(default)]
+    pub player_seed: Option<u64>,
     pub counters: Vec<(String, i64)>,
 }
 
@@ -469,8 +474,12 @@ fn ids_from_wire(
 fn rng_block(msg: &Map<String, Value>) -> Option<RngBlock> {
     let raw = msg.get("rng")?.as_object()?;
     let run_seed = match raw.get("run_seed") {
-        Some(Value::Number(n)) if n.is_i64() || n.is_u64() => n.as_i64()?,
+        Some(Value::Number(n)) if n.is_u64() => n.as_u64()?,
         _ => return None,
+    };
+    let player_seed = match raw.get("player_seed") {
+        Some(Value::Number(n)) if n.is_u64() => n.as_u64(),
+        _ => None,
     };
     let counters_obj = raw.get("counters")?.as_object()?;
     let mut counters: Vec<(String, i64)> = Vec::new();
@@ -486,7 +495,11 @@ fn rng_block(msg: &Map<String, Value>) -> Option<RngBlock> {
         return None;
     }
     counters.sort();
-    Some(RngBlock { run_seed, counters })
+    Some(RngBlock {
+        run_seed,
+        player_seed,
+        counters,
+    })
 }
 
 fn run_snapshot(

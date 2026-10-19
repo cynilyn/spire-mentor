@@ -160,9 +160,9 @@ fn make_combat(seed: u64, idx: u8) -> CombatState {
         phase: CombatPhase::Setup,
         round: 0,
         side: Side::Player,
-        rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
 
-        run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         creatures,
         cards: cards_arena.into(),
         powers: Vec::new().into(),
@@ -285,7 +285,7 @@ fn act1_random_playout_10k() {
             // so action choices are independent of intent rolls.
             let mut state = make_combat(seed, enc_idx);
             let mut action_rng =
-                sts2_core::dotnet_rng::Rng::new((seed ^ 0xa5a5_5a5a_a5a5_5a5a) as i32);
+                sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xa5a5_5a5a_a5a5_5a5a) as u32));
             let decisions = run_one(&mut state, &mut action_rng);
 
             let entry = stats.get_mut(label).expect("encounter pre-inserted");

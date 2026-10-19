@@ -386,7 +386,7 @@ fn make_row(
 
     // Ascension (implemented A0–A10) — widens the difficulty distribution.
     let ascension = *rng.pick(ascensions);
-    let mut rm = new_run_manager_for_character_with_ascension(seed as i32, character, ascension)
+    let mut rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension)
         .with_neow_start();
     initialize_run_setup(&mut rm);
 
@@ -748,7 +748,7 @@ fn harvest_realistic_range(
         // thousand runs this guarantees an even spread across cells, which a
         // per-seed random draw would only approach.
         let ascension = ascensions[(seeds_driven as usize) % ascensions.len()];
-        let mut rm = new_run_manager_for_character_with_ascension(seed, character, ascension)
+        let mut rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension)
             .with_neow_start();
         initialize_run_setup(&mut rm);
 

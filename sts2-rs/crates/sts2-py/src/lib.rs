@@ -131,8 +131,8 @@ pub(crate) fn emit_err(e: sts2_wire::emit::EmitError) -> PyErr {
 
 pub fn build_seeded_state(seed: u64, ascension: u8) -> CoreCombatState {
     CoreCombatState {
-        rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
-        run_rng: sts2_core::run_rng_set::RunRngSet::new((seed) as i32),
+        rng: sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         ascension,
         master_deck: Vec::new(),
         last_added_card: None,
@@ -256,8 +256,8 @@ fn build_encounter_state(
         deferred_draw_order: false,
     };
 
-    let rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
-    let mut run_rng = sts2_core::run_rng_set::RunRngSet::new(seed as i32);
+    let rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
+    let mut run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32));
     let mut creatures = Vec::new();
     let mut enemy_uids: SmallVec<[CreatureUid; 8]> = SmallVec::new();
     let mut taken_hp: HashSet<i32> = HashSet::new();
@@ -2788,7 +2788,9 @@ fn build_info(py: Python<'_>) -> PyResult<PyObject> {
     Ok(d.into())
 }
 
-/// Port of C# `StringHelper.GetDeterministicHashCode`.
+/// Port of the **legacy 32-bit** C# `StringHelper.GetDeterministicHashCode`
+/// (v0.107.1; v0.111.0 keeps it as `GetDeterministicHashCodeOld`). The current
+/// seed hash is [`xxhash64_utf8`]; this one only matters for `old` seeds.
 ///
 /// Exposed to Python so the parity-fuzz harness can derive the same
 /// uint seed that C# `RunRngSet(stringSeed)` uses internally
@@ -2797,6 +2799,27 @@ fn build_info(py: Python<'_>) -> PyResult<PyObject> {
 #[pyfunction]
 fn deterministic_hash_code(text: &str) -> i32 {
     sts2_core::deterministic_hash_code_old(text)
+}
+
+/// v0.111.0 `StringHelper.GetDeterministicHashCode`: `XxHash64(UTF-8, seed 0)`
+/// as an unsigned 64-bit integer.
+#[pyfunction]
+fn xxhash64_utf8(text: &str) -> u64 {
+    sts2_core::xxhash64_utf8(text)
+}
+
+/// Seed bases of a seed string (v0.111.0): `{"run_seed", "player_seed",
+/// "full_hash", "prefix"}` as Python ints/str. The lowercase `old` prefix is
+/// tested before normalization; see `sts2_core::seed_bases`.
+#[pyfunction]
+fn seed_bases<'py>(py: Python<'py>, raw: &str) -> PyResult<Bound<'py, PyDict>> {
+    let b = sts2_core::seed_bases(raw);
+    let d = PyDict::new(py);
+    d.set_item("run_seed", b.run_seed)?;
+    d.set_item("player_seed", b.player_seed)?;
+    d.set_item("full_hash", b.full_hash)?;
+    d.set_item("prefix", b.prefix)?;
+    Ok(d)
 }
 
 /// Roll the run's act list from a display seed — the port of C#
@@ -2859,7 +2882,7 @@ fn rollouts(state: &PyCombatState, n: u64) -> PyResult<PyObject> {
 
     for offset in 0..n {
         let mut s = state.inner.clone();
-        s.rng = sts2_core::dotnet_rng::Rng::new(state.seed.wrapping_add(offset) as i32);
+        s.rng = sts2_core::dotnet_rng::Rng::new(u64::from((state.seed.wrapping_add(offset)) as u32));
         let (won, turns) = run_playout(&mut s);
         if won {
             wins += 1;
@@ -3350,6 +3373,8 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(recompute_src_hash, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(deterministic_hash_code, m)?)?;
+    m.add_function(wrap_pyfunction!(xxhash64_utf8, m)?)?;
+    m.add_function(wrap_pyfunction!(seed_bases, m)?)?;
     m.add_function(wrap_pyfunction!(roll_acts, m)?)?;
     m.add_function(wrap_pyfunction!(rollouts, m)?)?;
     m.add_function(wrap_pyfunction!(mcts_play_to_terminal, m)?)?;
@@ -3863,7 +3888,7 @@ kind = "NIBBIT"
             let st = base.clone();
 
             let mut passive = st.clone();
-            passive.rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+            passive.rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
             if run_playout(&mut passive).0 {
                 passive_wins += 1;
             }

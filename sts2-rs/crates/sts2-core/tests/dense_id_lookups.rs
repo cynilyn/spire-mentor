@@ -179,7 +179,7 @@ fn fight(
     let mut rs = RunState {
         current_hp: 80,
         max_hp: 80,
-        rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+        rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
         character_id: character,
         ..RunState::default()
     };

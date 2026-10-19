@@ -31,7 +31,7 @@ use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind};
 
 fn fresh_state_with_enemy(hp: i32) -> (CombatState, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     // Bead `sts2-rs-hdy`: seed a non-zero player HP so handlers that

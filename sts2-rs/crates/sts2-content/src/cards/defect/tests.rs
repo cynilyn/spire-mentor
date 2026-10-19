@@ -33,7 +33,7 @@ use sts2_core::{Creature, IntentHistory, MonsterId, MonsterKind};
 
 fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatState, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     // Alive player -- a dead one trips the C# IsOverOrEnding select guard
@@ -144,7 +144,7 @@ fn dh30e_chaos_random_pool_includes_glass_orb() {
     let mut seen = std::collections::HashSet::new();
     for seed in 0..200_i32 {
         let (mut state, _e) = fresh_state(CardId::Chaos, 0, 0);
-        state.run_rng.combat_orbs = sts2_core::dotnet_rng::Rng::with_name(seed, "combat_orbs");
+        state.run_rng.combat_orbs = sts2_core::dotnet_rng::Rng::with_name(u64::from(seed as u32), "combat_orbs");
         let f = lookup(CardId::Chaos).expect("registered");
         let _ = f(&mut state, None);
         for orb in &state.player.orbs.slots {

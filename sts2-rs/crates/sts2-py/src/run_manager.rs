@@ -19,8 +19,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
 use sts2_content::run_callbacks::{
-    new_ironclad_run_manager_with_deck_and_hp, new_run_manager_for_character,
-    new_run_manager_for_character_from_string_seed, new_run_manager_for_character_with_ascension,
+    new_ironclad_run_manager_with_deck_and_hp,
+    new_ironclad_run_manager_with_deck_and_hp_from_string_seed, new_run_manager_for_character,
+    new_run_manager_for_character_from_string_seed_with_ascension,
+    new_run_manager_for_character_with_ascension,
 };
 use sts2_core::act_selection::ActVariant;
 use sts2_core::cards::CardId;
@@ -109,7 +111,7 @@ fn act_map_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObject
 #[derive(Clone, Debug)]
 pub struct PyRunManager {
     pub(crate) inner: RunManager,
-    seed: i32,
+    seed: u64,
     /// When `true`, the live combat records its card play-log (workbench event
     /// log). Default false; only the workbench enables it. Propagated onto the
     /// live `CombatState` so it survives combat-start resets of `TurnEvents`.
@@ -154,7 +156,7 @@ impl PyRunManager {
     // allowed here alongside too-many-arguments.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     fn new(
-        seed: i32,
+        seed: u64,
         character: &str,
         deck: Option<Vec<String>>,
         max_hp: Option<i32>,
@@ -181,10 +183,7 @@ impl PyRunManager {
         // as emitted by scraped .run files. We canonicalise + hash to the
         // same i32 the C# game uses, ignoring any explicit `seed` arg.
         let effective_seed = match string_seed {
-            Some(s) => {
-                let canonical = sts2_core::canonicalize_seed(s);
-                sts2_core::deterministic_hash_code_old(&canonical)
-            }
+            Some(s) => sts2_core::seed_bases(s).run_seed,
             None => seed,
         };
         let inner = match deck {
@@ -193,17 +192,18 @@ impl PyRunManager {
                 // factory so A3 gold, A4 potion-slot, A5 AscendersBane,
                 // A7 Scarcity (etc.) are applied. String-seed canonicalisation
                 // is preserved by passing the already-hashed `effective_seed`.
-                let mut rm = if ascension_level > 0 {
-                    new_run_manager_for_character_with_ascension(
+                let mut rm = match string_seed {
+                    Some(s) => new_run_manager_for_character_from_string_seed_with_ascension(
+                        s,
+                        cid,
+                        ascension_level,
+                    ),
+                    None if ascension_level > 0 => new_run_manager_for_character_with_ascension(
                         effective_seed,
                         cid,
                         ascension_level,
-                    )
-                } else {
-                    match string_seed {
-                        Some(s) => new_run_manager_for_character_from_string_seed(s, cid),
-                        None => new_run_manager_for_character(effective_seed, cid),
-                    }
+                    ),
+                    None => new_run_manager_for_character(effective_seed, cid),
                 };
                 if let Some(hp) = max_hp {
                     rm.run_state.max_hp = hp;
@@ -230,7 +230,12 @@ impl PyRunManager {
                     .iter()
                     .map(|s| card_id_from_str(s))
                     .collect::<PyResult<Vec<_>>>()?;
-                new_ironclad_run_manager_with_deck_and_hp(effective_seed, cards, max_hp)
+                match string_seed {
+                    Some(s) => new_ironclad_run_manager_with_deck_and_hp_from_string_seed(
+                        s, cards, max_hp,
+                    ),
+                    None => new_ironclad_run_manager_with_deck_and_hp(effective_seed, cards, max_hp),
+                }
             }
         };
         // Bead `sts2-rs-g24zv`: opt-in Neow-start. When `neow_start=True`,
@@ -303,22 +308,29 @@ impl PyRunManager {
     }
 
     #[getter]
-    fn seed(&self) -> i32 {
+    fn seed(&self) -> u64 {
         self.seed
     }
 
-    /// The run's own hashed master seed, as `u32` — the value every RNG
-    /// stream salts from, and the one the wire spells `$.rng.run_seed`
-    /// (C# `RunRngSet.Seed` is a uint).
+    /// The run base seed, as `u64` (v0.111.0 `RunRngSet.Seed`) — the value
+    /// every run-scoped RNG stream salts from, and the one the wire spells
+    /// `$.rng.run_seed`.
     ///
-    /// Distinct from [`Self::seed`], which is the pre-hash i32 this binding
-    /// was constructed with; for a `string_seed` run the two differ and only
-    /// this one lines up with a producer's `run_seed`. Read it from the run
-    /// rather than re-deriving it from the text seed — canonicalisation alone
-    /// is enough to make a second derivation disagree.
+    /// For a `string_seed` run this is `XxHash64(canonical string)` (or the
+    /// legacy 32-bit hash of the rest for lowercase `old` seeds). Read it from
+    /// the run rather than re-deriving it from the text seed —
+    /// canonicalisation alone is enough to make a second derivation disagree.
     #[getter]
-    fn run_seed(&self) -> u32 {
+    fn run_seed(&self) -> u64 {
         emit_rm::run_seed(&self.inner)
+    }
+
+    /// The player stream base, as `u64` (`H(full seed string) + slot 0`), the
+    /// wire's `$.rng.player_seed`. Equal to [`Self::run_seed`] except for
+    /// `old`-prefixed seed strings.
+    #[getter]
+    fn player_seed(&self) -> u64 {
+        emit_rm::player_seed(&self.inner)
     }
 
     /// Which Act-1 model this run ACTUALLY walks (GH #544): `"overgrowth"` or
@@ -621,7 +633,7 @@ impl PyRunManager {
     /// not belong to this run.
     fn debug_set_rng_counters(
         &mut self,
-        run_seed: i64,
+        run_seed: u64,
         counters: &Bound<'_, PyDict>,
     ) -> PyResult<Vec<String>> {
         if counters.is_empty() {
@@ -631,9 +643,7 @@ impl PyRunManager {
                  more lineage than it restores. Pass the whole block or none.",
             ));
         }
-        let ours = i64::from(u32::from_ne_bytes(
-            self.inner.run_state.rng.seed.to_ne_bytes(),
-        ));
+        let ours = self.inner.run_state.rng.seed;
         if run_seed != ours {
             return Err(PyValueError::new_err(format!(
                 "debug_set_rng_counters: run_seed {run_seed} is not this run's \
@@ -1339,7 +1349,7 @@ impl PyRunManager {
     /// into `RunAction` dicts.
     fn combat_state(&self) -> Option<crate::PyCombatState> {
         self.inner.combat.as_ref().map(|c| {
-            let seed_u64 = u64::from(u32::from_ne_bytes(self.seed.to_ne_bytes()));
+            let seed_u64 = self.seed;
             crate::PyCombatState::from_inner(c.clone(), seed_u64)
         })
     }
@@ -1743,7 +1753,7 @@ impl PyRunManager {
         use rand::seq::SliceRandom;
         use rand::SeedableRng;
         use rand_xoshiro::Xoshiro256PlusPlus;
-        let seed_u64 = u64::from(u32::from_ne_bytes(self.seed.to_ne_bytes()));
+        let seed_u64 = self.seed;
         let mut rng: Xoshiro256PlusPlus = match policy_seed {
             Some(s) => Xoshiro256PlusPlus::seed_from_u64(s),
             None => Xoshiro256PlusPlus::seed_from_u64(seed_u64 ^ 0xA5A5_A5A5_DEAD_BEEF),
@@ -1810,10 +1820,10 @@ impl PyRunManager {
     /// This is the Monte-Carlo lever the card-pick advisor pulls between
     /// rollouts: clone the run, reseed, then play the rest of the act out, so
     /// each rollout samples a different plausible future from the same
-    /// decision point. Mirrors the in-test `run_state.rng = RunRngSet::new(s)`
+    /// decision point. Mirrors the in-test `run_state.rng = RunRngSet::from_run_seed(s)`
     /// idiom (a documented, safe whole-set swap).
-    fn reseed_run(&mut self, seed: i32) {
-        self.inner.run_state.rng = sts2_core::RunRngSet::new(seed);
+    fn reseed_run(&mut self, seed: u64) {
+        self.inner.run_state.rng = sts2_core::RunRngSet::from_run_seed(seed);
     }
 
     fn __repr__(&self) -> String {

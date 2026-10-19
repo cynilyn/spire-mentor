@@ -44,7 +44,7 @@ impl CombatSurrogate for Stub {
 /// mirroring `planning_full_run.rs::build_run` verbatim.
 fn build_run(seed: i32) -> RunManager {
     sts2_runai::rollout::ensure_content_installed();
-    let mut rm = new_run_manager_for_character_with_ascension(seed, CharacterId::Ironclad, 0)
+    let mut rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), CharacterId::Ironclad, 0)
         .with_neow_start();
     initialize_run_setup(&mut rm);
     rm

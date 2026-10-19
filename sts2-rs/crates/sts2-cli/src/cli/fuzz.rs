@@ -145,7 +145,7 @@ struct Cell {
 /// Run one `(seed, character)` cell, catching any panic.
 fn run_cell(seed: i32, character: CharacterId, cfg: &FullRunConfig) -> Cell {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let mut rm = new_run_manager_for_character(seed, character);
+        let mut rm = new_run_manager_for_character(u64::from(seed as u32), character);
         // NOTE: ascension is identity at this pin (CLAUDE.md); the run
         // manager is built at A0. An ascension-aware constructor can be
         // threaded here once the run-side scaling lands.

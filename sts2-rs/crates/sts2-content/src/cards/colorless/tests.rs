@@ -33,7 +33,7 @@ use sts2_core::{Creature, IntentHistory, MonsterId, MonsterKind};
 
 fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatState, CreatureUid) {
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     // Alive player -- a dead one trips the C# IsOverOrEnding select guard
@@ -2320,7 +2320,7 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
     use sts2_core::card_effects::apply_power_to_creature;
     crate::cards::dispatch::ensure_installed();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     add_player_creature(&mut state);
@@ -2363,7 +2363,7 @@ fn orange_dough_generates_two_distinct_colorless_into_hand_via_card_generation()
     crate::cards::dispatch::install_default_registry();
     sts2_core::relic_effects::install_default_registry();
     let mut state = CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     add_player_creature(&mut state);
@@ -5772,7 +5772,7 @@ fn play_actions_for_hand_card(state: &sts2_core::CombatState) -> Vec<Option<u8>>
 fn state_with_spec_mad_science_in_hand() -> sts2_core::CombatState {
     use sts2_core::{CardUid, CombatPhase, CreatureUid};
     let mut state = sts2_core::CombatState {
-        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        rng: sts2_core::dotnet_rng::Rng::new(0),
         ..Default::default()
     };
     state.player.current_hp = 80;

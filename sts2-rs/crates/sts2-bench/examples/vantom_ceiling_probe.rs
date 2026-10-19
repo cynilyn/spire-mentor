@@ -316,7 +316,7 @@ fn load_sts2log_perfect_pool(dir: &Path) -> Result<Vec<Vec<CardSpec>>, String> {
 }
 
 fn random_full_pool_deck(seed: u64, size: usize) -> Vec<CardSpec> {
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from((seed ^ 0xDEC0_DEC0_DEC0_DEC0) as u32));
     (0..size)
         .map(|_| {
             let idx = rng.next_int_exclusive(0, IRONCLAD_SPECS.len() as i32) as usize;

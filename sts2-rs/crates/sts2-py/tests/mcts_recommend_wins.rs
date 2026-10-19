@@ -100,7 +100,7 @@ fn random_rollouts_can_kill_5hp_shrinker_beetle() {
         for seed in 0_u64..n {
             let mut s = state.clone();
             // Re-seed for determinism per trial.
-            s.rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+            s.rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
             let mut depth = 0u32;
             while !is_terminal(&s) && depth < 200 {
                 let acts = sts2_core::legal_actions(&s);

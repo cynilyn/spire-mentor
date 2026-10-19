@@ -114,7 +114,7 @@ fn state_with_draw_tail(
     };
     let mut state = CombatState {
         rng: sts2_core::dotnet_rng::Rng::new(7),
-        run_rng: sts2_core::run_rng_set::RunRngSet::new(7),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(7),
         creatures,
         cards,
         relics: relics.into(),

@@ -77,7 +77,7 @@ fn dotnet_rng_sequences_match_python() {
         .expect("rng_sequences not object");
     for (seed_str, expected_val) in sequences {
         let seed: i64 = seed_str.parse().expect("seed key not int-parsable");
-        let mut rng = Rng::new(seed as i32);
+        let mut rng = Rng::new(u64::from(seed as u32));
         let expected: Vec<i64> = expected_val
             .as_array()
             .expect("sequence not array")
@@ -132,7 +132,7 @@ fn standard_act_map_matches_csharp_snapshot() {
             .get("map_length")
             .and_then(Value::as_i64)
             .expect("map_length missing");
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::new(u64::from(seed as u32));
         let act = generate_act_map(15, &mut rng, 0, false, 0, None);
         assert_eq!(
             i64::from(act.map_length),

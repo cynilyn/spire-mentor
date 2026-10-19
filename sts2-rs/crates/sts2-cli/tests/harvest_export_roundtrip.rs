@@ -30,7 +30,7 @@ fn round_trips_potions_ascension_and_monsters() {
     let seed = 42i64 as i32;
 
     let mut rm =
-        new_run_manager_for_character_with_ascension(seed, CharacterId::Ironclad, ascension);
+        new_run_manager_for_character_with_ascension(u64::from(seed as u32), CharacterId::Ironclad, ascension);
     rm.run_state.current_hp = 55;
     rm.run_state.potions = vec![PotionKind::FirePotion, PotionKind::BlockPotion];
     rm.combat = Some(build_starter_state_from_monsters_with_ascension(

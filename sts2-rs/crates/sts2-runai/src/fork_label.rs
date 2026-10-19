@@ -205,7 +205,7 @@ mod tests {
         crate::rollout::ensure_content_installed();
         let mut rm: RunManager =
             sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(
-                seed,
+                u64::from(seed as u32),
                 sts2_core::potions::CharacterId::Ironclad,
                 0,
             )

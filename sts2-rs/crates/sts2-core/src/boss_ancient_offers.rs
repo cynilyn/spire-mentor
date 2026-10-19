@@ -81,7 +81,7 @@ fn next_item(rng: &mut Rng, lst: &[RelicId]) -> RelicId {
 /// `sts2-rs-ms8mm`). Mirrors
 /// [`crate::runstate::RunState::roll_neow_offers_if_needed`].
 #[must_use]
-pub fn event_rng(master_seed: i32, ancient: AncientId) -> Rng {
+pub fn event_rng(master_seed: u64, ancient: AncientId) -> Rng {
     Rng::with_name(master_seed, ancient.entry())
 }
 
@@ -520,7 +520,7 @@ mod tests {
         let mut fails = 0;
         for (seed, ancient, expected) in cases {
             let master = crate::deterministic_hash_code_old(&crate::canonicalize_seed(seed));
-            let mut rng = event_rng(master, *ancient);
+            let mut rng = event_rng(u64::from(master as u32), *ancient);
             let got: Vec<String> = roll_offers(*ancient, &mut rng, &c)
                 .iter()
                 .map(|r| r.to_python_name().to_string())
@@ -556,7 +556,7 @@ mod tests {
         let c = cond();
         for a in ancients {
             for seed in 0..64i32 {
-                let mut rng = event_rng(seed.wrapping_mul(2_654_435_761u32 as i32), a);
+                let mut rng = event_rng(u64::from((seed.wrapping_mul(2_654_435_761u32 as i32)) as u32), a);
                 let offers = roll_offers(a, &mut rng, &c);
                 assert_eq!(offers.len(), 3, "{a:?} offered {} relics", offers.len());
                 assert!(
@@ -605,7 +605,7 @@ mod tests {
             RelicId::NutritiousSoup,
         ];
         for seed in 0..128i32 {
-            let mut rng = event_rng(seed, AncientId::Tezcatara);
+            let mut rng = event_rng(u64::from(seed as u32), AncientId::Tezcatara);
             let o = roll_tezcatara(&mut rng, &c);
             assert!(pool1_no.contains(&o[0]));
             assert!(pool2.contains(&o[1]));
@@ -613,7 +613,7 @@ mod tests {
         }
         c.tezcatara_basic_strike = true;
         for seed in 0..128i32 {
-            let mut rng = event_rng(seed, AncientId::Tezcatara);
+            let mut rng = event_rng(u64::from(seed as u32), AncientId::Tezcatara);
             let o = roll_tezcatara(&mut rng, &c);
             assert!(pool1_yes.contains(&o[0]));
             assert!(pool2.contains(&o[1]));
@@ -628,7 +628,7 @@ mod tests {
         c.instinct_eligible_count = 0;
         let mut saw_no = false;
         for seed in 0..256i32 {
-            let mut rng = event_rng(seed, AncientId::Tanx);
+            let mut rng = event_rng(u64::from(seed as u32), AncientId::Tanx);
             if roll_tanx(&mut rng, &c).contains(&RelicId::TriBoomerang) {
                 saw_no = true;
             }
@@ -638,7 +638,7 @@ mod tests {
         c.instinct_eligible_count = 3;
         let mut saw_yes = false;
         for seed in 0..256i32 {
-            let mut rng = event_rng(seed, AncientId::Tanx);
+            let mut rng = event_rng(u64::from(seed as u32), AncientId::Tanx);
             if roll_tanx(&mut rng, &c).contains(&RelicId::TriBoomerang) {
                 saw_yes = true;
                 break;
@@ -658,9 +658,9 @@ mod tests {
         let mut act2_seen = std::collections::HashSet::new();
         let mut act3_seen = std::collections::HashSet::new();
         for seed in 0..512i32 {
-            let mut r2 = event_rng(seed, AncientId::Darv);
+            let mut r2 = event_rng(u64::from(seed as u32), AncientId::Darv);
             act2_seen.extend(roll_darv(&mut r2, &c2));
-            let mut r3 = event_rng(seed, AncientId::Darv);
+            let mut r3 = event_rng(u64::from(seed as u32), AncientId::Darv);
             act3_seen.extend(roll_darv(&mut r3, &c3));
         }
         assert!(act2_seen.contains(&RelicId::Sozu) || act2_seen.contains(&RelicId::Ectoplasm));

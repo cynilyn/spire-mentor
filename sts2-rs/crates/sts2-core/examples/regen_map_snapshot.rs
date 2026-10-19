@@ -39,7 +39,7 @@ fn point_type_name(t: MapPointType) -> &'static str {
 }
 
 fn dump_map(seed: i32) -> serde_json::Value {
-    let mut rng = Rng::new(seed);
+    let mut rng = Rng::new(u64::from(seed as u32));
     let map = generate_act_map(15, &mut rng, 0, false, 0, None);
 
     // Sort points by (col, row) so the dump is canonical and stable.

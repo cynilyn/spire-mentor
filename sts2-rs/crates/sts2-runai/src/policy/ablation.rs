@@ -227,7 +227,7 @@ mod tests {
         let seed = 12345;
         let mut base = HeuristicPolicy::new();
         let mut wrapped = AblationPolicy::new(HeuristicPolicy::new(), Vec::new(), seed);
-        let rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+        let rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
         let actions = rm.get_available_actions();
         if !actions.is_empty() {
             assert_eq!(

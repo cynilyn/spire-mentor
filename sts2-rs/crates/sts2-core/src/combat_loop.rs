@@ -9841,7 +9841,7 @@ mod tests {
     /// roll-intent step is observable. RNG is seeded for determinism.
     fn state_with_cultists(n: u32) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         // A combat fixture must have a LIVING player: `CombatState::default`
@@ -10389,7 +10389,7 @@ mod tests {
         use crate::{Power, PowerKind};
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
 
@@ -10746,7 +10746,7 @@ mod tests {
     #[test]
     fn start_combat_clears_enemy_spawn_block() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let uid = state.spawn_enemy(MonsterKind::CubexConstruct);
@@ -10824,7 +10824,7 @@ mod tests {
     fn start_combat_is_deterministic_given_seed() {
         fn build(seed: u64) -> CombatState {
             let mut state = CombatState {
-                rng: crate::dotnet_rng::Rng::new((seed) as i32),
+                rng: crate::dotnet_rng::Rng::new(u64::from(seed as i32 as u32)),
                 ..Default::default()
             };
             let id = NonZeroU32::new(1).expect("non-zero");
@@ -10864,12 +10864,12 @@ mod tests {
         use crate::CardUid;
         fn build_with_deck(seed: u64) -> CombatState {
             let mut state = CombatState {
-                rng: crate::dotnet_rng::Rng::new(seed as i32),
+                rng: crate::dotnet_rng::Rng::new(u64::from(seed as u32)),
                 // Bead `sts2-rs-943w7`: shuffle is now driven by
                 // `state.run_rng.shuffle`, so the seed must thread through
-                // here too — otherwise both seeds reuse `RunRngSet::new(0)`
+                // here too — otherwise both seeds reuse `RunRngSet::from_run_seed(0)`
                 // and produce identical shuffles, breaking this test.
-                run_rng: crate::run_rng_set::RunRngSet::new(seed as i32),
+                run_rng: crate::run_rng_set::RunRngSet::from_run_seed(u64::from(seed as u32)),
                 ..Default::default()
             };
             // 20-card deck of distinct CardUids in canonical order.
@@ -11027,7 +11027,7 @@ mod tests {
     /// pops index 0).
     fn state_for_turn_start(round: u16, draw_n: u32) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -11125,7 +11125,7 @@ mod tests {
         use crate::powers::PowerKind;
         use crate::{Power, PowerUid};
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.round = 2;
@@ -11198,7 +11198,7 @@ mod tests {
     #[test]
     fn turn_start_rolling_boulder_hits_all_enemies_and_ramps() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -11263,7 +11263,7 @@ mod tests {
     #[test]
     fn turn_start_rolling_boulder_precedes_rampart_block() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -11355,7 +11355,7 @@ mod tests {
         crate::card_effects::ensure_installed();
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -11461,7 +11461,7 @@ mod tests {
     #[test]
     fn turn_start_inferno_self_damage_and_retaliation_fire_in_cluster() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -11706,7 +11706,7 @@ mod tests {
     fn turn_start_mercury_hourglass_precedes_rampart_block() {
         crate::relic_effects::install_default_registry();
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -11794,7 +11794,7 @@ mod tests {
     fn turn_start_festive_popper_precedes_rampart_block() {
         crate::relic_effects::install_default_registry();
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerTurnStart;
@@ -12290,7 +12290,7 @@ mod tests {
     /// the exact shape the physical-top consumers pop from.
     fn state_with_pinned_top_card(top_id: crate::cards::CardId) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.player.deferred_draw_order = true;
@@ -12556,7 +12556,7 @@ mod tests {
     /// pile order.
     fn state_for_end_turn_phase_one(hand_n: u32) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerPlayPhase;
@@ -13056,7 +13056,7 @@ mod tests {
     #[test]
     fn end_turn_phase_two_keeps_retain_keyword_card_in_hand() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -13107,7 +13107,7 @@ mod tests {
         use std::num::NonZeroU32;
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -13294,7 +13294,7 @@ mod tests {
         entries: &[(crate::cards::CardId, bool)],
     ) -> (CombatState, Vec<CardUid>) {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -13453,7 +13453,7 @@ mod tests {
     /// seeded for determinism.
     fn state_for_enemy_turn_start(n: u32) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::EnemyTurnStart;
@@ -13700,7 +13700,7 @@ mod tests {
     /// at full HP / no block / no powers. RNG seeded for determinism.
     fn state_for_enemy_turn_exec(n: u32, kind: MonsterKind, intent: Intent) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::EnemyTurnExec;
@@ -14590,7 +14590,7 @@ mod tests {
         }
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::EnemyTurnExec;
@@ -14654,7 +14654,7 @@ mod tests {
         assert_eq!(ai.move_history().len(), 0);
 
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::EnemyTurnExec;
@@ -15082,7 +15082,7 @@ mod tests {
     /// determinism.
     fn state_for_enemy_turn_end() -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::EnemyTurnEnd;
@@ -15909,7 +15909,7 @@ mod tests {
     #[test]
     fn end_turn_dispatch_walks_full_player_to_player_chain() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerPlayPhase;
@@ -15966,7 +15966,7 @@ mod tests {
     #[serial_test::serial(global_registry)]
     fn end_turn_dispatch_short_circuits_on_combat_lost() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerPlayPhase;
@@ -16011,7 +16011,7 @@ mod tests {
     #[test]
     fn end_turn_dispatch_short_circuits_when_combat_already_resolved() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerPlayPhase;
@@ -16034,7 +16034,7 @@ mod tests {
     /// Attack(6)) won't kill them mid-test.
     fn cultist_at_enemy_turn_exec(initial_intent: Intent) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             phase: CombatPhase::EnemyTurnExec,
             round: 1,
             ..Default::default()
@@ -18129,7 +18129,7 @@ mod tests {
     /// (required by `apply_damage_to_player` + `apply_power_to_creature`).
     fn state_with_curse_in_hand(curse: CardId) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -18360,7 +18360,7 @@ mod tests {
     #[test]
     fn turn_end_regret_uses_hand_snapshot() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -18391,7 +18391,7 @@ mod tests {
     #[test]
     fn turn_end_regret_snapshot_is_pre_loop() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -18420,7 +18420,7 @@ mod tests {
     #[test]
     fn turn_end_filter_skips_non_curses() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         state.phase = CombatPhase::PlayerEndTurnPhaseOne;
@@ -19704,7 +19704,7 @@ mod tests {
         //                 because we exclude the dead uid itself even
         //                 when its AI has a listener)
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         let mk = |id_u32: u32, hp: i32, ai: Option<MonsterAi>| Creature {
@@ -19748,7 +19748,7 @@ mod tests {
     #[test]
     fn after_death_dispatch_noop_on_empty_carrier() {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0_i32),
+            rng: crate::dotnet_rng::Rng::new(0),
             ..Default::default()
         };
         assert!(state.combat_log.newly_dead_this_turn.is_empty());

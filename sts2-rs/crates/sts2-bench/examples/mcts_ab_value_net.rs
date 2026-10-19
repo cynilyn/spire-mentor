@@ -79,7 +79,7 @@ fn advance_n_turns(state: &mut CombatState, n: u32, seed: u64) -> bool {
     if n == 0 {
         return !is_terminal(state);
     }
-    let mut rng = sts2_core::dotnet_rng::Rng::new((seed) as i32);
+    let mut rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as i32 as u32));
     let mut turns_advanced = 0u32;
     let hard_step_cap = 10_000u64;
     let mut step_index = 0u64;

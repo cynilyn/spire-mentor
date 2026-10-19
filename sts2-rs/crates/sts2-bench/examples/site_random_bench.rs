@@ -30,7 +30,7 @@
 //! built from its roster position and the roster's spawn args, and HP is
 //! rolled with `roll_unique_max_hps` (C# `SetUniqueMonsterHpValue`: no two
 //! enemies share an HP value when the ranges allow it) off the combat's own
-//! `RunRngSet.niche`. Given the same roster and `RunRngSet::new(seed)`, the
+//! `RunRngSet.niche`. Given the same roster and `RunRngSet::from_run_seed(seed)`, the
 //! start state equals `enter_combat_from_roster`'s in every monster field
 //! (kind, slot, HP, block, powers, AI state, opening intent), in the RNG
 //! cursors and in the opening hand and draw pile (checked on all 22
@@ -149,7 +149,7 @@ fn start_state(
     list: &[&'static str],
     legacy_spawn: bool,
 ) -> CombatState {
-    let mut enc_rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+    let mut enc_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
     // Resolving by UPPER_SNAKE id goes through the same `specs_from_encounter_def`
     // (with the rng, so randomized rosters roll) as the `random-act1` draw.
     let name = if round_robin {

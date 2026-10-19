@@ -1668,18 +1668,11 @@ pub fn build_run_manager(
     act1: &str,
 ) -> Result<RunManager, GameError> {
     use sts2_content::run_callbacks::{
-        initialize_run_setup, new_run_manager_for_character_from_string_seed,
-        new_run_manager_for_character_with_ascension,
+        initialize_run_setup, new_run_manager_for_character_from_string_seed_with_ascension,
     };
     use sts2_core::act_selection::ActVariant;
     ensure_content_installed();
-    let canonical = sts2_core::canonicalize_seed(seed);
-    let effective_seed = sts2_core::deterministic_hash_code_old(&canonical);
-    let rm = if ascension > 0 {
-        new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
-    } else {
-        new_run_manager_for_character_from_string_seed(seed, cid)
-    };
+    let rm = new_run_manager_for_character_from_string_seed_with_ascension(seed, cid, ascension);
     let mut rm = rm.with_neow_start();
     // Present on-obtain card removals / upgrades / transforms as player
     // card_selects, matching C#; grant the chosen Neow relic directly.
@@ -1717,17 +1710,10 @@ pub fn build_run_manager(
 /// match the live run. Mirrors `RustGame.start_imported`'s `RunManager(...)`.
 fn build_import_run_manager(cid: CharacterId, seed: &str, ascension: u8) -> RunManager {
     use sts2_content::run_callbacks::{
-        initialize_run_setup, new_run_manager_for_character_from_string_seed,
-        new_run_manager_for_character_with_ascension,
+        initialize_run_setup, new_run_manager_for_character_from_string_seed_with_ascension,
     };
     ensure_content_installed();
-    let canonical = sts2_core::canonicalize_seed(seed);
-    let effective_seed = sts2_core::deterministic_hash_code_old(&canonical);
-    let rm = if ascension > 0 {
-        new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
-    } else {
-        new_run_manager_for_character_from_string_seed(seed, cid)
-    };
+    let rm = new_run_manager_for_character_from_string_seed_with_ascension(seed, cid, ascension);
     // No `with_neow_start`: not a fresh run.
     let mut rm = rm;
     rm.run_state.interactive_card_removal = true;
@@ -1813,9 +1799,9 @@ fn graft_set_potions(rm: &mut RunManager, potions: &[String]) {
 /// engine does not carry (run-level only — combat streams live on a
 /// `CombatState` and are the combat import's business).
 fn graft_rng(rm: &mut RunManager, rng: &crate::state_import::RngBlock) -> Vec<String> {
-    // The wire's `run_seed` is the u32 reinterpretation of the i32 run seed
-    // (same contract as the Python restore).
-    let ours = i64::from(u32::from_ne_bytes(rm.run_state.rng.seed.to_ne_bytes()));
+    // The wire's `run_seed` is the u64 run base (same contract as the Python
+    // restore).
+    let ours = rm.run_state.rng.seed;
     if rng.run_seed != ours {
         return vec![format!(
             "RNG cursors not restored — run_seed {} is not this run's seed ({ours}); \
@@ -1941,9 +1927,9 @@ pub fn build_faithful_run_manager(cid: CharacterId, seed: i32, ascension: u8) ->
     use sts2_core::act_selection::ActVariant;
     ensure_content_installed();
     let rm = if ascension > 0 {
-        new_run_manager_for_character_with_ascension(seed, cid, ascension)
+        new_run_manager_for_character_with_ascension(u64::from(seed as u32), cid, ascension)
     } else {
-        new_run_manager_for_character(seed, cid)
+        new_run_manager_for_character(u64::from(seed as u32), cid)
     };
     let mut rm = rm.with_neow_start();
     rm.run_state.interactive_card_removal = true;
@@ -2066,7 +2052,7 @@ mod tests {
     fn start_imported_restores_the_rng_cursors() {
         let source = build_import_run_manager(CharacterId::Ironclad, "TESTSEED42", 0);
         let (map, _c, _r) = map_block_from(&source, false);
-        let seed_wire = i64::from(u32::from_ne_bytes(source.run_state.rng.seed.to_ne_bytes()));
+        let seed_wire = source.run_state.rng.seed;
         let rng = json!({"run_seed": seed_wire, "counters": {"shops": 2, "rewards": 1}});
         let wire = import_wire(rng, map);
         let imported = parse_pasted_state(&wire.to_string()).expect("parse");

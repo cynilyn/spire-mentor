@@ -268,7 +268,7 @@ pub(crate) mod tests {
     pub(crate) fn fresh_ironclad_run(seed: i32) -> RunManager {
         crate::rollout::ensure_content_installed();
         let mut rm = sts2_content::run_callbacks::new_run_manager_for_character_with_ascension(
-            seed,
+            u64::from(seed as u32),
             sts2_core::potions::CharacterId::Ironclad,
             0,
         )

@@ -728,7 +728,7 @@ fn blood_potion_clamps_at_max_hp() {
 fn fresh_state_for_character(character: sts2_core::potions::CharacterId) -> CombatState {
     let mut state = fresh_state_with_player(50, 50);
     state.player.character = Some(character);
-    state.rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+    state.rng = sts2_core::dotnet_rng::Rng::new(0);
     // The AddGeneratedFreeToHand resolver materialises the chosen
     // card via the registered card factory; register it so the
     // choose-a-card potion tests can resolve their pending choice.
@@ -1409,7 +1409,7 @@ fn snecko_oil_draws_seven_and_randomizes_hand_costs() {
     use sts2_core::cards::Card;
     ensure_installed();
     let mut state = fresh_state_with_player(50, 50);
-    state.rng = sts2_core::dotnet_rng::Rng::new(7_i32);
+    state.rng = sts2_core::dotnet_rng::Rng::new(7);
     // Seed draw pile with 7 sentinel cards (cost = 5) so we can
     // observe both the draw step and the cost randomization step.
     for raw in 1..=7u32 {
@@ -1446,7 +1446,7 @@ fn snecko_oil_preserves_x_cost_sentinel() {
     use sts2_core::cards::Card;
     ensure_installed();
     let mut state = fresh_state_with_player(50, 50);
-    state.rng = sts2_core::dotnet_rng::Rng::new(0_i32);
+    state.rng = sts2_core::dotnet_rng::Rng::new(0);
     // Seed an X-cost (cost = -1) card directly in hand. Python
     // pin's `if card.cost >= 0` guard preserves it.
     let mut card = Card::pod_defaults();
@@ -1475,7 +1475,7 @@ fn snecko_oil_cost_randomization_reverts_at_turn_start() {
     use sts2_core::cards::{Card, VarKey};
     ensure_installed();
     let mut state = fresh_state_with_player(50, 50);
-    state.rng = sts2_core::dotnet_rng::Rng::new(3_i32);
+    state.rng = sts2_core::dotnet_rng::Rng::new(3);
     // One base-cost-2 card in the draw pile so Snecko draws + randomizes it.
     let mut card = Card::pod_defaults();
     let uid = sts2_core::CardUid::new(1).expect("nz");
@@ -2189,7 +2189,7 @@ fn cosmic_concoction_draws_from_full_combat_pool_not_modifier_subset() {
         let mut state = fresh_state_with_player(80, 80);
         state.player.character = Some(sts2_core::CharacterId::Ironclad);
         state.run_rng.combat_card_generation =
-            sts2_core::DotNetRng::new(seed.wrapping_mul(2_654_435_761_u32 as i32));
+            sts2_core::DotNetRng::new(u64::from((seed.wrapping_mul(2_654_435_761_u32 as i32)) as u32));
         let hand_before = state.player.hand.len();
         assert_eq!(
             dispatch(&mut state, PotionKind::CosmicConcoction, None),

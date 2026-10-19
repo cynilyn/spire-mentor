@@ -393,7 +393,7 @@ mod tests {
 
     /// Drive to the first card-shaped decision with first options.
     fn walk_to_card_surface(seed: i32) -> Option<RunManager> {
-        let mut rm = new_run_manager_for_character(seed, CharacterId::Ironclad);
+        let mut rm = new_run_manager_for_character(u64::from(seed as u32), CharacterId::Ironclad);
         for _ in 0..600 {
             if rm.is_over() {
                 return None;

@@ -1956,7 +1956,7 @@ mod tests {
         // (total 2) vs the old cooldown-as-weight bug = [3, 0, 1] (total 4).
         // The verified 0.7285 sample (seed 1918040094, draw #3) → SMASH
         // under total 2, but VULNERABLE_SPORES under the buggy total 4.
-        let mut rng = DotNetRng::new(1_918_040_094_u32 as i32);
+        let mut rng = DotNetRng::new(u64::from(1_918_040_094_u32 as u32));
         let _ = rng.next_float(1.0); // draw #1
         let _ = rng.next_float(1.0); // draw #2 → next sample is 0.7285
         assert_eq!(ai.roll_move(&mut rng).id, "SMASH");

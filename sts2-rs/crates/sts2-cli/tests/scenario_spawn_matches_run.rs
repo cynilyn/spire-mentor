@@ -113,7 +113,7 @@ fn builder_monsters_equal_run_path_monsters() {
     for enc in tables.into_iter().flatten() {
         for seed in 1..=6_u64 {
             for ascension in [0_u8, 10] {
-                let mut enc_rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+                let mut enc_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
                 let roster = enc.roster(&mut enc_rng);
                 let slots = enc.member_slots();
                 let specs: Vec<MonsterSpec> = roster
@@ -143,7 +143,7 @@ fn builder_monsters_equal_run_path_monsters() {
                     current_hp: 80,
                     max_hp: 80,
                     ascension_level: ascension,
-                    rng: RunRngSet::new(seed as i32),
+                    rng: RunRngSet::from_run_seed(u64::from(seed as u32)),
                     ..RunState::default()
                 };
                 let kinds: Vec<MonsterKind> = roster.iter().map(|&(k, _)| k).collect();

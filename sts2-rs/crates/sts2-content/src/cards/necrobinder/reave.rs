@@ -96,7 +96,7 @@ mod tests {
     #[allow(clippy::field_reassign_with_default)]
     fn reave_spawns_soul_at_random_draw_position_consuming_one_shuffle_read() {
         let mut state = CombatState::default();
-        state.run_rng = sts2_core::run_rng_set::RunRngSet::new(12345);
+        state.run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(12345);
         // Keep the player alive so combat is not flagged as ending (a pending
         // loss would short-circuit the soul-spawn Shuffle read).
         state.player.current_hp = 50;

@@ -771,7 +771,7 @@ mod tests {
         ];
         // Drain a large number of seeds; the banned potions must never appear.
         for seed in 0..256_i32 {
-            let mut rng = DotNetRng::with_name(seed, "combat_potion_generation");
+            let mut rng = DotNetRng::with_name(u64::from(seed as u32), "combat_potion_generation");
             // 48 = the full character+shared in-combat pool size; ask for more
             // than the pool holds so the loop exercises every rarity bucket.
             let rolled = create_random_potions_in_combat(&mut rng, CharacterId::Ironclad, 48);
@@ -784,7 +784,7 @@ mod tests {
         // the only difference).
         let mut seen_banned = false;
         for seed in 0..512_i32 {
-            let mut rng = DotNetRng::with_name(seed, "combat_potion_generation");
+            let mut rng = DotNetRng::with_name(u64::from(seed as u32), "combat_potion_generation");
             let rolled = create_random_potions_out_of_combat(&mut rng, CharacterId::Ironclad, 48);
             if rolled.iter().any(|k| banned.contains(k)) {
                 seen_banned = true;

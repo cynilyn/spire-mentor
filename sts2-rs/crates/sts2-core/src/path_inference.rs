@@ -317,7 +317,7 @@ mod tests {
         use crate::map_generator::generate_act_map;
         use crate::DotNetRng as Rng;
 
-        let mut rng = Rng::new(0xCAFEBABE_u32 as i32);
+        let mut rng = Rng::new(u64::from(0xCAFEBABE_u32 as u32));
         let map = generate_act_map(15, &mut rng, 0, false, 0, None);
         let start = map.start.unwrap();
         let boss = map.boss.unwrap();

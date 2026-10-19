@@ -479,9 +479,9 @@ pub fn act1_str(rm: &RunManager) -> &'static str {
     }
 }
 
-/// `run_seed` — the hashed master seed as `u32`.
+/// `run_seed` — the run base seed as `u64`.
 #[must_use]
-pub fn run_seed(rm: &RunManager) -> u32 {
+pub fn run_seed(rm: &RunManager) -> u64 {
     emit::run_manager::run_seed(rm)
 }
 

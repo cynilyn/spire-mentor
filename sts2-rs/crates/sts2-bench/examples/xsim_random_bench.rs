@@ -72,7 +72,7 @@ fn fullrun_one(seed: u64) -> Tally {
         ..FullRunConfig::default()
     };
     let seed_i32 = (seed % i32::MAX as u64) as i32;
-    let mut rm = new_run_manager_for_character(seed_i32, CharacterId::Ironclad);
+    let mut rm = new_run_manager_for_character(u64::from(seed_i32 as u32), CharacterId::Ironclad);
     let mut policy = RandomPolicy::from_run_seed(seed_i32);
     let report = drive_full_run(&mut rm, &mut policy, &cfg);
     // Anything that isn't a clean win/loss (livelock, wedge,
@@ -88,7 +88,7 @@ fn fullrun_one(seed: u64) -> Tally {
 }
 
 fn combat_template(seed: u64) -> sts2_core::CombatState {
-    let mut enc_rng = sts2_core::dotnet_rng::Rng::new(seed as i32);
+    let mut enc_rng = sts2_core::dotnet_rng::Rng::new(u64::from(seed as u32));
     let monsters =
         resolve_encounter("random-act1", &mut enc_rng).expect("random-act1 preset resolves");
     let mut state =
@@ -166,7 +166,7 @@ fn main() {
             let mut n = 0u64;
             for &s in &seeds {
                 let rm = new_run_manager_for_character(
-                    (s % i32::MAX as u64) as i32,
+                    u64::from((s % i32::MAX as u64) as u32),
                     CharacterId::Ironclad,
                 );
                 n += rm.get_available_actions().len() as u64;

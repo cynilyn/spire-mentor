@@ -951,7 +951,7 @@ mod tests {
 
     fn make_state(player_hp: i32, enemy_hps: &[i32]) -> CombatState {
         let mut state = CombatState {
-            rng: crate::dotnet_rng::Rng::new(0x00DE_FEC7_i32),
+            rng: crate::dotnet_rng::Rng::new(u64::from(0x00DE_FEC7_i32 as u32)),
             ..Default::default()
         };
         state.player.current_hp = player_hp;

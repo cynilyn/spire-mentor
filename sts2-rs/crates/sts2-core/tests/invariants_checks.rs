@@ -132,7 +132,7 @@ fn ironclad_vs_nibbit(seed: u64) -> CombatState {
         ..PlayerCombatState::default()
     };
 
-    let mut rng = DotNetRng::new(seed as i32);
+    let mut rng = DotNetRng::new(u64::from(seed as u32));
     let hp = MonsterKind::Nibbit.starting_hp(&mut rng, 0);
     let enemy = Creature {
         id: nz(1),
@@ -160,8 +160,8 @@ fn ironclad_vs_nibbit(seed: u64) -> CombatState {
 
     let mut state = CombatState {
         phase: CombatPhase::Setup,
-        rng: DotNetRng::new(seed as i32),
-        run_rng: RunRngSet::new(seed as i32),
+        rng: DotNetRng::new(u64::from(seed as u32)),
+        run_rng: RunRngSet::from_run_seed(u64::from(seed as u32)),
         creatures: vec![enemy],
         cards: arena.into(),
         player,

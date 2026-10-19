@@ -475,7 +475,7 @@ fn roll_lands_on_a_move_and_costs_one_tick_per_hop(tc: TestCase) {
 
     let seed = tc.draw(gs::integers::<i32>().min_value(-10_000).max_value(10_000));
     let mut ai = MonsterAi::new(states, "ROOT");
-    let mut rng = DotNetRng::new(seed);
+    let mut rng = DotNetRng::new(u64::from(seed as u32));
     let combat = CombatState::default();
 
     for step in 0..20 {

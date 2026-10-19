@@ -859,7 +859,7 @@ impl MonsterAi {
     #[doc(hidden)]
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn roll_move_seeded(&mut self, seed: u64) -> &MoveState {
-        let mut rng = DotNetRng::new(seed as i32);
+        let mut rng = DotNetRng::new(u64::from(seed as u32));
         self.roll_move(&mut rng)
     }
 
@@ -868,7 +868,7 @@ impl MonsterAi {
     #[doc(hidden)]
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn roll_move_with_combat_seeded(&mut self, seed: u64, combat: &CombatState) -> &MoveState {
-        let mut rng = DotNetRng::new(seed as i32);
+        let mut rng = DotNetRng::new(u64::from(seed as u32));
         self.roll_move_with_combat(&mut rng, combat)
     }
 

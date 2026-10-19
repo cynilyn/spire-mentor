@@ -3103,7 +3103,7 @@ mod tests {
         // out-of-band value the C# can never produce.
         for (ascension, lo, hi) in [(0_u8, 40_i32, 46_i32), (8, 46, 52)] {
             for seed in 0..64_i32 {
-                let mut rng = Rng::new(seed);
+                let mut rng = Rng::new(u64::from(seed as u32));
                 let hps = roll_unique_max_hps(&kinds, &mut rng, ascension);
                 assert_eq!(hps.len(), 3);
                 for &hp in &hps {

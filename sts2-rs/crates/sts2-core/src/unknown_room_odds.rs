@@ -259,7 +259,7 @@ mod tests {
     use crate::run_rng_set::RunRngSet;
 
     fn rng(seed: i32) -> Rng {
-        let mut set = RunRngSet::new(seed);
+        let mut set = RunRngSet::from_run_seed(u64::from(seed as u32));
         std::mem::replace(&mut set.unknown_map_point, Rng::with_name(0, "scratch"))
     }
 

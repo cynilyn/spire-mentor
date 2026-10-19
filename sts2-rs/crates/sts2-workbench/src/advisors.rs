@@ -1183,7 +1183,7 @@ impl RolloutConfig {
             sims: u(get("sims"), DEFAULT_SIMS).min(MAX_SIMS),
             threads: u(get("threads"), DEFAULT_THREADS),
             max_steps: u(get("max_steps"), DEFAULT_MAX_STEPS),
-            seed: get("seed").unwrap_or_else(|| i64::from(rm.seed & 0x7FFF_FFFF) ^ 0x5EED),
+            seed: get("seed").unwrap_or_else(|| i64::try_from(rm.seed & 0x7FFF_FFFF).unwrap_or(0) ^ 0x5EED),
         }
     }
 
@@ -1399,7 +1399,7 @@ fn evaluate_candidate(
         let seed = cfg.seed.wrapping_add(i64::from(r));
         #[allow(clippy::cast_possible_truncation)]
         let run_seed = seed as i32;
-        sim.run_state.rng = RunRngSet::new(run_seed);
+        sim.run_state.rng = RunRngSet::from_run_seed(u64::from(run_seed as u32));
         #[allow(clippy::cast_sign_loss)]
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed as u64);
         #[allow(clippy::cast_sign_loss)]
