@@ -1794,62 +1794,35 @@ fn listener_dream_catcher(rs: &mut RunState, rewards: &mut Vec<Reward>) -> Effec
     EffectResult::Resolved
 }
 
-/// C# `Nimble.CanEnchant` (`Nimble.cs:7-14`): the base rules (not a
-/// Status/Curse/Quest, not Unplayable in the deck — `EnchantmentModel.cs:280-292`)
-/// plus `card.GainsBlock`. The base rules also reject a card that already carries
-/// an enchantment unless the enchantment is stackable AND the same type
-/// (`EnchantmentModel.cs:289`); no enchantment overrides `IsStackable` (it is
-/// `false`, `:173`), so ANY existing enchantment blocks Nimble. `GainsBlock` is
-/// proxied by `base_block > 0`, as in [`crate::enchantments::can_enchant_card`].
-///
-/// FresnelLens consults this on all three of its paths — reward options
-/// (`FresnelLens.cs:45-47,57-65`), merchant results (`:31-37`) and the deck-add
-/// hook (`:39-52`) — which is what stops an offer-time `Nimble(2)` from being
-/// applied a second time when the picked card is added to the deck.
-fn nimble_can_enchant(pool: &[crate::cards::CardSpec], card: &Card) -> bool {
-    if !card.enchantments.is_empty() {
-        return false;
-    }
-    let Some(spec) = pool.iter().find(|s| s.id == card.card_id) else {
-        return false;
-    };
-    crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Nimble)
-}
-
-/// `FresnelLens::modify_card_reward_options_late` — every `CanEnchant` card in
-/// the reward option list gets `Nimble(2)` (`FresnelLens.cs:57-65`).
-/// Ownership-gated. Bead `sts2-rs-9wx7`.
+/// `FresnelLens::modify_card_reward_options_late` — every card in the
+/// reward option list gets `Nimble(2)` (`shop_event.py:1539-1551`,
+/// `NIMBLE=2`). Ownership-gated. Bead `sts2-rs-9wx7`.
 fn listener_fresnel_lens_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> EffectResult {
     if !run_owns(rs, RelicId::FresnelLens) {
         return EffectResult::NotImplemented;
     }
-    let pool = crate::names::deck_card_spec_pool();
     for card in cards {
-        if nimble_can_enchant(&pool, card) {
-            card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
-        }
-    }
-    EffectResult::Resolved
-}
-
-/// `FresnelLens::modify_card_being_added_to_deck` — a `CanEnchant` card being
-/// added gets `Nimble(2)` (`FresnelLens.cs:39-52`); a card that already carries
-/// the offer-time `Nimble` is rejected by `CanEnchant`, so it is not enchanted
-/// twice. Ownership-gated. Bead `sts2-rs-9wx7`.
-fn listener_fresnel_lens_deck_add(rs: &mut RunState, card: &mut Card) -> EffectResult {
-    if !run_owns(rs, RelicId::FresnelLens) {
-        return EffectResult::NotImplemented;
-    }
-    let pool = crate::names::deck_card_spec_pool();
-    if nimble_can_enchant(&pool, card) {
         card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
     }
     EffectResult::Resolved
 }
 
-/// `FresnelLens::modify_merchant_card_creation_results` — every `CanEnchant`
-/// merchant-spawned card gets `Nimble(2)` (`FresnelLens.cs:31-37,57-65`). The
-/// `is_colorless` kwarg is unused. Ownership-gated. Bead `sts2-rs-9wx7`.
+/// `FresnelLens::modify_card_being_added_to_deck` — the added card
+/// gets `Nimble(2)` (`shop_event.py:1553-1555`). Ownership-gated.
+/// Bead `sts2-rs-9wx7`.
+fn listener_fresnel_lens_deck_add(rs: &mut RunState, card: &mut Card) -> EffectResult {
+    if !run_owns(rs, RelicId::FresnelLens) {
+        return EffectResult::NotImplemented;
+    }
+    card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
+    EffectResult::Resolved
+}
+
+/// `FresnelLens::modify_merchant_card_creation_results` — every
+/// merchant-spawned card gets `Nimble(2)`
+/// (`shop_event.py:1557-1565`). The `is_colorless` kwarg is unused
+/// (Python's body doesn't gate on it). Ownership-gated. Bead
+/// `sts2-rs-9wx7`.
 fn listener_fresnel_lens_merchant(
     rs: &mut RunState,
     card: &mut Card,
@@ -1858,10 +1831,7 @@ fn listener_fresnel_lens_merchant(
     if !run_owns(rs, RelicId::FresnelLens) {
         return EffectResult::NotImplemented;
     }
-    let pool = crate::names::deck_card_spec_pool();
-    if nimble_can_enchant(&pool, card) {
-        card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
-    }
+    card.add_enchantment(EnchantmentId::Nimble, FRESNEL_LENS_NIMBLE);
     EffectResult::Resolved
 }
 
@@ -3976,13 +3946,13 @@ mod tests {
         rs.relics.push(RelicId::FresnelLens);
         let mut card = Card {
             uid: CardUid(std::num::NonZeroU32::new(42).unwrap()),
-            card_id: sts2_core::cards::CardId::DefendIronclad,
+            card_id: sts2_core::cards::CardId::StrikeIronclad,
             cost: 1,
-            card_type: CT::Skill,
-            target_type: TargetType::Self_,
+            card_type: CT::Attack,
+            target_type: TargetType::Enemy,
             upgraded: false,
-            base_damage: 0,
-            base_block: 5,
+            base_damage: 6,
+            base_block: 0,
             ..Card::pod_defaults()
         };
         rs.modify_card_being_added_to_deck(&mut card);
@@ -4000,13 +3970,13 @@ mod tests {
         rs.relics.push(RelicId::FresnelLens);
         let mk = |uid: u32| Card {
             uid: CardUid(std::num::NonZeroU32::new(uid).unwrap()),
-            card_id: sts2_core::cards::CardId::DefendIronclad,
+            card_id: sts2_core::cards::CardId::StrikeIronclad,
             cost: 1,
-            card_type: CT::Skill,
-            target_type: TargetType::Self_,
+            card_type: CT::Attack,
+            target_type: TargetType::Enemy,
             upgraded: false,
-            base_damage: 0,
-            base_block: 5,
+            base_damage: 6,
+            base_block: 0,
             ..Card::pod_defaults()
         };
         let options = vec![mk(1), mk(2), mk(3)];
@@ -4028,13 +3998,13 @@ mod tests {
         rs.relics.push(RelicId::FresnelLens);
         let mut card = Card {
             uid: CardUid(std::num::NonZeroU32::new(42).unwrap()),
-            card_id: sts2_core::cards::CardId::DefendIronclad,
+            card_id: sts2_core::cards::CardId::StrikeIronclad,
             cost: 1,
-            card_type: CT::Skill,
-            target_type: TargetType::Self_,
+            card_type: CT::Attack,
+            target_type: TargetType::Enemy,
             upgraded: false,
-            base_damage: 0,
-            base_block: 5,
+            base_damage: 6,
+            base_block: 0,
             ..Card::pod_defaults()
         };
         rs.modify_merchant_card_creation_results(&mut card, true);
