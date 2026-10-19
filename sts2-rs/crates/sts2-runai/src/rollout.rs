@@ -728,10 +728,11 @@ fn bucket_and_rep_hp(hp: i32, max_hp: i32) -> (i32, i32) {
     (bucket, rep)
 }
 
-/// Enemy `current_hp` at or above this is a non-combatant sentinel (the
-/// `999_999_999` "Door") — no real enemy approaches it. Excluded from
-/// probe damage accounting so it can't inflate `DeltaStats::dmg_dealt_t5_mean`.
-const SENTINEL_HP_MIN: i32 = 1_000_000;
+// Enemy `current_hp` at or above `SENTINEL_HP_MIN` is a beaten sentinel (the
+// exploding Waterfall Giant's `999_999_999`; `Creature::is_beaten_sentinel`)
+// — no real enemy approaches it. Excluded from probe damage accounting so it
+// can't inflate `DeltaStats::dmg_dealt_t5_mean`.
+use sts2_core::SENTINEL_HP_MIN;
 
 /// Enemy HP counted toward probe damage: clamps negatives to 0 and
 /// drops sentinel/Door creatures (>= `SENTINEL_HP_MIN`) entirely.

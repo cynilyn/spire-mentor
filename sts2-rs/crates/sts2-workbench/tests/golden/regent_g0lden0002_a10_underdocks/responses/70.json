@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "end turn",
+   "hp_n": 48,
    "is_best": true,
    "losses": 3,
    "low_confidence": false,
+   "mean_final_hp": 11.2292,
    "q": 0.8961,
    "q_saturated": false,
    "stable_idx": -1,

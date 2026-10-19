@@ -605,6 +605,12 @@
 /* ---- combatant ---- */
 .gs-combatant { position: relative; display: flex; flex-direction: column; align-items: center; }
 .gs-sprite-wrap { position: relative; }
+/* Shrink's `NCreature.ScaleTo(0.5f, 0.75)`: Visuals.Scale tweened over 0.75 s,
+   EaseInOut + Sine, about the creature's root — its feet, which land ~8px below
+   the box bottom (see .gs-groundshadow). The scale itself is inline
+   (Combatant.tsx, bodyScale). */
+.gs-sprite-body { position: relative; transform-origin: 50% calc(100% + 8px);
+  transition: scale .75s cubic-bezier(.37,0,.63,1); }
 
 /* ---- the Defect's orb belt ----
    A zero-size ANCHOR on the wrap's horizontal centre at its BOTTOM — the ground
@@ -751,15 +757,26 @@
    single-class selectors, so source order is the whole tiebreak. */
 .gs-hptext-doomed { color: #fb8dff; -webkit-text-stroke-color: #2d1263; }
 
-/* block shield */
+/* Block — NHealthBar.RefreshBlockUi. While the creature has block the bar
+   wears `%BlockOutline` (a light-blue rim in place of the teal edge), the fill
+   is modulated to #3B6FA3 and the HP numerals take a #1B3045 outline instead
+   of the maroon one. Doom-lethal wins the numerals, as RefreshText checks it
+   first. */
+.gs-hp-blocked .gs-hpbar { background: #8fd0ff; }
+.gs-hp-blocked .gs-hpfill { background: linear-gradient(#78a9dc, #3b6fa3 52%, #234d78); }
+.gs-hp-blocked .gs-hptext:not(.gs-hptext-doomed) { -webkit-text-stroke-color: #1b3045; }
+
+/* The shield itself (`%BlockContainer`): the game's ui/combat/block.png with
+   the count on it, centred on the bar's left end and riding over it. */
 .gs-block {
-  position: absolute; left: -10px; top: calc(var(--rig-top, 0px) - 8px); z-index: 3; width: 30px; height: 34px;
-  display: grid; place-items: center; color: #eaf4ff; font-weight: 700; font-size: 13px;
-  text-shadow: 0 1px 2px #000;
-  background: conic-gradient(from 0deg, #8fc4ee, #4f87bb, #8fc4ee);
-  clip-path: polygon(50% 0, 100% 22%, 100% 64%, 50% 100%, 0 64%, 0 22%);
+  position: absolute; left: -17px; top: 50%; margin-top: -17px; z-index: 3; width: 34px; height: 34px;
+  display: grid; place-items: center; pointer-events: none;
   filter: drop-shadow(0 2px 3px rgba(0,0,0,.6));
 }
+.gs-block-icon { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.gs-block-num { position: relative; color: #fff; font-weight: 700; font-size: 17px; line-height: 1;
+  -webkit-text-stroke: 3px #1b3045; paint-order: stroke fill;
+  font-variant-numeric: tabular-nums; }
 
 /* enemy intent — the game's read (refs/game-combat-1.png, measured): a painted
    ICON CENTRED over the creature's crown, the damage numeral tucked against
@@ -1363,12 +1380,13 @@
    Combatant.tsx via Web Animations, because four eased oscillations under a
    half-sine envelope is not a curve a keyframe block can carry (GH #632). */
 
-@keyframes gs-block-pop { 0% { transform: scale(.4); opacity: 0; } 60% { transform: scale(1.25); opacity: 1; }
-  100% { transform: scale(1); opacity: 1; } }
-.gs-block.gs-block-pop { animation: gs-block-pop .3s ease-out; }
+/* NHealthBar.AnimateInBlock: from 20px above and transparent, alpha over
+   0.5 s (EaseOut Sine), position over 0.5 s (EaseOut Back — the overshoot). */
+@keyframes gs-block-pop { 0% { translate: 0 -20px; opacity: 0; } 100% { translate: 0 0; opacity: 1; } }
+.gs-block.gs-block-pop { animation: gs-block-pop .5s cubic-bezier(.34,1.56,.64,1); }
 @keyframes gs-block-shatter { 0% { opacity: 1; transform: scale(1); }
   100% { opacity: 0; transform: scale(1.6) rotate(8deg); } }
-.gs-block-shatter { position: absolute; left: -10px; top: calc(var(--rig-top, 0px) - 8px); z-index: 3; width: 30px; height: 34px;
+.gs-block-shatter { position: absolute; left: -15px; top: 50%; margin-top: -17px; z-index: 3; width: 30px; height: 34px;
   background: conic-gradient(from 0deg, #8fc4ee, #4f87bb, #8fc4ee);
   clip-path: polygon(50% 0, 100% 22%, 100% 64%, 50% 100%, 0 64%, 0 22%);
   pointer-events: none; animation: gs-block-shatter .35s ease-out forwards; }

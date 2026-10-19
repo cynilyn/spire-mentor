@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Zap",
+   "hp_n": 22,
    "is_best": true,
    "losses": 8,
    "low_confidence": false,
+   "mean_final_hp": 7.0455,
    "q": 0.225,
    "q_saturated": false,
    "stable_idx": 1,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Dualcast",
+   "hp_n": 12,
    "is_best": false,
    "losses": 7,
    "low_confidence": false,
+   "mean_final_hp": 3.1667,
    "q": -0.2912,
    "q_saturated": false,
    "stable_idx": 0,
@@ -41,9 +44,11 @@
   },
   {
    "action": "TURBO",
+   "hp_n": 8,
    "is_best": false,
    "losses": 6,
    "low_confidence": false,
+   "mean_final_hp": 2.375,
    "q": -0.6555,
    "q_saturated": false,
    "stable_idx": 2,
@@ -55,9 +60,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 6,
    "is_best": false,
    "losses": 5,
    "low_confidence": false,
+   "mean_final_hp": 0.6667,
    "q": -0.8472,
    "q_saturated": false,
    "stable_idx": -1,

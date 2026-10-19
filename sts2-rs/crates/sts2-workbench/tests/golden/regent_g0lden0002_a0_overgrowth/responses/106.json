@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Falling Star",
+   "hp_n": 24,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 25.0,
    "q": 1.0891,
    "q_saturated": false,
    "stable_idx": 0,
@@ -27,9 +28,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 24,
    "is_best": false,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 24.5,
    "q": 1.0873,
    "q_saturated": false,
    "stable_idx": -1,

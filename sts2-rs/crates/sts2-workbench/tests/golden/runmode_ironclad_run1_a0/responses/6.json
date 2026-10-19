@@ -8,9 +8,11 @@
       "action": "end_turn"
      },
      "bucket": "likely-loss",
+     "hp_n": 0,
      "is_best": true,
      "losses": 0,
      "low_confidence": false,
+     "mean_final_hp": null,
      "p_loss": 0.0,
      "p_tie": 0.0,
      "p_win": 0.0,
@@ -66,9 +68,11 @@
   "scores": [
    {
     "action": "end turn",
+    "hp_n": 0,
     "is_best": true,
     "losses": 0,
     "low_confidence": false,
+    "mean_final_hp": null,
     "q": 0.0,
     "q_saturated": false,
     "stable_idx": -1,
@@ -355,9 +359,11 @@
        "action": "end_turn"
       },
       "bucket": "likely-loss",
+      "hp_n": 0,
       "is_best": true,
       "losses": 0,
       "low_confidence": false,
+      "mean_final_hp": null,
       "p_loss": 0.0,
       "p_tie": 0.0,
       "p_win": 0.0,

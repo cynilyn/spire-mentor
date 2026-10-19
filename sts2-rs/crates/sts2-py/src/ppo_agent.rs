@@ -258,6 +258,8 @@ fn root_outcome_to_pydict<'py>(
         o.losses,
         o.ties,
         o.value_sum,
+        o.hp_sum,
+        o.hp_n,
         /* low_confidence */ false,
         /* q_saturated */ false,
         is_best,

@@ -112,6 +112,22 @@ def test_rows_from_mcts_carries_wlt():
     assert rows[0]["wins"] == 0 and rows[0]["losses"] == 10 and rows[0]["ties"] == 0
 
 
+def test_rows_from_mcts_passes_final_hp():
+    from workbench.reasoning import rows_from_mcts
+
+    raw = {
+        "actions": [
+            {"action": {"action": "end_turn"}, "visits": 10, "p_win": 1.0,
+             "mean_final_hp": 61.5, "hp_n": 30, "is_best": True},
+            {"action": {"action": "play", "card_index": 0}, "visits": 5, "p_win": 1.0},
+        ]
+    }
+    rows = rows_from_mcts(raw, {"hand": [{"index": 0, "name": "Strike"}]})
+    by = {r["stable_idx"]: r for r in rows}
+    assert by[-1]["mean_final_hp"] == 61.5 and by[-1]["hp_n"] == 30
+    assert by[0]["mean_final_hp"] is None and by[0]["hp_n"] == 0
+
+
 def test_search_tree_native_forwards_honest_search_knobs(monkeypatch, combat_state):
     """The tree inspector must run the SAME search as the hint panel.
 

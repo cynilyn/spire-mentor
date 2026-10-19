@@ -29,14 +29,18 @@
 use rand::{Rng, SeedableRng};
 use serde_json::{json, Map, Value};
 use sts2_core::full_run::RunPolicy;
-use sts2_core::{CombatState, RunAction, RunManager, RunRngSet};
+use sts2_core::{Action, CombatState, RunAction, RunManager, RunRngSet};
 use sts2_mcts::{Mcts, MctsConfig};
 use sts2_runai::policy::HeuristicPolicy;
-use sts2_wire::emit::mcts::{recommend_value, search_tree_value, RecommendParams};
+use sts2_wire::emit::combat_action_to_value;
+use sts2_wire::emit::mcts::{
+    recommend_value, score_action_forced, search_tree_value, RecommendParams,
+};
 use sts2_wire::emit::run_action::combat_action_to_run_action_value;
 
+use crate::combat_view::build_combat_view;
 use crate::display_maps::loc_id;
-use crate::localization::resolve_state_names;
+use crate::localization::{resolve_state_names, Loc};
 use crate::options::normalize_options;
 use crate::rmx;
 use crate::session::{Node, Session, SessionError};
@@ -51,6 +55,14 @@ pub const POTION_MIN: i64 = -200;
 /// versus the MCTS line) — above MCTS sampling noise at the usual budget.
 pub const DEFAULT_BLUNDER_DROP_PCT: f64 = 8.0;
 
+/// Severity (win-prob points, or expected HP) below which a non-best move is
+/// a "tie" — within search noise. Mirrors `regret_review.TIE_PTS`.
+pub const TIE_PTS: f64 = 3.0;
+/// Minimum resolved playouts (`hp_n`) on BOTH rows before the HP gap is used.
+pub const HP_MIN_SAMPLES: i64 = 10;
+/// Minimum MCTS visits on the played move before it can be graded at all.
+pub const PLAYED_MIN_VISITS: i64 = 50;
+
 /// A progress sink: receives each wire frame (`{"type": "start", …}`,
 /// `{"type": "tick", …}`) as the rollout advisors go.
 pub type Progress<'a> = &'a mut dyn FnMut(&Value);
@@ -64,7 +76,7 @@ fn config_obj(config: &Value) -> Value {
 }
 
 /// `RecommendConfig.from_dict` + the browser's single-thread clamp.
-fn params_for(config: &Value, fn_name: &str) -> Result<RecommendParams, String> {
+pub(crate) fn params_for(config: &Value, fn_name: &str) -> Result<RecommendParams, String> {
     let mut p = RecommendParams::from_config(config, fn_name)?;
     p.threads = p.threads.min(1);
     Ok(p)
@@ -153,8 +165,29 @@ fn f64_of(v: &Value) -> f64 {
     v.as_f64().unwrap_or(0.0)
 }
 
+/// Python `int(row.get(k, 0) or 0)`: a missing / null count is 0 and a
+/// float truncates toward zero.
+#[allow(clippy::cast_possible_truncation)]
+fn py_int(v: &Value) -> i64 {
+    v.as_i64()
+        .or_else(|| v.as_f64().map(|f| f as i64))
+        .unwrap_or(0)
+}
+
 fn win_prob(row: &Value) -> f64 {
     f64_of(&row["win_prob"]).clamp(0.0, 1.0)
+}
+
+/// The stable index a search action surfaces under in [`rows_from_mcts`]:
+/// a card play's hand position, `end_turn` → [`END_TURN`], potion slot `s` →
+/// `POTION_BASE - s`. `None` for channel / evoke / choose actions.
+fn row_stable_idx(a: &Value) -> Option<i64> {
+    match a["action"].as_str() {
+        Some("play") => Some(a["card_index"].as_i64().unwrap_or(0)),
+        Some("end_turn") => Some(END_TURN),
+        Some("potion" | "drink_potion") => Some(POTION_BASE - a["slot"].as_i64().unwrap_or(0)),
+        _ => None,
+    }
 }
 
 /// `rows_from_mcts`: score rows from a raw `mcts_recommend` result, labelled
@@ -165,11 +198,8 @@ pub fn rows_from_mcts(result: &Value, state: &Value) -> Vec<Value> {
     let mut rows: Vec<Value> = Vec::new();
     for entry in result["actions"].as_array().into_iter().flatten() {
         let a = &entry["action"];
-        let stable_idx = match a["action"].as_str() {
-            Some("play") => a["card_index"].as_i64().unwrap_or(0),
-            Some("end_turn") => END_TURN,
-            Some("potion" | "drink_potion") => POTION_BASE - a["slot"].as_i64().unwrap_or(0),
-            _ => continue,
+        let Some(stable_idx) = row_stable_idx(a) else {
+            continue;
         };
         rows.push(json!({
             "stable_idx": stable_idx,
@@ -184,6 +214,8 @@ pub fn rows_from_mcts(result: &Value, state: &Value) -> Vec<Value> {
             "wins": entry["wins"].as_i64().unwrap_or(0),
             "losses": entry["losses"].as_i64().unwrap_or(0),
             "ties": entry["ties"].as_i64().unwrap_or(0),
+            "mean_final_hp": entry["mean_final_hp"].as_f64(),
+            "hp_n": entry["hp_n"].as_i64().unwrap_or(0),
         }));
     }
     rows.sort_by(|a, b| {
@@ -203,16 +235,32 @@ pub fn rows_from_mcts(result: &Value, state: &Value) -> Vec<Value> {
 
 /// `score_native`: per-action MCTS scores for a native combat state —
 /// `{scores, pv: null, config}`, or `{error, scores: [], pv: null, config}`.
+/// `pv` stays null like Python's (the SPA reads it as `string[] | null`);
+/// the coach takes the search's PV from [`score_with_pv`].
 #[must_use]
 pub fn score(cs: &CombatState, named_state: &Value, config: &Value) -> Value {
+    score_with_pv(cs, named_state, config).0
+}
+
+/// [`score`] plus the search's principal variation as native action dicts
+/// (empty under `fair` or on error) — for the coach's AI line only.
+fn score_with_pv(cs: &CombatState, named_state: &Value, config: &Value) -> (Value, Vec<Value>) {
     let echo = config_obj(config);
     match params_for(config, "mcts_recommend") {
-        Ok(p) => json!({
-            "scores": rows_from_mcts(&recommend_value(cs, &p, true), named_state),
-            "pv": Value::Null,
-            "config": echo,
-        }),
-        Err(e) => json!({"error": e, "scores": [], "pv": Value::Null, "config": echo}),
+        Ok(p) => {
+            let result = recommend_value(cs, &p, true);
+            let pv = result["pv"].as_array().cloned().unwrap_or_default();
+            let out = json!({
+                "scores": rows_from_mcts(&result, named_state),
+                "pv": Value::Null,
+                "config": echo,
+            });
+            (out, pv)
+        }
+        Err(e) => (
+            json!({"error": e, "scores": [], "pv": Value::Null, "config": echo}),
+            Vec::new(),
+        ),
     }
 }
 
@@ -576,6 +624,158 @@ pub struct DecisionStep {
     pub turn: Value,
     pub floor: Value,
     pub act: Value,
+    /// The search's recommended line from this position, labelled
+    /// (see [`label_line`]); empty when unknown.
+    pub best_line: Vec<String>,
+}
+
+/// `_round_half_up`: both twins compute `floor(x + 0.5)` — round half up,
+/// which for `x >= 0` is half-away-from-zero (so 2.5 → 3, unlike Python's
+/// banker's `round`). The explicit formula, not `f64::round`, keeps the two
+/// bit-identical even where `x + 0.5` itself rounds in binary.
+#[allow(clippy::cast_possible_truncation)]
+fn round_half_up(x: f64) -> i64 {
+    (x + 0.5).floor() as i64
+}
+
+/// `_hp_known`: a numeric `mean_final_hp` over at least [`HP_MIN_SAMPLES`]
+/// resolved playouts (a missing `hp_n` counts as 0).
+fn hp_known(row: &Value) -> bool {
+    row["mean_final_hp"].as_f64().is_some() && py_int(&row["hp_n"]) >= HP_MIN_SAMPLES
+}
+
+/// A position's name-resolved `combat_play` view, built from the engine
+/// state the way the session builds a combat node's `state` (the same
+/// `build_combat_view` → `resolve_state_names` the hand / potion labels of
+/// [`rows_from_mcts`] read).
+fn named_combat_state(cs: &CombatState, loc: &Loc) -> Value {
+    let view = build_combat_view(&rmx::wire(cs), "", &[], &[], &[]);
+    resolve_state_names(Some(&view), loc)
+}
+
+/// The legal action at `cs` whose native dict is `v`, if any.
+fn legal_action_for(cs: &CombatState, v: &Value) -> Option<Action> {
+    sts2_core::legal_actions(cs)
+        .into_iter()
+        .find(|a| combat_action_to_value(a) == *v)
+}
+
+/// The search's principal variation as human labels: each PV action is
+/// applied in order to a clone of `cs` and labelled from the position it is
+/// played in — so after `play 0` the next `play 0` names the card that slid
+/// into slot 0 — with the label [`rows_from_mcts`] gives. Stops after the
+/// first `end_turn`, when the combat ends, at an action that is not legal
+/// where it lands, or after the first action that puts a card into the hand
+/// (a draw or a random generation): the clone replays with the real engine
+/// RNG, so any label past that point could name the actual hidden draw — or
+/// a card the search never saw. A pending-choice pick inside the line is
+/// applied but not labelled ([`rows_from_mcts`] does not surface those
+/// either).
+#[must_use]
+pub fn label_line(cs: &CombatState, pv: &[Value], loc: &Loc) -> Vec<String> {
+    let mut state = cs.clone();
+    let mut out = Vec::new();
+    for v in pv {
+        if state.is_over {
+            break;
+        }
+        let Some(action) = legal_action_for(&state, v) else {
+            break;
+        };
+        if let Some(idx) = row_stable_idx(v) {
+            out.push(action_label(idx, &named_combat_state(&state, loc)));
+        }
+        let ends_turn = matches!(action, Action::EndTurn);
+        let hand_before = state.player.hand.clone();
+        let _ = sts2_core::apply(&mut state, action);
+        let hand_gained = state
+            .player
+            .hand
+            .iter()
+            .any(|uid| !hand_before.contains(uid));
+        if ends_turn || hand_gained {
+            break;
+        }
+    }
+    out
+}
+
+/// Index of the score row for `(stable_idx, target)` — [`match_row`]'s
+/// exact-then-`stable_idx`-only rule.
+fn match_row_index(
+    scores: &[Value],
+    stable_idx: Option<i64>,
+    target: Option<i64>,
+) -> Option<usize> {
+    let stable_idx = stable_idx?;
+    let same_idx = |r: &Value| r["stable_idx"].as_i64() == Some(stable_idx);
+    scores
+        .iter()
+        .position(|r| same_idx(r) && r["target_index"].as_i64() == target)
+        .or_else(|| scores.iter().position(same_idx))
+}
+
+/// Whether [`top_up_played`] would re-search the played move's row: it is in
+/// `scores`, is not the recommended row, and has fewer than
+/// [`PLAYED_MIN_VISITS`] visits. Cheap — lets callers skip building the
+/// parent position when nothing would be topped up.
+#[must_use]
+pub(crate) fn played_needs_top_up(scores: &[Value], played: &Value) -> bool {
+    let (idx, target) = action_stable_key(played);
+    match_row_index(scores, idx, target).is_some_and(|i| {
+        let row = &scores[i];
+        row["is_best"].as_bool() != Some(true) && py_int(&row["visits"]) < PLAYED_MIN_VISITS
+    })
+}
+
+/// Force a gradable sample on the played move: when its row (matched from
+/// the native action dict `played`) has fewer than [`PLAYED_MIN_VISITS`]
+/// visits, its stats — `win_prob`, `q`, `visits`, `wins` / `losses` /
+/// `ties`, `mean_final_hp`, `hp_n` — are replaced by a forced-root search
+/// ([`score_action_forced`]) rooted at `cs`, the PARENT position the move
+/// was chosen from, under the main search's config and hidden-info mode.
+/// Every simulation re-deals at the move's chance node, so the row never
+/// prices the realized child's draw (applying the move to `cs` with its real
+/// RNG — what [`sts2_wire::emit::mcts::score_action`] does — would). `stable_idx`, `action` and `target_index` are kept. The
+/// recommended (`is_best`) row is never topped up: a move that matches the
+/// line is graded "best" whatever its visit count.
+pub fn top_up_played(
+    cs: &CombatState,
+    scores: &mut [Value],
+    played: &Value,
+    params: &RecommendParams,
+) {
+    if !played_needs_top_up(scores, played) {
+        return;
+    }
+    let (idx, target) = action_stable_key(played);
+    let Some(i) = match_row_index(scores, idx, target) else {
+        return;
+    };
+    let row = &scores[i];
+    let key = (row["stable_idx"].as_i64(), row["target_index"].as_i64());
+    let Some(action) = sts2_core::legal_actions(cs).into_iter().find(|a| {
+        let v = combat_action_to_value(a);
+        (row_stable_idx(&v), v["target_index"].as_i64()) == key
+    }) else {
+        return;
+    };
+    let Some(fresh) = score_action_forced(cs, params, &action) else {
+        return;
+    };
+    let Some(m) = scores[i].as_object_mut() else {
+        return;
+    };
+    m.insert("win_prob".into(), json!(f64_of(&fresh["p_win"])));
+    m.insert("q".into(), json!(f64_of(&fresh["q"])));
+    for k in ["visits", "wins", "losses", "ties", "hp_n"] {
+        m.insert(k.into(), json!(fresh[k].as_i64().unwrap_or(0)));
+    }
+    m.insert(
+        "mean_final_hp".into(),
+        json!(fresh["mean_final_hp"].as_f64()),
+    );
+    m.insert("is_best".into(), json!(false));
 }
 
 /// `assess_decision`: one combat step diffed against the MCTS line, or
@@ -596,7 +796,27 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
         && played["target_index"] == best["target_index"];
     let rank = scores.iter().filter(|r| win_prob(r) > played_wp).count();
     let drop_pct = pct(regret);
-    let is_blunder = !matched_best && regret * 100.0 >= blunder_pct;
+    let hp = (hp_known(played) && hp_known(best)).then(|| {
+        let played_hp = f64_of(&played["mean_final_hp"]);
+        let best_hp = f64_of(&best["mean_final_hp"]);
+        (played_hp, best_hp, (best_hp - played_hp).max(0.0))
+    });
+    let hp_drop = hp.map(|(_, _, d)| d);
+    // `regret * 100.0` in f64, as Python computes it: 1.0 − 0.92 gives
+    // 7.999…, a slip, though it renders as −8 pts.
+    let severity = (regret * 100.0).max(hp_drop.unwrap_or(0.0));
+    let verdict = if matched_best {
+        "best"
+    } else if py_int(&played["visits"]) < PLAYED_MIN_VISITS {
+        "uncertain"
+    } else if severity < TIE_PTS {
+        "tie"
+    } else if severity >= blunder_pct {
+        "blunder"
+    } else {
+        "slip"
+    };
+    let is_blunder = verdict == "blunder";
     let enemies: Vec<Value> = step.state["enemies"]
         .as_array()
         .cloned()
@@ -615,11 +835,15 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
             pct(played_wp)
         )
     } else {
-        format!(
+        let mut m = format!(
             "Turn {turn_s}: {played_label} instead of {best_label} dropped P(win) {}%→{}% (−{drop_pct} pts)",
             pct(best_wp),
             pct(played_wp)
-        )
+        );
+        if let Some(d) = hp_drop.map(round_half_up).filter(|&d| d >= 1) {
+            m.push_str(&format!(", ≈{d} HP"));
+        }
+        m
     };
     Some(json!({
         "idx": step.idx,
@@ -635,10 +859,16 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
         "drop_pct": drop_pct,
         "player_rank": rank,
         "n_actions": scores.len(),
-        "visits": best["visits"].as_i64().unwrap_or(0),
+        "visits": py_int(&best["visits"]),
         "matched_best": matched_best,
         "is_blunder": is_blunder,
         "message": message,
+        "played_mean_hp": hp.map(|(p, _, _)| p),
+        "best_mean_hp": hp.map(|(_, b, _)| b),
+        "hp_drop": hp_drop,
+        "severity": severity,
+        "verdict": verdict,
+        "best_line": step.best_line,
     }))
 }
 
@@ -652,7 +882,7 @@ pub fn summarize(decisions: Vec<Value>, top_n: usize) -> Value {
     flagged.sort_by(|a, b| {
         let key = |d: &Value| {
             (
-                -f64_of(&d["regret"]),
+                -f64_of(&d["severity"]),
                 d["turn"].as_i64().unwrap_or(1 << 30),
                 d["idx"].as_i64().unwrap_or(0),
             )
@@ -664,6 +894,8 @@ pub fn summarize(decisions: Vec<Value>, top_n: usize) -> Value {
             .then(ka.2.cmp(&kb.2))
     });
     let cumulative: f64 = decisions.iter().map(|d| f64_of(&d["regret"])).sum();
+    // Summed in decision order, like Python's generator `sum`.
+    let cumulative_hp: f64 = decisions.iter().filter_map(|d| d["hp_drop"].as_f64()).sum();
     let worst = flagged
         .first()
         .map_or(0, |d| d["drop_pct"].as_i64().unwrap_or(0));
@@ -673,6 +905,7 @@ pub fn summarize(decisions: Vec<Value>, top_n: usize) -> Value {
             "total_decisions": decisions.len(),
             "blunder_count": flagged.len(),
             "cumulative_drop_pct": pct(cumulative),
+            "cumulative_hp_drop": round_half_up(cumulative_hp),
             "worst_drop_pct": worst,
         },
         "decisions": decisions,
@@ -793,6 +1026,7 @@ fn step_of(
         turn,
         floor: floor.clone(),
         act: act.clone(),
+        best_line: Vec::new(),
     }
 }
 
@@ -810,19 +1044,19 @@ pub fn last_move_regret(sess: &Session, config: &Value) -> Result<Option<Value>,
     }
     let mut cfg = config_obj(config);
     let blunder_pct = pop_f64(&mut cfg, "blunder_pct", DEFAULT_BLUNDER_DROP_PCT);
-    let step = step_of(parent, node, sess.loc(), &Value::Null, &Value::Null);
-    let scores: Vec<Value> = parent
-        .combat
-        .as_ref()
-        .map(|cs| score(cs, &step.state, &cfg))
-        .and_then(|r| r["scores"].as_array().cloned())
-        .unwrap_or_default();
+    let mut step = step_of(parent, node, sess.loc(), &Value::Null, &Value::Null);
+    let no_scores = || json!({"error": "no MCTS scores available", "regret": Value::Null});
+    let (Some(cs), Ok(params)) = (parent.combat.as_ref(), params_for(&cfg, "mcts_recommend"))
+    else {
+        return Ok(Some(no_scores()));
+    };
+    let (result, pv) = score_with_pv(cs, &step.state, &cfg);
+    let mut scores: Vec<Value> = result["scores"].as_array().cloned().unwrap_or_default();
     if scores.is_empty() {
-        return Ok(Some(
-            json!({"error": "no MCTS scores available", "regret": Value::Null}),
-        ));
+        return Ok(Some(no_scores()));
     }
-    let mut step = step;
+    top_up_played(cs, &mut scores, &step.chosen, &params);
+    step.best_line = label_line(cs, &pv, sess.loc());
     step.node_id = None; // the live coach's step carries no node id
     Ok(assess_decision(&step, &scores, blunder_pct))
 }
@@ -871,6 +1105,7 @@ pub fn review_run(sess: &Session, config: &Value) -> Result<Value, SessionError>
     let mut cfg = config_obj(config);
     let blunder_pct = pop_f64(&mut cfg, "blunder_pct", DEFAULT_BLUNDER_DROP_PCT);
     let top_n = pop_usize(&mut cfg, "top_n", 2);
+    let params = params_for(&cfg, "mcts_recommend").ok();
     let mut decisions = Vec::new();
     let mut floor = Value::Null;
     let mut act = Value::Null;
@@ -885,7 +1120,7 @@ pub fn review_run(sess: &Session, config: &Value) -> Result<Value, SessionError>
         if !combat_play(parent) {
             continue;
         }
-        let step = step_of(parent, node, sess.loc(), &floor, &act);
+        let mut step = step_of(parent, node, sess.loc(), &floor, &act);
         // The AGENT'S OWN root distribution when the move came from a searched
         // autoplay step. This is what makes the review agree with the run: it
         // grades the move against the very numbers that picked it, so an
@@ -894,13 +1129,19 @@ pub fn review_run(sess: &Session, config: &Value) -> Result<Value, SessionError>
         // searches. A hand-played move has none, and falls back to a fresh
         // search below — a DIFFERENT referee, so those rows are advisory.
         let mut scores = agent_scores(parent, node, sess.loc());
+        // The agent's stashed search carries no PV, so an autoplayed move
+        // names no AI line; a fresh search does.
+        let mut pv: Vec<Value> = Vec::new();
         if scores.is_empty() {
-            scores = parent
-                .combat
-                .as_ref()
-                .map(|cs| score(cs, &step.state, &cfg))
-                .and_then(|r| r["scores"].as_array().cloned())
-                .unwrap_or_default();
+            if let Some(cs) = parent.combat.as_ref() {
+                let (result, line) = score_with_pv(cs, &step.state, &cfg);
+                scores = result["scores"].as_array().cloned().unwrap_or_default();
+                pv = line;
+            }
+        }
+        if let (Some(cs), Some(params)) = (parent.combat.as_ref(), params.as_ref()) {
+            top_up_played(cs, &mut scores, &step.chosen, params);
+            step.best_line = label_line(cs, &pv, sess.loc());
         }
         if let Some(d) = assess_decision(&step, &scores, blunder_pct) {
             decisions.push(d);
@@ -1367,6 +1608,56 @@ pub fn decision_advise(
     })
 }
 
+/// The coach's rollout check of one graded run-level choice: your pick vs
+/// the policy's top pick, paired rollouts to the end of the act (the same
+/// rows as [`decision_advise`], keyed `"you"` / `"ai"`). Unlike the
+/// advisors it takes any decision, the map and rest site included, since
+/// both actions come from the snapshotted position's legal moves.
+pub fn choice_check(
+    rm: &RunManager,
+    you: (RunAction, &str),
+    ai: (RunAction, &str),
+    config: &Value,
+    mut progress: Option<Progress<'_>>,
+) -> Value {
+    let cfg = RolloutConfig::from_config(config, rm);
+    let start_act = rm.run_state.act_index;
+    let max_hp = rm.run_state.max_hp.max(1);
+    let cands = [("you", you), ("ai", ai)];
+    let total = 2 * cfg.rollouts;
+    if let Some(p) = progress.as_mut() {
+        p(&json!({
+            "type": "start",
+            "total": total,
+            "rollouts": cfg.rollouts,
+            "act": start_act,
+            "candidates": cands
+                .iter()
+                .map(|(key, (_, label))| json!({"key": key, "label": label}))
+                .collect::<Vec<_>>(),
+        }));
+    }
+    let mut done = 0_u32;
+    let mut rows: Vec<Value> = Vec::with_capacity(2);
+    for (key, (action, label)) in cands {
+        let mut row = evaluate_candidate(
+            rm,
+            action,
+            cfg,
+            max_hp,
+            &mut progress,
+            &mut done,
+            total,
+            &json!({"candidate_key": key}),
+        );
+        row["key"] = json!(key);
+        row["label"] = json!(label);
+        rows.push(row);
+    }
+    rank_rows(&mut rows);
+    json!({"candidates": rows, "act": start_act, "config": cfg.to_value()})
+}
+
 /// `advise_card_reward`: the card advisor over the live run; `None` when the
 /// active node is not a `card_reward`.
 pub fn advise_card_reward(
@@ -1489,7 +1780,7 @@ mod tests {
     fn row(stable_idx: i64, target: Option<i64>, wp: f64, best: bool, label: &str) -> Value {
         json!({
             "stable_idx": stable_idx, "target_index": target, "win_prob": wp,
-            "is_best": best, "visits": 40, "action": label,
+            "is_best": best, "visits": 100, "action": label,
         })
     }
 
@@ -1502,6 +1793,7 @@ mod tests {
             turn: json!(3),
             floor: json!(2),
             act: json!(1),
+            best_line: Vec::new(),
         }
     }
 
@@ -1578,7 +1870,7 @@ mod tests {
 
     #[test]
     fn summarize_ranks_blunders_by_regret_then_turn() {
-        let d = |idx: i64, turn: i64, regret: f64, blunder: bool| json!({"idx": idx, "turn": turn, "regret": regret, "drop_pct": pct(regret), "is_blunder": blunder});
+        let d = |idx: i64, turn: i64, regret: f64, blunder: bool| json!({"idx": idx, "turn": turn, "regret": regret, "severity": regret * 100.0, "drop_pct": pct(regret), "is_blunder": blunder});
         let out = summarize(
             vec![
                 d(1, 1, 0.10, true),
@@ -1622,5 +1914,373 @@ mod tests {
         assert_eq!(pct(0.125), 12);
         assert_eq!(pct(0.135), 14);
         assert_eq!(pct(0.71), 71);
+    }
+
+    // ── HP-aware verdicts (twins of test_regret_review.py's `_hp_step` tests) ──
+
+    fn score_row(stable_idx: i64, label: &str, wp: f64, best: bool, visits: i64) -> Value {
+        json!({
+            "stable_idx": stable_idx, "action": label, "win_prob": wp,
+            "is_best": best, "target_index": null, "visits": visits,
+        })
+    }
+
+    /// `_hp_step`: Defend (best, 900 visits, 70 HP over 400 playouts) vs the
+    /// played end turn (120 visits, 58 HP over 120), each overridable.
+    fn hp_assess(best_kw: Value, played_kw: Value, best_line: &[&str]) -> Value {
+        let mut best = score_row(1, "Defend", 1.0, true, 900);
+        best["mean_final_hp"] = json!(70.0);
+        best["hp_n"] = json!(400);
+        let mut played = score_row(END_TURN, "end turn", 1.0, false, 120);
+        played["mean_final_hp"] = json!(58.0);
+        played["hp_n"] = json!(120);
+        for (row, kw) in [(&mut best, best_kw), (&mut played, played_kw)] {
+            for (k, v) in kw.as_object().unwrap() {
+                row[k] = v.clone();
+            }
+        }
+        let mut s = step(json!({"action": "end_turn"}), json!([]));
+        s.best_line = best_line.iter().map(|x| (*x).to_string()).collect();
+        assess_decision(&s, &[played, best], DEFAULT_BLUNDER_DROP_PCT).unwrap()
+    }
+
+    #[test]
+    fn saturated_fight_hp_gap_is_a_blunder() {
+        let d = hp_assess(json!({}), json!({}), &[]);
+        assert_eq!(d["verdict"], json!("blunder"));
+        assert_eq!(d["is_blunder"], json!(true));
+        assert_eq!(d["hp_drop"], json!(12.0));
+        assert_eq!(d["played_mean_hp"], json!(58.0));
+        assert_eq!(d["best_mean_hp"], json!(70.0));
+        assert_eq!(d["severity"], json!(12.0));
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 100%→100% (−0 pts), ≈12 HP")
+        );
+    }
+
+    #[test]
+    fn small_hp_gap_is_a_slip() {
+        let d = hp_assess(json!({}), json!({"mean_final_hp": 65.0}), &[]);
+        assert_eq!(d["verdict"], json!("slip"));
+        assert_eq!(d["is_blunder"], json!(false));
+        assert_eq!(d["hp_drop"], json!(5.0));
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 100%→100% (−0 pts), ≈5 HP")
+        );
+    }
+
+    #[test]
+    fn within_noise_on_all_signals_is_a_tie() {
+        let d = hp_assess(
+            json!({"win_prob": 1.0}),
+            json!({"win_prob": 0.98, "mean_final_hp": 68.0}),
+            &[],
+        );
+        assert_eq!(d["verdict"], json!("tie"));
+        assert_eq!(d["is_blunder"], json!(false));
+        // The suffix rides on every non-matched verdict, ties included.
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 100%→98% (−2 pts), ≈2 HP")
+        );
+    }
+
+    #[test]
+    fn low_visit_played_move_is_uncertain() {
+        let d = hp_assess(json!({}), json!({"visits": 12}), &[]);
+        assert_eq!(d["verdict"], json!("uncertain"));
+        assert_eq!(d["is_blunder"], json!(false));
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 100%→100% (−0 pts), ≈12 HP")
+        );
+        // A row without `visits` counts as 0 — uncertain, not a crash.
+        let d = hp_assess(json!({}), json!({"visits": null}), &[]);
+        assert_eq!(d["verdict"], json!("uncertain"));
+        // A float count truncates like Python's `int()`: 50.7 → 50, gradable.
+        let d = hp_assess(json!({}), json!({"visits": 50.7}), &[]);
+        assert_eq!(d["verdict"], json!("blunder"));
+        let d = hp_assess(json!({}), json!({"visits": 49.9}), &[]);
+        assert_eq!(d["verdict"], json!("uncertain"));
+    }
+
+    #[test]
+    fn missing_hp_falls_back_to_win_prob() {
+        let d = hp_assess(
+            json!({"win_prob": 0.9, "mean_final_hp": null, "hp_n": 0}),
+            json!({"win_prob": 0.8, "mean_final_hp": null, "hp_n": 0}),
+            &[],
+        );
+        assert_eq!(d["hp_drop"], Value::Null);
+        assert_eq!(d["played_mean_hp"], Value::Null);
+        assert_eq!(d["verdict"], json!("blunder"));
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 90%→80% (−10 pts)")
+        );
+    }
+
+    #[test]
+    fn hp_below_min_samples_ignored() {
+        let d = hp_assess(json!({}), json!({"hp_n": 5}), &[]);
+        assert_eq!(d["hp_drop"], Value::Null);
+        assert_eq!(d["verdict"], json!("tie"));
+        // A row without `hp_n` counts as 0 samples.
+        let d = hp_assess(json!({}), json!({"hp_n": null}), &[]);
+        assert_eq!(d["hp_drop"], Value::Null);
+    }
+
+    #[test]
+    fn player_beats_ai_line_is_a_tie() {
+        let d = hp_assess(json!({}), json!({"mean_final_hp": 75.0}), &[]);
+        assert_eq!(d["hp_drop"], json!(0.0));
+        assert_eq!(d["verdict"], json!("tie"));
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 100%→100% (−0 pts)")
+        );
+    }
+
+    #[test]
+    fn best_line_is_echoed() {
+        let d = hp_assess(json!({}), json!({}), &["Bash", "Defend", "end turn"]);
+        assert_eq!(d["best_line"], json!(["Bash", "Defend", "end turn"]));
+        assert_eq!(hp_assess(json!({}), json!({}), &[])["best_line"], json!([]));
+    }
+
+    #[test]
+    fn severity_is_computed_in_float_points_like_python() {
+        // 1.0 − 0.92 = 0.07999…; ×100 = 7.999… < 8 → slip, though it renders −8.
+        let d = hp_assess(
+            json!({"win_prob": 1.0, "mean_final_hp": null}),
+            json!({"win_prob": 0.92, "mean_final_hp": null}),
+            &[],
+        );
+        assert_eq!(d["verdict"], json!("slip"));
+        assert_eq!(d["drop_pct"], json!(8));
+        // A half-HP gap rounds half-up in the message (2.5 → 3), still a tie.
+        let d = hp_assess(json!({}), json!({"mean_final_hp": 67.5}), &[]);
+        assert_eq!(d["verdict"], json!("tie"));
+        assert_eq!(
+            d["message"],
+            json!("Turn 3: end turn instead of Defend dropped P(win) 100%→100% (−0 pts), ≈3 HP")
+        );
+    }
+
+    #[test]
+    fn summarize_sorts_by_severity_and_sums_hp_in_order() {
+        let ds = vec![
+            hp_assess(json!({}), json!({}), &[]), // blunder, hp 12, drop 0
+            hp_assess(json!({}), json!({"mean_final_hp": 65.0}), &[]), // slip, hp 5
+            hp_assess(
+                json!({"win_prob": 0.9, "mean_final_hp": null}),
+                json!({"win_prob": 0.8, "mean_final_hp": null}),
+                &[],
+            ), // blunder, severity 9.99…, drop 10
+            hp_assess(json!({}), json!({"mean_final_hp": 67.5}), &[]), // tie, hp 2.5
+        ];
+        let out = summarize(ds, 2);
+        let s = &out["summary"];
+        assert_eq!(s["blunder_count"], json!(2));
+        assert_eq!(s["cumulative_drop_pct"], json!(10));
+        // 12 + 5 + 2.5 = 19.5 → 20 (half-up).
+        assert_eq!(s["cumulative_hp_drop"], json!(20));
+        // The top blunder is the HP one (severity 12 > 9.99), whose drop is 0.
+        assert_eq!(s["worst_drop_pct"], json!(0));
+        assert_eq!(out["blunders"][0]["severity"], json!(12.0));
+        assert_eq!(out["blunders"][1]["drop_pct"], json!(10));
+    }
+
+    #[test]
+    fn round_half_up_matches_python_floor_plus_half() {
+        assert_eq!(round_half_up(2.5), 3);
+        assert_eq!(round_half_up(0.49), 0);
+        assert_eq!(round_half_up(12.0), 12);
+    }
+
+    // ── label_line / top_up_played (native combat fixtures) ─────────────
+
+    /// An Ironclad turn-1 fight vs a Mawler whose hand is exactly `hand` and
+    /// whose draw pile is exactly `draw` (top first), by card id.
+    fn ironclad_fight(hand: &[&str], draw: &[&str]) -> CombatState {
+        let deck: Vec<String> = hand.iter().chain(draw).map(|s| (*s).to_string()).collect();
+        let mut cs = sts2_wire::scenario::build_scenario_state(
+            1,
+            "Ironclad",
+            &deck,
+            80,
+            80,
+            &[],
+            &[],
+            "MAWLER_NORMAL",
+            0,
+            None,
+            None,
+        )
+        .expect("scenario builds");
+        let mut pool: Vec<sts2_core::CardUid> = cs
+            .player
+            .hand
+            .iter()
+            .chain(cs.player.draw.iter())
+            .copied()
+            .collect();
+        let mut take = |cs: &CombatState, id: &str| {
+            let i = pool
+                .iter()
+                .position(|uid| {
+                    sts2_core::card_by_uid(&cs.cards, *uid)
+                        .is_some_and(|c| c.card_id.to_python_name() == id)
+                })
+                .unwrap_or_else(|| panic!("{id} dealt"));
+            pool.remove(i)
+        };
+        let new_hand: Vec<_> = hand.iter().map(|id| take(&cs, id)).collect();
+        let new_draw: Vec<_> = draw.iter().map(|id| take(&cs, id)).collect();
+        cs.player.hand = new_hand.into_iter().collect();
+        cs.player.draw = new_draw.into_iter().collect();
+        cs
+    }
+
+    fn ironclad_with_hand(order: &[&str]) -> CombatState {
+        ironclad_fight(order, &[])
+    }
+
+    fn test_loc() -> crate::localization::Loc {
+        let mut loc = crate::localization::Loc::new();
+        loc.insert("BASH.title", "Bash");
+        loc.insert("DEFEND_IRONCLAD.title", "Defend");
+        loc.insert("STRIKE_IRONCLAD.title", "Strike");
+        loc.insert("POMMEL_STRIKE.title", "Pommel Strike");
+        loc
+    }
+
+    /// The legal action at `cs` playing hand slot `slot` (any target).
+    fn play_slot(cs: &CombatState, slot: u8) -> Value {
+        sts2_core::legal_actions(cs)
+            .into_iter()
+            .find(|a| matches!(a, sts2_core::Action::PlayCard { hand_index, .. } if *hand_index == slot))
+            .map(|a| sts2_wire::emit::combat_action_to_value(&a))
+            .expect("slot playable")
+    }
+
+    #[test]
+    fn label_line_stops_at_the_first_draw() {
+        let cs = ironclad_fight(
+            &["POMMEL_STRIKE", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"],
+            &["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"],
+        );
+        let draw = play_slot(&cs, 0);
+        // `play 0` after the draw would name whatever the REAL draw put
+        // there — the line ends at the draw instead.
+        let pv = vec![
+            draw,
+            json!({"action": "play", "card_index": 0, "target_index": null}),
+            json!({"action": "end_turn"}),
+        ];
+        assert_eq!(label_line(&cs, &pv, &test_loc()), vec!["Pommel Strike"]);
+    }
+
+    fn end_turn_rows() -> Vec<Value> {
+        vec![
+            json!({"stable_idx": 1, "action": "Defend", "win_prob": 0.9, "q": 0.5,
+                   "visits": 300, "is_best": true, "target_index": null,
+                   "wins": 270, "losses": 30, "ties": 0, "mean_final_hp": 70.0, "hp_n": 250}),
+            json!({"stable_idx": END_TURN, "action": "end turn", "win_prob": 0.0, "q": 0.0,
+                   "visits": 3, "is_best": false, "target_index": null,
+                   "wins": 0, "losses": 3, "ties": 0, "mean_final_hp": null, "hp_n": 0}),
+        ]
+    }
+
+    /// The top-up prices the move from the PARENT with the draw re-dealt per
+    /// simulation, so it cannot depend on the real (hidden) draw-pile order.
+    #[test]
+    fn top_up_ignores_the_hidden_draw_order() {
+        let hand = ["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"];
+        let draw = [
+            "POMMEL_STRIKE",
+            "DEFEND_IRONCLAD",
+            "STRIKE_IRONCLAD",
+            "BASH",
+            "STRIKE_IRONCLAD",
+        ];
+        let a = ironclad_fight(&hand, &draw);
+        // Same cards, same uids — only the hidden order differs.
+        let mut b = a.clone();
+        b.player.draw.reverse();
+        assert_ne!(a.player.draw, b.player.draw);
+        let params = params_for(&json!({"sims": 200, "seed": 1}), "mcts_recommend").unwrap();
+        let end = json!({"action": "end_turn"});
+        let (mut ra, mut rb) = (end_turn_rows(), end_turn_rows());
+        top_up_played(&a, &mut ra, &end, &params);
+        top_up_played(&b, &mut rb, &end, &params);
+        assert!(
+            ra[1]["visits"].as_i64().unwrap() >= PLAYED_MIN_VISITS,
+            "{}",
+            ra[1]
+        );
+        assert_eq!(ra, rb);
+    }
+
+    #[test]
+    fn label_line_relabels_after_hand_shift() {
+        let cs = ironclad_with_hand(&["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"]);
+        let play0 = |cs: &CombatState| {
+            sts2_core::legal_actions(cs)
+                .into_iter()
+                .find(|a| matches!(a, sts2_core::Action::PlayCard { hand_index: 0, .. }))
+                .map(|a| sts2_wire::emit::combat_action_to_value(&a))
+                .expect("card 0 playable")
+        };
+        let first = play0(&cs);
+        let mut after = cs.clone();
+        let a0 = sts2_core::legal_actions(&after)
+            .into_iter()
+            .find(|a| sts2_wire::emit::combat_action_to_value(a) == first)
+            .unwrap();
+        let _ = sts2_core::apply(&mut after, a0);
+        let second = play0(&after);
+        let pv = vec![
+            first,
+            second,
+            json!({"action": "end_turn"}),
+            // Never reached: the line stops after the first end turn.
+            json!({"action": "end_turn"}),
+        ];
+        let loc = test_loc();
+        assert_eq!(
+            label_line(&cs, &pv, &loc),
+            vec!["Bash", "Defend", "end turn"]
+        );
+        // An action that is not legal where it lands ends the line.
+        assert_eq!(
+            label_line(&cs, &[json!({"action": "play", "card_index": 9})], &loc),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn top_up_lifts_low_visit_played_row() {
+        let cs = ironclad_with_hand(&["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"]);
+        let params = params_for(&json!({"sims": 200, "seed": 1}), "mcts_recommend").unwrap();
+        let mut scores = end_turn_rows();
+        top_up_played(&cs, &mut scores, &json!({"action": "end_turn"}), &params);
+        let row = &scores[1];
+        assert!(
+            row["visits"].as_i64().unwrap() >= PLAYED_MIN_VISITS,
+            "{row}"
+        );
+        assert!(row["mean_final_hp"].is_number(), "{row}");
+        assert_eq!(row["stable_idx"], json!(END_TURN));
+        assert_eq!(row["action"], json!("end turn"));
+        assert_eq!(row["is_best"], json!(false));
+        // The best row is untouched.
+        assert_eq!(scores[0]["visits"], json!(300));
+        // A row already at the floor is left alone.
+        let before = scores.clone();
+        top_up_played(&cs, &mut scores, &json!({"action": "end_turn"}), &params);
+        assert_eq!(scores, before);
     }
 }

@@ -407,6 +407,14 @@ pub fn search_tree(store: &ReplayStore, idx: i64, config: &Value) -> Result<Valu
     })
 }
 
+/// Whether the review of one combat step must rebuild the run up to it: only
+/// to search it (`need_search`: no recorded rows, or recompute) or to top up
+/// the played move's recorded row. Everything else grades the recorded rows
+/// as they stand, so the replay (and the state clone) is skipped.
+fn needs_rebuild(need_search: bool, rows: &[Value], played: &Value) -> bool {
+    need_search || advisors::played_needs_top_up(rows, played)
+}
+
 /// `POST /api/regret-review {config}`: every combat decision diffed against
 /// the MCTS line — the recorded scores, or one forward replay re-searching
 /// the steps without them (all of them under `recompute`).
@@ -439,23 +447,37 @@ pub fn regret_review(store: &ReplayStore, config: &Value, loc: &'static Loc) -> 
         } else {
             s.scores.clone()
         };
-        if rows.is_empty() {
+        let params = advisors::params_for(&mcts_cfg, "mcts_recommend").ok();
+        let need_search = rows.is_empty();
+        let mut played_cs = None;
+        let chosen = s.chosen_action.get("args").cloned().unwrap_or(Value::Null);
+        if needs_rebuild(need_search, &rows, &chosen) {
             let r = rebuilt.get_or_insert_with(|| Rebuilt::start(store));
             if let Ok(r) = r.as_mut() {
                 if r.advance_to(s.idx).is_ok() {
                     if let Some(cs) = r.combat() {
-                        rows = advisors::score(
-                            cs,
-                            &resolve_state_names(Some(&s.state), loc),
-                            &mcts_cfg,
-                        )
-                        .get("scores")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default();
+                        if need_search {
+                            rows = advisors::score(
+                                cs,
+                                &resolve_state_names(Some(&s.state), loc),
+                                &mcts_cfg,
+                            )
+                            .get("scores")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        }
+                        played_cs = Some(cs.clone());
                     }
                 }
             }
+        }
+        // A hand-played move gets too few visits to grade at default sims, so
+        // it would read "uncertain" and vanish from the review. Force a
+        // gradable sample on it from the parent position — the same top-up the
+        // live coach paths apply.
+        if let (Some(cs), Some(params)) = (played_cs.as_ref(), params.as_ref()) {
+            advisors::top_up_played(cs, &mut rows, &chosen, params);
         }
         // A recorded row carries its OWN label, so resolving the state is not
         // enough for it — a log written before the labels were resolved at
@@ -484,6 +506,8 @@ pub fn regret_review(store: &ReplayStore, config: &Value, loc: &'static Loc) -> 
             turn: s.meta["turn"].clone(),
             floor: s.meta["floor"].clone(),
             act: s.meta["act"].clone(),
+            // The replay review grades recorded rows; it names no AI line.
+            best_line: Vec::new(),
         };
         if let Some(d) = advisors::assess_decision(&step, &rows, blunder_pct) {
             decisions.push(d);
@@ -522,6 +546,51 @@ pub fn resume_plan(
     }
 }
 
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+
+    fn rows(best_visits: i64, played_visits: i64) -> Vec<Value> {
+        vec![
+            json!({"stable_idx": 0, "target_index": null, "visits": played_visits, "is_best": false}),
+            json!({"stable_idx": 1, "target_index": null, "visits": best_visits, "is_best": true}),
+        ]
+    }
+
+    fn play(card_index: i64) -> Value {
+        json!({"action": "play", "card_index": card_index, "target_index": null})
+    }
+
+    #[test]
+    fn rebuilds_when_a_search_is_needed() {
+        assert!(needs_rebuild(true, &[], &play(0)));
+        assert!(needs_rebuild(true, &rows(500, 120), &play(1)));
+    }
+
+    #[test]
+    fn skips_the_rebuild_when_the_played_move_is_best() {
+        assert!(!needs_rebuild(false, &rows(5, 2), &play(1)));
+    }
+
+    #[test]
+    fn skips_the_rebuild_when_the_played_row_has_enough_visits() {
+        const _: () = assert!(advisors::PLAYED_MIN_VISITS <= 120);
+        assert!(!needs_rebuild(false, &rows(500, 120), &play(0)));
+    }
+
+    #[test]
+    fn rebuilds_to_top_up_a_thin_played_row() {
+        const _: () = assert!(advisors::PLAYED_MIN_VISITS > 12);
+        assert!(needs_rebuild(false, &rows(500, 12), &play(0)));
+    }
+
+    #[test]
+    fn skips_the_rebuild_when_the_played_row_is_missing() {
+        assert!(!needs_rebuild(false, &rows(500, 12), &play(7)));
+        assert!(!needs_rebuild(false, &rows(500, 12), &Value::Null));
+    }
+}
+
 #[cfg(all(test, workbench_game_data))] // its one test asserts on real game text
 mod tests {
     use super::*;
@@ -537,7 +606,7 @@ mod tests {
         let text = [
             r#"{"step":0,"ts":"t","type":"meta","data":{"character":"Ironclad","seed":"S","ascension":0,"run_mode":true,"act1":"overgrowth","backend":"rust"}}"#,
             r#"{"step":1,"ts":"t","type":"state","data":{"decision":"combat_play","round":2,"hand":[{"index":0,"name":"STRIKE_IRONCLAD.title"},{"index":1,"name":"DEFEND_IRONCLAD.title"}],"player":{"potions":[]},"enemies":[]}}"#,
-            r#"{"step":1,"ts":"t","type":"mcts","data":{"source":"agent","root_outcomes":[{"stable_idx":0,"action":"STRIKE_IRONCLAD.title","win_prob":0.4,"visits":40,"q":0.1,"is_best":false},{"stable_idx":1,"action":"DEFEND_IRONCLAD.title","win_prob":0.9,"visits":60,"q":0.4,"is_best":true}]}}"#,
+            r#"{"step":1,"ts":"t","type":"mcts","data":{"source":"agent","root_outcomes":[{"stable_idx":0,"action":"STRIKE_IRONCLAD.title","win_prob":0.4,"visits":100,"q":0.1,"is_best":false},{"stable_idx":1,"action":"DEFEND_IRONCLAD.title","win_prob":0.9,"visits":60,"q":0.4,"is_best":true}]}}"#,
             r#"{"step":1,"ts":"t","type":"action","data":{"cmd":"action","action":"play_card","args":{"action":"play","card_index":0,"target_index":null}}}"#,
             r#"{"step":2,"ts":"t","type":"state","data":{"decision":"map_select","floor":1,"act":1}}"#,
             r#"{"step":2,"ts":"t","type":"meta","data":{"summary":true,"final_won":false,"final_turn":2}}"#,

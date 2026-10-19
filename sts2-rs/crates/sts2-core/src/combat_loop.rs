@@ -7793,16 +7793,7 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         // not the stale roll (coverage seed 5880: a SneckoOil'd REND rolled to 1,
         // played, then BottledPotential redrew it; C# shows base 2, RS kept 1 →
         // LEGAL_ACTION divergence at energy 1).
-        let snecko_banked =
-            state.cards[card_idx].combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn);
-        if snecko_banked != 0 {
-            let c = &mut state.cards[card_idx];
-            c.cost = c.cost.saturating_sub(snecko_banked as i8);
-            c.set_combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn, 0);
-            // The expiring Snecko roll was the absolute modifier the
-            // upgrade-clamp flag tracks; the cost is base-owned again.
-            c.set_combat_var(crate::cards::VarKey::CostAbsolutelySet, 0);
-        }
+        state.cards[card_idx].expire_snecko_roll();
     }
     // else: the card's OnPlay opened a `pending_choice` (Headbutt's
     // PutBack, Armaments' upgrade-in-hand select, …). C# holds the played
@@ -7948,12 +7939,7 @@ pub fn flush_played_cards_after_choice(state: &mut CombatState) {
         {
             let c = &mut state.cards[idx];
             c.set_combat_var(crate::cards::VarKey::FreeThisTurn, 0);
-            let snecko_banked = c.combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn);
-            if snecko_banked != 0 {
-                c.cost = c.cost.saturating_sub(snecko_banked as i8);
-                c.set_combat_var(crate::cards::VarKey::SneckoCostDeltaThisTurn, 0);
-                c.set_combat_var(crate::cards::VarKey::CostAbsolutelySet, 0);
-            }
+            c.expire_snecko_roll();
         }
         let corruption_exhausts_skill = card.card_type == cards::CardType::Skill
             && state.player_power_amount(crate::PowerKind::Corruption) > 0;

@@ -2220,9 +2220,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--rollout-policy",
-        choices=["heuristic", "uniform"],
+        choices=["heuristic", "uniform", "net"],
         default=RecommendConfig.rollout_policy,
-        help=f"MCTS rollout policy (default: {RecommendConfig.rollout_policy!r}).",
+        help="MCTS rollout policy (default: what --hidden-info deploys — the playout net under beliefdraw).",
     )
     parser.add_argument(
         "--time-budget-ms",

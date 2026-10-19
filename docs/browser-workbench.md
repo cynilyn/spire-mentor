@@ -216,6 +216,16 @@ Python routes (`/api/live/hint`, `search_tree`, `choice-ranker`,
 `threads` is honoured as 1 — and the search-backed routes are deterministic
 for a config, which is what makes them golden-testable.
 
+**Wasm-only: the choice coach** (`src/session_choice.rs`). `POST
+/api/live/last-choice-grade` and `POST /api/live/last-choice-check/stream`
+have no Python twin and no golden — the browser build is the only target.
+`live_action` snapshots the PPO policy and a `RunManager` clone before each
+human run-level choice; the grade is policy agreement (flag only when the
+top pick is ≥ 40% and ≥ 2× the pick's probability, else toss-up), and the
+check plays paired rollouts of your pick vs the AI's top pick from that
+snapshot. The snapshot never changes a ported response, so the goldens stay
+byte-identical.
+
 - **Search-backed**: one `sts2_wire::emit::mcts::recommend_value` /
   `search_tree_value` over the engine `CombatState`. The hint's rows, the
   ranker's per-option join (`choice:{opt}` / `choice:skip`) and "play best"

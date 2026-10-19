@@ -1128,7 +1128,8 @@ def _run_probe(
 
 #: The search config every advisor probe carries: the deployed honest triple
 #: at a budget small enough to keep the dump quick, seeded so the search is
-#: reproducible. The Rust port clamps ``threads`` to 1 (no thread pool in
+#: reproducible. ``rollout_policy`` is left out, as the browser frontend
+#: leaves it out, so the probes search with the mode's deployed playout. The Rust port clamps ``threads`` to 1 (no thread pool in
 #: wasm), so the probe pins 1 too — with ``threads > 1`` Python would run the
 #: root-parallel search and the hashes could never match.
 ADVISOR_SEARCH = {
@@ -1137,7 +1138,6 @@ ADVISOR_SEARCH = {
     "threads": 1,
     "c_puct": 2.5,
     "depth": 200,
-    "rollout_policy": "heuristic",
     "hidden_info": "beliefdraw",
     "draw_widening_c": 2.0,
 }

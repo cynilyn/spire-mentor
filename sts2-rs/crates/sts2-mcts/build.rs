@@ -1,14 +1,29 @@
-//! Stamp a content hash of this crate's own source into `STS2_MCTS_SRC_HASH`,
-//! exposed as `sts2_mcts::SRC_HASH`. Part of the content-addressed
-//! engine-identity fix (issue #15, bead `sts2-rs-cg5ci`); see sts2-core/build.rs
-//! for the rationale. No `rerun-if-changed` is emitted, so cargo's default —
-//! re-run this script whenever any file in the package changes — keeps the stamp
-//! fresh without per-file directives.
+//! Two jobs:
+//!
+//! - Stamp a content hash of this crate's build inputs into
+//!   `STS2_MCTS_SRC_HASH`, exposed as `sts2_mcts::SRC_HASH`. This is part of
+//!   the content-addressed engine-identity fix (issue #15, bead
+//!   `sts2-rs-cg5ci`); see sts2-core/build.rs for the rationale. The inputs
+//!   are `src`, `Cargo.toml` and the built-in playout net
+//!   (`sts2_srchash::MCTS_DATA_INPUTS`), which lives outside the package. So
+//!   the stamp names its inputs explicitly instead of relying on cargo's
+//!   any-file-in-the-package default.
+//! - Set `cfg(rollout_net_ironclad)` when that net file exists.
+//!   `src/rollout_net.rs` compiles it in only then, so a checkout without the
+//!   file still compiles and plays the heuristic playout.
 
 fn main() {
+    sts2_srchash::emit_build_stamp("sts2-mcts", "STS2_MCTS_SRC_HASH");
+
+    println!("cargo::rustc-check-cfg=cfg(rollout_net_ironclad)");
     let crate_dir = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo"),
     );
-    let hash = sts2_srchash::hash_crate(&crate_dir, &[]);
-    println!("cargo:rustc-env=STS2_MCTS_SRC_HASH={hash}");
+    // `emit_build_stamp` already watches this path (or, while it is absent,
+    // its nearest existing directory), so adding or removing the file flips
+    // the cfg without a `cargo clean`.
+    let net = crate_dir.join("../../data/rollout_nets/ironclad.json");
+    if net.is_file() {
+        println!("cargo:rustc-cfg=rollout_net_ironclad");
+    }
 }

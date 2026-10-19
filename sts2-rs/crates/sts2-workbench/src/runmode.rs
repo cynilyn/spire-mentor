@@ -317,6 +317,8 @@ impl RunAgent {
                             o.losses,
                             o.ties,
                             o.value_sum,
+                            o.hp_sum,
+                            o.hp_n,
                             false,
                             false,
                             i == best_idx,

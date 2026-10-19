@@ -903,6 +903,33 @@ impl PyRunManager {
         self.inner.debug_set_player(hp, max_hp, gold);
     }
 
+    /// Install `state` (e.g. from `build_scenario_state`) as this run's live
+    /// fight in a `room_type` room ("monster" / "elite" / "boss"), so a run
+    /// agent (`MctsCombatAgent.step`) plays it with the deployed combat
+    /// policy and the tier's budget (read from `current_room`, which the core
+    /// hook sets only when the run has none — true of a fresh run).
+    /// Diagnostics only (GH #777): the run's deck, relics and map position
+    /// are NOT made consistent with the fight.
+    fn debug_enter_combat(
+        &mut self,
+        state: &crate::PyCombatState,
+        room_type: &str,
+    ) -> PyResult<()> {
+        use sts2_core::runstate::RoomType;
+        let rt = match room_type {
+            "monster" => RoomType::Monster,
+            "elite" => RoomType::Elite,
+            "boss" => RoomType::Boss,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "debug_enter_combat: room_type must be monster/elite/boss, got {other:?}"
+                )))
+            }
+        };
+        self.inner.debug_enter_combat(state.inner.clone(), rt);
+        Ok(())
+    }
+
     #[getter]
     fn player_won(&self) -> bool {
         self.inner.run_state.player_won

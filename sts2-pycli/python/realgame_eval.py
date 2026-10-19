@@ -738,7 +738,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mcts-seed", type=int, default=RecommendConfig.seed)
     parser.add_argument(
         "--rollout-policy",
-        choices=["heuristic", "uniform"],
+        choices=["heuristic", "uniform", "net"],
         default=RecommendConfig.rollout_policy,
     )
     args = parser.parse_args(argv)

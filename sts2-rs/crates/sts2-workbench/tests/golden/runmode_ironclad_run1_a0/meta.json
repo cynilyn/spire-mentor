@@ -41,6 +41,8 @@
   "route:/api/regret-review",
   "route:/api/runs",
   "route:/api/runs/stat",
+  "route:/api/saves",
+  "route:/api/saves/load",
   "route:/api/search_tree",
   "route:/api/step",
   "route:/api/timeline",
@@ -49,12 +51,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "7742e2d4d3b50566",
+  "src_hash": "83413b1a6a95398e",
   "version": "0.0.1"
  },
  "final_act": 1,
- "final_floor": 5,
- "full_responses": 60,
+ "final_floor": 6,
+ "full_responses": 68,
  "full_steps": 0,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -63,7 +65,7 @@
  },
  "python": "3.13",
  "reached_game_over": true,
- "requests": 126,
+ "requests": 148,
  "scenario": {
   "act1": "overgrowth",
   "ascension": 0,
@@ -435,5 +437,5 @@
   "seed": "run_1",
   "start": "faithful"
  },
- "steps_played": 60
+ "steps_played": 74
 }

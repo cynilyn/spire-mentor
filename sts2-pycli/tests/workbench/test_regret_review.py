@@ -38,6 +38,74 @@ def _combat_step(idx, hand, scores, played_args, turn=3):
     }
 
 
+def _hp_step(best_kw, played_kw, **extra):
+    best = {**_score(1, "Defend", 1.0, True, visits=900), "mean_final_hp": 70.0, "hp_n": 400}
+    played = {**_score(-1, "end turn", 1.0, False, visits=120), "mean_final_hp": 58.0, "hp_n": 120}
+    best.update(best_kw)
+    played.update(played_kw)
+    step = _combat_step(
+        0,
+        hand=[{"index": 1, "name": "Defend"}],
+        scores=[played, best],
+        played_args={"action": "end_turn"},
+    )
+    step.update(extra)
+    return step
+
+
+def test_saturated_fight_hp_gap_is_a_blunder():
+    d = regret_review.assess_decision(_hp_step({}, {}))
+    assert d.verdict == "blunder" and d.is_blunder
+    assert d.hp_drop == 12
+    assert d.message.endswith(", ≈12 HP")
+
+
+def test_small_hp_gap_is_a_slip():
+    d = regret_review.assess_decision(_hp_step({}, {"mean_final_hp": 65.0}))
+    assert d.verdict == "slip" and not d.is_blunder
+    assert d.hp_drop == 5
+
+
+def test_within_noise_on_all_signals_is_a_tie():
+    d = regret_review.assess_decision(
+        _hp_step({"win_prob": 1.0}, {"win_prob": 0.98, "mean_final_hp": 68.0})
+    )
+    assert d.verdict == "tie" and not d.is_blunder
+
+
+def test_low_visit_played_move_is_uncertain():
+    d = regret_review.assess_decision(_hp_step({}, {"visits": 12}))
+    assert d.verdict == "uncertain" and not d.is_blunder
+
+
+def test_missing_hp_falls_back_to_win_prob():
+    step = _hp_step(
+        {"win_prob": 0.9, "mean_final_hp": None, "hp_n": 0},
+        {"win_prob": 0.8, "mean_final_hp": None, "hp_n": 0},
+    )
+    d = regret_review.assess_decision(step)
+    assert d.hp_drop is None
+    assert d.verdict == "blunder"
+    assert "HP" not in d.message
+
+
+def test_hp_below_min_samples_ignored():
+    d = regret_review.assess_decision(_hp_step({}, {"hp_n": 5}))
+    assert d.hp_drop is None
+
+
+def test_player_beats_ai_line_is_a_tie():
+    d = regret_review.assess_decision(_hp_step({}, {"mean_final_hp": 75.0}))
+    assert d.hp_drop == 0
+    assert d.verdict == "tie"
+
+
+def test_best_line_is_echoed():
+    line = ["Bash", "Defend", "end turn"]
+    d = regret_review.assess_decision(_hp_step({}, {}, best_line=line))
+    assert d.best_line == line
+
+
 def test_action_stable_key_maps_native_verbs():
     assert regret_review.action_stable_key({"action": "play", "card_index": 2}, []) == (2, None)
     assert regret_review.action_stable_key(
@@ -460,10 +528,10 @@ def test_regret_review_endpoint_resolves_recorded_row_labels(tmp_path):
                 "stable_idx": 0,
                 "action_label": "STRIKE_IRONCLAD.title",
                 "target_index": None,
-                "visits": 40,
+                "visits": 100,
                 "q": 0.1,
-                "wins": 16,
-                "losses": 24,
+                "wins": 40,
+                "losses": 60,
                 "ties": 0,
                 "is_best": False,
             },

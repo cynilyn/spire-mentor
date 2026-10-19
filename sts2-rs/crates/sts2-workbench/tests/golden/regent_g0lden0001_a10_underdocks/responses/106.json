@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Solar Strike",
+   "hp_n": 12,
    "is_best": true,
    "losses": 11,
    "low_confidence": false,
+   "mean_final_hp": 0.3333,
    "q": -1.0722,
    "q_saturated": false,
    "stable_idx": 3,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Strike",
+   "hp_n": 9,
    "is_best": false,
    "losses": 9,
    "low_confidence": false,
+   "mean_final_hp": 0.0,
    "q": -1.2661,
    "q_saturated": false,
    "stable_idx": 1,
@@ -41,9 +44,11 @@
   },
   {
    "action": "Spoils of Battle",
+   "hp_n": 9,
    "is_best": false,
    "losses": 9,
    "low_confidence": false,
+   "mean_final_hp": 0.0,
    "q": -1.2673,
    "q_saturated": false,
    "stable_idx": 2,
@@ -55,9 +60,11 @@
   },
   {
    "action": "Venerate",
+   "hp_n": 9,
    "is_best": false,
    "losses": 9,
    "low_confidence": false,
+   "mean_final_hp": 0.0,
    "q": -1.2741,
    "q_saturated": false,
    "stable_idx": 0,
@@ -69,9 +76,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 9,
    "is_best": false,
    "losses": 9,
    "low_confidence": false,
+   "mean_final_hp": 0.0,
    "q": -1.298,
    "q_saturated": false,
    "stable_idx": -1,

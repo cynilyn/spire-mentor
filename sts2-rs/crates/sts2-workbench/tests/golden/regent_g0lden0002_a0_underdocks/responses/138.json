@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Falling Star",
+   "hp_n": 21,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 8.381,
    "q": 1.0107,
    "q_saturated": false,
    "stable_idx": 0,
@@ -27,9 +28,11 @@
   },
   {
    "action": "Know Thy Place",
+   "hp_n": 11,
    "is_best": false,
    "losses": 2,
    "low_confidence": false,
+   "mean_final_hp": 7.2727,
    "q": 0.6004,
    "q_saturated": false,
    "stable_idx": 2,
@@ -41,9 +44,11 @@
   },
   {
    "action": "Strike",
+   "hp_n": 8,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,
+   "mean_final_hp": 5.75,
    "q": 0.1675,
    "q_saturated": false,
    "stable_idx": 1,
@@ -55,9 +60,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 8,
    "is_best": false,
    "losses": 3,
    "low_confidence": false,
+   "mean_final_hp": 2.125,
    "q": 0.1514,
    "q_saturated": false,
    "stable_idx": -1,

@@ -1415,6 +1415,50 @@ pub fn pick_rollout_action_with<R: Rng>(
     actions: &[Action],
     end_turn_priority: i16,
 ) -> usize {
+    pick_rollout_action_by(rng, state, actions, end_turn_priority, |id, ch| {
+        let base = play_ordering(id, ch);
+        (base, base != NEUTRAL_PRIORITY)
+    })
+}
+
+/// [`pick_rollout_action_with`] reading card base priorities from a fitted
+/// [`LearnedPriorities`] table instead of the STS1-derived ladder
+/// ([`RolloutPolicyKind::Learned`]). A card the table does not list keeps
+/// its [`play_ordering`] value; a card it lists counts as covered for the
+/// coverage gate whatever value it carries, since a fitted value of
+/// [`NEUTRAL_PRIORITY`] is a measurement, not the unclassified fallback.
+/// Every context adjustment in [`play_card_priority`] applies on top of
+/// the learned base unchanged.
+///
+/// # Panics
+/// Panics if `actions` is empty.
+pub fn pick_rollout_action_learned<R: Rng>(
+    rng: &mut R,
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+    table: &LearnedPriorities,
+) -> usize {
+    pick_rollout_action_by(rng, state, actions, end_turn_priority, |id, ch| {
+        table.base(id, ch).map_or_else(
+            || {
+                let base = play_ordering(id, ch);
+                (base, base != NEUTRAL_PRIORITY)
+            },
+            |p| (p, true),
+        )
+    })
+}
+
+/// Shared body of the two rollout pickers. `base_of` returns a card's base
+/// priority and whether it counts as covered for the coverage gate.
+fn pick_rollout_action_by<R: Rng>(
+    rng: &mut R,
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+    base_of: impl Fn(CardId, Option<CharacterId>) -> (i16, bool),
+) -> usize {
     assert!(!actions.is_empty(), "pick_rollout_action: empty actions");
     /// Per-action resolution cached from the coverage pass.
     enum Slot<'a> {
@@ -1442,8 +1486,8 @@ pub fn pick_rollout_action_with<R: Rng>(
                     .and_then(|uid| state.cards.get(uid.0.get() as usize - 1));
                 match card {
                     Some(card) => {
-                        let base = play_ordering(card.card_id, state.player.character);
-                        if base != NEUTRAL_PRIORITY {
+                        let (base, is_covered) = base_of(card.card_id, state.player.character);
+                        if is_covered {
                             covered = covered.saturating_add(1);
                         }
                         Slot::Card {
@@ -1487,6 +1531,240 @@ pub fn pick_rollout_action_with<R: Rng>(
         })
         .collect();
     softmax_sample(rng, &priorities, actions.len())
+}
+
+/// Per-action priorities exactly as the heuristic rollout scores them —
+/// the softmax input of [`pick_rollout_action_with`], without its coverage
+/// gate or kill shortcut. Lower is preferred. The learned rollout policy
+/// (`crate::rollout_net`) reads them as one input feature.
+#[must_use]
+pub fn heuristic_priorities(
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+) -> smallvec::SmallVec<[i16; 16]> {
+    let ctx = HpAwareCtx::compute(state);
+    actions
+        .iter()
+        .map(|a| match a {
+            Action::PlayCard { hand_index, target } => state
+                .player
+                .hand
+                .get(*hand_index as usize)
+                .and_then(|uid| state.cards.get(uid.0.get() as usize - 1))
+                .map_or(NEUTRAL_PRIORITY, |card| {
+                    let base = play_ordering(card.card_id, state.player.character);
+                    play_card_priority(state, card, *target, base, &ctx)
+                }),
+            Action::EndTurn => end_turn_priority,
+            _ => NEUTRAL_PRIORITY,
+        })
+        .collect()
+}
+
+/// Env var naming the JSON file [`learned_priorities`] loads.
+pub const LEARNED_PRIORITIES_ENV: &str = "STS2_ROLLOUT_PRIORITIES";
+
+/// Number of [`CharacterId`] variants; the table keeps one row per variant.
+const N_CHARACTERS: usize = 5;
+
+/// Base rollout priorities fitted offline per `(character, card)`, the
+/// replacement [`RolloutPolicyKind::Learned`] reads in place of
+/// [`play_ordering`]. Built by `scripts/fit_rollout_priorities.py` from the
+/// root visit counts `rollout_policy_labels` dumps.
+///
+/// JSON shape (unknown card names are an error, so a table fitted against
+/// a different card roster fails loudly instead of silently dropping rows):
+///
+/// ```text
+/// {"tables": {"ironclad": {"BASH": 23, "STRIKE_IRONCLAD": 57}, "regent": {}}}
+/// ```
+#[derive(Debug, Clone)]
+pub struct LearnedPriorities {
+    /// `rows[character][card as usize]`; [`Self::ABSENT`] where the table
+    /// has no entry.
+    rows: [Vec<i16>; N_CHARACTERS],
+}
+
+impl LearnedPriorities {
+    const ABSENT: i16 = i16::MIN;
+
+    /// Parse the JSON form described on the type.
+    ///
+    /// # Errors
+    /// Malformed JSON, an unknown character key, or an unknown card name.
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            tables: std::collections::BTreeMap<String, std::collections::BTreeMap<String, i16>>,
+        }
+        let raw: Raw =
+            serde_json::from_str(text).map_err(|e| format!("rollout priorities: {e}"))?;
+        let n_cards = CardId::all().len();
+        let by_name: std::collections::HashMap<&'static str, CardId> = CardId::all()
+            .iter()
+            .map(|&c| (c.to_python_name(), c))
+            .collect();
+        let mut rows: [Vec<i16>; N_CHARACTERS] =
+            std::array::from_fn(|_| vec![Self::ABSENT; n_cards]);
+        for (character, cards) in raw.tables {
+            let ch = match character.to_ascii_lowercase().as_str() {
+                "ironclad" => CharacterId::Ironclad,
+                "silent" => CharacterId::Silent,
+                "defect" => CharacterId::Defect,
+                "regent" => CharacterId::Regent,
+                "necrobinder" => CharacterId::Necrobinder,
+                other => return Err(format!("rollout priorities: unknown character {other:?}")),
+            };
+            for (name, p) in cards {
+                let id = by_name
+                    .get(name.as_str())
+                    .ok_or_else(|| format!("rollout priorities: unknown card {name:?}"))?;
+                if p == Self::ABSENT {
+                    return Err(format!(
+                        "rollout priorities: {name} uses the reserved value"
+                    ));
+                }
+                rows[ch as usize][*id as usize] = p;
+            }
+        }
+        Ok(Self { rows })
+    }
+
+    /// Fitted base priority of `card` for `character`, or `None` when the
+    /// table has no entry (including when the character is unknown).
+    #[inline]
+    #[must_use]
+    pub fn base(&self, card: CardId, character: Option<CharacterId>) -> Option<i16> {
+        let p = *self.rows[character? as usize].get(card as usize)?;
+        (p != Self::ABSENT).then_some(p)
+    }
+}
+
+static LEARNED_PRIORITIES: std::sync::OnceLock<LearnedPriorities> = std::sync::OnceLock::new();
+
+/// The process-wide fitted table, loaded on first use from the file named
+/// by [`LEARNED_PRIORITIES_ENV`] unless [`install_learned_priorities`] ran
+/// first.
+///
+/// # Panics
+/// When nothing was installed and the env var is unset or names a file
+/// that does not load: a `Learned` arm that silently fell back to the
+/// deployed table would report a null that measured nothing.
+pub fn learned_priorities() -> &'static LearnedPriorities {
+    LEARNED_PRIORITIES.get_or_init(|| {
+        let path = std::env::var(LEARNED_PRIORITIES_ENV).unwrap_or_else(|_| {
+            panic!("RolloutPolicyKind::Learned needs {LEARNED_PRIORITIES_ENV}=<table.json>")
+        });
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{LEARNED_PRIORITIES_ENV}={path}: {e}"));
+        LearnedPriorities::from_json(&text).unwrap_or_else(|e| panic!("{path}: {e}"))
+    })
+}
+
+/// Install the process-wide table explicitly (tests, embedders).
+///
+/// # Errors
+/// Returns the table back when one is already installed or loaded.
+pub fn install_learned_priorities(table: LearnedPriorities) -> Result<(), LearnedPriorities> {
+    LEARNED_PRIORITIES.set(table)
+}
+
+/// One legal action as the Heuristic rollout prices it — the training row
+/// `rollout_policy_labels` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PricedAction {
+    /// The card a `PlayCard` resolves to; `None` for every other action.
+    pub card: Option<CardId>,
+    /// [`play_ordering`] of that card (the value a fitted table replaces).
+    pub base: i16,
+    /// The final softmax priority the rollout uses.
+    pub priority: i16,
+    /// Whether `priority` moves one-for-one with `base`. `false` where a
+    /// context rule returns a fixed constant (the lethal-turn Defend /
+    /// Strike cliffs) or for non-card actions, so a fitted base cannot
+    /// change it.
+    pub tracks_base: bool,
+}
+
+/// How the deployed Heuristic rollout would treat `actions` at `state`:
+/// whether the coverage gate sends the step to Uniform, whether the
+/// obvious-kill shortcut fires, and every action's priority.
+#[derive(Debug, Clone)]
+pub struct RolloutPricing {
+    pub uniform_fallback: bool,
+    pub obvious_kill: Option<usize>,
+    pub actions: Vec<PricedAction>,
+}
+
+/// Price `actions` exactly as [`pick_rollout_action_with`] would, without
+/// sampling.
+#[must_use]
+pub fn rollout_pricing(
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+) -> RolloutPricing {
+    let ctx = HpAwareCtx::compute(state);
+    let character = state.player.character;
+    let mut play_cards = 0u32;
+    let mut covered = 0u32;
+    let priced: Vec<PricedAction> = actions
+        .iter()
+        .map(|a| match a {
+            Action::PlayCard { hand_index, target } => {
+                play_cards += 1;
+                let card = state
+                    .player
+                    .hand
+                    .get(*hand_index as usize)
+                    .and_then(|uid| state.cards.get(uid.0.get() as usize - 1));
+                match card {
+                    Some(card) => {
+                        let base = play_ordering(card.card_id, character);
+                        if base != NEUTRAL_PRIORITY {
+                            covered += 1;
+                        }
+                        let priority = play_card_priority(state, card, *target, base, &ctx);
+                        let bumped = play_card_priority(state, card, *target, base + 1, &ctx);
+                        PricedAction {
+                            card: Some(card.card_id),
+                            base,
+                            priority,
+                            tracks_base: bumped == priority + 1,
+                        }
+                    }
+                    None => PricedAction {
+                        card: None,
+                        base: NEUTRAL_PRIORITY,
+                        priority: NEUTRAL_PRIORITY,
+                        tracks_base: false,
+                    },
+                }
+            }
+            other => {
+                let p = if matches!(other, Action::EndTurn) {
+                    end_turn_priority
+                } else {
+                    NEUTRAL_PRIORITY
+                };
+                PricedAction {
+                    card: None,
+                    base: p,
+                    priority: p,
+                    tracks_base: false,
+                }
+            }
+        })
+        .collect();
+    #[allow(clippy::cast_precision_loss)]
+    let uniform_fallback =
+        play_cards > 0 && (covered as f32 / play_cards as f32) < COVERAGE_THRESHOLD;
+    RolloutPricing {
+        uniform_fallback,
+        obvious_kill: obvious_kill_action(state, actions),
+        actions: priced,
+    }
 }
 
 /// Per-call cache for [`action_priority`]'s HP-aware bump. Computed
@@ -2233,6 +2511,17 @@ pub enum RolloutPolicyKind {
     /// [`SOFTMAX_TAU`]). Default.
     #[default]
     Heuristic,
+    /// [`Self::Heuristic`] with each card's base priority read from the
+    /// process-wide fitted table ([`learned_priorities`], loaded from
+    /// `STS2_ROLLOUT_PRIORITIES`) instead of the STS1-derived ladder.
+    /// Experimental: an arm for `mcts_book_sweep`, not a deployed default.
+    Learned,
+    /// The playout net ([`crate::rollout_net`], GH #777): the net named by
+    /// `STS2_ROLLOUT_NET` when set, else the built-in net for the fight's
+    /// character. A character without one (every character but Ironclad
+    /// today) plays [`Self::Heuristic`] unchanged. The deployed honest
+    /// dialect selects it ([`crate::MctsConfig::apply_mode_dialect`]).
+    Net,
 }
 
 #[cfg(test)]

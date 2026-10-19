@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -13,9 +12,11 @@
  "scores": [
   {
    "action": "Strike",
+   "hp_n": 27,
    "is_best": true,
    "losses": 0,
    "low_confidence": false,
+   "mean_final_hp": 14.1111,
    "q": 1.0502,
    "q_saturated": false,
    "stable_idx": 1,
@@ -27,9 +28,11 @@
   },
   {
    "action": "end turn",
+   "hp_n": 21,
    "is_best": false,
    "losses": 1,
    "low_confidence": false,
+   "mean_final_hp": 7.8095,
    "q": 0.9201,
    "q_saturated": false,
    "stable_idx": -1,

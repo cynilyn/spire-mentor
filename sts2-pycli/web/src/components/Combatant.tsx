@@ -156,6 +156,21 @@ export function doomAmount(powers?: Power[]): number {
   return Math.max(0, p?.amount ?? 0);
 }
 
+/** How much the creature's BODY is drawn at, from its powers. Shrink is the
+ *  one power that resizes a creature: `ShrinkPower.AfterApplied` calls
+ *  `NCreature.ScaleTo(0.5f, 0.75)` (and `AfterRemoved` scales back to 1) —
+ *  players included, since `ScaleTo` only refuses a monster whose
+ *  `CanChangeScale` is false (`DecimillipedeSegment`, which is drawn as a
+ *  `noSprite` overlay here anyway). `ScaleTo` tweens `Visuals.Scale`, i.e. the
+ *  sprite subtree only — the health bar, nameplate and power row keep their
+ *  size and place. */
+export function bodyScale(powers?: Power[]): number {
+  const shrunk = powers?.some(
+    (x) => (x.id ?? "").toUpperCase() === "SHRINK" || x.name.trim().toUpperCase() === "SHRINK",
+  );
+  return shrunk ? 0.5 : 1;
+}
+
 /** Chrome (HP bar / name / powers) fade duration for a dying enemy's
  *  `.gs-dying` wrapper, before the manifest has loaded (or when it lacks
  *  the `vfx_monster_death` entry) — the pre-Task-14 CSS timing (0.9s
@@ -418,6 +433,26 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
   // spacer's body is drawn by a different combatant). `SpineSprite` covers
   // the fourth state, a rig that failed to load, from the inside.
   const dyingSpriteDissolves = dying && !!dissolve && !!c.rig && !noSprite;
+  // Shrink (see bodyScale). The body scales about its feet; the overlays that
+  // pin to the crown (`--rig-top`: intent, damage numbers, power pops) follow
+  // it down, as the game re-places `IntentContainer` by `Visuals.Scale`
+  // (`NCreature.cs`'s bounds refresh). `100%` resolves against the wrap at
+  // each consumer's `top`/`bottom`, i.e. the body box the feet stand on.
+  const scale = noSprite ? 1 : bodyScale(c.powers);
+  const rigTop = scale === 1
+    ? `${rigHeadTop ?? 0}px`
+    : `calc(100% - (100% - ${rigHeadTop ?? 0}px) * ${scale})`;
+  const blocked = c.block > 0;
+  // `AnimateInBlock` returns early unless `oldBlock == 0`: only a shield that
+  // was not showing drops in; topping up an existing one just changes the
+  // number. `blockPop` fires on every gain, so remember which kind this was
+  // (React's "state from the previous render" pattern, no effect lag).
+  const [prevBlock, setPrevBlock] = useState(c.block);
+  const [blockFromZero, setBlockFromZero] = useState(false);
+  if (c.block !== prevBlock) {
+    setPrevBlock(c.block);
+    setBlockFromZero(prevBlock <= 0 && c.block > 0);
+  }
   return (
     <div
       className={`gs-combatant${onClick ? " gs-clickable" : ""}${dying ? " gs-dying" : ""}${dyingSpriteDissolves ? " gs-dissolving" : ""}`}
@@ -432,7 +467,7 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
       style={{ "--gs-dying-ms": `${dyingChromeFadeSeconds(dissolve, deathAnimSeconds)}s` } as React.CSSProperties}
     >
       <div ref={wrapRef} className={`gs-sprite-wrap${effects?.flash ? " gs-hit-punch" : ""}`}
-        style={{ "--rig-top": `${rigHeadTop ?? 0}px` } as React.CSSProperties}>
+        style={{ "--rig-top": rigTop } as React.CSSProperties}>
         {wantOrbs && !rigLoading && <Orbs orbs={orbs} slots={orbSlots} bodyH={bodyH} />}
         {hotkey != null && !rigLoading && <span aria-hidden="true" className="gs-hotkey">{hotkey}</span>}
         {isEnemy && intent && !rigLoading && (
@@ -477,38 +512,6 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
             )}
           </div>
         )}
-        {/* `data-block-badge`: `VfxLayer`'s anchor for `vfx_block_broken`
-            (`NHealthBar.cs:575`: `_blockContainer.GlobalPosition +
-            _blockContainer.Size * 0.5`) — the block BADGE, not the creature.
-            `position: absolute` (game-skin.css), so this always being in the
-            tree costs no layout for a creature that never has block.
-            ALWAYS MOUNTED once the rig itself is up — never gated on
-            `c.block > 0` — and only its NUMBER/visibility toggle with it.
-            That mirrors Godot's own `Control.Visible`: a hidden `Control`
-            stays in the scene tree with a valid `GlobalPosition`, it just
-            doesn't draw, and `_blockContainer.Visible` is exactly what the
-            addendum's guard reads. It is also load-bearing for TIMING: the
-            `blockBreak` event that plays `vfx_block_broken` fires from a
-            `useEffect` that runs AFTER `c.block` has already committed to 0
-            in this same render pass — gating the DIV itself on `c.block > 0`
-            would unmount the anchor before the VFX ever got a position to
-            query (verified: a `blockShatter`-flag gate looked like a fix but
-            READS THE SAME POST-COMMIT DOM, one render too late — React defers
-            the `setFx` that sets it until after `sink.play` already ran).
-            Keeping the container always-present and toggling only its
-            CONTENTS/opacity sidesteps the race entirely: nothing about the
-            anchor point depends on state that updates in the same tick the
-            VFX needs to read it. */}
-        {!rigLoading && (
-          <div
-            className={`gs-block${effects?.blockPop ? " gs-block-pop" : ""}`}
-            style={c.block > 0 ? undefined : { opacity: 0, pointerEvents: "none" }}
-            title={`block ${c.block}`}
-            data-block-badge="true"
-          >
-            {c.block > 0 ? c.block : null}
-          </div>
-        )}
         {/* One node per hit — a multi-hit attack shows every number in flight
             at once, like NDamageNumVfx does in the real game, rather than
             the single net total `combatDiff` alone could ever produce. Each
@@ -520,7 +523,6 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
             <span>{d.amount}</span>
           </div>
         ))}
-        {effects?.blockShatter && <div key={`bs${effects.nonce}`} className="gs-block-shatter" />}
         {/* The card this thief is holding. The game gives the Thieving Hopper a
             `%StolenCardPos` marker and parents a real card node to it
             (ThievingHopper.ThieveryMove), because a bare "Swipe 1" pip does not
@@ -581,36 +583,43 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
             )}
           </div>
         )}
-        {/* Ground-contact shadow (skipped for noSprite spacers — their shared
-            rig draws one body elsewhere and per-arm ellipses would tile). */}
-        {!noSprite && !rigLoading && <div className="gs-groundshadow" aria-hidden="true" />}
-        {noSprite
-          ? <div aria-hidden="true" style={{ width: noSprite.w, height: noSprite.h }} />
-          : c.rig
-            ? <SpineSprite rigBase={c.rig} animation={animation}
-                skin={isEnemy ? monsterSkin(c.name, dataIndex) : undefined}
-                /* The authored scene scale: it IS px per rig unit in the game's
-                   scene (see scene.ts), so the rig comes out the size the game
-                   draws it — times this instance's own jitter, which the game
-                   applies to repeated monsters of one type. */
-                worldScale={c.rig_scale != null
-                  ? Math.abs(c.rig_scale) * instanceScale(c)
-                  : undefined}
-                hueShift={c.hue_jitter}
-                pxPerScene={pxPerScene}
-                /* Reserve the rig's REAL body, from the generated rig-bounds
-                   table, rather than the authored Bounds box — that box is a
-                   hitbox, drawn a median 1.07x the rig, and the overlays below
-                   pin to the head this reports. */
-                boundsH={spriteBodyH(c, isEnemy)}
-                maxBodyH={maxBodyH}
-                fallbackHeight={(isEnemy ? FALLBACK_BODY_H.enemy : FALLBACK_BODY_H.player) * pxPerScene}
-                fallback={c.image} alt={c.name}
-                actionAnim={actionAnim} actionAnimCandidates={actionAnimCandidates}
-                actionNonce={actionNonce} holdLast={holdLast} dissolve={dissolve} onMeasure={setRigHeadTop} />
-            : c.image
-              ? <img className={`gs-sprite ${isEnemy ? "gs-enemy" : "gs-player"}`} src={c.image} alt={c.name} />
-              : <div className="gs-sprite-fallback" />}
+        {/* `Visuals`: the body Shrink scales (bodyScale; the tween is in
+            game-skin.css). Its own box, so the scale reaches the drawn creature
+            and its ground shadow but none of the chrome riding on the wrap.
+            Unset at 1 rather than `scale: 1`, which would still open a
+            stacking context and lift the ground shadow's `z-index: -1`. */}
+        <div className="gs-sprite-body" style={scale === 1 ? undefined : { scale: String(scale) }}>
+          {/* Ground-contact shadow (skipped for noSprite spacers — their shared
+              rig draws one body elsewhere and per-arm ellipses would tile). */}
+          {!noSprite && !rigLoading && <div className="gs-groundshadow" aria-hidden="true" />}
+          {noSprite
+            ? <div aria-hidden="true" style={{ width: noSprite.w, height: noSprite.h }} />
+            : c.rig
+              ? <SpineSprite rigBase={c.rig} animation={animation}
+                  skin={isEnemy ? monsterSkin(c.name, dataIndex) : undefined}
+                  /* The authored scene scale: it IS px per rig unit in the game's
+                     scene (see scene.ts), so the rig comes out the size the game
+                     draws it — times this instance's own jitter, which the game
+                     applies to repeated monsters of one type. */
+                  worldScale={c.rig_scale != null
+                    ? Math.abs(c.rig_scale) * instanceScale(c)
+                    : undefined}
+                  hueShift={c.hue_jitter}
+                  pxPerScene={pxPerScene}
+                  /* Reserve the rig's REAL body, from the generated rig-bounds
+                     table, rather than the authored Bounds box — that box is a
+                     hitbox, drawn a median 1.07x the rig, and the overlays below
+                     pin to the head this reports. */
+                  boundsH={spriteBodyH(c, isEnemy)}
+                  maxBodyH={maxBodyH}
+                  fallbackHeight={(isEnemy ? FALLBACK_BODY_H.enemy : FALLBACK_BODY_H.player) * pxPerScene}
+                  fallback={c.image} alt={c.name}
+                  actionAnim={actionAnim} actionAnimCandidates={actionAnimCandidates}
+                  actionNonce={actionNonce} holdLast={holdLast} dissolve={dissolve} onMeasure={setRigHeadTop} />
+              : c.image
+                ? <img className={`gs-sprite ${isEnemy ? "gs-enemy" : "gs-player"}`} src={c.image} alt={c.name} />
+                : <div className="gs-sprite-fallback" />}
+        </div>
       </div>
       {/* Game order: HP bar right under the feet, name under the bar.
           Three layers so the chevron silhouette survives: frame (teal edge) ->
@@ -619,7 +628,12 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
           LENGTH tracks the creature — r3 gave a 13-HP and a 27-HP slime the
           same 150px, which both critics flagged. sqrt keeps small enemies
           distinguishable without making a boss's bar span the arena. */}
-      <div className="gs-hpwrap" style={{ "--gs-hpw": `${hpBarWidth(c.max_hp)}px` } as React.CSSProperties}>
+      {/* `gs-hp-blocked`: NHealthBar.RefreshBlockUi — while the creature has
+          block the bar shows `%BlockOutline`, the fill is modulated to
+          `#3B6FA3` and the HP numerals take the `#1B3045` outline
+          (RefreshText). */}
+      <div className={`gs-hpwrap${blocked ? " gs-hp-blocked" : ""}`}
+        style={{ "--gs-hpw": `${hpBarWidth(c.max_hp)}px` } as React.CSSProperties}>
         <div className="gs-hpbar">
           <div className="gs-hptrack">
             {/* Doom band. The game draws it from the bar's LOW end out to
@@ -642,6 +656,39 @@ export default function Combatant({ c, isEnemy, dataIndex, onClick, onHoverChang
           </div>
         </div>
         <span className={`gs-hptext${doomLethal ? " gs-hptext-doomed" : ""}`}>{c.hp}/{c.max_hp}</span>
+        {/* `%BlockContainer`: the game's shield (ui/combat/block.png) with the
+            count on it, centred on the bar's LEFT end (`SetCreatureBounds`
+            puts its centre on the creature box's left edge, which is where
+            the bar starts) — part of the health bar, not floating by the head.
+
+            `data-block-badge`: `VfxLayer`'s anchor for `vfx_block_broken`
+            (`NHealthBar.cs:575`: `_blockContainer.GlobalPosition +
+            _blockContainer.Size * 0.5`). ALWAYS MOUNTED — never gated on
+            `c.block > 0` — and only its NUMBER/visibility toggle with it.
+            That mirrors Godot's own `Control.Visible`: a hidden `Control`
+            stays in the scene tree with a valid `GlobalPosition`, it just
+            doesn't draw. It is also load-bearing for TIMING: the `blockBreak`
+            event that plays `vfx_block_broken` fires from a `useEffect` that
+            runs AFTER `c.block` has already committed to 0 in this same
+            render pass — gating the DIV itself on `c.block > 0` would unmount
+            the anchor before the VFX ever got a position to query (verified: a
+            `blockShatter`-flag gate looked like a fix but READS THE SAME
+            POST-COMMIT DOM, one render too late). Keeping the container
+            always-present and toggling only its CONTENTS/opacity sidesteps the
+            race entirely.
+
+            `gs-block-pop` is `AnimateInBlock`: on a 0 -> n gain the shield
+            fades in while dropping 20px into place (0.5 s, Back ease). */}
+        <div
+          className={`gs-block${effects?.blockPop && blockFromZero ? " gs-block-pop" : ""}`}
+          style={blocked ? undefined : { opacity: 0, pointerEvents: "none" }}
+          title={`block ${c.block}`}
+          data-block-badge="true"
+        >
+          <img className="gs-block-icon" src={assetUrl("ui/combat/block.png")} alt="" aria-hidden="true" draggable={false} />
+          {blocked ? <span className="gs-block-num">{c.block}</span> : null}
+        </div>
+        {effects?.blockShatter && <div key={`bs${effects.nonce}`} className="gs-block-shatter" />}
       </div>
       {/* Name at reduced at-rest weight (hover brightens — see .gs-nameplate);
           the exact-HP numerals on the bar above stay always-visible. Debug

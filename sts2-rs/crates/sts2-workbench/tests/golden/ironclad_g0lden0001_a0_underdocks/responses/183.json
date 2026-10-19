@@ -4,7 +4,6 @@
   "depth": 200,
   "draw_widening_c": 2.0,
   "hidden_info": "beliefdraw",
-  "rollout_policy": "heuristic",
   "seed": 1,
   "sims": 48,
   "threads": 1
@@ -12,10 +11,25 @@
  "pv": null,
  "scores": [
   {
-   "action": "BASH.title",
+   "action": "STRIKE_IRONCLAD.title",
+   "hp_n": 0,
    "is_best": true,
    "low_confidence": false,
-   "q": 1.2728,
+   "mean_final_hp": null,
+   "q": 1.277,
+   "q_saturated": false,
+   "stable_idx": 0,
+   "target_index": null,
+   "visits": 12,
+   "win_prob": 1.0
+  },
+  {
+   "action": "BASH.title",
+   "hp_n": 0,
+   "is_best": false,
+   "low_confidence": false,
+   "mean_final_hp": null,
+   "q": 1.274,
    "q_saturated": false,
    "stable_idx": 2,
    "target_index": null,
@@ -24,9 +38,11 @@
   },
   {
    "action": "DEFEND_IRONCLAD.title",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
-   "q": 1.2719,
+   "mean_final_hp": null,
+   "q": 1.2731,
    "q_saturated": false,
    "stable_idx": 1,
    "target_index": null,
@@ -34,21 +50,12 @@
    "win_prob": 1.0
   },
   {
-   "action": "STRIKE_IRONCLAD.title",
-   "is_best": false,
-   "low_confidence": false,
-   "q": 1.2704,
-   "q_saturated": false,
-   "stable_idx": 0,
-   "target_index": null,
-   "visits": 12,
-   "win_prob": 1.0
-  },
-  {
    "action": "end turn",
+   "hp_n": 0,
    "is_best": false,
    "low_confidence": false,
-   "q": 1.2403,
+   "mean_final_hp": null,
+   "q": 1.2442,
    "q_saturated": false,
    "stable_idx": -1,
    "target_index": null,

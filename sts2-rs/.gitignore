@@ -117,6 +117,9 @@ data/run-fixtures-potions/
 # Hard pool (`just harvest-fixtures-hard`, GH #446): three sub-pools
 # (ascension 10 / 40-HP snapshot) the playout-selected book is built from.
 data/run-fixtures-hard/
+# Disjoint-seed pool the fitted rollout priority table trains on
+# (`just harvest-fixtures-rollout`, GH #805).
+data/run-fixtures-rollout/
 
 # MCTS high-ascension (A8-A10) campaign. The loose files stay out of git; the
 # whole campaign — fixture pool AND raw result rows — is committed instead as

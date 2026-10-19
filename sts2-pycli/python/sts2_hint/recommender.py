@@ -167,9 +167,12 @@ class RecommendConfig:
     ascension: int = 0
     # Forwarded as the ``combat_id`` argument to the adapter.
     combat_id: int = 0
-    # Rollout policy: "heuristic" (softmax over expert priorities, default)
-    # or "uniform" (un-biased random). Forwarded to sts2_rs.mcts_recommend.
-    rollout_policy: str = "heuristic"
+    # Rollout policy forwarded to sts2_rs.mcts_recommend. None (default) runs
+    # what the hidden-info mode deploys: the playout net under "beliefdraw"
+    # (Ironclad's built-in net; the heuristic for a character without one),
+    # the heuristic otherwise. A named policy — "heuristic" (softmax over
+    # expert priorities), "uniform" (un-biased random) or "net" — always runs.
+    rollout_policy: str | None = None
     # Hidden-information mode forwarded to sts2_rs.mcts_recommend. Default
     # "beliefdraw" — the DEPLOYED honest search, the same mode
     # ``sts2_runai::policy::resolve_hidden_info`` picks when
