@@ -6833,7 +6833,10 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     let relic_extra = dispatch_if_live(state, live, 0, |state| {
         crate::relic_effects::dispatch_relic_modify_card_play_count(state, &count_ctx)
     });
-    let extra_plays = power_extra + base_replay + relic_extra;
+    // B13: Glam's first-use `EnchantPlayCount` (+Times) joins the chain before
+    // the power/relic modifiers' result is applied (C# `GeneratePlayCount`).
+    let glam_extra = crate::enchantment_hooks::enchant_glam_play_count_bonus(&card);
+    let extra_plays = power_extra + base_replay + relic_extra + glam_extra;
     let after_count_ctx = hooks::CardCtx {
         card_id: Some(card.card_id),
         card_uid: Some(card_uid),
@@ -9039,7 +9042,9 @@ pub(crate) fn resolve_auto_played_card_at_target(
         // Fires once per card play (matches C# + hand-play): routes the
         // OneTwoPunch decrement/remove deferred effects.
         hooks::dispatch_after_modifying_card_play_count(state, &after_count_ctx);
-        (base_replay + power_extra + relic_extra).max(0)
+        let glam_extra =
+            crate::enchantment_hooks::enchant_glam_play_count_bonus(&state.cards[top_idx]);
+        (base_replay + power_extra + relic_extra + glam_extra).max(0)
     };
 
     // C# `CardCmd.AutoPlay` (CardCmd.cs:106-131) captures a `HasStarCostX` card's
@@ -18544,6 +18549,53 @@ mod tests {
             hp_after_first - hp_after_second,
             6,
             "OneTwoPunch exhausted: second Attack should hit once (6 damage)",
+        );
+    }
+
+    /// B13: a Glam-enchanted Attack's FIRST play replays once (C#
+    /// `Glam.EnchantPlayCount`, `Glam.cs:34-40`: +`Times` = 1), the second
+    /// play does not (`UsedThisCombat` latch).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn glam_first_play_replays_once_then_latches() {
+        use crate::cards::EnchantmentId;
+
+        crate::card_effects::ensure_installed();
+
+        let mut state = state_with_cultists(1);
+        let _ = start_combat(&mut state);
+        let _ = start_player_turn(&mut state);
+        let enemy_uid = state.enemy_uids[0];
+        let enemy_idx = state
+            .creatures
+            .iter()
+            .position(|c| c.id == enemy_uid.0)
+            .expect("enemy creature");
+        let hp_before = state.creatures[enemy_idx].current_hp;
+
+        let (uid, hand_idx) = push_strike_to_hand(&mut state);
+        state.cards[(uid.get() as usize) - 1].set_enchantment(EnchantmentId::Glam, 1);
+        let _ = play_card(&mut state, hand_idx, Some(0));
+        let hp_after_first = state.creatures[enemy_idx].current_hp;
+        assert_eq!(
+            hp_before - hp_after_first,
+            12,
+            "Glam first use: Strike plays twice (6 + 6)",
+        );
+
+        // Second use of the SAME card: put it back in hand and replay.
+        let card_idx = (uid.get() as usize) - 1;
+        state.player.discard.retain(|u| *u != uid);
+        state.player.exhaust.retain(|u| *u != uid);
+        state.player.hand.push(uid);
+        let hand_idx = (state.player.hand.len() - 1) as u8;
+        assert!(state.cards[card_idx].has_enchantment(EnchantmentId::Glam));
+        let _ = play_card(&mut state, hand_idx, Some(0));
+        let hp_after_second = state.creatures[enemy_idx].current_hp;
+        assert_eq!(
+            hp_after_first - hp_after_second,
+            6,
+            "Glam latched: second play is a single hit",
         );
     }
 
