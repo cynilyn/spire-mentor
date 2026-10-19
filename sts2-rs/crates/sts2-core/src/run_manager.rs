@@ -9212,6 +9212,51 @@ mod tests {
         assert_eq!(rm.phase(), Phase::MapChoice);
     }
 
+    /// `resolve_event_at` test double for B12: page 0 (REST) opens page 1 and
+    /// stays in the event; page 1 (FIGHT) stages the no-resume
+    /// DenseVegetation combat.
+    fn resolve_dense_vegetation_rest_then_fight(rs: &mut RunState, _idx: usize) -> bool {
+        if rs.event_state.page == 0 {
+            rs.event_state.page = 1;
+        } else {
+            rs.event_combat = Some(EventCombatRequest::no_resume(
+                EventEncounter::DenseVegetation,
+                EventId::DenseVegetation,
+                Vec::new(),
+            ));
+        }
+        true
+    }
+
+    #[test]
+    fn dense_vegetation_rest_page_then_fight_is_not_resumed_after_combat() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(
+            bridge_callbacks(resolve_dense_vegetation_rest_then_fight),
+        );
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+
+        // REST: the second page keeps the event (and Phase::Event) open.
+        rm.take_action(RunAction::EventChoice { idx: 1 });
+        assert_eq!(rm.phase(), Phase::Event, "REST keeps the event open");
+        assert!(rm.run_state.event_combat.is_none());
+        assert_eq!(rm.run_state.current_event, Some(EventId::DenseVegetation));
+
+        // FIGHT: real combat, event still open across it.
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(rm.phase(), Phase::Combat);
+        assert_eq!(rm.run_state.current_event, Some(EventId::DenseVegetation));
+
+        // Win: `shouldResumeAfterCombat: false` — the event closes, no resume.
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let _ = rm.exit_combat_and_transition();
+        assert!(rm.run_state.event_combat.is_none(), "request consumed");
+        assert!(rm.run_state.current_event.is_none(), "event closed");
+        assert_ne!(rm.phase(), Phase::Event, "event not resumed");
+    }
+
     #[test]
     fn event_combat_player_death_ends_run() {
         let mut rm = RunManager::new(0, CharacterId::Ironclad)

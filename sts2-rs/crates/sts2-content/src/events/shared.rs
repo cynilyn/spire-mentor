@@ -1088,12 +1088,62 @@ fn dense_vegetation_rest(state: &mut RunState) -> EventOutcome {
     // (`Hook.ModifyRestSiteHealRewards` -> Tiny Mailbox potions etc.). Route
     // through `rest_site_heal`, which fires `after_rest_site_heal` AND grants
     // the offered rewards — the prior bare `heal()` skipped both, so a mimicked
-    // rest with Tiny Mailbox gained no potion (sts2-rs-RP23). The second page
-    // (FIGHT `DenseVegetationEventEncounter` without exiting) is still deferred
-    // (no event-combat bridge).
+    // rest with Tiny Mailbox gained no potion (sts2-rs-RP23).
+    //
+    // B12: C# `Rest` then calls `SetEventState(REST description, [FIGHT])` —
+    // a SECOND page with a single FIGHT option — instead of finishing the
+    // event (`DenseVegetation.cs:90,99`). Return a NOT-finished outcome so the
+    // run loop stays in `Phase::Event` and presents page 1.
     let base = state.max_hp * DENSE_VEGETATION_HEAL_PCT_NUM / DENSE_VEGETATION_HEAL_PCT_DEN;
     let healed = state.rest_site_heal(base);
-    EventOutcome::finished(format!("Healed {healed} HP (fight combat-setup deferred)."))
+    state.event_state.page = 1;
+    EventOutcome {
+        finished: false,
+        description: format!("Healed {healed} HP. Something stirs in the vegetation."),
+        effects: Vec::new(),
+    }
+}
+
+/// `Fight` (page 1): C# `EnterCombatWithoutExitingEvent<
+/// DenseVegetationEventEncounter>(Array.Empty<Reward>(),
+/// shouldResumeAfterCombat: false)` (`DenseVegetation.cs:104`). Stages a real
+/// `Phase::Combat` against four Wrigglers; no extra rewards, no resume — the
+/// event finishes when the fight resolves. Returns a NOT-finished outcome so
+/// the dispatcher keeps the event room open across the combat.
+fn dense_vegetation_fight(state: &mut RunState) -> EventOutcome {
+    state.event_combat = Some(EventCombatRequest::no_resume(
+        EventEncounter::DenseVegetation,
+        EventId::DenseVegetation,
+        Vec::new(),
+    ));
+    EventOutcome {
+        finished: false,
+        description: "The wrigglers burst out. Fight!".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+/// Number of page-0 options (`TRUDGE_ON`, `REST`); the static list also holds
+/// the page-1 `fight` handler, which must NOT be presented on page 0.
+const DENSE_VEGETATION_PAGE0_OPTIONS: usize = 2;
+
+/// Multi-page presenter: page 0 = Trudge On / Rest; page 1 = the single FIGHT
+/// option opened by [`dense_vegetation_rest`].
+fn dense_vegetation_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    if state.event_state.page == 1 {
+        return vec![EventOptionInfo {
+            option_id: "fight",
+            loc_key: "DENSE_VEGETATION.pages.REST.options.FIGHT",
+            vars: Vec::new(),
+            title_vars: Vec::new(),
+            label: "Fight".to_string(),
+            description: "Fight the wrigglers.".to_string(),
+            enabled: true,
+        }];
+    }
+    let mut opts = default_option_info_from_spec(state, spec);
+    opts.truncate(DENSE_VEGETATION_PAGE0_OPTIONS);
+    opts
 }
 
 const DENSE_VEGETATION_OPTIONS: &[EventOptionSpec] = &[
@@ -1120,6 +1170,17 @@ const DENSE_VEGETATION_OPTIONS: &[EventOptionSpec] = &[
         title_vars_fn: None,
         handler: dense_vegetation_rest,
     },
+    // Page 1 (after REST). Presented only via `dense_vegetation_generate_options`.
+    EventOptionSpec {
+        option_id: "fight",
+        loc_key: "DENSE_VEGETATION.pages.REST.options.FIGHT",
+        default_label: "Fight",
+        default_description: "Fight the wrigglers.",
+        default_vars: &[],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: dense_vegetation_fight,
+    },
 ];
 
 /// `DenseVegetation` spec. Pin: `shared.py:803`.
@@ -1127,7 +1188,7 @@ pub const DENSE_VEGETATION: EventSpec = EventSpec {
     id: EventId::DenseVegetation,
     python_name: "DenseVegetation",
     is_allowed: always_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: dense_vegetation_generate_options,
     options: DENSE_VEGETATION_OPTIONS,
 };
 
@@ -2256,7 +2317,7 @@ mod tests {
                 &DENSE_VEGETATION,
                 EventId::DenseVegetation,
                 "DenseVegetation",
-                &["trudge_on", "rest"],
+                &["trudge_on", "rest", "fight"],
             ),
             (
                 &DOORS_OF_LIGHT_AND_DARK,
@@ -2337,6 +2398,16 @@ mod tests {
                     assert!(
                         rs.event_combat.is_some(),
                         "{name}/{}: must stage event_combat",
+                        opt.option_id
+                    );
+                } else if *id == EventId::DenseVegetation
+                    && matches!(opt.option_id, "rest" | "fight")
+                {
+                    // B12: REST opens page 1 (FIGHT only); FIGHT stages the
+                    // event combat. Neither finishes the event.
+                    assert!(
+                        !outcome.finished,
+                        "{name}/{}: multi-page / staged fight",
                         opt.option_id
                     );
                 } else if *id == EventId::ColossalFlower && opt.option_id == "reach_deeper" {
@@ -2734,7 +2805,8 @@ mod tests {
         rs.max_hp = 80;
         rs.current_hp = 1;
         let outcome = dense_vegetation_rest(&mut rs);
-        assert!(outcome.finished);
+        assert!(!outcome.finished, "B12: REST opens the FIGHT page");
+        assert_eq!(rs.event_state.page, 1);
         // 24 HP healed: 1 -> 25. The `+`/`*` mutants overshoot (>=79 healed),
         // the `/`/`%` mutants undershoot (<=2 healed); all differ from 24.
         assert_eq!(rs.current_hp, 25, "healed exactly 30% of max HP");

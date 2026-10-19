@@ -286,3 +286,108 @@ fn battleworn_resume_grants_only_on_clean_victory() {
         "no upgrade on RanOutOfTime"
     );
 }
+
+// ── B12 (0c repair): DenseVegetation REST -> FIGHT page -> event combat ──
+
+#[test]
+fn dense_vegetation_rest_opens_fight_page_and_fight_stages_no_resume_combat() {
+    let mut rs = RunState::new();
+    rs.max_hp = 80;
+    rs.current_hp = 40;
+    rs.enter_event_room(EventId::DenseVegetation);
+    let page0 = dispatch::present(&rs).expect("event active");
+    assert_eq!(
+        page0.iter().map(|o| o.option_id).collect::<Vec<_>>(),
+        vec!["trudge_on", "rest"],
+        "page 0 presents Trudge On / Rest only"
+    );
+
+    let out = dispatch::resolve(&mut rs, "rest").expect("event active");
+    assert!(!out.finished, "REST opens a second page");
+    assert_eq!(rs.current_hp, 64, "heal 30% of 80 = 24");
+    assert_eq!(rs.current_event, Some(EventId::DenseVegetation));
+    assert!(rs.event_combat.is_none(), "REST itself stages no fight");
+    let page1 = dispatch::present(&rs).expect("event active");
+    assert_eq!(
+        page1.iter().map(|o| o.option_id).collect::<Vec<_>>(),
+        vec!["fight"],
+        "page 1 is exactly one FIGHT option"
+    );
+
+    let out = dispatch::resolve_by_index(&mut rs, 0).expect("event active");
+    assert!(!out.finished);
+    let req = rs.event_combat.as_ref().expect("combat staged");
+    assert!(!req.resume, "shouldResumeAfterCombat: false");
+    assert!(req.victory_rewards.is_empty(), "no extra rewards");
+    assert_eq!(req.encounter, EventEncounter::DenseVegetation);
+    assert_eq!(rs.current_event, Some(EventId::DenseVegetation));
+}
+
+#[test]
+fn trudge_on_still_finishes_the_event() {
+    let mut rs = RunState::new();
+    rs.enter_event_room(EventId::DenseVegetation);
+    let out = dispatch::resolve(&mut rs, "trudge_on").expect("event active");
+    assert!(out.finished);
+    assert!(rs.current_event.is_none());
+}
+
+#[test]
+fn build_event_combat_dense_vegetation_spawns_four_wrigglers_with_slot_openers() {
+    let mut rs = RunState::new();
+    let req = sts2_core::events::EventCombatRequest::no_resume(
+        EventEncounter::DenseVegetation,
+        EventId::DenseVegetation,
+        Vec::new(),
+    );
+    let combat = build_event_combat(&mut rs, &req);
+    let wrigglers: Vec<_> = combat
+        .creatures
+        .iter()
+        .filter(|c| c.species == Some(MonsterKind::DenseVegetationWriggler))
+        .collect();
+    assert_eq!(wrigglers.len(), 4, "wriggler1..wriggler4");
+    for w in &wrigglers {
+        assert!((17..=21).contains(&w.max_hp), "A0 HP 17-21, got {}", w.max_hp);
+    }
+    // Slots 1/3 open on NASTY_BITE, slots 2/4 on WRIGGLE; StartStunned=false.
+    let openers: Vec<&str> = wrigglers
+        .iter()
+        .map(|w| w.ai.as_ref().expect("ai").current_move().id)
+        .collect();
+    assert_eq!(openers, vec!["NASTY_BITE", "WRIGGLE", "NASTY_BITE", "WRIGGLE"]);
+}
+
+#[test]
+fn dense_vegetation_niche_advance_is_four_unique_hp_rolls() {
+    use sts2_core::monsters::roll_unique_max_hps;
+    let kinds = [MonsterKind::DenseVegetationWriggler; 4];
+    let mut ref_rs = RunState::new();
+    let ref_hps = roll_unique_max_hps(&kinds, &mut ref_rs.rng.niche, ref_rs.ascension_level);
+    let ref_after = ref_rs.rng.niche.next_int(0, 1_000_000);
+
+    let mut rs = RunState::new();
+    let req = sts2_core::events::EventCombatRequest::no_resume(
+        EventEncounter::DenseVegetation,
+        EventId::DenseVegetation,
+        Vec::new(),
+    );
+    let combat = build_event_combat(&mut rs, &req);
+    let hps: Vec<i32> = combat
+        .creatures
+        .iter()
+        .filter(|c| c.species == Some(MonsterKind::DenseVegetationWriggler))
+        .map(|c| c.max_hp)
+        .collect();
+    assert_eq!(hps, ref_hps);
+    assert_eq!(rs.rng.niche.next_int(0, 1_000_000), ref_after);
+}
+
+#[test]
+fn dense_vegetation_resume_callback_is_a_noop_for_the_no_resume_encounter() {
+    let mut rs = RunState::new();
+    let (gold, hp) = (rs.gold, rs.current_hp);
+    dispatch::resume_event_after_combat_callback(&mut rs, &EventEncounter::DenseVegetation, true);
+    assert_eq!((rs.gold, rs.current_hp), (gold, hp));
+    assert!(rs.pending_rewards.is_empty());
+}

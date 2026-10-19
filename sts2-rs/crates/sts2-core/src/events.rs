@@ -903,6 +903,9 @@ pub enum EventEncounter {
     MysteriousKnight,
     /// `FakeMerchantEventEncounter` (FakeMerchant "throw foul potion").
     FakeMerchant,
+    /// `DenseVegetationEventEncounter` (DenseVegetation REST → FIGHT): four
+    /// non-stunned `Wriggler`s in slots `wriggler1..4`. No resume (B12).
+    DenseVegetation,
 }
 
 /// A request, raised by an event-option handler, to enter a real
