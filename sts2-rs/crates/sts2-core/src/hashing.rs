@@ -2056,10 +2056,16 @@ mod tests {
         // Prior pin 2026-07-12: per-card `affliction` +
         // `chains_bound_card_played_this_turn` (Queen-fight freeze
         // aliasing).
+        // Re-pinned 2026-10-20 (seed-hash port, stage 1) BY LAYOUT, not from an
+        // oracle: `hash_run_rng_set` now folds `seed` as u64 (8 bytes, was i32),
+        // adds `player_seed`, and every stream seed is a u64 `base + XxHash64(name)`.
+        // `run_search_hash` (which ignores RNG streams) is deliberately left at its
+        // previous value below — the proof that only the RNG block of the byte
+        // stream moved. Prior value 15_769_890_208_358_649_762.
         assert_eq!(
             run_hash(&rm),
-            15_769_890_208_358_649_762_u64,
-            "run_hash must keep its frozen SipHash value (re-pinned 2026-08-09)"
+            2_654_047_737_149_915_424_u64,
+            "run_hash must keep its frozen SipHash value (re-pinned 2026-10-20, layout)"
         );
         assert_eq!(
             run_search_hash(&rm),

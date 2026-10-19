@@ -3963,6 +3963,89 @@ mod tests {
         assert_eq!(merchant_relic_cost(RelicRarity::Shop), 200);
     }
 
+    /// 0.111.0 oracle evidence for the merchant inventory: the frozen oracle's
+    /// `dump_shop` at the Neow screen of a fresh Ironclad run (f79d3a9; sts2_bot
+    /// `logs/engine/p0/s1/oracle_pins.json`, sha256 3a8c6e97ba9a3bb5720b5329a0d2d5d3cd6c74d7ff963aff7bf073bfef7607c5, made by
+    /// `logs/engine/p0/tools/export_oracle_pins.py`). Rows: seed, character-card
+    /// prices, colorless prices, relic prices, potion prices, removal cost,
+    /// `shops` reads, `rewards` reads. This replaces the old seed-0
+    /// `RunState::new()` relic-price golden, which had no oracle behind it.
+    #[test]
+    fn merchant_inventory_matches_the_oracle_dump_shop() {
+        #[allow(clippy::type_complexity)]
+        let rows: [(&str, [i32; 5], [i32; 2], [i32; 3], [i32; 3], i32, u32, u32); 3] = [
+            (
+                "P0A0",
+                [38, 48, 77, 74, 72],
+                [86, 179],
+                [193, 253, 222],
+                [50, 50, 100],
+                75,
+                25,
+                14,
+            ),
+            (
+                "P0A1",
+                [37, 51, 74, 50, 76],
+                [84, 175],
+                [170, 151, 173],
+                [75, 50, 50],
+                75,
+                25,
+                14,
+            ),
+            (
+                "P0A2",
+                [76, 49, 49, 52, 36],
+                [84, 166],
+                [236, 152, 197],
+                [50, 50, 50],
+                75,
+                25,
+                14,
+            ),
+        ];
+        for (seed, cards, colorless, relics, potions, removal, shops_reads, rewards_reads) in rows {
+            let mut rm = crate::run_callbacks::new_run_manager_for_character_from_string_seed(
+                seed,
+                CharacterId::Ironclad,
+            );
+            let inv = generate_merchant_inventory(&mut rm.run_state, CharacterId::Ironclad);
+            let got = |v: Vec<i32>| v;
+            assert_eq!(
+                got(inv.cards.iter().map(|c| c.price).collect()),
+                cards,
+                "{seed} cards"
+            );
+            assert_eq!(
+                got(inv.colorless_cards.iter().map(|c| c.price).collect()),
+                colorless,
+                "{seed} colorless"
+            );
+            assert_eq!(
+                got(inv.relics.iter().map(|c| c.price).collect()),
+                relics,
+                "{seed} relics"
+            );
+            assert_eq!(
+                got(inv.potions.iter().map(|c| c.price).collect()),
+                potions,
+                "{seed} potions"
+            );
+            assert_eq!(inv.removal_cost, removal, "{seed} removal");
+            assert_eq!(
+                rm.run_state.rng.shops.counter(),
+                shops_reads,
+                "{seed} shops reads"
+            );
+            assert_eq!(
+                rm.run_state.rng.rewards.counter(),
+                rewards_reads,
+                "{seed} rewards reads"
+            );
+        }
+    }
+
     /// `generate_merchant_inventory` builds a full, well-formed inventory:
     /// 5 character cards, 2 colorless, 3 relics, 3 potions. The relic-cost
     /// `*` jitter (line 2110) and the potion-rarity match arms (lines
@@ -3984,18 +4067,9 @@ mod tests {
         // (kills `*`→`+` and `*`→`/` on line 2110: the additive mutant yields
         // ~base+1 ∈ {176, 201, 226, 276} and the division mutant ~base, neither
         // of which can equal these `base * jitter` products).
-        // v0.107.1 MegaRandom shifted both the rolled relic rarities and the
-        // jitter; the v0.107.1 PlayerRngSet seed fix (player term NetId=1 →
-        // GetPlayerSlotIndex=0, bead `sts2-rs-ms8mm` family) then re-seeded the
-        // `shops` stream off the run-seed base, shifting these again. The
-        // full-vector golden still differs from the additive mutant (~base+1 ∈
-        // {176,201,226,276}) and division mutant (~base) in ≥1 slot (240, 273
-        // ∉ either set), so it keeps killing both.
-        assert_eq!(
-            inv.relics.iter().map(|r| r.price).collect::<Vec<_>>(),
-            vec![240, 273, 201],
-            "deterministic relic prices for seed-0 Ironclad (base * jitter)",
-        );
+        // The exact per-seed prices are pinned against the 0.111.0 oracle in
+        // `merchant_inventory_matches_the_oracle_dump_shop` (the old seed-0
+        // golden had no oracle behind it and is gone).
         for r in &inv.relics {
             assert!(r.price > 0, "relic price must be positive, got {}", r.price);
         }

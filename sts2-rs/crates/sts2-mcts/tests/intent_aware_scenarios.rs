@@ -32,7 +32,10 @@ use sts2_core::{Action, Intent};
 use sts2_mcts::{Mcts, MctsConfig};
 
 const SIMS: u32 = 1000;
-const SEEDS: &[u64] = &[0, 1, 2];
+const SEEDS: &[u64] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29,
+];
 
 // NOTE: these tests must score the action MCTS *actually recommends*,
 // which since bead `sts2-rs-trnu` is `argmax(Q) tiebreak visits` — the
@@ -125,8 +128,12 @@ fn scenario_a_blocks_when_enemy_attacks_for_lethal() {
     // against UCB tie-breaking on near-identical Q at the budget knee
     // without weakening the contract: the defending action must
     // dominate as the search's preferred move.
+    // 2026-10-20: widened from 3 to 30 seeds. The 3-seed sample passed on the
+    // old stream derivation by luck; under the 0.111.0 derivation seeds 0..2 are
+    // the three of 30 that attack (Defend on 23/30 = 77%), so the 2/3 contract
+    // is checked on a sample large enough to mean something.
     assert!(
-        defend_picks >= 2,
+        defend_picks * 3 >= SEEDS.len() * 2,
         "expected MCTS to pick Defend on the lethal-attack turn for ≥2/3 seeds; got {defend_picks}/{} \
          (picks per seed = {picks:?})",
         SEEDS.len(),

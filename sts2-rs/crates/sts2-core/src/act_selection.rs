@@ -354,48 +354,43 @@ mod tests {
         );
     }
 
-    /// Act-1 rolls captured from the C# headless oracle (`roll_acts` command,
-    /// `UnlockState.all` so Underdocks is unlocked, `TestMode.IsOn` so the
-    /// first-discovery force branch is dead and the roll is purely seeded).
-    ///
-    /// Regenerate from `sts2-pycli/`:
-    /// ```text
-    /// PYTHONPATH=python uv run python -c "
-    /// from sts2_client import Game
-    /// g = Game()
-    /// for s in ['SEED{}'.format(i) for i in range(40)]:
-    ///     print(s, g.send({'cmd': 'roll_acts', 'seed': s})['acts'][0])
-    /// g.close()"
-    /// ```
+    /// Act-1 rolls captured from the **0.111.0** C# headless oracle (frozen
+    /// f79d3a9, `roll_acts` command, `UnlockState.all` so Underdocks is
+    /// unlocked, `TestMode.IsOn` so the first-discovery force branch is dead
+    /// and the roll is purely seeded; the stream is `H(seed string) +
+    /// H("act_selection")`). Re-pinned 2026-10-20 from sts2_bot
+    /// `logs/engine/p0/s1/oracle_pins.json` (sha256 3a8c6e97ba9a3bb5720b5329a0d2d5d3cd6c74d7ff963aff7bf073bfef7607c5),
+    /// produced by `logs/engine/p0/tools/export_oracle_pins.py`. The old
+    /// 0.107.1 values are obsolete: the 64-bit seed hash changed every roll.
     ///
     /// `C9EXV1KTPH` is the seed from the report that opened GH #544 — the real
     /// game showed Lagavulin Matriarch where the sim showed Vantom. The oracle
     /// agrees it rolls Underdocks, which is the whole diagnosis in one row.
     const CSHARP_ACT1_GOLDENS: &[(&str, ActVariant)] = &[
         ("C9EXV1KTPH", ActVariant::Underdocks),
-        ("SEED0", ActVariant::Overgrowth),
-        ("SEED1", ActVariant::Underdocks),
-        ("SEED2", ActVariant::Underdocks),
+        ("SEED0", ActVariant::Underdocks),
+        ("SEED1", ActVariant::Overgrowth),
+        ("SEED2", ActVariant::Overgrowth),
         ("SEED3", ActVariant::Underdocks),
         ("SEED4", ActVariant::Overgrowth),
         ("SEED5", ActVariant::Underdocks),
-        ("SEED6", ActVariant::Underdocks),
+        ("SEED6", ActVariant::Overgrowth),
         ("SEED7", ActVariant::Overgrowth),
         ("SEED8", ActVariant::Overgrowth),
-        ("SEED9", ActVariant::Overgrowth),
-        ("SEED10", ActVariant::Overgrowth),
-        ("SEED11", ActVariant::Overgrowth),
+        ("SEED9", ActVariant::Underdocks),
+        ("SEED10", ActVariant::Underdocks),
+        ("SEED11", ActVariant::Underdocks),
         ("SEED12", ActVariant::Underdocks),
-        ("SEED13", ActVariant::Underdocks),
-        ("SEED14", ActVariant::Overgrowth),
-        ("SEED15", ActVariant::Overgrowth),
-        ("SEED16", ActVariant::Overgrowth),
-        ("SEED17", ActVariant::Overgrowth),
+        ("SEED13", ActVariant::Overgrowth),
+        ("SEED14", ActVariant::Underdocks),
+        ("SEED15", ActVariant::Underdocks),
+        ("SEED16", ActVariant::Underdocks),
+        ("SEED17", ActVariant::Underdocks),
         ("SEED18", ActVariant::Underdocks),
-        ("SEED19", ActVariant::Overgrowth),
+        ("SEED19", ActVariant::Underdocks),
         ("SEED20", ActVariant::Underdocks),
         ("SEED21", ActVariant::Underdocks),
-        ("SEED22", ActVariant::Overgrowth),
+        ("SEED22", ActVariant::Underdocks),
         ("SEED23", ActVariant::Overgrowth),
         ("SEED24", ActVariant::Overgrowth),
         ("SEED25", ActVariant::Underdocks),
@@ -403,16 +398,16 @@ mod tests {
         ("SEED27", ActVariant::Overgrowth),
         ("SEED28", ActVariant::Overgrowth),
         ("SEED29", ActVariant::Underdocks),
-        ("SEED30", ActVariant::Overgrowth),
+        ("SEED30", ActVariant::Underdocks),
         ("SEED31", ActVariant::Underdocks),
         ("SEED32", ActVariant::Overgrowth),
         ("SEED33", ActVariant::Underdocks),
         ("SEED34", ActVariant::Overgrowth),
         ("SEED35", ActVariant::Overgrowth),
-        ("SEED36", ActVariant::Overgrowth),
+        ("SEED36", ActVariant::Underdocks),
         ("SEED37", ActVariant::Underdocks),
         ("SEED38", ActVariant::Underdocks),
-        ("SEED39", ActVariant::Overgrowth),
+        ("SEED39", ActVariant::Underdocks),
     ];
 
     /// The cross-engine pin: this port reproduces the C# `act_selection`

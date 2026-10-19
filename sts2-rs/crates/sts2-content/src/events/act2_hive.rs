@@ -1802,14 +1802,19 @@ mod tests {
     #[test]
     fn jungle_maze_gold_rolls_base_plus_signed_swing() {
         // Kills the `base + swing` → `base - swing` mutants AND the
-        // `delete -` (on the `-15.0` swing bound) mutants. v0.107.1 MegaRandom
-        // re-rolls seed 0 to a +10 solo swing and a non-zero join swing, so
-        // both the sign flip and the bound-collapse still change the result.
+        // `delete -` (on the `-15.0` swing bound) mutants. At run seed 0 the
+        // event stream is `0 + XxHash64("JUNGLE_MAZE_ADVENTURE")`; its first two
+        // `NextFloat(-15, 15)` swings are +8.794 and +10.938, so both the sign
+        // flip and the bound-collapse still change the result. Values from an
+        // independent Python recomputation validated against the 0.111.0 oracle
+        // vectors (sts2_bot `logs/engine/p0/tools/derive_goldens.py`, 4,400
+        // oracle draws reproduced). There is no direct oracle dump for this
+        // default-seed state; the C# sequence is `JungleMazeAdventure.cs:67-68`.
         let rs = RunState::new();
         assert_eq!(rs.rng.seed, 0, "default seed pins the roll");
         let (solo, join) = jungle_maze_gold(&rs);
-        assert_eq!(solo, 160, "150 base + (+10) solo swing");
-        assert_eq!(join, 61, "50 base + (+11) join swing");
+        assert_eq!(solo, 158, "150 base + (+8.79) solo swing, truncated");
+        assert_eq!(join, 60, "50 base + (+10.94) join swing, truncated");
     }
 
     #[test]
@@ -1821,9 +1826,9 @@ mod tests {
         assert_eq!(opts.len(), 2, "solo + join options");
         assert_eq!(opts[0].option_id, "solo");
         assert_eq!(opts[1].option_id, "join");
-        // Rolled solo gold (160) must be interpolated into the label text.
+        // Rolled solo gold (158) must be interpolated into the label text.
         assert!(
-            opts[0].description.contains("160"),
+            opts[0].description.contains("158"),
             "solo gold interpolated: {}",
             opts[0].description,
         );

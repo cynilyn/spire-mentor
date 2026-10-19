@@ -182,8 +182,9 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
     //                            ANGER/4, UPPERCUT/5]
     // These two starting permutations differ, so under a fixed RNG the
     // resulting top-3 option SET differs.
-    fn make_state() -> (CombatState, CreatureUid) {
+    fn make_state(seed: u64) -> (CombatState, CreatureUid) {
         let (mut state, euid) = fresh_state(CardId::SeekerStrike, 9, 0);
+        state.run_rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(seed);
         add_player_creature(&mut state);
         // Raw player HP for combat_is_ending (see sibling test) so the
         // lethal-suppression guard doesn't short-circuit the draw select.
@@ -195,66 +196,77 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
         (state, euid)
     }
 
-    let (mut state, euid) = make_state();
-    let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
-    let pc = state.pending_choice.as_ref().expect("opens a choice");
-    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawByType);
-    assert_eq!(pc.options.len(), 3, "presents 3 of the 4 draw cards");
+    // The discrimination between the two sort keys depends on the shuffle the
+    // seed produces (a 4-card pile, top 3 kept), so sweep seeds: the correct key
+    // must match on EVERY seed, and at least one seed must separate it from the
+    // uid key (0.111.0 seed derivation moved the old single pinned seed onto a
+    // shuffle where both keys coincide — a test-design fragility, not an engine bug).
+    let mut discriminated = false;
+    for seed in 0..64_u64 {
+        let (mut state, euid) = make_state(seed);
+        let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
+        let pc = state.pending_choice.as_ref().expect("opens a choice");
+        assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawByType);
+        assert_eq!(pc.options.len(), 3, "presents 3 of the 4 draw cards");
 
-    // Compute the C#-correct expected subset: sort the FULL pile by
-    // (Entry, upgraded), run the SAME plain shuffle on a fresh state's
-    // combat_card_selection stream, take the first 3.
-    let (state_ref, _) = make_state();
-    let mut sorted: Vec<CardUid> = state_ref.player.draw.to_vec();
-    sorted.sort_by(|&a, &b| {
-        let ca = &state_ref.cards[a.0.get() as usize - 1];
-        let cb = &state_ref.cards[b.0.get() as usize - 1];
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
-            .then_with(|| ca.upgraded.cmp(&cb.upgraded))
-    });
-    let mut rng = state_ref.run_rng.combat_card_selection.clone();
-    rng.shuffle(&mut sorted);
-    let mut expected: Vec<CardUid> = sorted.into_iter().take(3).collect();
-    // C# `FromCombatPile` presents the surfaced options ordered by
-    // `(Rarity, Id)` (CardSelectCmd.cs:404-409), so the option order is that
-    // presentation sort applied to the StableShuffle-selected subset.
-    let entry_sort = |cards: &[Card], v: &mut Vec<CardUid>| {
-        v.sort_by(|&a, &b| {
-            let ca = &cards[a.0.get() as usize - 1];
-            let cb = &cards[b.0.get() as usize - 1];
-            crate::cards::spec_index::card_rarity_rank_csharp(ca.card_id)
-                .cmp(&crate::cards::spec_index::card_rarity_rank_csharp(
-                    cb.card_id,
-                ))
-                .then_with(|| {
-                    crate::cards::spec_index::card_csharp_entry(ca.card_id)
-                        .cmp(&crate::cards::spec_index::card_csharp_entry(cb.card_id))
-                })
+        // Compute the C#-correct expected subset: sort the FULL pile by
+        // (Entry, upgraded), run the SAME plain shuffle on a fresh state's
+        // combat_card_selection stream, take the first 3.
+        let (state_ref, _) = make_state(seed);
+        let mut sorted: Vec<CardUid> = state_ref.player.draw.to_vec();
+        sorted.sort_by(|&a, &b| {
+            let ca = &state_ref.cards[a.0.get() as usize - 1];
+            let cb = &state_ref.cards[b.0.get() as usize - 1];
+            ca.card_id
+                .to_python_name()
+                .cmp(cb.card_id.to_python_name())
+                .then_with(|| ca.upgraded.cmp(&cb.upgraded))
         });
-    };
-    entry_sort(&state_ref.cards, &mut expected);
+        let mut rng = state_ref.run_rng.combat_card_selection.clone();
+        rng.shuffle(&mut sorted);
+        let mut expected: Vec<CardUid> = sorted.into_iter().take(3).collect();
+        // C# `FromCombatPile` presents the surfaced options ordered by
+        // `(Rarity, Id)` (CardSelectCmd.cs:404-409), so the option order is that
+        // presentation sort applied to the StableShuffle-selected subset.
+        let entry_sort = |cards: &[Card], v: &mut Vec<CardUid>| {
+            v.sort_by(|&a, &b| {
+                let ca = &cards[a.0.get() as usize - 1];
+                let cb = &cards[b.0.get() as usize - 1];
+                crate::cards::spec_index::card_rarity_rank_csharp(ca.card_id)
+                    .cmp(&crate::cards::spec_index::card_rarity_rank_csharp(
+                        cb.card_id,
+                    ))
+                    .then_with(|| {
+                        crate::cards::spec_index::card_csharp_entry(ca.card_id)
+                            .cmp(&crate::cards::spec_index::card_csharp_entry(cb.card_id))
+                    })
+            });
+        };
+        entry_sort(&state_ref.cards, &mut expected);
 
-    let actual: Vec<CardUid> = pc.options.iter().filter_map(|o| o.card_uid).collect();
-    assert_eq!(
-        actual, expected,
-        "options must match a (Entry, upgraded)-keyed StableShuffle, NOT a uid sort \
+        let actual: Vec<CardUid> = pc.options.iter().filter_map(|o| o.card_uid).collect();
+        assert_eq!(
+            actual, expected,
+            "options must match a (Entry, upgraded)-keyed StableShuffle, NOT a uid sort \
          (sts2-rs-i0f30 regression guard for seeds 215/526)"
-    );
+        );
 
-    // Belt-and-suspenders: prove the uid-sort key would produce a DIFFERENT
-    // result, so this test actually discriminates the two keys.
-    let (state_ref2, _) = make_state();
-    let mut uid_sorted: Vec<CardUid> = state_ref2.player.draw.to_vec();
-    uid_sorted.sort(); // CardUid Ord = instance-uid order
-    let mut rng2 = state_ref2.run_rng.combat_card_selection.clone();
-    rng2.shuffle(&mut uid_sorted);
-    let mut uid_keyed: Vec<CardUid> = uid_sorted.into_iter().take(3).collect();
-    entry_sort(&state_ref2.cards, &mut uid_keyed);
-    assert_ne!(
-        actual, uid_keyed,
-        "test must discriminate: uid-sort and (Entry,upgraded)-sort should differ here"
+        // Belt-and-suspenders: prove the uid-sort key would produce a DIFFERENT
+        // result, so this test actually discriminates the two keys.
+        let (state_ref2, _) = make_state(seed);
+        let mut uid_sorted: Vec<CardUid> = state_ref2.player.draw.to_vec();
+        uid_sorted.sort(); // CardUid Ord = instance-uid order
+        let mut rng2 = state_ref2.run_rng.combat_card_selection.clone();
+        rng2.shuffle(&mut uid_sorted);
+        let mut uid_keyed: Vec<CardUid> = uid_sorted.into_iter().take(3).collect();
+        entry_sort(&state_ref2.cards, &mut uid_keyed);
+        if actual != uid_keyed {
+            discriminated = true;
+        }
+    }
+    assert!(
+        discriminated,
+        "test must discriminate: uid-sort and (Entry,upgraded)-sort should differ on some seed"
     );
 }
 

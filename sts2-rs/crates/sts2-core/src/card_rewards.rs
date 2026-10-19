@@ -938,9 +938,12 @@ mod tests {
             elite_hits >= normal_hits,
             "elite (>= via +12.5% bonus): got elite={elite_hits} vs normal={normal_hits}"
         );
-        // Sanity band: both should be roughly in 30-65% (the pity
-        // dynamics oscillate around 45-50%).
-        let band = 1000..=1500;
+        // Sanity band: the pity dynamics settle at ~50% for BOTH normal and
+        // elite (mean over 200 independent seeds, 2000 trials each: normal
+        // 999.5, elite 1000.1 hits). The old band 1000..=1500 had its lower
+        // edge exactly on that mean, so it passed or failed on the seed (998
+        // hits on the 0.111.0 stream). Centre the band on the mean.
+        let band = 900..=1100;
         assert!(
             band.contains(&elite_hits),
             "elite hits {elite_hits} in {band:?}"

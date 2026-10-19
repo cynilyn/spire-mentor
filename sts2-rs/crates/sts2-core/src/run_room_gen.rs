@@ -919,8 +919,23 @@ mod tests {
             (&under[1], &under[2]),
             "acts 2/3 must move with the act-1 cursor shift"
         );
+        // The two cursors end up differently placed. The total difference is NOT
+        // a constant 3: besides the event-pool shuffle (3 more reads for the
+        // 3-longer Overgrowth pool) the room generation has value-dependent
+        // retries, so over 300 seeds the difference is spread over -6..15 (3 on
+        // only 60 of them). Assert what is structural:
+        assert_ne!(
+            rng_o.counter(),
+            rng_u.counter(),
+            "the act-1 variant must move the up_front cursor"
+        );
+        // ... and the shuffle read cost itself: a Fisher-Yates over n items costs n-1 reads.
+        let mut a = Rng::with_name(12345, "up_front");
+        let mut b = Rng::with_name(12345, "up_front");
+        a.shuffle(&mut vec![0_u8; 13 + 18]);
+        b.shuffle(&mut vec![0_u8; 10 + 18]);
         assert_eq!(
-            rng_o.counter() - rng_u.counter(),
+            a.counter() - b.counter(),
             3,
             "Overgrowth's event pool is 3 longer, so its shuffle costs 3 more reads"
         );

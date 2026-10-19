@@ -943,27 +943,37 @@ mod tests {
             win_prob: 1.0,
             hp_frac_lost: 0.1,
         };
-        let rm = fresh_ironclad_run(1);
-        let mut pr = PlanningRun::new(rm, &stub, 0x5EED_5EED);
-        let opening = pr.legal_actions();
-        pr.apply(opening[0], 0);
-        let legal = pr.legal_actions();
-        assert_eq!(
-            legal,
-            vec![RunAction::PickRelicReward, RunAction::SkipRelic],
-            "fixture drifted: expected the post-Neow relic-reward decision"
-        );
-
+        // Which Neow offer the first option is, and whether picking its relic
+        // draws from the run-draw streams, both depend on the seed (the 0.111.0
+        // seed derivation moved seed 1 onto a relic whose pickup is
+        // deterministic). Take the first small seed whose opening choice leads to
+        // the `[PickRelicReward, SkipRelic]` decision AND whose pickup is
+        // stochastic, then assert the node kinds on it.
         let leaf = StubLeafEval { v: 0.5 };
-        let cfg = RunMctsConfig {
-            max_simulations: legal.len() as u32,
-            max_depth: 1,
-            seed: 11,
-            ..Default::default()
-        };
-        let mut planner = RunPlanner::new(&pr, cfg);
-        planner.run_search(&leaf, &UniformPriors);
-        let kinds = planner.root_child_kinds();
+        let kinds = (1..200)
+            .find_map(|seed| {
+                let rm = fresh_ironclad_run(seed);
+                let mut pr = PlanningRun::new(rm, &stub, 0x5EED_5EED);
+                let opening = pr.legal_actions();
+                pr.apply(opening[0], 0);
+                let legal = pr.legal_actions();
+                if legal != vec![RunAction::PickRelicReward, RunAction::SkipRelic] {
+                    return None;
+                }
+                let cfg = RunMctsConfig {
+                    max_simulations: legal.len() as u32,
+                    max_depth: 1,
+                    seed: 11,
+                    ..Default::default()
+                };
+                let mut planner = RunPlanner::new(&pr, cfg);
+                planner.run_search(&leaf, &UniformPriors);
+                let kinds = planner.root_child_kinds();
+                kinds.contains(&RunNodeKind::Chance).then_some(kinds)
+            })
+            .expect(
+                "no seed in 1..200 reaches a post-Neow relic decision with a stochastic pickup",
+            );
         assert_eq!(kinds.len(), 2, "both root actions must be expanded");
         assert!(
             kinds.contains(&RunNodeKind::Chance),
