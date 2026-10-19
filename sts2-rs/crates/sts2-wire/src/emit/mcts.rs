@@ -62,6 +62,9 @@ pub struct RecommendParams {
     /// Explicit EndTurn DPW exponent; `None` keeps the mode's.
     pub endturn_widening_alpha: Option<f32>,
     pub common_random_numbers: bool,
+    /// [`MctsConfig::dominance_pruning`]: drop follow-up card plays whose
+    /// reverse order the engine proves at least as good.
+    pub dominance_pruning: bool,
 }
 
 impl Default for RecommendParams {
@@ -81,6 +84,7 @@ impl Default for RecommendParams {
             endturn_widening_c: None,
             endturn_widening_alpha: None,
             common_random_numbers: false,
+            dominance_pruning: false,
         }
     }
 }
@@ -180,6 +184,9 @@ impl RecommendParams {
         if let Some(v) = obj.get("common_random_numbers").and_then(Value::as_bool) {
             p.common_random_numbers = v;
         }
+        if let Some(v) = obj.get("dominance_pruning").and_then(Value::as_bool) {
+            p.dominance_pruning = v;
+        }
         p.resolve_mode_constants(
             obj.get("c_puct").and_then(num_f32).is_some(),
             explicit_draw_widening,
@@ -236,6 +243,7 @@ impl RecommendParams {
             use_puct_prior: false,
             hidden_info: self.hidden_info,
             common_random_numbers: self.common_random_numbers,
+            dominance_pruning: self.dominance_pruning,
             ..MctsConfig::default()
         };
         cfg.apply_mode_dialect();

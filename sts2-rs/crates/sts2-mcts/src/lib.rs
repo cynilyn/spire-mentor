@@ -60,6 +60,7 @@ use sts2_core::{
 
 pub mod action_index;
 pub mod corpus;
+pub mod dominance;
 pub mod expert;
 pub mod hint;
 pub mod lethal_detector;
@@ -401,6 +402,12 @@ pub struct MctsConfig {
     /// recommender path); a native-arm or play-to-terminal A/B needs the
     /// plumbing extended first.
     pub common_random_numbers: bool,
+    /// Engine-proven move-order pruning (see [`dominance`]). At a decision
+    /// node reached by a card play `b`, drop each follow-up card `a` whose
+    /// `a`-then-`b` order the engine proves at least as good as `b`-then-`a`
+    /// (equal state except strictly less enemy HP). Path-conditional: the
+    /// pruned set is salted into the transposition key. Default `false`.
+    pub dominance_pruning: bool,
     /// Root-pick tolerance band for [`Mcts::pick_root_action`]: among
     /// root children whose (bonus-adjusted) mean value lies within
     /// `tie_eps` of the best, the most-visited child wins. Default
@@ -1040,6 +1047,7 @@ impl Default for MctsConfig {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             loss_w_removed: 0.6,
@@ -1601,6 +1609,10 @@ pub struct MctsNode {
     /// realistic-deck callgrind). 16 keeps moderate hands inline; big
     /// hands still spill once, amortized over the node's life.
     pub untried_actions: SmallVec<[EdgeAction; 16]>,
+    /// Follow-up plays proven dominated on the edge that allocated this
+    /// node ([`MctsConfig::dominance_pruning`]); removed from
+    /// `untried_actions` at expansion. Empty (no allocation) otherwise.
+    pub dominance_pruned: Vec<EdgeAction>,
     /// Recorded for diagnostics + the transposition table. In chance-node
     /// mode this is the RNG-cursor-sensitive [`sts2_core::state_hash`] of the
     /// realized state (diagnostics); transposition uses
@@ -1790,6 +1802,7 @@ impl MctsNode {
             child_visits: SmallVec::new(),
             parent,
             untried_actions: SmallVec::new(),
+            dominance_pruned: Vec::new(),
             state_hash: state_hash_val,
             search_hash: 0,
             kind: NodeKind::Decision,
@@ -3799,6 +3812,10 @@ impl<P: Policy> Mcts<P> {
                     for a in acts {
                         untried.push(EdgeAction::from_action(&a, state_ref));
                     }
+                    let pruned = &self.tree.node(node_id).dominance_pruned;
+                    if !pruned.is_empty() {
+                        untried.retain(|e| !pruned.contains(e));
+                    }
                     // A8 audit §7b: `canonicalize_actions` dedups on
                     // exactly the `EdgeAction::PlayCard` identity tuple,
                     // so no two untried edges may be equal. A duplicate
@@ -4004,6 +4021,7 @@ impl<P: Policy> Mcts<P> {
                                 &work.cards,
                             )
                     };
+                    let action_applied = action.clone();
                     let _ = core_apply(&mut work, action);
                     let stochastic = work.run_rng.combat_counter_fingerprint() != before_fp
                         || work.rng.counter() != before_legacy
@@ -4126,7 +4144,26 @@ impl<P: Policy> Mcts<P> {
                         incoming.push(CHANCE_HOP);
                         node_id = outcome0;
                     } else {
-                        let child = self.chance_alloc_decision(Some(node_id), work, &path);
+                        let pruned = if self.config.dominance_pruning {
+                            self.dominance_pruned_for(&path, &incoming, action_applied, &work)
+                        } else {
+                            Vec::new()
+                        };
+                        let child = if pruned.is_empty() {
+                            self.chance_alloc_decision(Some(node_id), work, &path)
+                        } else {
+                            let sh = sts2_core::search_hash(&work) ^ dominance::salt(&pruned);
+                            let child = self.chance_alloc_decision_with_hash(
+                                Some(node_id),
+                                work,
+                                &path,
+                                sh,
+                            );
+                            if self.tree.node(child).dominance_pruned.is_empty() {
+                                self.tree.node_mut(child).dominance_pruned = pruned;
+                            }
+                            child
+                        };
                         self.tree.node_mut(node_id).children.push((edge, child));
                         self.tree.node_mut(node_id).child_visits.push(0);
                         path.push(child);
@@ -4673,6 +4710,45 @@ impl<P: Policy> Mcts<P> {
     /// `state`. When the transposition table is enabled, chance mode keys it
     /// on the RNG-cursor-insensitive [`sts2_core::search_hash`] so
     /// game-identical states reached via different outcome seeds merge.
+    /// [`dominance::pruned_followups`] for the child reached from the leaf
+    /// `path.last()` by `b`: the line is `b` plus the deterministic same-turn
+    /// card plays that led to the leaf, oldest first, at most
+    /// [`dominance::MAX_LINE`] long.
+    fn dominance_pruned_for(
+        &self,
+        path: &[NodeId],
+        incoming: &[u32],
+        b: Action,
+        child: &CombatState,
+    ) -> Vec<EdgeAction> {
+        let state = |id: NodeId| self.tree.node(id).realized.as_deref();
+        let Some(leaf) = path.last().and_then(|&id| state(id)) else {
+            return Vec::new();
+        };
+        let mut line: Vec<(&CombatState, Action)> = vec![(leaf, b)];
+        for k in (1..path.len()).rev() {
+            if line.len() >= dominance::MAX_LINE {
+                break;
+            }
+            let prev = self.tree.node(path[k - 1]);
+            let Some(prev_state) = prev.realized.as_deref() else {
+                break;
+            };
+            let Some((edge, _)) = usize::try_from(incoming[k])
+                .ok()
+                .and_then(|i| prev.children.get(i))
+            else {
+                break;
+            };
+            match edge.resolve(prev_state) {
+                Some(a @ Action::PlayCard { .. }) => line.push((prev_state, a)),
+                _ => break,
+            }
+        }
+        line.reverse();
+        dominance::pruned_followups(&line, child)
+    }
+
     fn chance_alloc_decision(
         &mut self,
         parent: Option<NodeId>,
@@ -6528,6 +6604,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -6839,6 +6916,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7154,6 +7232,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7525,6 +7604,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7580,6 +7660,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7651,6 +7732,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7703,6 +7785,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7765,6 +7848,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7815,6 +7899,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7881,6 +7966,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -7945,6 +8031,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -9311,6 +9398,7 @@ mod tests {
             chance_max_depth: CHANCE_MAX_DEPTH,
             hidden_info: HiddenInfoMode::Clairvoyant,
             common_random_numbers: false,
+            dominance_pruning: false,
             tie_eps: 0.02,
             loss_gradient: true,
             root_guards: true,
@@ -9730,6 +9818,7 @@ mod tests {
         let bases = |crn: bool| -> (u64, u64) {
             let cfg = MctsConfig {
                 common_random_numbers: crn,
+                dominance_pruning: false,
                 ..chance_cfg(0x5EED_1234, 0)
             };
             let mut m = Mcts::new(state.clone(), cfg);
@@ -9792,6 +9881,7 @@ mod tests {
                 max_rollout_depth: 12,
                 seed: 0x0C12_0001,
                 common_random_numbers: crn,
+                dominance_pruning: false,
                 ..MctsConfig::default()
             };
             let mut m = Mcts::new(make_smoke_state(5), cfg);
@@ -9823,6 +9913,7 @@ mod tests {
         let run = |crn: bool| -> (usize, Vec<(Action, u32, f32)>) {
             let cfg = MctsConfig {
                 common_random_numbers: crn,
+                dominance_pruning: false,
                 ..chance_cfg(0x51DE_51DE, 400)
             };
             let mut m = Mcts::new(permutation_fixture(), cfg);

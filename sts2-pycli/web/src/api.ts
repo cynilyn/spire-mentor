@@ -1146,6 +1146,12 @@ export interface MctsConfig {
    *  "beliefdraw"; 2.0 is the F2-retuned deployed value and travels with
    *  c_puct 2.5 as a set. */
   draw_widening_c: number;
+  /** Drop follow-up card plays whose reverse order the engine proves at least
+   *  as good (`MctsConfig::dominance_pruning`): "Strike, then Beam Cell" is
+   *  pruned because "Beam Cell, then Strike" deals more damage and is
+   *  otherwise identical. Optional so older callers still type-check; absent
+   *  means off. */
+  dominance_pruning?: boolean;
 }
 
 export const DEFAULT_MCTS_CONFIG: MctsConfig = {
@@ -1182,6 +1188,12 @@ export const DEFAULT_MCTS_CONFIG: MctsConfig = {
   // fails if it stops searching like the run agent.
   hidden_info: "beliefdraw",
   draw_widening_c: 2.0,
+  // Workbench-only on purpose: the run agent does not prune. It cuts the
+  // dominated move being the top suggestion from 14.7% to 10.6% of searches
+  // on 2800 engine-proven ordering pairs, at an unchanged fight win rate
+  // (77.40% vs 77.38%, 9000 paired A10 fights). Not a dialect field, so
+  // `search_dialect_parity.rs` still holds.
+  dominance_pruning: true,
 };
 
 /** Below this, the #1 row's Q lead over #2 is inside the search's own

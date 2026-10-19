@@ -19,6 +19,15 @@ describe("MctsControls", () => {
     expect(seen[2].rollout_policy).toBe("uniform");
   });
 
+  it("defaults dominance pruning on and toggles it off", () => {
+    const seen: MctsConfig[] = [];
+    render(<MctsControls config={DEFAULT_MCTS_CONFIG} onChange={(c) => seen.push(c)} />);
+    const prune = screen.getByLabelText(/prune/i, { selector: "input" });
+    expect(prune).toBeChecked();
+    fireEvent.click(prune);
+    expect(seen[0].dominance_pruning).toBe(false);
+  });
+
   it("disables controls while a search is running", () => {
     render(<MctsControls config={DEFAULT_MCTS_CONFIG} onChange={() => {}} disabled />);
     expect(screen.getByLabelText(/sims/i, { selector: "select" })).toBeDisabled();

@@ -6,7 +6,7 @@ const THREAD_CHOICES = [1, 2, 4, 8, 16];
 
 /**
  * Compact inline editor for the MCTS knobs (sims / explore / depth / rollout /
- * seed / threads). Unlike the search-tree modal's draft+run panel, this
+ * seed / prune / threads). Unlike the search-tree modal's draft+run panel, this
  * applies each change immediately via `onChange` — intended for the hint
  * config, where the next hint (H / play-best / autoplay) picks up the new
  * values.
@@ -50,6 +50,10 @@ export default function MctsControls({
       <label title="RNG seed — fixes the determinization draw; change to re-roll">seed{" "}
         <NumberInput min={0} value={config.seed} disabled={disabled} width={80}
           onChange={(v) => setK("seed", v)} />
+      </label>
+      <label title="prune move orders the engine proves dominated — e.g. never search Strike-then-Beam-Cell when Beam-Cell-then-Strike is the same turn with more damage">
+        <input type="checkbox" checked={config.dominance_pruning ?? false} disabled={disabled}
+          onChange={(e) => setK("dominance_pruning", e.target.checked)} />{" "}prune
       </label>
       <label title="root-parallel workers — splits the sim budget across independent trees for a ~Nx wall-clock speedup at the same total sims (needs free cores), at the cost of N shallower trees and a flatter visit distribution. Defaults to 1: one deterministic tree, directly comparable to the search-tree inspector.">threads{" "}
         <select value={config.threads ?? 1} disabled={disabled}

@@ -3,7 +3,7 @@
 //! spec: docs/superpowers/specs/2026-08-15-mcts-highasc-optimization-design.md).
 //!
 //! Plays every corpus fixture to terminal in the DEPLOYED honest
-//! dialect; the 18 knobs listed below are overridable as `k=v` argv
+//! dialect; the 19 knobs listed below are overridable as `k=v` argv
 //! (lightspeed `tune_optuna.py` contract) — this is the arm-E tuning
 //! surface, NOT every `MctsConfig` field (no `rollout_policy`,
 //! `use_quiescence`, `fpu_reduction`, `chance_prove_wins`, SH, …).
@@ -22,7 +22,7 @@
 //!     endturn_widening_c/alpha, tie_eps (0.02),
 //!     loss_gradient (1), loss_w_removed (0.6), loss_w_hp (0.25),
 //!     loss_w_turns (0.15), loss_turns_half_life (8.0), loss_span (0.8),
-//!     loot_weight (1.0), root_guards (1)
+//!     loot_weight (1.0), root_guards (1), dominance_pruning (0)
 //! ```
 //!
 //! Output: one JSONL line per fight, `--out.partial` streamed +
@@ -132,6 +132,8 @@ struct Knobs {
     loss_span: f32,
     loot_weight: f32,
     root_guards: bool,
+    /// `MctsConfig::dominance_pruning` (default off, as deployed).
+    dominance_pruning: bool,
 }
 
 impl Default for Knobs {
@@ -160,6 +162,7 @@ impl Default for Knobs {
             loss_span: d.loss_span,
             loot_weight: d.loot_weight,
             root_guards: true,
+            dominance_pruning: d.dominance_pruning,
         }
     }
 }
@@ -204,13 +207,14 @@ impl Knobs {
             "loss_span" => self.loss_span = f32_of(key, val),
             "loot_weight" => self.loot_weight = f32_of(key, val),
             "root_guards" => self.root_guards = bool_of(key, val),
+            "dominance_pruning" => self.dominance_pruning = bool_of(key, val),
             other => panic!(
                 "unknown knob {other:?} — typo? known knobs: sims, depth, c_puct, \
                  chance_widening_c, chance_widening_alpha, draw_widening_c, \
                  draw_widening_alpha, endturn_widening_c, endturn_widening_alpha, \
                  tie_eps, loss_gradient, loss_w_removed, loss_w_hp, \
                  loss_w_turns, loss_turns_half_life, loss_span, loot_weight, \
-                 root_guards"
+                 root_guards, dominance_pruning"
             ),
         }
     }
@@ -236,7 +240,7 @@ Knobs (bare k=v tokens): sims (1000), depth (200), c_puct (2.5), \
 chance_widening_c/alpha, draw_widening_c (2.0)/alpha, endturn_widening_c/alpha, \
 tie_eps (0.02), loss_gradient (1), loss_w_removed (0.6), \
 loss_w_hp (0.25), loss_w_turns (0.15), loss_turns_half_life (8.0), \
-loss_span (0.8), loot_weight (1.0), root_guards (1)";
+loss_span (0.8), loot_weight (1.0), root_guards (1), dominance_pruning (0)";
 
 fn parse_args() -> Args {
     let mut corpus: Option<PathBuf> = None;
@@ -326,6 +330,7 @@ fn deployed_config(k: &Knobs, seed: u64) -> MctsConfig {
     c.loss_span = k.loss_span;
     c.loot_weight = k.loot_weight;
     c.root_guards = k.root_guards;
+    c.dominance_pruning = k.dominance_pruning;
     c
 }
 
