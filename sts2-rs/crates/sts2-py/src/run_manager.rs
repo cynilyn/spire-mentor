@@ -112,6 +112,9 @@ fn act_map_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObject
 pub struct PyRunManager {
     pub(crate) inner: RunManager,
     seed: u64,
+    /// The seed string this run was built from (`None` for a numeric seed);
+    /// only `rng_dump` reads it, to echo `seed_string`/`input_seed`/`prefix`.
+    seed_string: Option<String>,
     /// When `true`, the live combat records its card play-log (workbench event
     /// log). Default false; only the workbench enables it. Propagated onto the
     /// live `CombatState` so it survives combat-start resets of `TurnEvents`.
@@ -302,6 +305,7 @@ impl PyRunManager {
         Ok(Self {
             inner,
             seed: effective_seed,
+            seed_string: string_seed.map(str::to_owned),
             record_card_plays: false,
             record_combat_log: false,
         })
@@ -602,6 +606,75 @@ impl PyRunManager {
     /// vs C#'s advanced `up_front` is the run-RNG divergence signal).
     fn rng_counters(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         crate::value_to_pydict(py, &emit_rm::rng_counters(&self.inner)).map(Bound::unbind)
+    }
+
+    /// Dump every named RNG stream the run derives, in the schema of the
+    /// oracle's `dump_rng_trace` (v0.111.0 seed-hash port, W1-W4): both seed
+    /// bases, 22 streams (12 run + 3 player + `act_selection` + `act_1/2/3_map`
+    /// + `event:NEOW` + the current act's first event + its first normal
+    /// encounter) plus the Rust-only `run_manager`, the 10 model→stream
+    /// correspondences, and `src_hash`.
+    ///
+    /// `draws` are taken on a fresh generator at each stream's seed (counter
+    /// 0); `current`/`next_draws` appear only for streams the run holds live
+    /// (see `emit::rng_dump`). **Read-only**: all draws run on clones, so
+    /// `get_state` and `rng_counters` are identical before and after.
+    ///
+    /// `schedule` is a list of `{"call": "NextInt"|"NextFloat"|"NextDouble"|
+    /// "NextBool", "args": [...]}` cycled over the `n` draws (default
+    /// `NextInt(0,100)`, `NextFloat()`, `NextInt(100)`). `NextInt(min,max)` and
+    /// `NextInt(n)` are half-open. `predict_next_floor` adds the oracle's `+1`
+    /// to the `encounter:*` prediction. Raises `ValueError` on a bad schedule
+    /// entry or `n` outside `0..=10000`.
+    #[pyo3(signature = (n = 10, schedule = None, predict_next_floor = true))]
+    fn rng_dump(
+        &self,
+        py: Python<'_>,
+        n: usize,
+        schedule: Option<&Bound<'_, PyList>>,
+        predict_next_floor: bool,
+    ) -> PyResult<Py<PyDict>> {
+        use sts2_wire::emit::rng_dump::{rng_dump, TraceCall};
+        if n > 10_000 {
+            return Err(PyValueError::new_err("rng_dump: n out of range (0..=10000)"));
+        }
+        let parsed: Option<Vec<TraceCall>> = match schedule {
+            None => None,
+            Some(list) => {
+                let mut out = Vec::with_capacity(list.len());
+                for item in list.iter() {
+                    let d = item.downcast::<PyDict>()?;
+                    let call: String = d
+                        .get_item("call")?
+                        .ok_or_else(|| PyValueError::new_err("rng_dump: schedule item lacks `call`"))?
+                        .extract()?;
+                    let args: Vec<i64> = match d.get_item("args")? {
+                        Some(a) => a.extract()?,
+                        None => Vec::new(),
+                    };
+                    out.push(TraceCall::parse(&call, &args).ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "rng_dump: bad schedule item {call:?} with args {args:?}"
+                        ))
+                    })?);
+                }
+                Some(out)
+            }
+        };
+        let mut v = rng_dump(
+            &self.inner,
+            n,
+            parsed.as_deref(),
+            predict_next_floor,
+            self.seed_string.as_deref(),
+        );
+        if let serde_json::Value::Object(m) = &mut v {
+            m.insert(
+                "src_hash".to_owned(),
+                serde_json::Value::String(crate::src_hash()),
+            );
+        }
+        crate::value_to_pydict(py, &v).map(Bound::unbind)
     }
 
     /// Restore this run's RNG cursors from a live-game snapshot.
