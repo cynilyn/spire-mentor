@@ -165,6 +165,27 @@ pub fn enchant_block_additive(card: &crate::cards::Card) -> i32 {
     total
 }
 
+/// Extra plays granted by the played card's Glam enchantment (B13).
+///
+/// C# `Glam.EnchantPlayCount` (`Glam.cs:34-40`) returns
+/// `originalPlayCount + Times` (canonical `Times = 1`, independent of the
+/// enchantment amount) until `UsedThisCombat` latches in `AfterCardPlayed`;
+/// `CardModel.GeneratePlayCount` folds it in BEFORE `ModifyCardPlayCount`.
+/// The latch lives in [`GLAM_USED_BIT`] (set by
+/// [`dispatch_after_card_played`]). Spiral's identical bonus is deliberately
+/// not wired here (out of the 0c repair scope; see the sts2-content
+/// `enchant_play_count_bonus`).
+#[must_use]
+pub fn enchant_glam_play_count_bonus(card: &crate::cards::Card) -> i32 {
+    if card.has_enchantment(EnchantmentId::Glam)
+        && (card.combat_var(VarKey::Generic) & GLAM_USED_BIT) == 0
+    {
+        1
+    } else {
+        0
+    }
+}
+
 /// Returns `true` if any card in `pile` has at least one enchantment
 /// stack. The caller uses this for the per-channel empty-bus
 /// early-out — if the pile is enchantment-free the dispatch loop is
@@ -1110,6 +1131,19 @@ mod tests {
             0b10,
             "Glam-used bit set on after_card_played"
         );
+    }
+
+    /// B13: Glam's first-use play-count bonus is +1 until the used bit
+    /// latches (set by `dispatch_after_card_played`), then 0.
+    #[test]
+    fn glam_play_count_bonus_first_use_only() {
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Glam, 1);
+        assert_eq!(enchant_glam_play_count_bonus(&state.cards[0]), 1);
+        dispatch_after_card_played(&mut state, uid(1));
+        assert_eq!(enchant_glam_play_count_bonus(&state.cards[0]), 0);
+        // A card without Glam never gets the bonus.
+        let plain = make_card(2, false);
+        assert_eq!(enchant_glam_play_count_bonus(&plain), 0);
     }
 
     /// Spiral: query-only play-count bonus; dispatch sites are inert.
