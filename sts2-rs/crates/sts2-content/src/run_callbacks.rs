@@ -1533,6 +1533,103 @@ mod tests {
         );
     }
 
+    /// Real reward generation -> pick, through `RunManager`: a Neow Lost Coffer
+    /// card reward with the COMBAT roller (so offer-time relic enchantments ride
+    /// `card_reward_enchantments`), holding `relic`. Returns the offered ids, the
+    /// picked option index chosen by `choose` and the deck card that was added.
+    fn reward_pick_with_relic(
+        seed: i32,
+        relic: RelicId,
+        choose: impl Fn(&[sts2_core::cards::CardId]) -> Option<usize>,
+    ) -> Option<(Vec<sts2_core::cards::CardId>, usize, sts2_core::cards::Card)> {
+        use sts2_core::run_manager::{Phase, RunAction, RunManager};
+        use sts2_core::NeowRelic;
+        crate::relics::dispatch::ensure_installed();
+        let mut cb = ironclad_content_callbacks();
+        // Route the Lost Coffer card reward through the combat roller.
+        cb.generate_noncombat_card_reward_options = None;
+        let mut rm = RunManager::new(seed, CharacterId::Ironclad)
+            .with_content_callbacks(cb)
+            .with_neow_start();
+        rm.run_state.direct_event_relic_grant = true;
+        let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+        offers.positive_2 = NeowRelic::LostCoffer;
+        rm.run_state.neow_offers = Some(offers);
+        rm.run_state.relics.push(relic);
+        rm.take_action(RunAction::EventChoice { idx: 1 });
+        assert_eq!(rm.phase(), Phase::CardReward);
+        let offered = rm.card_reward_options().to_vec();
+        let idx = choose(&offered)?;
+        let before = rm.run_state.master_deck.len();
+        rm.take_action(RunAction::PickCardReward { idx: Some(idx) });
+        assert_eq!(rm.run_state.master_deck.len(), before + 1, "card added");
+        let card = *rm.run_state.master_deck.last().expect("picked card");
+        Some((offered, idx, card))
+    }
+
+    /// Codex r3 P1: FresnelLens stamps `Nimble(2)` at offer time AND has a
+    /// deck-add hook. C# `TryModifyCardBeingAddedToDeck` re-checks `CanEnchant`
+    /// (`FresnelLens.cs:44-47`) and a card that already has an enchantment is
+    /// rejected (`EnchantmentModel.cs:289`), so the picked card ends with
+    /// `Nimble(2)`, never `Nimble(4)`; a card that gains no block gets none.
+    #[test]
+    fn fresnel_lens_reward_pick_enters_deck_with_nimble_2_not_4() {
+        use sts2_core::cards::EnchantmentId;
+        let pool = crate::names::deck_card_spec_pool();
+        let gains_block = |id: &sts2_core::cards::CardId| {
+            pool.iter().find(|s| s.id == *id).is_some_and(|s| s.base_block > 0)
+        };
+        let mut checked_eligible = false;
+        let mut checked_ineligible = false;
+        for seed in 0..60 {
+            if !checked_eligible {
+                if let Some((offered, idx, card)) = reward_pick_with_relic(
+                    seed,
+                    RelicId::FresnelLens,
+                    |o| o.iter().position(|id| gains_block(id)),
+                ) {
+                    assert!(gains_block(&offered[idx]));
+                    assert_eq!(
+                        card.enchantment(EnchantmentId::Nimble),
+                        2,
+                        "eligible reward card: Nimble(2), never Nimble(4) (seed {seed})"
+                    );
+                    checked_eligible = true;
+                }
+            }
+            if !checked_ineligible {
+                if let Some((_, _, card)) = reward_pick_with_relic(
+                    seed,
+                    RelicId::FresnelLens,
+                    |o| o.iter().position(|id| !gains_block(id)),
+                ) {
+                    assert_eq!(
+                        card.enchantment(EnchantmentId::Nimble),
+                        0,
+                        "a card that gains no block cannot take Nimble (seed {seed})"
+                    );
+                    checked_ineligible = true;
+                }
+            }
+            if checked_eligible && checked_ineligible {
+                break;
+            }
+        }
+        assert!(checked_eligible, "found a seed offering a block card");
+        assert!(checked_ineligible, "found a seed offering a non-block card");
+    }
+
+    /// SilkenTress -> Glam(1) survives the pick (0c P0A17), and the one-time
+    /// `IsUsed` latch means nothing else is enchanted.
+    #[test]
+    fn silken_tress_reward_pick_enters_deck_with_glam_1() {
+        use sts2_core::cards::EnchantmentId;
+        let (_, _, card) =
+            reward_pick_with_relic(3, RelicId::SilkenTress, |o| (!o.is_empty()).then_some(0))
+                .expect("a reward to pick");
+        assert_eq!(card.enchantment(EnchantmentId::Glam), 1, "Glam(1) after pick");
+    }
+
     /// Task #19 end-to-end: `generate_boss_relic_pool` returns the NEXT
     /// act's Ancient-event offers (3 distinct relics) for an initialized
     /// run, not the flat shop_event stand-in. Bead `sts2-rs-40ikw`.
