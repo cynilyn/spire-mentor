@@ -210,6 +210,11 @@ class RecommendConfig:
     # approximation). Judge it on per-decision STABILITY (flip rate, modal
     # share), not on a 60-seed win rate that noise dominates.
     common_random_numbers: bool = False
+    # Engine-proven move-order pruning (``MctsConfig::dominance_pruning``):
+    # drop a follow-up card play when playing it earlier in the same turn is
+    # proven at least as good. Off here, matching the run agent; the browser
+    # workbench turns it on (``DEFAULT_MCTS_CONFIG``).
+    dominance_pruning: bool = False
     # Optional path to a JSONL log file. When set, every recommend()
     # call appends one line with the full per-action MCTS output plus
     # a state digest, for post-hoc analysis.
@@ -693,6 +698,7 @@ def recommend_all(game: Any, cfg: RecommendConfig | None = None) -> list[HintTag
         endturn_widening_c=cfg.endturn_widening_c,
         endturn_widening_alpha=cfg.endturn_widening_alpha,
         common_random_numbers=cfg.common_random_numbers,
+        dominance_pruning=cfg.dominance_pruning,
     )
 
     if cfg.log_path:
@@ -747,6 +753,7 @@ def search_tree(game: Any, cfg: RecommendConfig | None = None) -> dict[str, Any]
         draw_widening_c=cfg.resolved_draw_widening_c(),
         endturn_widening_c=cfg.endturn_widening_c,
         endturn_widening_alpha=cfg.endturn_widening_alpha,
+        dominance_pruning=cfg.dominance_pruning,
     )
 
 
@@ -806,6 +813,7 @@ def recommend(game: Any, cfg: RecommendConfig | None = None) -> dict[int, HintTa
         endturn_widening_c=cfg.endturn_widening_c,
         endturn_widening_alpha=cfg.endturn_widening_alpha,
         common_random_numbers=cfg.common_random_numbers,
+        dominance_pruning=cfg.dominance_pruning,
     )
 
     if cfg.log_path:

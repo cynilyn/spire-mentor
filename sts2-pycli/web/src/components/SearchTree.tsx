@@ -67,7 +67,8 @@ export default function SearchTree({
   const dirty =
     draft.sims !== config.sims || draft.c_puct !== config.c_puct ||
     draft.depth !== config.depth || draft.rollout_policy !== config.rollout_policy ||
-    draft.seed !== config.seed;
+    draft.seed !== config.seed ||
+    (draft.dominance_pruning ?? false) !== (config.dominance_pruning ?? false);
   const setK = <K extends keyof MctsConfig>(k: K, v: MctsConfig[K]) =>
     setDraft((d) => ({ ...d, [k]: v }));
   const run = () => onRun(draft);
@@ -484,6 +485,10 @@ export default function SearchTree({
             <NumberInput min={0} value={draft.seed} disabled={busy} width={72}
               onKeyDown={(e) => e.key === "Enter" && dirty && run()}
               onChange={(v) => setK("seed", v)} />
+          </label>
+          <label title="prune move orders the engine proves dominated — e.g. never search Strike-then-Beam-Cell when Beam-Cell-then-Strike is the same turn with more damage">
+            <input type="checkbox" checked={draft.dominance_pruning ?? false} disabled={busy}
+              onChange={(e) => setK("dominance_pruning", e.target.checked)} />{" "}prune
           </label>
           <button onClick={() => setK("seed", draft.seed + 1)} disabled={busy} title="re-roll: bump the seed"
             style={{ padding: "2px 8px", border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer" }}>🎲</button>
