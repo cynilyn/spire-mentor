@@ -39,7 +39,11 @@ use sts2_core::runstate::RoomType;
 /// Panics if the loop hits `ActionResult::NotImplemented` (that is the
 /// acceptance failure mode — the goal requires NO NotImplemented).
 fn drive_run(seed: i32) -> RunSummary {
-    let mut rm = new_ironclad_run_manager_with_deck_and_hp(u64::from(seed as u32), stacked_test_deck(), Some(400));
+    let mut rm = new_ironclad_run_manager_with_deck_and_hp(
+        u64::from(seed as u32),
+        stacked_test_deck(),
+        Some(400),
+    );
     let mut visited_phases: HashSet<Phase> = HashSet::new();
     let mut visited_rooms: BTreeSet<RoomType> = BTreeSet::new();
     let mut step_budget = 100_000_i32; // hard ceiling — run must terminate.

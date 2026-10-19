@@ -5740,7 +5740,8 @@ mod tests {
         for seed in 0..200_i32 {
             let (mut state, _enemy) = fresh_state_with_one_enemy();
             state.player.orbs = crate::orbs::OrbSlots::with_capacity(3);
-            state.run_rng.combat_orbs = crate::dotnet_rng::Rng::with_name(u64::from(seed as u32), "combat_orbs");
+            state.run_rng.combat_orbs =
+                crate::dotnet_rng::Rng::with_name(u64::from(seed as u32), "combat_orbs");
             grant_player_power(&mut state, PowerKind::TrashToTreasure, 1);
             state.player.play.push(CardUid::new(999).expect("nz"));
             let _ = spawn_card_into_pile(

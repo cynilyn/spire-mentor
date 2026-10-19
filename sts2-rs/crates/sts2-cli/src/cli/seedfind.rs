@@ -656,7 +656,8 @@ fn collect_driven(
     for path in 0..paths.max(1) {
         // Vary the policy seed per path so distinct paths are sampled, while
         // keeping the run seed (and thus the content) fixed.
-        let policy_seed = (seed.wrapping_add(u64::from(path).wrapping_mul(0x9E37_79B9)) as u32) as i32;
+        let policy_seed =
+            (seed.wrapping_add(u64::from(path).wrapping_mul(0x9E37_79B9)) as u32) as i32;
         let mut rm = ready_run_manager(seed, character, ascension);
         let mut policy = CollectingPolicy::from_run_seed(policy_seed);
         let _ = drive_full_run(&mut rm, &mut policy, &cfg);

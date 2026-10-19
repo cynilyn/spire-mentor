@@ -234,10 +234,12 @@ impl PyRunManager {
                     .map(|s| card_id_from_str(s))
                     .collect::<PyResult<Vec<_>>>()?;
                 match string_seed {
-                    Some(s) => new_ironclad_run_manager_with_deck_and_hp_from_string_seed(
-                        s, cards, max_hp,
-                    ),
-                    None => new_ironclad_run_manager_with_deck_and_hp(effective_seed, cards, max_hp),
+                    Some(s) => {
+                        new_ironclad_run_manager_with_deck_and_hp_from_string_seed(s, cards, max_hp)
+                    }
+                    None => {
+                        new_ironclad_run_manager_with_deck_and_hp(effective_seed, cards, max_hp)
+                    }
                 }
             }
         };
@@ -636,7 +638,9 @@ impl PyRunManager {
     ) -> PyResult<Py<PyDict>> {
         use sts2_wire::emit::rng_dump::{rng_dump, TraceCall};
         if n > 10_000 {
-            return Err(PyValueError::new_err("rng_dump: n out of range (0..=10000)"));
+            return Err(PyValueError::new_err(
+                "rng_dump: n out of range (0..=10000)",
+            ));
         }
         let parsed: Option<Vec<TraceCall>> = match schedule {
             None => None,
@@ -646,7 +650,9 @@ impl PyRunManager {
                     let d = item.downcast::<PyDict>()?;
                     let call: String = d
                         .get_item("call")?
-                        .ok_or_else(|| PyValueError::new_err("rng_dump: schedule item lacks `call`"))?
+                        .ok_or_else(|| {
+                            PyValueError::new_err("rng_dump: schedule item lacks `call`")
+                        })?
                         .extract()?;
                     let args: Vec<i64> = match d.get_item("args")? {
                         Some(a) => a.extract()?,

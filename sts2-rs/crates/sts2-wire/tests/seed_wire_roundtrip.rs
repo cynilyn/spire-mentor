@@ -34,7 +34,10 @@ fn old_p0a0_round_trips_both_bases_and_the_next_player_draw() {
     let original = state_with_seed("oldP0A0", 3, 2);
     let wire = combat_state_to_value(&original).expect("emit");
     assert_eq!(wire["rng"]["run_seed"], json!(273_692_109_u64));
-    assert_eq!(wire["rng"]["player_seed"], json!(15_676_685_915_450_073_139_u64));
+    assert_eq!(
+        wire["rng"]["player_seed"],
+        json!(15_676_685_915_450_073_139_u64)
+    );
 
     // Through JSON text, so the u64 > i64::MAX value really crosses a parser.
     let text = serde_json::to_string(&wire).expect("to text");
@@ -60,8 +63,14 @@ fn old_p0a0_round_trips_both_bases_and_the_next_player_draw() {
 fn seeds_above_i64_max_survive_the_wire() {
     let original = state_with_seed("P0A0", 1, 0);
     let wire = combat_state_to_value(&original).expect("emit");
-    assert_eq!(wire["rng"]["run_seed"], json!(10_883_704_133_362_413_376_u64));
-    assert_eq!(wire["rng"]["player_seed"], json!(10_883_704_133_362_413_376_u64));
+    assert_eq!(
+        wire["rng"]["run_seed"],
+        json!(10_883_704_133_362_413_376_u64)
+    );
+    assert_eq!(
+        wire["rng"]["player_seed"],
+        json!(10_883_704_133_362_413_376_u64)
+    );
     let text = serde_json::to_string(&wire).expect("to text");
     let restored = state_from_json(&serde_json::from_str(&text).unwrap()).expect("import");
     assert_eq!(restored.run_rng.seed, 10_883_704_133_362_413_376);
@@ -96,5 +105,8 @@ fn seed_string_recovers_the_player_base_and_must_agree_with_run_seed() {
     assert_eq!(restored.run_rng.rewards.counter(), 2);
 
     wire["rng"] = json!({"run_seed": 1_u64, "seed_string": "oldP0A0"});
-    assert!(state_from_json(&wire).is_err(), "a string that does not hash to run_seed is rejected");
+    assert!(
+        state_from_json(&wire).is_err(),
+        "a string that does not hash to run_seed is rejected"
+    );
 }

@@ -4350,7 +4350,8 @@ mod tests {
             let total_before = p.draw.len() + p.discard.len() + p.hand.len();
             let hand_before = p.hand.len();
 
-            let mut draw_rng = crate::dotnet_rng::Rng::new(u64::from((seed.wrapping_mul(31)) as u32));
+            let mut draw_rng =
+                crate::dotnet_rng::Rng::new(u64::from((seed.wrapping_mul(31)) as u32));
             let moved = draw(&mut p, request, &empty_store(), &mut draw_rng);
 
             let total_after = p.draw.len() + p.discard.len() + p.hand.len();

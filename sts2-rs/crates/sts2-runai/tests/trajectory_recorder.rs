@@ -52,8 +52,12 @@ const DEATH_SEED: i32 = 2;
 /// the shared C#-faithful setup), mirroring `arena::new_arena_run_manager`.
 fn build_run(seed: i32) -> RunManager {
     sts2_runai::rollout::ensure_content_installed();
-    let mut rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), CharacterId::Ironclad, 0)
-        .with_neow_start();
+    let mut rm = new_run_manager_for_character_with_ascension(
+        u64::from(seed as u32),
+        CharacterId::Ironclad,
+        0,
+    )
+    .with_neow_start();
     rm.run_state.interactive_card_removal = true;
     rm.run_state.interactive_card_upgrade = true;
     rm.run_state.interactive_card_transform = true;

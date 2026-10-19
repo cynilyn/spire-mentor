@@ -981,7 +981,11 @@ mod tests {
         // Seeds that panicked before the fix (all hit GrantDeckCard during MapChoice).
         for seed in [5_i32, 6, 11, 24, 34] {
             ensure_content_installed();
-            let rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), CharacterId::Ironclad, 0);
+            let rm = new_run_manager_for_character_with_ascension(
+                u64::from(seed as u32),
+                CharacterId::Ironclad,
+                0,
+            );
             let mut rm = rm.with_neow_start();
             initialize_run_setup(&mut rm);
             let mut policy = SampledDeckPolicy::new(Weights::default(), seed, 0);

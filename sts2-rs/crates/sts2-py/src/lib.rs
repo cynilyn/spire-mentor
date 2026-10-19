@@ -2882,7 +2882,8 @@ fn rollouts(state: &PyCombatState, n: u64) -> PyResult<PyObject> {
 
     for offset in 0..n {
         let mut s = state.inner.clone();
-        s.rng = sts2_core::dotnet_rng::Rng::new(u64::from((state.seed.wrapping_add(offset)) as u32));
+        s.rng =
+            sts2_core::dotnet_rng::Rng::new(u64::from((state.seed.wrapping_add(offset)) as u32));
         let (won, turns) = run_playout(&mut s);
         if won {
             wins += 1;

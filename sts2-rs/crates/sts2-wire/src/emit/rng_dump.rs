@@ -61,12 +61,19 @@ impl TraceCall {
         }
         // `NextInt` ranges must be non-empty or the draw would panic.
         if call == "NextInt" {
-            let (lo, hi) = if args.len() == 1 { (0, args[0]) } else { (args[0], args[1]) };
+            let (lo, hi) = if args.len() == 1 {
+                (0, args[0])
+            } else {
+                (args[0], args[1])
+            };
             if lo >= hi || i32::try_from(lo).is_err() || i32::try_from(hi).is_err() {
                 return None;
             }
         }
-        Some(Self { call: call.to_owned(), args: args.to_vec() })
+        Some(Self {
+            call: call.to_owned(),
+            args: args.to_vec(),
+        })
     }
 }
 
@@ -74,9 +81,18 @@ impl TraceCall {
 #[must_use]
 pub fn default_schedule() -> Vec<TraceCall> {
     vec![
-        TraceCall { call: "NextInt".into(), args: vec![0, 100] },
-        TraceCall { call: "NextFloat".into(), args: vec![] },
-        TraceCall { call: "NextInt".into(), args: vec![100] },
+        TraceCall {
+            call: "NextInt".into(),
+            args: vec![0, 100],
+        },
+        TraceCall {
+            call: "NextFloat".into(),
+            args: vec![],
+        },
+        TraceCall {
+            call: "NextInt".into(),
+            args: vec![100],
+        },
     ]
 }
 
@@ -161,7 +177,14 @@ const fn arg_i32(v: i64) -> i32 {
 
 /// One `streams.<name>` entry. `seed` is the stream's construction seed;
 /// `live` is the engine's own object when it holds one.
-fn stream(scope: &str, formula: &str, seed: u64, live: Option<&Rng>, n: usize, sch: &[TraceCall]) -> Value {
+fn stream(
+    scope: &str,
+    formula: &str,
+    seed: u64,
+    live: Option<&Rng>,
+    n: usize,
+    sch: &[TraceCall],
+) -> Value {
     let initial = Rng::new(seed);
     let mut d = obj();
     set(&mut d, "scope", scope);
@@ -232,7 +255,14 @@ pub fn rng_dump(
     for (name, live) in run_streams {
         streams.insert(
             name.to_owned(),
-            stream("run", "run_seed + hash(name)", run_seed.wrapping_add(h(name)), Some(live), n, sch),
+            stream(
+                "run",
+                "run_seed + hash(name)",
+                run_seed.wrapping_add(h(name)),
+                Some(live),
+                n,
+                sch,
+            ),
         );
     }
     // Player-level streams.
@@ -269,7 +299,17 @@ pub fn rng_dump(
     for a in 1..=3 {
         let nm = format!("act_{a}_map");
         let seed = run_seed.wrapping_add(h(&nm));
-        streams.insert(nm, stream("derived", "run_seed + hash(\"act_N_map\")", seed, None, n, sch));
+        streams.insert(
+            nm,
+            stream(
+                "derived",
+                "run_seed + hash(\"act_N_map\")",
+                seed,
+                None,
+                n,
+                sch,
+            ),
+        );
     }
 
     // Event streams: `run_seed + slot 0 + H(event id)`. The first event of
@@ -314,7 +354,8 @@ pub fn rng_dump(
     // (C# counts the Ancient event as a history entry); the oracle dumps the
     // *next* floor, `+ 1`.
     if !enc_id.is_empty() {
-        let floor = i64::from(rs.total_floor) + i64::from(rs.act_index) + i64::from(predict_next_floor);
+        let floor =
+            i64::from(rs.total_floor) + i64::from(rs.act_index) + i64::from(predict_next_floor);
         #[allow(clippy::cast_sign_loss)]
         let floor_u = floor.max(0) as u64;
         streams.insert(
@@ -425,7 +466,10 @@ mod tests {
         assert_eq!(csharp_slugify("FurCoat"), "FUR_COAT");
         assert_eq!(csharp_slugify("WhisperingHollow"), "WHISPERING_HOLLOW");
         assert_eq!(csharp_slugify("RanwidTheElder"), "RANWID_THE_ELDER");
-        assert_eq!(csharp_slugify("TheFutureOfPotions"), "THE_FUTURE_OF_POTIONS");
+        assert_eq!(
+            csharp_slugify("TheFutureOfPotions"),
+            "THE_FUTURE_OF_POTIONS"
+        );
         assert_eq!(csharp_slugify("Neow"), "NEOW");
         // Consecutive capitals: each boundary gets an underscore (`\G` anchor).
         assert_eq!(csharp_slugify("ABc"), "A_BC");

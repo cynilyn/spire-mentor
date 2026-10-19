@@ -557,7 +557,10 @@ mod tests {
         let c = cond();
         for a in ancients {
             for seed in 0..64i32 {
-                let mut rng = event_rng(u64::from((seed.wrapping_mul(2_654_435_761u32 as i32)) as u32), a);
+                let mut rng = event_rng(
+                    u64::from((seed.wrapping_mul(2_654_435_761u32 as i32)) as u32),
+                    a,
+                );
                 let offers = roll_offers(a, &mut rng, &c);
                 assert_eq!(offers.len(), 3, "{a:?} offered {} relics", offers.len());
                 assert!(

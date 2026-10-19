@@ -1921,8 +1921,9 @@ fn main() -> ExitCode {
             .filter(|(local, _)| !local.is_empty());
         }
 
-        let mut enc_rng =
-            sts2_core::dotnet_rng::Rng::new(u64::from((combat_seed ^ 0x5151_5151_5151_5151) as u32));
+        let mut enc_rng = sts2_core::dotnet_rng::Rng::new(u64::from(
+            (combat_seed ^ 0x5151_5151_5151_5151) as u32,
+        ));
         let enc_idx =
             encounter_pool[enc_rng.next_int_exclusive(0, encounter_pool.len() as i32) as usize];
         let enc = &ACT1_ENCOUNTERS[enc_idx];
@@ -3388,7 +3389,9 @@ fn build_combat_state(
         side: Side::Player,
         rng: sts2_core::dotnet_rng::Rng::new(u64::from((seed.wrapping_add(0x9e37_79b9)) as u32)),
 
-        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from((seed.wrapping_add(0x9e37_79b9)) as u32)),
+        run_rng: sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(
+            (seed.wrapping_add(0x9e37_79b9)) as u32,
+        )),
         creatures,
         cards: cards_arena.into(),
         powers: Vec::new().into(),

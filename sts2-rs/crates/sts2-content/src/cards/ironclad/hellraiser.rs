@@ -232,7 +232,8 @@ mod tests {
         // while still pinning the rolled-target behaviour.
         let seed = (0_i32..10_000)
             .find(|&s| {
-                let mut probe = sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(s as u32));
+                let mut probe =
+                    sts2_core::run_rng_set::RunRngSet::from_run_seed(u64::from(s as u32));
                 probe.combat_targets.next_int_exclusive(0, 2) == 1
             })
             .expect("a seed exists whose first 2-element CombatTargets roll is slot 1");

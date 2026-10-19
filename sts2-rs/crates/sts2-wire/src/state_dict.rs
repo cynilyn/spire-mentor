@@ -744,71 +744,72 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
     }
 
     // Optional `rng` block. Every key inside is optional individually.
-    let (rng_seed, ascension, run_seed, player_seed, seed_string, rng_counters) = if let Some(rng_val) =
-        extract_optional(d, "rng")
-    {
-        let rng_dict = as_dict(&rng_val, "$.rng")?;
-        // `as_u64`, not `as_i64` — a seed above `i64::MAX` is ordinary and
-        // the `PyO3` path accepted it.
-        let seed = if let Some(v) = extract_optional(&rng_dict, "seed") {
-            Some(
-                v.as_u64()
-                    .ok_or_else(|| schema_err("$.rng.seed", "must be a u64"))?,
-            )
-        } else {
-            None
-        };
-        let asc = if let Some(v) = extract_optional(&rng_dict, "ascension") {
-            v.as_i64()
-                .and_then(|n| u8::try_from(n).ok())
-                .ok_or_else(|| schema_err("$.rng.ascension", "must be a u8"))?
-        } else {
-            0
-        };
-        // The RUN's own dice: the once-hashed master seed plus each stream's
-        // read count. A producer that carries them puts the reconstruction on
-        // the exact roll the world is about to make; one that doesn't leaves
-        // the streams unrelated to the game's, and every intent the state
-        // predicts is a guess.
-        // v0.111.0 `RunRngSet.Seed` and the player base are `ulong`: parse
-        // unsigned (`as_u64`), a value above `i64::MAX` is ordinary.
-        let run_seed = match extract_optional(&rng_dict, "run_seed") {
-            Some(v) => Some(
-                v.as_u64()
-                    .ok_or_else(|| schema_err("$.rng.run_seed", "must be a u64"))?,
-            ),
-            None => None,
-        };
-        let player_seed = match extract_optional(&rng_dict, "player_seed") {
-            Some(v) => Some(
-                v.as_u64()
-                    .ok_or_else(|| schema_err("$.rng.player_seed", "must be a u64"))?,
-            ),
-            None => None,
-        };
-        let seed_string = match extract_optional(&rng_dict, "seed_string") {
-            Some(v) => Some(
-                v.as_str()
-                    .ok_or_else(|| schema_err("$.rng.seed_string", "must be a string"))?
-                    .to_owned(),
-            ),
-            None => None,
-        };
-        let mut counters: Vec<(String, u32)> = Vec::new();
-        if let Some(v) = extract_optional(&rng_dict, "counters") {
-            for (name, val) in as_entries(&v, "$.rng.counters")? {
-                let n = val
-                    .as_i64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| schema_err(format!("$.rng.counters.{name}"), "must be a u32"))?;
-                counters.push((name, n));
+    let (rng_seed, ascension, run_seed, player_seed, seed_string, rng_counters) =
+        if let Some(rng_val) = extract_optional(d, "rng") {
+            let rng_dict = as_dict(&rng_val, "$.rng")?;
+            // `as_u64`, not `as_i64` — a seed above `i64::MAX` is ordinary and
+            // the `PyO3` path accepted it.
+            let seed = if let Some(v) = extract_optional(&rng_dict, "seed") {
+                Some(
+                    v.as_u64()
+                        .ok_or_else(|| schema_err("$.rng.seed", "must be a u64"))?,
+                )
+            } else {
+                None
+            };
+            let asc = if let Some(v) = extract_optional(&rng_dict, "ascension") {
+                v.as_i64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(|| schema_err("$.rng.ascension", "must be a u8"))?
+            } else {
+                0
+            };
+            // The RUN's own dice: the once-hashed master seed plus each stream's
+            // read count. A producer that carries them puts the reconstruction on
+            // the exact roll the world is about to make; one that doesn't leaves
+            // the streams unrelated to the game's, and every intent the state
+            // predicts is a guess.
+            // v0.111.0 `RunRngSet.Seed` and the player base are `ulong`: parse
+            // unsigned (`as_u64`), a value above `i64::MAX` is ordinary.
+            let run_seed = match extract_optional(&rng_dict, "run_seed") {
+                Some(v) => Some(
+                    v.as_u64()
+                        .ok_or_else(|| schema_err("$.rng.run_seed", "must be a u64"))?,
+                ),
+                None => None,
+            };
+            let player_seed = match extract_optional(&rng_dict, "player_seed") {
+                Some(v) => Some(
+                    v.as_u64()
+                        .ok_or_else(|| schema_err("$.rng.player_seed", "must be a u64"))?,
+                ),
+                None => None,
+            };
+            let seed_string = match extract_optional(&rng_dict, "seed_string") {
+                Some(v) => Some(
+                    v.as_str()
+                        .ok_or_else(|| schema_err("$.rng.seed_string", "must be a string"))?
+                        .to_owned(),
+                ),
+                None => None,
+            };
+            let mut counters: Vec<(String, u32)> = Vec::new();
+            if let Some(v) = extract_optional(&rng_dict, "counters") {
+                for (name, val) in as_entries(&v, "$.rng.counters")? {
+                    let n = val
+                        .as_i64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| {
+                            schema_err(format!("$.rng.counters.{name}"), "must be a u32")
+                        })?;
+                    counters.push((name, n));
+                }
+                counters.sort();
             }
-            counters.sort();
-        }
-        (seed, asc, run_seed, player_seed, seed_string, counters)
-    } else {
-        (None, 0u8, None, None, None, Vec::new())
-    };
+            (seed, asc, run_seed, player_seed, seed_string, counters)
+        } else {
+            (None, 0u8, None, None, None, Vec::new())
+        };
     let legacy_u32 = run_seed.is_some() && player_seed.is_none() && seed_string.is_none();
 
     let player_val = get_item(d, "$", "player")?;

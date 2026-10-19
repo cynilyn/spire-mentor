@@ -386,8 +386,9 @@ fn make_row(
 
     // Ascension (implemented A0–A10) — widens the difficulty distribution.
     let ascension = *rng.pick(ascensions);
-    let mut rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension)
-        .with_neow_start();
+    let mut rm =
+        new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension)
+            .with_neow_start();
     initialize_run_setup(&mut rm);
 
     // ── Diversify the deck: append 0..=22 class cards (≈30% upgraded). ──
@@ -748,8 +749,12 @@ fn harvest_realistic_range(
         // thousand runs this guarantees an even spread across cells, which a
         // per-seed random draw would only approach.
         let ascension = ascensions[(seeds_driven as usize) % ascensions.len()];
-        let mut rm = new_run_manager_for_character_with_ascension(u64::from(seed as u32), character, ascension)
-            .with_neow_start();
+        let mut rm = new_run_manager_for_character_with_ascension(
+            u64::from(seed as u32),
+            character,
+            ascension,
+        )
+        .with_neow_start();
         initialize_run_setup(&mut rm);
 
         let inner = build_realistic_driver_policy(seed, driver, character, driver_combat);

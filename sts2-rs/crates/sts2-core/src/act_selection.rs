@@ -271,6 +271,31 @@ mod tests {
         );
     }
 
+    /// v0.111.0 `act_selection` stream seed = `H(full seed string) + H("act_selection")`
+    /// (`StartRunLobby.cs:437`) — the full-string base, NOT the run base, which
+    /// differs for `old` seeds. Vectors: sts2_bot `logs/engine/p0/stage1_vectors.json`
+    /// (sha256 5267538d84c1a1468b68656b82bdd270e4a4e21b60a251366beb475786aa8976).
+    #[test]
+    fn act_selection_stream_seed_matches_oracle_and_uses_the_full_string_base() {
+        for (seed, want) in [
+            ("P0A0", 1_202_606_684_116_786_320_u64),
+            ("oldP0A0", 5_995_588_466_204_446_083_u64),
+        ] {
+            let b = crate::dotnet_rng::seed_bases(seed);
+            assert_eq!(
+                Rng::with_name(b.full_hash, "act_selection").seed(),
+                want,
+                "{seed}"
+            );
+        }
+        let old = crate::dotnet_rng::seed_bases("oldP0A0");
+        assert_ne!(
+            Rng::with_name(old.run_seed, "act_selection").seed(),
+            5_995_588_466_204_446_083,
+            "the run base must not be used for act_selection"
+        );
+    }
+
     /// Acts 2 and 3 are singletons but still consume one `NextItem` read each,
     /// because `Rng.NextItem` calls `NextInt(0, count)` even for `count == 1`.
     /// Getting this wrong desyncs nothing today (the stream is used once) but

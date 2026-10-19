@@ -144,7 +144,8 @@ fn dh30e_chaos_random_pool_includes_glass_orb() {
     let mut seen = std::collections::HashSet::new();
     for seed in 0..200_i32 {
         let (mut state, _e) = fresh_state(CardId::Chaos, 0, 0);
-        state.run_rng.combat_orbs = sts2_core::dotnet_rng::Rng::with_name(u64::from(seed as u32), "combat_orbs");
+        state.run_rng.combat_orbs =
+            sts2_core::dotnet_rng::Rng::with_name(u64::from(seed as u32), "combat_orbs");
         let f = lookup(CardId::Chaos).expect("registered");
         let _ = f(&mut state, None);
         for orb in &state.player.orbs.slots {

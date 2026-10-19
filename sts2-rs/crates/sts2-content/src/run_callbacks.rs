@@ -921,13 +921,12 @@ pub fn dump_roster_for_encounter(
     // roster-parity sweep is kinds 50/50 (vs 43/50 at +0). The live
     // `build_combat_for_room` path will instead read the run's real
     // post-entry `total_floor` when step-c wires it onto this stream.
-    let mut enc_rng =
-        sts2_core::dotnet_rng::Rng::with_name(
-            rs.rng
-                .seed
-                .wrapping_add(u64::from((rs.total_floor + 1) as u32)),
-            enc.id,
-        );
+    let mut enc_rng = sts2_core::dotnet_rng::Rng::with_name(
+        rs.rng
+            .seed
+            .wrapping_add(u64::from((rs.total_floor + 1) as u32)),
+        enc.id,
+    );
     let roster_kinds = enc.roster(&mut enc_rng);
     // Per-monster HP off niche via the shared two-pass roller — C#'s
     // creation-then-finalize split (raw side-wide exclusion in pass 1, the

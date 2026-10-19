@@ -1183,7 +1183,8 @@ impl RolloutConfig {
             sims: u(get("sims"), DEFAULT_SIMS).min(MAX_SIMS),
             threads: u(get("threads"), DEFAULT_THREADS),
             max_steps: u(get("max_steps"), DEFAULT_MAX_STEPS),
-            seed: get("seed").unwrap_or_else(|| i64::try_from(rm.seed & 0x7FFF_FFFF).unwrap_or(0) ^ 0x5EED),
+            seed: get("seed")
+                .unwrap_or_else(|| i64::try_from(rm.seed & 0x7FFF_FFFF).unwrap_or(0) ^ 0x5EED),
         }
     }
 

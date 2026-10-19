@@ -2188,8 +2188,9 @@ fn cosmic_concoction_draws_from_full_combat_pool_not_modifier_subset() {
     for seed in 0i32..16 {
         let mut state = fresh_state_with_player(80, 80);
         state.player.character = Some(sts2_core::CharacterId::Ironclad);
-        state.run_rng.combat_card_generation =
-            sts2_core::DotNetRng::new(u64::from((seed.wrapping_mul(2_654_435_761_u32 as i32)) as u32));
+        state.run_rng.combat_card_generation = sts2_core::DotNetRng::new(u64::from(
+            (seed.wrapping_mul(2_654_435_761_u32 as i32)) as u32,
+        ));
         let hand_before = state.player.hand.len();
         assert_eq!(
             dispatch(&mut state, PotionKind::CosmicConcoction, None),
