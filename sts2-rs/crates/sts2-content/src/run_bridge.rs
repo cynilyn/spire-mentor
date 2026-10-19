@@ -114,25 +114,47 @@ pub fn build_event_combat(
 ) -> CombatState {
     use sts2_core::events::{BattlewornDummySetting, EventEncounter};
     use sts2_core::runstate::RoomType;
-    let kind = match req.encounter {
+    let kinds: Vec<MonsterKind> = match req.encounter {
         EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting1) => {
-            MonsterKind::BattleFriendV1
+            vec![MonsterKind::BattleFriendV1]
         }
         EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting2) => {
-            MonsterKind::BattleFriendV2
+            vec![MonsterKind::BattleFriendV2]
         }
         EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting3) => {
-            MonsterKind::BattleFriendV3
+            vec![MonsterKind::BattleFriendV3]
         }
-        EventEncounter::MysteriousKnight => MonsterKind::MysteriousKnight,
-        EventEncounter::FakeMerchant => MonsterKind::FakeMerchantMonster,
+        EventEncounter::MysteriousKnight => vec![MonsterKind::MysteriousKnight],
+        EventEncounter::FakeMerchant => vec![MonsterKind::FakeMerchantMonster],
+        // C# `DenseVegetationEventEncounter.GenerateMonsters`: one Wriggler per
+        // slot `wriggler1..wriggler4`, `StartStunned = false`.
+        EventEncounter::DenseVegetation => vec![MonsterKind::DenseVegetationWriggler; 4],
     };
-    let hp =
-        sts2_core::monsters::roll_unique_max_hps(&[kind], &mut rs.rng.niche, rs.ascension_level)
-            .first()
-            .copied()
-            .unwrap_or(0);
-    let roster = [(kind, MonsterSpawnArgs::None, hp)];
+    // One `Niche` draw per enemy, in roster order (see the doc above).
+    let hps = sts2_core::monsters::roll_unique_max_hps(
+        &kinds,
+        &mut rs.rng.niche,
+        rs.ascension_level,
+    );
+    let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| {
+            let args = if kind == MonsterKind::DenseVegetationWriggler {
+                use crate::monsters::shared::DenseVegetationWrigglerSlot as Slot;
+                let slot = match i {
+                    0 => Slot::First,
+                    1 => Slot::Second,
+                    2 => Slot::Third,
+                    _ => Slot::Fourth,
+                };
+                MonsterSpawnArgs::DenseVegetationWriggler { slot }
+            } else {
+                MonsterSpawnArgs::None
+            };
+            (kind, args, hps.get(i).copied().unwrap_or(0))
+        })
+        .collect();
     enter_combat_from_roster(rs, &roster, RoomType::Unknown)
 }
 
