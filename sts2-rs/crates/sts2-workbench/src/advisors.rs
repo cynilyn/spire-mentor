@@ -1398,9 +1398,10 @@ fn evaluate_candidate(
         // Paired across candidates: the same run seed + policy seed per
         // rollout `r`, so the only difference is the option taken.
         let seed = cfg.seed.wrapping_add(i64::from(r));
-        #[allow(clippy::cast_possible_truncation)]
-        let run_seed = seed as i32;
-        sim.run_state.rng = RunRngSet::from_run_seed(u64::from(run_seed as u32));
+        // The whole 64-bit rollout seed (reinterpreted, not truncated to 32 bits).
+        #[allow(clippy::cast_sign_loss)]
+        let run_seed = seed as u64;
+        sim.run_state.rng = RunRngSet::from_run_seed(run_seed);
         #[allow(clippy::cast_sign_loss)]
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed as u64);
         #[allow(clippy::cast_sign_loss)]
