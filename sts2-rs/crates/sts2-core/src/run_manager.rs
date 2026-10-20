@@ -2502,6 +2502,15 @@ impl RunManager {
             // BlackStar that IS this room's relic does not modify this room's set
             // (RTGG_H_101 i=213). v0.107.1 has the same code; its arm still drops
             // them so that build stays bit-identical (tracked for #806).
+            //
+            // BlackStar's second `RelicReward` is queued here, ahead of the other
+            // relics' additions: the registry-less core tests drive this arm and
+            // the content walk below skips BlackStar's sentinel (handled once).
+            if self.run_state.game_version >= crate::GameVersion::V0_111_0
+                && self.run_state.owns_active_relic(crate::RelicId::BlackStar)
+            {
+                self.run_state.offer_random_relic_rewards(1, &[None]);
+            }
             self.apply_modify_rewards(reward_room_type);
             self.run_state.drain_relic_rewards_directly();
         } else {
@@ -2543,12 +2552,12 @@ impl RunManager {
         for reward in extras {
             match reward {
                 Reward::Gold { amount } => self.run_state.gain_gold(amount),
+                // BlackStar's sentinel: its relic was already rolled in the Elite arm.
+                Reward::Relic(rr) if rr.relic_id == crate::RelicId::BlackStar => {}
                 Reward::Relic(rr)
                     if matches!(
                         rr.relic_id,
-                        crate::RelicId::BlackStar
-                            | crate::RelicId::LavaRock
-                            | crate::RelicId::WongosMysteryTicket
+                        crate::RelicId::LavaRock | crate::RelicId::WongosMysteryTicket
                     ) =>
                 {
                     self.run_state.offer_random_relic_rewards(1, &[None]);
@@ -3891,8 +3900,8 @@ impl RunManager {
                 // Rust `CardType` has no Quest variant (Quest cards are
                 // identified by rarity); Status/Curse covers C#'s
                 // `(uint)(type - 4) <= 2u` exclusion for the live decks.
-                !matches!(c.card_type, CardType::Status | CardType::Curse)
-                    && !(quest_excluded && c.is_quest())
+                !(matches!(c.card_type, CardType::Status | CardType::Curse)
+                    || (quest_excluded && c.is_quest()))
                     && c.enchantments.is_empty()
                     && (c.cost >= 0 || (allow_x_cost && c.is_x_cost()))
                     && (!requires_block || c.base_block > 0)
