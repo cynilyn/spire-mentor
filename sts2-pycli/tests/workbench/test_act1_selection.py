@@ -17,11 +17,15 @@ import pytest
 from workbench.backends.rust_game import RustGame, _act_name
 
 REPORTED_SEED = "C9EXV1KTPH"
+# Underdocks -> Lagavulin Matriarch and Overgrowth -> Vantom at A10 on 0.111.0.
+# The reported seed above no longer maps to those bosses after the seed-derivation
+# port (it still anchors the act roll), so the boss tests use their own seed.
+BOSS_SEED = "BOSSMAP0"
 
 
-def _start(act1: str) -> tuple[RustGame, dict]:
+def _start(act1: str, seed: str = REPORTED_SEED) -> tuple[RustGame, dict]:
     g = RustGame()
-    state = g.start(character="Ironclad", seed=REPORTED_SEED, ascension=10, act1=act1)
+    state = g.start(character="Ironclad", seed=seed, ascension=10, act1=act1)
     return g, state
 
 
@@ -47,13 +51,12 @@ def test_the_state_reports_the_resolved_act_not_the_request() -> None:
     assert state["act1"] in {"overgrowth", "underdocks"}
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_the_map_boss_matches_the_act_that_was_walked() -> None:
     """The act-1 boss PIN was Overgrowth-only in four places, so an Underdocks
     run displayed `Vantom` while fighting Lagavulin Matriarch — the id came
     from `generated_rooms` (right) and the name from a stale pin (wrong).
     Assert on the NAME: the id was already correct while the bug was live."""
-    g, _ = _start("underdocks")
+    g, _ = _start("underdocks", BOSS_SEED)
     boss = g.get_map()["boss"]
     assert boss["id"] == "LAGAVULIN_MATRIARCH_BOSS"
     assert boss["name"] == "Lagavulin Matriarch"
@@ -62,10 +65,9 @@ def test_the_map_boss_matches_the_act_that_was_walked() -> None:
     assert g.rm.pinned_boss_encounter_id() == "LAGAVULIN_MATRIARCH_BOSS"
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_overgrowth_still_reports_its_own_boss() -> None:
     """The control: the fix must not make every act report Underdocks."""
-    g, _ = _start("overgrowth")
+    g, _ = _start("overgrowth", BOSS_SEED)
     boss = g.get_map()["boss"]
     assert boss["id"] == "VANTOM_BOSS"
     assert boss["name"] == "Vantom"

@@ -194,15 +194,15 @@ def test_combat_actions_bypass_the_guard() -> None:
 # ── GH #399 Task 3: the four flags are actually ON and reach the policy ──────
 
 # Seed cover for the four deck-mutation kinds under the *cheap* combat budget
-# used below (`sims=8`): removal on 3/8, upgrade on 5/17, transform on 8/15,
-# enchant on 5. These surfaces are seed-dependent (they come from Neow
-# blessings, events like Wellspring / Wood Carvings, and on-obtain relics such
+# used below (`sims=8`): transform on 0, enchant on 1, upgrade on 9, removal
+# on 11 (smallest seeds per kind on 0.111.0). These surfaces are
+# seed-dependent (they come from Neow blessings, events like Wellspring / Wood Carvings, and on-obtain relics such
 # as Precise Scissors / Pomander), so a cover is the only way to see all four
 # without driving dozens of runs. If an engine change moves the cover this
 # test fails loudly — re-derive it by censusing kinds over seeds 0..40 rather
 # than by deleting the assertion: "no removal ever surfaced" is exactly the
 # invisibility bug #399 exists to close.
-_COVER_SEEDS = (3, 5, 8, 15, 17)
+_COVER_SEEDS = (0, 1, 9, 11)
 _DECK_MUTATION_KINDS = frozenset(
     {"remove_deck_card", "upgrade_deck_card", "transform_deck_card", "enchant_deck_card"}
 )
@@ -256,7 +256,6 @@ def _cover_census():
     return {seed: _expert_census(seed) for seed in _COVER_SEEDS}
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_deck_mutation_decisions_actually_reach_the_policy(_cover_census) -> None:
     """All four flags must be ON *and* produce yielded decisions.
 
@@ -406,7 +405,6 @@ def test_behavior_stats_averages_over_runs() -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_deck_mutation_decisions_carry_a_distinct_fine_surface(_cover_census) -> None:
     """End of the chain, against the real engine: the census decisions map to
     distinct fine surfaces even though all five share the coarse `card-pick`."""

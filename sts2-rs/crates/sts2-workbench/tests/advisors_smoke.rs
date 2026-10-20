@@ -133,7 +133,6 @@ fn assert_stream(frames: &[Value], key_field: &str) {
 }
 
 #[test]
-#[ignore = "scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation; re-pick seed/script after stage 2 of the P0 port"]
 fn advisor_routes_over_a_scripted_run() {
     let mut wb = new_wb();
     let caps = call(&mut wb, "GET", "/api/capabilities", Value::Null);

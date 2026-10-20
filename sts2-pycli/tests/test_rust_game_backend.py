@@ -667,19 +667,21 @@ def test_replay_determinism() -> None:
     replay.quit()
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
+_SCISSORS_SEED = 7
+
+
 def test_interactive_card_removal_renders_card_select() -> None:
     """An on-obtain card-removal relic (Precise Scissors from Neow) presents a
     deck ``card_select``; resolving it removes the picked card (matching C#)."""
     import sts2_rs
 
-    # Seed 3's Neow offers Precise Scissors (a remove-1-card relic) under the
-    # v0.107.1 build. Drive the adapter through it via a direct int-seed
+    # Seed 7's Neow offers Precise Scissors (a remove-1-card relic) under the
+    # v0.111.0 build. Drive the adapter through it via a direct int-seed
     # RunManager. (The exact option index is resolved dynamically below.)
     g = RustGame()
     g.character = "Ironclad"
     g.rm = sts2_rs.RunManager(
-        seed=3,
+        seed=_SCISSORS_SEED,
         character="Ironclad",
         ascension_level=0,
         neow_start=True,
@@ -694,7 +696,7 @@ def test_interactive_card_removal_renders_card_select() -> None:
         (o["index"] for o in state["options"] if o.get("text_key") == "PRECISE_SCISSORS"),
         None,
     )
-    assert idx is not None, "seed 9 Neow should offer Precise Scissors"
+    assert idx is not None, "seed 7 Neow should offer Precise Scissors"
     state = g.act("choose_option", option_index=idx)
 
     # Collect the relic (Take relic), reaching the forced removal card_select.
@@ -936,7 +938,10 @@ def test_fill_combat_lifts_osty_to_top_level(monkeypatch) -> None:
     }
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
+@pytest.mark.xfail(
+    strict=True,
+    reason="golden pack contents pinned to the v0.107.1 oracle capture (ECHO/Necrobinder); not a seed problem - no seed reproduces these exact packs on 0.111.0. Re-record the packs from the 0.111.0 oracle (stage 5), never by re-pinning engine output",
+)
 def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
     """Scroll Boxes (Necrobinder Neow, seed ECHO) must surface as a
     ``bundle_select`` (pick 1 of 2 packs), not two single-card rewards.
@@ -982,7 +987,7 @@ def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
 # always-grabbing `TreasureRoomHandler`. No decision reaches the UI, so the
 # workbench showed nothing at all for a treasure room until `room_reveal`.
 
-TREASURE_SEED = "SEEDTEST"  # Ironclad A0: greedy play reaches an act-1 chest
+TREASURE_SEED = "SEEDTEST135"  # Ironclad A0: greedy play reaches an act-1 chest paying 43 gold and holding Horn Cleat
 
 
 def _walk_to_chest(g: RustGame, max_steps: int = 400) -> tuple[dict, list[dict]]:
@@ -1016,7 +1021,11 @@ def _walk_to_chest(g: RustGame, max_steps: int = 400) -> tuple[dict, list[dict]]
         elif dec == "combat_play":
             playable = [c for c in state["hand"] if c["can_play"]]
             if playable:
-                target = 0 if playable[0]["target_type"] == "AnyEnemy" else None
+                # Target the first LIVING enemy by its slot `index`: after the
+                # front enemy dies the survivors keep their slots, and a play
+                # aimed at the dead slot 0 is a silent no-op that loops the fight.
+                aimed = playable[0]["target_type"] == "AnyEnemy"
+                target = state["enemies"][0]["index"] if aimed else None
                 state = g.act("play_card", card_index=playable[0]["index"], target_index=target)
             else:
                 state = g.act("end_turn")
@@ -1030,7 +1039,6 @@ def _walk_to_chest(g: RustGame, max_steps: int = 400) -> tuple[dict, list[dict]]
     pytest.fail("did not reach a treasure room within the step budget")
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_walking_into_a_chest_reveals_what_it_held() -> None:
     g = RustGame()
     g.start(character="Ironclad", seed=TREASURE_SEED, ascension=0)
@@ -1046,7 +1054,6 @@ def test_walking_into_a_chest_reveals_what_it_held() -> None:
     assert "HORN_CLEAT.title" in owned
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_only_the_chest_room_reveals() -> None:
     g = RustGame()
     g.start(character="Ironclad", seed=TREASURE_SEED, ascension=0)
@@ -1056,7 +1063,6 @@ def test_only_the_chest_room_reveals() -> None:
     assert [s for s in seen[:-1] if s.get("room_reveal")] == []
 
 
-@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_leaving_the_chest_room_clears_the_reveal() -> None:
     g = RustGame()
     g.start(character="Ironclad", seed=TREASURE_SEED, ascension=0)
