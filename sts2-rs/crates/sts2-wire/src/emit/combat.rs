@@ -617,12 +617,18 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // there would double-count on a round trip), so the live value is an ADDITIVE key, emitted for
     // v0.111.0 only (v0.107.1 bytes unchanged).
     if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        let live = sts2_core::combat_loop::BASE_MAX_ENERGY.saturating_add(
+        let mut live = sts2_core::combat_loop::BASE_MAX_ENERGY.saturating_add(
             sts2_core::hooks::dispatch_modify_max_energy(
                 state,
                 &sts2_core::hooks::MaxEnergyCtx::default(),
             ),
         );
+        // PaelsFlesh.ModifyMaxEnergy (PaelsFlesh.cs: +1 from turn 3): the Rust port grants that energy from an
+        // `after_side_turn_start` listener instead of the hook (see `dispatch_modify_max_energy`'s doc), so the hook
+        // total misses it; add it here for the reported value only (no double grant).
+        if state.relics.owns(sts2_core::RelicKind::PaelsFlesh) && state.turn_number() >= 3 {
+            live = live.saturating_add(1);
+        }
         set(&mut player, "max_energy_effective", live.max(0));
     }
     // Gold: gates SealOfGold's turn-start hook, so an engine -> dict ->
@@ -1453,6 +1459,28 @@ mod tests {
         let v = pyre_state(sts2_core::GameVersion::V0_111_0);
         assert_eq!(v["player"]["max_energy"], 3, "stored mirror unchanged");
         assert_eq!(v["player"]["max_energy_effective"], 5, "3 + Pyre 2 (PyrePower.cs ModifyMaxEnergy)");
+    }
+
+    #[test]
+    fn live_max_energy_counts_paels_flesh_from_turn_three_v0111() {
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        state.player.max_energy = 3;
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::PaelsFlesh,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        state.round = 2;
+        let v = combat_state_to_value(&state).expect("serializes");
+        assert_eq!(v["player"]["max_energy_effective"], 3, "turn 2: not yet");
+        state.round = 3;
+        let v = combat_state_to_value(&state).expect("serializes");
+        assert_eq!(v["player"]["max_energy_effective"], 4, "PaelsFlesh.cs ModifyMaxEnergy +1 from turn 3");
     }
 
     #[test]
