@@ -152,6 +152,20 @@ pub fn classify_surface(phase: Phase, actions: &[RunAction]) -> Option<&'static 
 /// unfiltered `actions`, matching Python's `masked or actions`).
 #[cfg(feature = "ppo")]
 pub fn mask_rejectable(rm: &RunManager, phase: Phase, actions: &[RunAction]) -> Vec<RunAction> {
+    // Driftwood's `RerollCardReward` (stage 2 delta, RL-B10) has no `ActionDesc`
+    // twin — the PPO action vocabulary is fixed — so the net cannot pick it and
+    // `ActionDesc::try_from` would reject the whole decision. Mask it here; the
+    // other surfaces are untouched.
+    let filtered: Vec<RunAction> = actions
+        .iter()
+        .copied()
+        .filter(|a| !matches!(a, RunAction::RerollCardReward))
+        .collect();
+    let actions: &[RunAction] = if filtered.is_empty() {
+        actions
+    } else {
+        &filtered
+    };
     if phase != Phase::Shop {
         return actions.to_vec();
     }
@@ -1185,6 +1199,30 @@ mod argmax_tests {
     #[test]
     fn empty_slice_is_none() {
         assert_eq!(argmax_first(&[]), None);
+    }
+}
+
+#[cfg(all(test, feature = "ppo"))]
+mod mask_reroll_tests {
+    use sts2_core::potions::CharacterId;
+    use sts2_core::run_manager::{Phase, RunAction, RunManager};
+
+    use super::mask_rejectable;
+
+    /// Driftwood's reroll has no `ActionDesc`, so it must never reach the net.
+    #[test]
+    fn driftwood_reroll_is_masked_from_the_ppo_action_set() {
+        let rm = RunManager::new(0, CharacterId::Ironclad);
+        let actions = [
+            RunAction::PickCardReward { idx: Some(0) },
+            RunAction::PickCardReward { idx: None },
+            RunAction::RerollCardReward,
+        ];
+        let masked = mask_rejectable(&rm, Phase::CardReward, &actions);
+        assert_eq!(masked, &actions[..2]);
+        // Never an empty set: a lone reroll falls back to itself.
+        let lone = [RunAction::RerollCardReward];
+        assert_eq!(mask_rejectable(&rm, Phase::CardReward, &lone), lone);
     }
 }
 
