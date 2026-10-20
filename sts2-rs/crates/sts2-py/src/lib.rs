@@ -2857,6 +2857,12 @@ fn roll_acts(
         .collect()
 }
 
+/// RNG of playout `offset` in [`rollouts`]: the whole u64 base seed plus the
+/// playout index (this used to fold the sum to 32 bits).
+fn playout_rng(base_seed: u64, offset: u64) -> sts2_core::dotnet_rng::Rng {
+    sts2_core::dotnet_rng::Rng::new(base_seed.wrapping_add(offset))
+}
+
 /// `n` **pass-every-turn** playouts from `state`, reporting the win rate.
 ///
 /// WARNING — this is NOT a heuristic-agent baseline. [`run_playout`] applies
@@ -2882,7 +2888,7 @@ fn rollouts(state: &PyCombatState, n: u64) -> PyResult<PyObject> {
 
     for offset in 0..n {
         let mut s = state.inner.clone();
-        s.rng = sts2_core::dotnet_rng::Rng::new(state.seed.wrapping_add(offset));
+        s.rng = playout_rng(state.seed, offset);
         let (won, turns) = run_playout(&mut s);
         if won {
             wins += 1;
@@ -5225,6 +5231,20 @@ kind = "VANTOM"
         assert_eq!(card_type_python_name(CardType::Power), "Power");
         assert_eq!(card_type_python_name(CardType::Status), "Status");
         assert_eq!(card_type_python_name(CardType::Curse), "Curse");
+    }
+
+    /// `rollouts` seeds playout k from the whole u64 base: two bases that differ
+    /// only in the high word get different playout RNGs for every k. (The
+    /// aggregate `rollouts` result is seed-insensitive — random play never wins
+    /// and always runs 16 turns — so the derivation is tested directly.)
+    #[test]
+    fn rollout_playout_rng_keeps_the_high_32_bits() {
+        let lo = 7_u64;
+        let hi = lo + (1_u64 << 32);
+        for k in [0_u64, 1, 299] {
+            assert_ne!(playout_rng(lo, k).seed(), playout_rng(hi, k).seed());
+            assert_eq!(playout_rng(hi, k).seed(), hi + k);
+        }
     }
 
     /// Two seeds that differ ONLY in the high 32 bits must not collide (the
