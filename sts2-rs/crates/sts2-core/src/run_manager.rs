@@ -3582,8 +3582,19 @@ impl RunManager {
         let Some(&deck_idx) = self.run_state.removal_offer_order().get(idx) else {
             return ActionResult::InvalidForPhase;
         };
-        self.run_state.master_deck.remove(deck_idx);
+        let removed = self.run_state.master_deck.remove(deck_idx);
+        if let Some(staged) = self.run_state.paels_stash_pending.as_mut() {
+            staged.push(removed);
+        }
         self.run_state.pending_deck_removals -= 1;
+        // Pael's Tooth: once the batch drains, store the staged cards ordered
+        // by ordinal `Id.Entry` (`PaelsTooth.AfterObtained`'s `OrderBy`).
+        if self.run_state.pending_deck_removals == 0 {
+            if let Some(mut staged) = self.run_state.paels_stash_pending.take() {
+                staged.sort_by_key(|c| c.card_id.to_python_name());
+                self.run_state.paels_tooth_stored.extend(staged);
+            }
+        }
         // Once the removal batch fully drains, append any cards a
         // "remove-then-add" event deferred (Wellspring Bathe → Guilty).
         // Deferring kept them out of the removal `card_select` pool so the
@@ -7180,6 +7191,55 @@ mod tests {
             .get_available_actions()
             .iter()
             .any(|a| matches!(a, RunAction::RemoveDeckCard { .. })));
+    }
+
+    /// v0.111.0 Pael's Tooth: the removal batch it owns offers only upgradable
+    /// cards, and the picks are stored sorted by ordinal `Id.Entry` once the
+    /// batch drains (C# `FromDeckForRemoval(filter: IsUpgradable)` then
+    /// `OrderBy(Id.Entry, Ordinal)`).
+    #[test]
+    fn paels_tooth_stash_offers_upgradable_and_stores_sorted_on_drain() {
+        use crate::cards::CardId;
+        let mk = |uid: u32, id: CardId, upgraded: bool| crate::Card {
+            uid: crate::CardUid::new(uid).expect("nz"),
+            card_id: id,
+            upgraded,
+            ..crate::Card::pod_defaults()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.master_deck = vec![
+            mk(1, CardId::StrikeIronclad, false),
+            mk(2, CardId::Bash, true),
+            mk(3, CardId::DefendIronclad, false),
+            mk(4, CardId::Anger, false),
+        ];
+        rm.run_state.paels_stash_pending = Some(Vec::new());
+        rm.run_state.pending_deck_removals = 2;
+        // Offer = [Strike, Defend, Anger] (the upgraded Bash is withheld).
+        assert_eq!(rm.run_state.removal_offer_order(), vec![0, 2, 3]);
+        assert_eq!(
+            rm.take_action(RunAction::RemoveDeckCard { idx: 1 }),
+            ActionResult::Advanced
+        );
+        assert!(
+            rm.run_state.paels_tooth_stored.is_empty(),
+            "not stored mid-batch"
+        );
+        // Remaining offer = [Strike, Anger]; take Strike last.
+        assert_eq!(
+            rm.take_action(RunAction::RemoveDeckCard { idx: 0 }),
+            ActionResult::Advanced
+        );
+        let stored: Vec<CardId> = rm
+            .run_state
+            .paels_tooth_stored
+            .iter()
+            .map(|c| c.card_id)
+            .collect();
+        // Picked Defend then Strike; ordinal order is DEFEND_IRONCLAD < STRIKE_IRONCLAD.
+        assert_eq!(stored, vec![CardId::DefendIronclad, CardId::StrikeIronclad]);
+        assert!(rm.run_state.paels_stash_pending.is_none());
+        assert_eq!(rm.run_state.master_deck.len(), 2);
     }
 
     /// Bead `sts2-rs-1hiht`: a "remove-then-damage" relic (PrecariousShears)

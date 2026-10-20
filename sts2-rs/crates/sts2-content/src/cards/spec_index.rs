@@ -1192,10 +1192,26 @@ pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> 
 #[must_use]
 pub fn roll_gorge_common_cards(rs: &mut RunState, count: usize) -> Vec<sts2_core::cards::Card> {
     let character = rs.character_id;
-    // C# `GetPossibleCards(player)` (Common-filtered char pool), in
+    roll_uniform_pool_cards(rs, character, CardRarity::Common, count)
+}
+
+/// `CardFactory.CreateForReward(owner, count, ForNonCombatWithUniformOdds(
+/// [pool], c => c.Rarity == rarity).WithFlags(NoRarityModification |
+/// NoCardPoolModifications))` for any character pool — the body of
+/// [`roll_gorge_common_cards`] (see its doc for the per-card stream reads)
+/// shared with `SeaGlass.AfterObtained` (`SeaGlass.cs`, three calls of
+/// `count = 15 / 3` for Common / Uncommon / Rare on another character's pool).
+#[must_use]
+pub fn roll_uniform_pool_cards(
+    rs: &mut RunState,
+    character: CharacterId,
+    rarity: CardRarity,
+    count: usize,
+) -> Vec<sts2_core::cards::Card> {
+    // C# `GetPossibleCards(player)` (rarity-filtered char pool), in
     // `GenerateAllCards` order — the same pool `eligible_ids_for_rarity`
     // serves the (parity-clean) regular reward path.
-    let pool = eligible_ids_for_rarity_in(&[character], false, CardRarity::Common, rs.game_version);
+    let pool = eligible_ids_for_rarity_in(&[character], false, rarity, rs.game_version);
     let mut chosen_ids: Vec<CardId> = Vec::new();
     let mut out: Vec<sts2_core::cards::Card> = Vec::new();
     for _ in 0..count {
@@ -1252,6 +1268,30 @@ pub fn roll_uniform_rarity_reward_cards(
     allow_card_pool_modifications: bool,
     rng_override: Option<&mut sts2_core::dotnet_rng::Rng>,
 ) -> Vec<sts2_core::cards::Card> {
+    roll_uniform_rarity_reward_cards_with(
+        rs,
+        pool,
+        rarity,
+        count,
+        allow_card_pool_modifications,
+        rng_override,
+        true,
+    )
+}
+
+/// [`roll_uniform_rarity_reward_cards`] with the upgrade roll switchable:
+/// `roll_upgrade = false` is `CardCreationOptions.ForNonCombatWithUniformOdds`
+/// (it stamps `NoUpgradeRoll`, `CardCreationOptions.cs:88-91`), as used by
+/// `GlassEye.AfterObtained`.
+pub fn roll_uniform_rarity_reward_cards_with(
+    rs: &mut RunState,
+    pool: CharacterId,
+    rarity: CardRarity,
+    count: usize,
+    allow_card_pool_modifications: bool,
+    rng_override: Option<&mut sts2_core::dotnet_rng::Rng>,
+    roll_upgrade: bool,
+) -> Vec<sts2_core::cards::Card> {
     use sts2_core::card_rewards::{
         combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RewardRarity,
     };
@@ -1264,6 +1304,7 @@ pub fn roll_uniform_rarity_reward_cards(
         card_creation_source: "other",
         allow_card_pool_modifications,
         allow_rarity_modifications: allow_card_pool_modifications,
+        roll_upgrade,
         ..sts2_core::runstate::CardRewardGenerationOptions::default()
     };
     if allow_card_pool_modifications {

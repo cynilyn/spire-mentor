@@ -1494,6 +1494,15 @@ pub struct RunState {
     /// `RemoveDeckCard` action per deck card while this is `> 0`.
     pub pending_deck_removals: u32,
 
+    /// `Some(staged)` while a v0.111.0 Pael's Tooth stash is the owner of the
+    /// pending [`Self::pending_deck_removals`] batch (C#
+    /// `FromDeckForRemoval(filter: IsUpgradable)` of 5, then stow the picks):
+    /// the offer is restricted to upgradable cards
+    /// ([`Self::removal_offer_order`]) and each removed card is staged here;
+    /// when the batch drains the staged cards are stored sorted by ordinal
+    /// `Id.Entry` into [`Self::paels_tooth_stored`].
+    pub paels_stash_pending: Option<Vec<crate::cards::Card>>,
+
     /// Cards to append to [`Self::master_deck`] AFTER the current batch of
     /// interactive [`Self::pending_deck_removals`] fully drains (i.e. when
     /// the count next hits 0). Models C# events that do
@@ -2028,6 +2037,7 @@ impl Default for RunState {
             elite_combats_this_act: 0,
             interactive_card_removal: false,
             pending_deck_removals: 0,
+            paels_stash_pending: None,
             pending_post_removal_cards: Vec::new(),
             pending_post_removal_hp_loss: 0,
             pending_post_removal_max_hp_gain: 0,
@@ -3091,6 +3101,8 @@ impl RunState {
         let removable = crate::lookup_card_removable();
         let mut order: Vec<usize> = (0..self.master_deck.len())
             .filter(|&i| removable.map_or(true, |f| f(&self.master_deck[i])))
+            // Pael's Tooth's `FromDeckForRemoval(filter: IsUpgradable)`.
+            .filter(|&i| self.paels_stash_pending.is_none() || self.master_deck[i].is_upgradable())
             .collect();
         // Stable sort: Curse → key 0 (front, deck order preserved), else key 1
         // (deck order). `sort_by_key` is stable, matching C#'s OrderBy.
@@ -4083,6 +4095,83 @@ impl RunState {
         crate::boss_ancient_offers::roll_offers_for(self.game_version, ancient, &mut rng, &cond)
     }
 
+    /// The character `SeaGlass.CharacterId` is stamped with by
+    /// `Orobas.GenerateInitialOptions`: the FIRST read of the Orobas event
+    /// rng, `NextItem` over `UnlockState.Characters` minus the player's
+    /// (`ModelDb.AllCharacters` order — Ironclad, Silent, Regent,
+    /// Necrobinder, Defect; the headless unlock state has all five). Re-derived
+    /// from the run seed (the rng is act-independent and the pick is its first
+    /// read), mirroring the `num_other_characters` read in
+    /// [`crate::boss_ancient_offers`]. Falls back to the player's own
+    /// character like C# when there is no other one.
+    #[must_use]
+    pub fn sea_glass_character(&self) -> crate::potions::CharacterId {
+        use crate::potions::CharacterId::{Defect, Ironclad, Necrobinder, Regent, Silent};
+        let others: Vec<_> = [Ironclad, Silent, Regent, Necrobinder, Defect]
+            .into_iter()
+            .filter(|c| *c != self.character_id)
+            .collect();
+        if others.is_empty() {
+            return self.character_id;
+        }
+        let mut rng = crate::boss_ancient_offers::event_rng_for(
+            &self.rng,
+            crate::run_room_gen::AncientId::Orobas,
+        );
+        others[rng.next_int_exclusive(0, others.len() as i32) as usize]
+    }
+
+    /// `Orobas.OptionPool3`: TouchOfOrobas iff the player owns a
+    /// Starter-rarity relic (`TouchOfOrobas.SetupForPlayer`), ArchaicTooth iff
+    /// the deck holds a transcendence starter card (`ArchaicTooth.
+    /// SetupForPlayer`: Bash / Neutralize / Unleash / FallingStar / Dualcast).
+    /// v0.111.0 only — earlier builds keep the unconditional pair. When
+    /// neither holds, C# offers a LOCKED placeholder: still one `NextItem`
+    /// read over a one-element list, so a TouchOfOrobas stand-in keeps the
+    /// stream aligned.
+    fn orobas_pool3(&self) -> Vec<RelicId> {
+        use crate::cards::CardId;
+        if self.game_version < crate::GameVersion::V0_111_0 {
+            return vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth];
+        }
+        let has_starter_relic = self.relics.iter().any(|r| {
+            matches!(
+                r,
+                RelicId::BurningBlood
+                    | RelicId::BlackBlood
+                    | RelicId::RingOfTheSnake
+                    | RelicId::RingOfTheDrake
+                    | RelicId::CrackedCore
+                    | RelicId::InfusedCore
+                    | RelicId::BoundPhylactery
+                    | RelicId::PhylacteryUnbound
+                    | RelicId::DivineRight
+                    | RelicId::DivineDestiny
+            )
+        });
+        let has_transcendence_card = self.master_deck.iter().any(|c| {
+            matches!(
+                c.card_id,
+                CardId::Bash
+                    | CardId::Neutralize
+                    | CardId::Unleash
+                    | CardId::FallingStar
+                    | CardId::Dualcast
+            )
+        });
+        let mut pool = Vec::with_capacity(2);
+        if has_starter_relic {
+            pool.push(RelicId::TouchOfOrobas);
+        }
+        if has_transcendence_card {
+            pool.push(RelicId::ArchaicTooth);
+        }
+        if pool.is_empty() {
+            pool.push(RelicId::TouchOfOrobas);
+        }
+        pool
+    }
+
     /// Deck/run predicates the Ancient `GenerateInitialOptions` methods read.
     /// `act_index_0based` is the next act's `CurrentActIndex` (Darv gate).
     fn compute_ancient_conditions(
@@ -4143,7 +4232,7 @@ impl RunState {
             // TouchOfOrobas's starter relic always exists; ArchaicTooth's
             // transcendence starter card is assumed present (Ironclad). The
             // C# LOCKED placeholder is therefore unreachable.
-            orobas_pool3: vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth],
+            orobas_pool3: self.orobas_pool3(),
             // Standard runs carry no deck-clearing modifier.
             pandoras_allowed: true,
             tezcatara_basic_strike,
@@ -8827,6 +8916,37 @@ mod tests {
         // Decay (the curse) sorts to the front; all other cards (incl. the
         // basic Strike) keep deck order behind it.
         assert_eq!(rs.removal_offer_order(), vec![1, 0, 2, 3]);
+    }
+
+    /// C# `Orobas.OptionPool3` (v0.111.0): TouchOfOrobas needs a Starter relic,
+    /// ArchaicTooth a transcendence starter card (Bash here); an empty pool is
+    /// the LOCKED placeholder (still one read). 0.107.1 keeps the fixed pair.
+    #[test]
+    fn orobas_pool3_follows_starter_relic_and_card_on_v0111_only() {
+        let mut rs = RunState::new();
+        rs.game_version = crate::GameVersion::V0_111_0;
+        let mut bash = Card::pod_defaults();
+        bash.card_id = CardId::Bash;
+        let mut strike = Card::pod_defaults();
+        strike.card_id = CardId::StrikeIronclad;
+        rs.relics = vec![RelicId::BurningBlood];
+        rs.master_deck = vec![strike.clone(), bash.clone()];
+        assert_eq!(
+            rs.orobas_pool3(),
+            vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth]
+        );
+        rs.master_deck = vec![strike.clone()];
+        assert_eq!(rs.orobas_pool3(), vec![RelicId::TouchOfOrobas]);
+        rs.relics = vec![RelicId::Anchor];
+        rs.master_deck = vec![bash];
+        assert_eq!(rs.orobas_pool3(), vec![RelicId::ArchaicTooth]);
+        rs.master_deck = vec![strike];
+        assert_eq!(rs.orobas_pool3(), vec![RelicId::TouchOfOrobas]);
+        rs.game_version = crate::GameVersion::V0_107_1;
+        assert_eq!(
+            rs.orobas_pool3(),
+            vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth]
+        );
     }
 
     /// `upgradable_deck_cards()` returns the `CardId`s of every

@@ -2850,6 +2850,23 @@ fn listener_glass_eye(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::GlassEye) {
         return EffectResult::NotImplemented;
     }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // C# `GlassEye.AfterObtained`: five `CardReward(options, 3)` — Common,
+        // Common, Uncommon, Uncommon, Rare — each `ForNonCombatWithUniformOdds`
+        // (no upgrade roll) of the owner's pool under `NoRarityModification`,
+        // populated in order on the Rewards stream by `OfferCustom`.
+        use crate::cards::CardRarity::{Common, Rare, Uncommon};
+        let character = rs.character_id;
+        for rarity in [Common, Common, Uncommon, Uncommon, Rare] {
+            let cards = crate::cards::spec_index::roll_uniform_rarity_reward_cards_with(
+                rs, character, rarity, 3, true, None, false,
+            );
+            let cards = rs.offer_card_slate(cards, true);
+            rs.pending_rewards
+                .push(Reward::Card(CardReward::from_cards(&cards)));
+        }
+        return EffectResult::Resolved;
+    }
     for _ in 0..GLASS_EYE_CARDS {
         rs.pending_rewards.push(Reward::Card(CardReward::empty()));
     }
@@ -4292,6 +4309,32 @@ fn listener_lead_paperweight(rs: &mut RunState) -> EffectResult {
 fn listener_sea_glass(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::SeaGlass) {
         return EffectResult::NotImplemented;
+    }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // C# `SeaGlass.AfterObtained`: three `CreateForReward` calls of
+        // `15 / 3` uniform-odds cards (Common, Uncommon, Rare) from the
+        // stamped other character's pool on the Rewards stream, then one
+        // `FromSimpleGridForRewards` (min 0 / max 15) — a skippable
+        // choose-screen like HeftyTablet's.
+        use crate::cards::CardRarity;
+        let character = rs.sea_glass_character();
+        let per_rarity = SEA_GLASS_CARDS / 3;
+        let mut options = Vec::with_capacity(SEA_GLASS_CARDS);
+        for rarity in [CardRarity::Common, CardRarity::Uncommon, CardRarity::Rare] {
+            let cards = crate::cards::spec_index::roll_uniform_pool_cards(
+                rs, character, rarity, per_rarity,
+            );
+            options.extend(cards.into_iter().map(|c| c.card_id));
+        }
+        let n = options.len();
+        rs.pending_card_selects
+            .push(sts2_core::runstate::PendingCardSelect {
+                upgraded: vec![false; n],
+                enchantments: Vec::new(),
+                options,
+                post_add: Vec::new(),
+            });
+        return EffectResult::Resolved;
     }
     for _ in 0..SEA_GLASS_CARDS {
         rs.pending_rewards.push(Reward::Card(CardReward::empty()));
@@ -7765,6 +7808,55 @@ mod tests {
             .all(|r| matches!(r, Reward::Card(_))));
     }
 
+    /// C# `GlassEye.AfterObtained` (v0.111.0): five pre-rolled 3-card rewards,
+    /// rarities C C U U R, uniform odds with no upgrade roll (exactly 15
+    /// Rewards reads); 0.107.1 keeps the five empty sentinels.
+    #[test]
+    fn listener_glass_eye_rolls_five_forced_rarity_rewards_on_v0111_only() {
+        use crate::cards::{spec_index, CardRarity};
+        use sts2_core::runstate::{Reward, RunState};
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let before = rs.pending_rewards.len();
+        let rewards_before = rs.rng.rewards.counter();
+        rs.relics.push(RelicId::GlassEye);
+        rs.last_obtained_relic = Some(RelicId::GlassEye);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.rng.rewards.counter(), rewards_before + 15);
+        let added: Vec<_> = rs.pending_rewards[before..].to_vec();
+        assert_eq!(added.len(), GLASS_EYE_CARDS);
+        let expected = [
+            CardRarity::Common,
+            CardRarity::Common,
+            CardRarity::Uncommon,
+            CardRarity::Uncommon,
+            CardRarity::Rare,
+        ];
+        for (reward, rarity) in added.iter().zip(expected) {
+            let Reward::Card(card_reward) = reward else {
+                panic!("expected a card reward");
+            };
+            assert_eq!(card_reward.options.len(), 3);
+            for id in &card_reward.options {
+                let found = spec_index::specs_for_character(rs.character_id)
+                    .iter()
+                    .map(|f| f())
+                    .find(|s| s.id == *id);
+                assert_eq!(found.map(|s| s.rarity), Some(rarity));
+            }
+        }
+        let mut old = RunState::new();
+        old.relics.push(RelicId::GlassEye);
+        old.last_obtained_relic = Some(RelicId::GlassEye);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut old);
+        assert_eq!(old.rng.rewards.counter(), 0);
+        assert!(old
+            .pending_rewards
+            .iter()
+            .all(|r| !matches!(r, Reward::Card(c) if !c.options.is_empty())));
+    }
+
     /// Bead `sts2-rs-66l9f`: GlassEye listener is noop without ownership.
     #[test]
     fn listener_glass_eye_is_noop_without_ownership() {
@@ -8090,6 +8182,56 @@ mod tests {
             .rev()
             .take(SEA_GLASS_CARDS)
             .all(|r| matches!(r, Reward::Card(_))));
+    }
+
+    /// C# `SeaGlass.AfterObtained` (v0.111.0): 5 Common + 5 Uncommon + 5 Rare
+    /// uniform-odds cards from ANOTHER character's pool (one Rewards read
+    /// each, no rarity/upgrade roll) behind a skippable 15-card choose
+    /// screen — not 15 reward sentinels. 0.107.1 keeps the sentinels.
+    #[test]
+    fn listener_sea_glass_offers_fifteen_other_character_cards_on_v0111_only() {
+        use crate::cards::{spec_index, CardRarity};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let character = rs.sea_glass_character();
+        assert_ne!(character, rs.character_id, "pool is another character's");
+        let rewards_before = rs.rng.rewards.counter();
+        let sentinels_before = rs.pending_rewards.len();
+        rs.relics.push(RelicId::SeaGlass);
+        rs.last_obtained_relic = Some(RelicId::SeaGlass);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.pending_rewards.len(), sentinels_before);
+        assert_eq!(rs.pending_card_selects.len(), 1);
+        let select = &rs.pending_card_selects[0];
+        assert_eq!(select.options.len(), SEA_GLASS_CARDS);
+        assert_eq!(
+            rs.rng.rewards.counter(),
+            rewards_before + SEA_GLASS_CARDS as u32
+        );
+        let rarity_of = |id| {
+            spec_index::specs_for_character(character)
+                .iter()
+                .map(|f| f())
+                .find(|s| s.id == id)
+                .map(|s| s.rarity)
+        };
+        for (i, id) in select.options.iter().enumerate() {
+            let expected = [CardRarity::Common, CardRarity::Uncommon, CardRarity::Rare][i / 5];
+            assert_eq!(
+                rarity_of(*id),
+                Some(expected),
+                "option {i} in pool, rarity bucket"
+            );
+        }
+        // 0.107.1: unchanged sentinel behaviour.
+        let mut old = RunState::new();
+        old.relics.push(RelicId::SeaGlass);
+        old.last_obtained_relic = Some(RelicId::SeaGlass);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut old);
+        assert!(old.pending_card_selects.is_empty());
+        assert_eq!(old.pending_rewards.len(), SEA_GLASS_CARDS);
     }
 
     /// Bead `sts2-rs-qw9oe`: SeaGlass listener is noop without

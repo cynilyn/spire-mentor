@@ -2166,6 +2166,7 @@ fn listener_paels_tooth_after_obtained(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::PaelsTooth) {
         return EffectResult::NotImplemented;
     }
+    let v0111 = rs.game_version >= sts2_core::GameVersion::V0_111_0;
     // Candidate set: master-deck (idx, card_id, upgraded) tuples for
     // non-upgraded AND removable cards.
     let mut candidates: Vec<(usize, sts2_core::cards::CardId, bool)> = rs
@@ -2173,14 +2174,32 @@ fn listener_paels_tooth_after_obtained(rs: &mut RunState) -> EffectResult {
         .iter()
         .enumerate()
         .filter_map(|(idx, c)| {
-            (!c.upgraded && is_paels_tooth_removable(c)).then_some((idx, c.card_id, c.upgraded))
+            let upgradable = if v0111 {
+                c.is_upgradable()
+            } else {
+                !c.upgraded
+            };
+            (upgradable && is_paels_tooth_removable(c)).then_some((idx, c.card_id, c.upgraded))
         })
         .collect();
-    // Sort by card_id for parity with Python's `reference_card_entry`
-    // stable-order key.
-    candidates.sort_by_key(|&(_idx, card_id, _upg)| card_id);
+    // v0.111.0: C# `OrderBy(c => c.Id.Entry, StringComparer.Ordinal)` over the
+    // picked cards (the stash order feeds `Rewards.NextItem` later); older
+    // builds keep the enum-order proxy for Python's `reference_card_entry`.
+    if v0111 {
+        candidates.sort_by_key(|&(_idx, card_id, _upg)| card_id.to_python_name());
+    } else {
+        candidates.sort_by_key(|&(_idx, card_id, _upg)| card_id);
+    }
     let take = candidates.len().min(PAELS_TOOTH_CARDS);
     if take == 0 {
+        return EffectResult::Resolved;
+    }
+    // v0.111.0 interactive host: a real `FromDeckForRemoval(5, IsUpgradable)`
+    // pick surfaced as the standard removal card_select (index order =
+    // `removal_offer_order`, filtered); the stash happens when it drains.
+    if v0111 && rs.interactive_card_removal && candidates.len() > take {
+        rs.paels_stash_pending = Some(Vec::new());
+        rs.pending_deck_removals += u32::try_from(take).unwrap_or(u32::MAX);
         return EffectResult::Resolved;
     }
     let max_count = u8::try_from(take).unwrap_or(u8::MAX);
