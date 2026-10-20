@@ -274,3 +274,68 @@ fn goopy_card_exhausts_when_played_v0111() {
 fn goopy_card_goes_to_discard_v0107_unchanged() {
     assert_eq!(goopy_defend_piles(V107), (0, 1));
 }
+
+// ── A replay that opens a choice surfaces it (seed LSA_6, Silken Tress Glam on Armaments) ──────────────
+
+/// Plays a Glam-enchanted Armaments (block 5, upgrade a hand card; Glam replays the first play) with three Strikes
+/// in hand, answers the first upgrade select with the first option, and reports whether a SECOND select is open.
+fn glam_armaments_second_select_open(version: GameVersion) -> (bool, usize) {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    state.side = sts2_core::Side::Player;
+    let _ = add_enemy(&mut state, 2, 100);
+    let i = push_hand(&mut state, CardId::Armaments, false);
+    let uid = state.player.hand[usize::from(i)];
+    state.cards[uid.0.get() as usize - 1].set_enchantment(sts2_core::cards::EnchantmentId::Glam, 1);
+    for _ in 0..3 {
+        let _ = push_hand(&mut state, CardId::StrikeIronclad, false);
+    }
+    let step = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::PlayCard {
+            hand_index: 0,
+            target: None,
+        },
+    );
+    assert_eq!(
+        step,
+        sts2_core::StepResult::PendingChoice,
+        "first replay-less play surfaces the upgrade select"
+    );
+    let first: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice { selection: first },
+    );
+    let second_open = state.pending_choice.is_some();
+    // finish whatever is still open, then count upgraded cards in hand
+    for _ in 0..4 {
+        if state.pending_choice.is_none() {
+            break;
+        }
+        let sel: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice { selection: sel },
+        );
+    }
+    let upgraded = state
+        .player
+        .hand
+        .iter()
+        .filter(|u| state.cards[u.0.get() as usize - 1].upgraded)
+        .count();
+    (second_open, upgraded)
+}
+
+/// C# `OnPlayWrapper` awaits each replay's `OnPlay` selector inside the `i < playCount` loop (CardModel.cs:1898-1964):
+/// the Glam replay of Armaments asks for its own upgrade pick. Two picks -> two upgraded cards.
+#[test]
+fn replay_surfaces_its_own_select_v0111() {
+    assert_eq!(glam_armaments_second_select_open(V111), (true, 2));
+}
+
+/// v0.107.1 drains the replay's select inline to the first legal pick (unchanged): no second prompt, 2 upgrades.
+#[test]
+fn replay_select_is_drained_inline_v0107_unchanged() {
+    assert_eq!(glam_armaments_second_select_open(V107), (false, 2));
+}
