@@ -385,7 +385,7 @@ fn detail_level_gates_the_decision_stream_only() {
 }
 
 #[test]
-#[ignore = "seed-path-dependent coverage test: after the 0.111.0 card-rarity reassignments (stage 2 beta) the random-policy run of DEEP_SEED no longer visits a shop; re-pick the seed after stage 4 of the P0 port"]
+#[ignore = "stage-2 rarity change moved DEEP_SEED off the shop path; reselect seed in stage-2 zeta (gap #1)"]
 fn offered_payloads_are_phase_typed_and_well_formed() {
     let r = record_run(DEEP_SEED, Detail::Full, true);
     let mut saw = BTreeMap::<&str, usize>::new();
