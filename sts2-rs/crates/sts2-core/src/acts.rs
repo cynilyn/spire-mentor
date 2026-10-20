@@ -2,8 +2,11 @@
 //!
 //! Mirrors `sts2-rl-agent@01c094d:sts2_env/map/acts.py`. Each act
 //! carries its room-row count, weak/strong encounter rosters, elite
-//! roster, boss roster, and event pool. The Python `ALL_ACTS` constant
-//! is reflected here as [`all_acts`].
+//! roster and boss roster. The Python `ALL_ACTS` constant is reflected here
+//! as [`all_acts`]. The Python per-act event pool is intentionally NOT kept
+//! (RG-27): the live event order is the `up_front`-shuffled
+//! `GeneratedActRooms::events_shuffled`; a second, never-shuffled table here
+//! only invited misuse. Only the `events_visited` cursor stays.
 //!
 //! ## Python → Rust act numbering
 //!
@@ -16,8 +19,8 @@
 //!
 //! ## Encounter / event IDs are still string-typed
 //!
-//! Python carries `boss_ids: list[str]`, `event_ids: list[str]`, etc.
-//! The matching Rust enums (`EncounterId`, `EventId`, `BossId`) don't
+//! Python carries `boss_ids: list[str]`, etc.
+//! The matching Rust enums (`EncounterId`, `BossId`) don't
 //! exist at pin `01c094d`'s Rust port — see the P9 audit doc §2.1
 //! "Data structures" row. To keep this bead atomic, lists stay as
 //! `&'static [&'static str]`; a follow-up bead can swap them to
@@ -36,8 +39,7 @@ pub const DEFAULT_ACT_NUM_ROOMS: i32 = 15;
 ///
 /// Lists are held as static slices so the registry constants in this
 /// module can be `const fn` builders rather than allocating `Vec`s at
-/// startup. The `events_visited` counter is per-run mutable state and
-/// is the only non-`Copy` field; a fresh `ActConfig` from
+/// startup. The `events_visited` counter is per-run mutable state; a fresh `ActConfig` from
 /// [`act_1`] / [`act_2`] / [`act_3`] starts at 0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActConfig {
@@ -64,31 +66,12 @@ pub struct ActConfig {
     /// Python `strong_encounter_ids` — pool of "strong" (post-elite)
     /// encounters in monster rooms after the elite band.
     pub strong_encounter_ids: &'static [&'static str],
-    /// Python `event_ids` — pool of events the run can roll in
-    /// event rooms.
-    pub event_ids: &'static [&'static str],
     /// Python `events_visited` — per-run counter incremented as the
     /// player consumes event rooms. Used by future pity-style
     /// generators (Python's `_get_next_event_id` pops visited IDs
     /// from the candidate pool). Starts at 0; the registry builders
     /// always initialize it to 0.
     pub events_visited: u32,
-    /// Per-run shuffled mirror of [`Self::event_ids`]. Populated by
-    /// [`crate::run_manager::RunManager::initialize_run`]'s
-    /// `_generate_rooms` step (Python `run_state.py:1481-1487`) which
-    /// shuffles via the `rng.up_front` stream. Empty on a fresh
-    /// `ActConfig` (registry builders init to `Vec::new()`); the
-    /// shuffle step populates it from `event_ids` on first call and
-    /// is guarded by `RunState::rooms_generated` so subsequent
-    /// `initialize_run` invocations are no-ops.
-    ///
-    /// Kept distinct from `event_ids` so the static-slice registry
-    /// stays `const fn`-buildable; the runtime shuffle is the only
-    /// per-run-mutable view consumers (the event-room handler, once
-    /// it lands) should read.
-    ///
-    /// Bead `sts2-rs-wk1t6` (P9.2.n follow-up).
-    pub event_ids_shuffled: Vec<&'static str>,
 }
 
 // ── Act 1 (Python ACT_0 = exordium) ──────────────────────────────────
@@ -110,50 +93,6 @@ const ACT_1_STRONG: &[&str] = &[
     "ExordiumWildlife",
     "LotOfSlimes",
 ];
-const ACT_1_EVENTS: &[&str] = &[
-    "AbyssalBaths",
-    "Amalgamator",
-    "BattlewornDummy",
-    "BrainLeech",
-    "Bugslayer",
-    "ByrdonisNest",
-    "ColorfulPhilosophers",
-    "ColossalFlower",
-    "Darv",
-    "DenseVegetation",
-    "DoorsOfLightAndDark",
-    "DrowningBeacon",
-    "GraveOfTheForgotten",
-    "HungryForMushrooms",
-    "InfestedAutomaton",
-    "LostWisp",
-    "Nonupeipe",
-    "Orobas",
-    "Pael",
-    "PunchOff",
-    "Reflections",
-    "RoomFullOfCheese",
-    "RoundTeaParty",
-    "SapphireSeed",
-    "SelfHelpBook",
-    "SpiritGrafter",
-    "SunkenStatue",
-    "SunkenTreasury",
-    "TabletOfTruth",
-    "Tanx",
-    "TeaMaster",
-    "Tezcatara",
-    "TheLegendsWereTrue",
-    "ThisOrThat",
-    "TinkerTime",
-    "TrashHeap",
-    "Trial",
-    "UnrestSite",
-    "Vakuu",
-    "Wellspring",
-    "WoodCarvings",
-    "ZenWeaver",
-];
 
 /// Act 1 (Exordium) — Python `ACT_0`. 15 rooms, default 3 weak
 /// encounters at map-start.
@@ -167,9 +106,7 @@ pub const fn act_1() -> ActConfig {
         elite_ids: ACT_1_ELITES,
         weak_encounter_ids: ACT_1_WEAK,
         strong_encounter_ids: ACT_1_STRONG,
-        event_ids: ACT_1_EVENTS,
         events_visited: 0,
-        event_ids_shuffled: Vec::new(),
     }
 }
 
@@ -179,67 +116,6 @@ const ACT_2_BOSSES: &[&str] = &["TheCollector", "Automaton", "Champ"];
 const ACT_2_ELITES: &[&str] = &["TaskMaster", "SphericGuardian", "Snecko"];
 const ACT_2_WEAK: &[&str] = &["SnakePlant", "Centurion", "ThreeByrds"];
 const ACT_2_STRONG: &[&str] = &["SlaverGroup", "BookOfStabbing", "MushroomGroup"];
-const ACT_2_EVENTS: &[&str] = &[
-    "AbyssalBaths",
-    "Amalgamator",
-    "AromaOfChaos",
-    "BattlewornDummy",
-    "Bugslayer",
-    "ByrdonisNest",
-    "ColorfulPhilosophers",
-    "ColossalFlower",
-    "CrystalSphere",
-    "Darv",
-    "DenseVegetation",
-    "DollRoom",
-    "DoorsOfLightAndDark",
-    "DrowningBeacon",
-    "EndlessConveyor",
-    "FakeMerchant",
-    "FieldOfManSizedHoles",
-    "GraveOfTheForgotten",
-    "HungryForMushrooms",
-    "InfestedAutomaton",
-    "JungleMazeAdventure",
-    "LostWisp",
-    "LuminousChoir",
-    "MorphicGrove",
-    "Nonupeipe",
-    "Orobas",
-    "Pael",
-    "PotionCourier",
-    "PunchOff",
-    "RanwidTheElder",
-    "Reflections",
-    "RelicTrader",
-    "RoundTeaParty",
-    "SapphireSeed",
-    "SelfHelpBook",
-    "SlipperyBridge",
-    "SpiralingWhirlpool",
-    "SpiritGrafter",
-    "StoneOfAllTime",
-    "SunkenStatue",
-    "SunkenTreasury",
-    "Symbiote",
-    "TabletOfTruth",
-    "Tanx",
-    "Tezcatara",
-    "TheFutureOfPotions",
-    "TheLanternKey",
-    "ThisOrThat",
-    "TinkerTime",
-    "TrashHeap",
-    "Trial",
-    "UnrestSite",
-    "Vakuu",
-    "WaterloggedScriptorium",
-    "WelcomeToWongos",
-    "Wellspring",
-    "WhisperingHollow",
-    "WoodCarvings",
-    "ZenWeaver",
-];
 
 /// Act 2 (Hive) — Python `ACT_1`. 14 rooms (C# `Hive.BaseNumberOfRooms = 14`),
 /// 2 weak encounters at map-start.
@@ -253,9 +129,7 @@ pub const fn act_2() -> ActConfig {
         elite_ids: ACT_2_ELITES,
         weak_encounter_ids: ACT_2_WEAK,
         strong_encounter_ids: ACT_2_STRONG,
-        event_ids: ACT_2_EVENTS,
         events_visited: 0,
-        event_ids_shuffled: Vec::new(),
     }
 }
 
@@ -265,64 +139,6 @@ const ACT_3_BOSSES: &[&str] = &["AwakenedOne", "TimeEater", "DonuAndDeca"];
 const ACT_3_ELITES: &[&str] = &["GiantHead", "Nemesis", "Reptomancer"];
 const ACT_3_WEAK: &[&str] = &["Darkling", "OrbWalker"];
 const ACT_3_STRONG: &[&str] = &["WrithingMass", "Transient", "Maw"];
-const ACT_3_EVENTS: &[&str] = &[
-    "AbyssalBaths",
-    "Amalgamator",
-    "AromaOfChaos",
-    "BattlewornDummy",
-    "Bugslayer",
-    "ByrdonisNest",
-    "ColorfulPhilosophers",
-    "ColossalFlower",
-    "CrystalSphere",
-    "Darv",
-    "DenseVegetation",
-    "DoorsOfLightAndDark",
-    "DrowningBeacon",
-    "EndlessConveyor",
-    "FakeMerchant",
-    "FieldOfManSizedHoles",
-    "GraveOfTheForgotten",
-    "HungryForMushrooms",
-    "InfestedAutomaton",
-    "JungleMazeAdventure",
-    "LostWisp",
-    "LuminousChoir",
-    "MorphicGrove",
-    "Nonupeipe",
-    "Orobas",
-    "Pael",
-    "PotionCourier",
-    "PunchOff",
-    "RanwidTheElder",
-    "Reflections",
-    "RelicTrader",
-    "RoundTeaParty",
-    "SapphireSeed",
-    "SelfHelpBook",
-    "SlipperyBridge",
-    "SpiralingWhirlpool",
-    "SpiritGrafter",
-    "SunkenStatue",
-    "SunkenTreasury",
-    "Symbiote",
-    "TabletOfTruth",
-    "Tanx",
-    "Tezcatara",
-    "TheFutureOfPotions",
-    "TheLanternKey",
-    "ThisOrThat",
-    "TinkerTime",
-    "TrashHeap",
-    "Trial",
-    "UnrestSite",
-    "Vakuu",
-    "WaterloggedScriptorium",
-    "Wellspring",
-    "WhisperingHollow",
-    "WoodCarvings",
-    "ZenWeaver",
-];
 
 /// Act 3 (Glory) — Python `ACT_2`. 13 rooms (C# `Glory.BaseNumberOfRooms = 13`),
 /// 2 weak encounters at map-start.
@@ -336,9 +152,7 @@ pub const fn act_3() -> ActConfig {
         elite_ids: ACT_3_ELITES,
         weak_encounter_ids: ACT_3_WEAK,
         strong_encounter_ids: ACT_3_STRONG,
-        event_ids: ACT_3_EVENTS,
         events_visited: 0,
-        event_ids_shuffled: Vec::new(),
     }
 }
 

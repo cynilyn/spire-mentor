@@ -349,10 +349,10 @@ pub fn preview_option_effect(state: &RunState, idx: usize) -> Option<OptionEffec
 /// success, marks the picked id as visited, increments
 /// `act.events_visited`, and returns the [`EventId`].
 ///
-/// `pool` defaults to the current act's `event_ids_shuffled` (the
-/// per-run shuffled mirror populated by `RunManager::initialize_run`),
-/// falling back to the static `event_ids` slice when the shuffled
-/// list is empty (e.g. before `initialize_run` has run).
+/// `pool` defaults to the current act's `events_shuffled` order recorded
+/// in `generated_rooms` by `initialize_run_setup`. A run that skipped that
+/// setup has no order, so the default pool is empty and this returns `None`
+/// (the old static per-act table was removed with RG-27).
 ///
 /// Returns `None` when the pool is empty OR every candidate was
 /// filtered out (and the pool is a caller-supplied override — when
@@ -372,10 +372,9 @@ pub fn preview_option_effect(state: &RunState, idx: usize) -> Option<OptionEffec
 pub fn pick_event(state: &mut RunState, pool: Option<&[&str]>) -> Option<EventId> {
     use sts2_core::EventId;
 
-    // Pool selection: caller override > shuffled act pool > static
-    // act pool. The `uses_act_event_order` flag tracks whether we
-    // walk under the act's `events_visited` cursor or restart at 0
-    // (matches Python's `pool is act.event_ids` identity check).
+    // Pool selection: caller override > the act's generated, shuffled
+    // event order. The `uses_act_event_order` flag tracks whether we
+    // walk under the act's `events_visited` cursor or restart at 0.
     let uses_act_event_order = pool.is_none();
     let act_idx = state.act_index() as usize;
     debug_assert!(
@@ -394,18 +393,10 @@ pub fn pick_event(state: &mut RunState, pool: Option<&[&str]>) -> Option<EventId
         // C#-faithful source (bead `sts2-rs-1hiht`): the per-act
         // `RoomSet.events` shuffled order recorded by `run_room_gen`
         // (`AllEvents ++ AllSharedEvents` UnstableShuffled off `up_front`).
-        // Falls back to the legacy in-`acts` mirror, then the static slice,
-        // for raw-core test paths that skip the `generated_rooms` setup.
         let gen_events: &[&str] = state
             .generated_rooms
             .get(act_idx - 1)
-            .map(|g| &g.events_shuffled[..])
-            .filter(|s| !s.is_empty())
-            .unwrap_or(if act.event_ids_shuffled.is_empty() {
-                act.event_ids
-            } else {
-                &act.event_ids_shuffled[..]
-            });
+            .map_or(&[][..], |g| &g.events_shuffled[..]);
         gen_events
             .iter()
             .filter_map(|n| EventId::from_python_name(n))
@@ -458,7 +449,7 @@ pub fn pick_event(state: &mut RunState, pool: Option<&[&str]>) -> Option<EventId
 /// End-to-end Event-phase driver:
 /// 1. If [`sts2_core::RunState::current_event`] is `None`, calls
 ///    [`pick_event`] with `pool = None` to roll the next allowed event
-///    from the current act's `event_ids_shuffled` cursor (with the
+///    from the current act's generated `events_shuffled` cursor (with the
 ///    per-run visited-set + `is_allowed` filters already applied),
 ///    then [`sts2_core::RunState::enter_event_room`] to bind the
 ///    picked id. If `current_event` is already set (e.g.
@@ -618,6 +609,17 @@ mod tests {
         assert_eq!(EventId::from_python_name("BogusUnknown"), None);
     }
 
+    /// RG-27: without a generated order (no `initialize_run_setup`) the
+    /// default pool is empty; there is no static per-act fallback table.
+    #[test]
+    fn pick_event_without_generated_order_returns_none() {
+        let mut rs = RunState::new();
+        assert!(rs.generated_rooms.is_empty());
+        assert!(pick_event(&mut rs, None).is_none());
+        assert_eq!(rs.acts[0].events_visited, 0, "cursor untouched on None");
+        assert!(rs.visited_event_ids.is_empty());
+    }
+
     #[test]
     fn pick_event_returns_none_for_empty_caller_pool() {
         let mut rs = RunState::new();
@@ -657,40 +659,42 @@ mod tests {
         // (C# MarkRoomVisited ⇒ cursor 1), the first event room must skip
         // WarHistorianRepy (`IsAllowed => false`) and land on
         // RoomFullOfCheese at slot 2 — NOT walk any further.
-        let mut rs = RunState::new();
-        rs.acts[0].event_ids_shuffled = vec![
-            "JungleMazeAdventure",
-            "WarHistorianRepy",
-            "RoomFullOfCheese",
-            "CrystalSphere",
-            "DollRoom",
-            "SlipperyBridge",
-            "PotionCourier",
-            "WhisperingHollow",
-            "Symbiote",
-            "TheLegendsWereTrue",
-            "SapphireSeed",
-            "TheFutureOfPotions",
-            "UnrestSite",
-            "Wellspring",
-            "FakeMerchant",
-            "WoodCarvings",
-            "RelicTrader",
-            "ByrdonisNest",
-            "DenseVegetation",
-            "TeaMaster",
-            "SelfHelpBook",
-            "LuminousChoir",
-            "StoneOfAllTime",
-            "WelcomeToWongos",
-            "ThisOrThat",
-            "AromaOfChaos",
-            "BrainLeech",
-            "RanwidTheElder",
-            "MorphicGrove",
-            "SunkenStatue",
-            "TabletOfTruth",
-        ];
+        let mut rs = rs_with_generated_event_orders(
+            vec![
+                "JungleMazeAdventure",
+                "WarHistorianRepy",
+                "RoomFullOfCheese",
+                "CrystalSphere",
+                "DollRoom",
+                "SlipperyBridge",
+                "PotionCourier",
+                "WhisperingHollow",
+                "Symbiote",
+                "TheLegendsWereTrue",
+                "SapphireSeed",
+                "TheFutureOfPotions",
+                "UnrestSite",
+                "Wellspring",
+                "FakeMerchant",
+                "WoodCarvings",
+                "RelicTrader",
+                "ByrdonisNest",
+                "DenseVegetation",
+                "TeaMaster",
+                "SelfHelpBook",
+                "LuminousChoir",
+                "StoneOfAllTime",
+                "WelcomeToWongos",
+                "ThisOrThat",
+                "AromaOfChaos",
+                "BrainLeech",
+                "RanwidTheElder",
+                "MorphicGrove",
+                "SunkenStatue",
+                "TabletOfTruth",
+            ],
+            Vec::new(),
+        );
         rs.acts[0].events_visited = 1;
         let picked = pick_event(&mut rs, None);
         assert_eq!(picked, Some(EventId::RoomFullOfCheese));
@@ -699,9 +703,8 @@ mod tests {
 
     #[test]
     fn pick_event_act_order_advances_events_visited() {
-        let mut rs = RunState::new();
-        // Default pool = act_1's event_ids (shuffled empty before
-        // initialize_run, falls back to static slice).
+        let mut rs =
+            rs_with_generated_event_orders(vec!["AbyssalBaths", "Amalgamator"], Vec::new());
         let before = rs.acts[0].events_visited;
         let picked = pick_event(&mut rs, None);
         assert!(picked.is_some(), "act_1 event pool must yield a pick");
@@ -716,10 +719,10 @@ mod tests {
 
     #[test]
     fn pick_event_act_order_is_deterministic() {
-        // Two fresh RunStates pick identically when the pool is the
-        // static fallback (event_ids_shuffled empty).
-        let mut a = RunState::new();
-        let mut b = RunState::new();
+        // Two RunStates with the same generated order pick identically.
+        let order = vec!["AbyssalBaths", "Amalgamator", "TrashHeap", "LostWisp"];
+        let mut a = rs_with_generated_event_orders(order.clone(), Vec::new());
+        let mut b = rs_with_generated_event_orders(order, Vec::new());
         for _ in 0..3 {
             assert_eq!(pick_event(&mut a, None), pick_event(&mut b, None));
         }
@@ -746,7 +749,8 @@ mod tests {
         // event) gets driven through pick→enter→resolve, leaving
         // `current_event` cleared (finished-outcome path) and the
         // picked event recorded in visited_event_ids.
-        let mut rs = RunState::new();
+        let mut rs =
+            rs_with_generated_event_orders(vec!["AbyssalBaths", "Amalgamator"], Vec::new());
         assert!(rs.current_event.is_none());
         let before_visited = rs.visited_event_ids.len();
 
@@ -765,12 +769,12 @@ mod tests {
 
     #[test]
     fn resolve_event_at_callback_is_deterministic_under_same_seed() {
-        // Same starting RunState → same picked event (the per-act
-        // event_ids_shuffled mirror is empty at this pin, so pick_event
-        // falls back to the static `event_ids` slice — deterministic
-        // by index). Re-runs must mark the same id visited.
-        let mut a = RunState::new();
-        let mut b = RunState::new();
+        // Same starting RunState → same picked event (deterministic by
+        // index into the generated order). Re-runs must mark the same id
+        // visited.
+        let order = vec!["AbyssalBaths", "Amalgamator"];
+        let mut a = rs_with_generated_event_orders(order.clone(), Vec::new());
+        let mut b = rs_with_generated_event_orders(order, Vec::new());
         assert!(resolve_event_at_callback(&mut a, 0));
         assert!(resolve_event_at_callback(&mut b, 0));
         assert_eq!(a.visited_event_ids, b.visited_event_ids);
@@ -781,7 +785,8 @@ mod tests {
         // Two consecutive callback firings must visit two distinct
         // events — `pick_event` filters out already-visited ids, so
         // the second call lands on the next slot in the act pool.
-        let mut rs = RunState::new();
+        let mut rs =
+            rs_with_generated_event_orders(vec!["AbyssalBaths", "Amalgamator"], Vec::new());
         assert!(resolve_event_at_callback(&mut rs, 0));
         let first_visited: Vec<EventId> = rs.visited_event_ids.iter().copied().collect();
         assert_eq!(first_visited.len(), 1, "{first_visited:?}");
@@ -986,13 +991,6 @@ mod tests {
         // does not lead with TrashHeap.
         let mut rs = rs_with_generated_event_orders(vec!["TrashHeap"], vec!["LostWisp"]);
         rs.acts[0].events_visited = 0;
-        // Sanity: the static fallback for act 1 does NOT start with TrashHeap,
-        // so a fallback would yield a different pick.
-        assert_ne!(
-            rs.acts[0].event_ids.first().copied(),
-            Some("TrashHeap"),
-            "fallback must differ so the filter behavior is observable",
-        );
         let picked = pick_event(&mut rs, None);
         assert_eq!(picked, Some(EventId::TrashHeap));
     }
