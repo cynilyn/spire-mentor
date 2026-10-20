@@ -1030,9 +1030,23 @@ pub fn apply_card_reward_late_hooks(
     Vec<bool>,
     Vec<sts2_core::cards::CardEnchantments>,
 ) {
-    let mut cards: Vec<sts2_core::cards::Card> = ids
+    apply_card_reward_late_hooks_flagged(rs, ids.into_iter().map(|id| (id, false)).collect())
+}
+
+/// [`apply_card_reward_late_hooks`] over cards the `RollForUpgrade` leg may have
+/// already upgraded (`(id, upgraded)`); the roll's outcome is kept in the
+/// returned flags (the hooks only add upgrades).
+pub fn apply_card_reward_late_hooks_flagged(
+    rs: &mut RunState,
+    rolled: Vec<(CardId, bool)>,
+) -> (
+    Vec<CardId>,
+    Vec<bool>,
+    Vec<sts2_core::cards::CardEnchantments>,
+) {
+    let mut cards: Vec<sts2_core::cards::Card> = rolled
         .iter()
-        .filter_map(|id| card_pod_from_id(*id, false))
+        .filter_map(|(id, up)| card_pod_from_id(*id, *up))
         .collect();
     let _ = sts2_core::run_effects::dispatch_modify_card_reward_options_late(rs, &mut cards);
     let upgraded = cards.iter().map(|c| c.upgraded).collect();
@@ -1089,12 +1103,12 @@ pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
         return ids;
     }
     let character = rs.character_id;
-    let ids = roll_reward_options_base_odds(rs, 3, true, &[character], false);
+    let rolled = roll_reward_options_base_odds_flagged(rs, 3, true, &[character], false);
     // C# `CardFactory.CreateForReward` fires `Hook.TryModifyCardRewardOptions`
     // (`CardFactory.cs:84-87`) for these `OfferCustom` rewards too (none sets
     // `NoModifyHooks`); the offer state rides the side channel the run manager
     // takes after the roller returns.
-    let (ids, upgraded, enchantments) = apply_card_reward_late_hooks(rs, ids);
+    let (ids, upgraded, enchantments) = apply_card_reward_late_hooks_flagged(rs, rolled);
     rs.card_reward_upgraded_flags = upgraded;
     rs.card_reward_enchantments = enchantments;
     ids
@@ -1137,13 +1151,16 @@ const fn character_pool_entry(character: CharacterId) -> &'static str {
 /// THEN `UnstableShuffle(Niche)`; the keys are distinct so the post-sort
 /// order is fully determined, and [`crate::cards::dotnet_list_sort`] inside
 /// `stable_shuffle_by` reproduces it. Returns the 2 rewards, each a
-/// `Vec<CardId>` of 3 cards in C# generation order — the listener
+/// `Vec<(CardId, upgraded)>` of 3 cards in C# generation order — the listener
 /// [`crate::relics::shop_event::listener_kaleidoscope`] pushes each as a
 /// `Reward::Card`, surfaced by the run loop as a `card_reward` pick. Bead
 /// `sts2-rs-utgn4` (v0.107.1 Kaleidoscope; closes the PARITY13/PARITY117
 /// Neow `card_reward` whole-run residual).
 #[must_use]
-pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> Vec<Vec<CardId>> {
+pub fn roll_kaleidoscope_card_rewards(
+    rs: &mut RunState,
+    owner: CharacterId,
+) -> Vec<Vec<(CardId, bool)>> {
     /// `Kaleidoscope.DynamicVars.Cards` — `CanonicalVars => CardsVar(2)`.
     const CARDS: usize = 2;
     /// `StableShuffle(...).Take(3)` — pools (and thus cards) per reward.
@@ -1159,7 +1176,7 @@ pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> 
         CharacterId::Necrobinder,
         CharacterId::Defect,
     ];
-    let mut rewards: Vec<Vec<CardId>> = Vec::with_capacity(CARDS);
+    let mut rewards: Vec<Vec<(CardId, bool)>> = Vec::with_capacity(CARDS);
     for _ in 0..CARDS {
         // Fresh non-owner pool list each reward (C# rebuilds + reshuffles per
         // iteration of its `for i in 0..Cards` loop).
@@ -1175,9 +1192,15 @@ pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> 
             });
         pools.truncate(POOLS_PER_REWARD);
         // One `CardCreationSource.Other` card per pool on the Rewards stream.
-        let mut reward_cards: Vec<CardId> = Vec::with_capacity(POOLS_PER_REWARD);
+        let mut reward_cards: Vec<(CardId, bool)> = Vec::with_capacity(POOLS_PER_REWARD);
         for ch in pools {
-            reward_cards.extend(roll_reward_options_base_odds(rs, 1, true, &[ch], false));
+            reward_cards.extend(roll_reward_options_base_odds_flagged(
+                rs,
+                1,
+                true,
+                &[ch],
+                false,
+            ));
         }
         rewards.push(reward_cards);
     }
@@ -1247,6 +1270,35 @@ fn roll_reward_options_base_odds(
     character_ids: &[CharacterId],
     include_colorless: bool,
 ) -> Vec<CardId> {
+    roll_reward_options_base_odds_flagged(
+        rs,
+        count,
+        consume_upgrade_roll,
+        character_ids,
+        include_colorless,
+    )
+    .into_iter()
+    .map(|(id, _)| id)
+    .collect()
+}
+
+/// [`roll_reward_options_base_odds`] keeping each card's `RollForUpgrade` outcome.
+///
+/// C# `CardFactory.CreateForReward` (`CardFactory.cs:72-92`) rolls per card:
+/// create -> (unless `NoUpgradeRoll`) `RollForUpgrade(player, card, 0m, rng)`
+/// (`CardFactory.cs:240-257`: always one `NextFloat`; only an upgradable card is
+/// upgraded when `roll <= odds`, odds = `act * UpgradedCardOddScaling` for
+/// non-Rares, then `Hook.ModifyCardRewardUpgradeOdds`) — and only AFTER all cards
+/// exist the reward-modification hooks run (`CardFactory.cs:84-87`). So a card the
+/// roll already upgraded is simply not upgradable for SilverCrucible, which still
+/// counts its use for the reward.
+fn roll_reward_options_base_odds_flagged(
+    rs: &mut RunState,
+    count: usize,
+    consume_upgrade_roll: bool,
+    character_ids: &[CharacterId],
+    include_colorless: bool,
+) -> Vec<(CardId, bool)> {
     use sts2_core::card_rewards::{
         combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RarityContext,
     };
@@ -1254,6 +1306,7 @@ fn roll_reward_options_base_odds(
     let ascension_level = rs.card_rarity_odds.ascension_level;
     let upgrade_base = combat_card_upgrade_base_chance();
     let mut chosen: Vec<CardId> = Vec::new();
+    let mut flags: Vec<bool> = Vec::new();
     for _ in 0..count {
         let rolled = rs
             .card_rarity_odds
@@ -1280,17 +1333,17 @@ fn roll_reward_options_base_odds(
             .rewards
             .next_int_exclusive(0, candidates.len() as i32) as usize;
         chosen.push(candidates[idx]);
-        if consume_upgrade_roll {
-            let _ = roll_for_upgrade_with_dotnet(
+        let upgraded = consume_upgrade_roll
+            && roll_for_upgrade_with_dotnet(
                 &mut rs.rng.rewards,
                 rarity,
                 act_index,
                 ascension_level,
                 upgrade_base,
             );
-        }
+        flags.push(upgraded);
     }
-    chosen
+    chosen.into_iter().zip(flags).collect()
 }
 
 /// Shared candidate pool for an out-of-combat card transform: the

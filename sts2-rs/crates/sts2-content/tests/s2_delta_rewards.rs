@@ -1182,3 +1182,70 @@ fn dream_catcher_reward_rolls_with_the_monster_room_context() {
         assert!(has_reroll(&rm), "Driftwood flags it; Room spec rerolls");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Non-combat rewards keep the RollForUpgrade outcome (act 2+ odds > 0)
+// ---------------------------------------------------------------------------
+
+/// `CardFactory.cs:72-92,240-257`: every card of a reward without `NoUpgradeRoll`
+/// gets `RollForUpgrade(player, card, 0m)` — one `NextFloat`, and an upgradable
+/// non-Rare is upgraded when `roll <= actIndex * 0.25` (A0 `UpgradedCardOddScaling`,
+/// `CardFactory.cs:23`), i.e. 0.5 in the third act (0-based index 2). The roll runs
+/// BEFORE the modification hooks, so SilverCrucible finds those cards already
+/// upgraded (not upgradable) and still counts one use for the reward.
+#[test]
+fn noncombat_reward_keeps_its_upgrade_roll_outcome() {
+    let mut upgraded_total = 0;
+    let mut cards_total = 0;
+    for seed in 1..=40u64 {
+        let act3 = |rs: &mut RunState| rs.act_index = 3;
+        let rm = coffer_with(seed, None, &[], act3);
+        let flags = rm.card_reward_upgraded_flags().to_vec();
+        assert_eq!(flags.len(), 3, "seed {seed}");
+        upgraded_total += flags.iter().filter(|f| **f).count();
+        cards_total += flags.len();
+        // The same reward in act 1 (odds 0) is never rolled upgraded.
+        let act1 = coffer_with(seed, None, &[], |_| {});
+        assert!(act1.card_reward_upgraded_flags().iter().all(|f| !*f));
+        // SilverCrucible: roll first, hook second; everything ends upgraded and
+        // exactly one use is counted, with no extra stream draw.
+        let sc = coffer_with(seed, None, &[RelicId::SilverCrucible], |rs| {
+            rs.act_index = 3;
+        });
+        assert_eq!(sc.card_reward_upgraded_flags(), [true, true, true]);
+        assert_eq!(
+            sc.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+            1
+        );
+        assert_eq!(cursor(&sc.run_state), cursor(&rm.run_state), "seed {seed}");
+        assert_eq!(sc.card_reward_options(), rm.card_reward_options());
+    }
+    assert!(
+        upgraded_total >= 1,
+        "some card must be upgraded by the roll across 40 seeds"
+    );
+    // 120 non-Rare-dominated cards at ~0.5: the empirical rate is in a loose band
+    // (rarity mix includes Rares at 0 odds), proving the odds are applied.
+    assert!(
+        upgraded_total * 10 > cards_total && upgraded_total * 10 < cards_total * 8,
+        "{upgraded_total}/{cards_total}"
+    );
+}
+
+/// A rolled upgrade survives into the deck: pick the first rolled-upgraded card.
+#[test]
+fn rolled_upgrade_reaches_the_deck() {
+    for seed in 1..=40u64 {
+        let mut rm = coffer_with(seed, None, &[], |rs| rs.act_index = 3);
+        let flags = rm.card_reward_upgraded_flags().to_vec();
+        let Some(i) = flags.iter().position(|f| *f) else {
+            continue;
+        };
+        let before = rm.run_state.master_deck.len();
+        let _ = rm.take_action(RunAction::PickCardReward { idx: Some(i) });
+        assert_eq!(rm.run_state.master_deck.len(), before + 1);
+        assert!(rm.run_state.master_deck.last().expect("picked").upgraded);
+        return;
+    }
+    panic!("no seed produced a rolled upgrade");
+}

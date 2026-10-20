@@ -2787,7 +2787,7 @@ fn listener_kaleidoscope(rs: &mut RunState) -> EffectResult {
         // `CardReward.Populate` of a pre-set slate fires
         // `Hook.TryModifyCardRewardOptions` (`CardReward.cs:111-117`).
         let (reward, upgraded, enchantments) =
-            crate::cards::spec_index::apply_card_reward_late_hooks(rs, reward);
+            crate::cards::spec_index::apply_card_reward_late_hooks_flagged(rs, reward);
         rs.pending_rewards.push(Reward::Card(
             CardReward::from_options(reward).with_offer_state(upgraded, enchantments),
         ));
