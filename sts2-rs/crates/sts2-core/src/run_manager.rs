@@ -2841,9 +2841,10 @@ impl RunManager {
         // Coffer) must consume the Rewards stream as [card rolls, potion
         // rolls] — resolving all potions first shifted every card pick (RP0:
         // Rust offered Bully where C# offered PommelStrike). The first Card
-        // sentinel surfaces inline (rolling its options right here, in queue
-        // position); processing stops at a SECOND Card sentinel, whose rolls
-        // belong to a later drain.
+        // sentinel surfaces inline; its options (like every other reward's) were
+        // already populated, in queue order, by `populate_pending_rewards` before
+        // any screen opens, so processing stops at a SECOND Card sentinel only to
+        // let a later drain SURFACE it — no rolling happens then.
         let mut opened = false;
         // C# `RewardsCmd.OfferCustom` -> `RewardsSet.GenerateWithoutOffering`
         // runs `Hook.ModifyRewards` (normal + Late) over the offered set too, so
@@ -2908,7 +2909,7 @@ impl RunManager {
                         reward.room_context,
                     ))
                 }
-                Reward::Card(_) => break, // later drain rolls this one
+                Reward::Card(_) => break, // already populated; a later drain surfaces it
                 _ => None,
             };
             let Some(resolve) = queued else {
