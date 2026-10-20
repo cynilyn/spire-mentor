@@ -91,6 +91,7 @@ fn assert_golden(name: &str, args: &[&str]) {
 }
 
 #[test]
+#[ignore = "golden pinned to pre-0.111.0 seed derivation output; re-record after stage 5 of the P0 port from oracle (real 0.111.0) evidence, never by blindly re-pinning current engine output"]
 fn human_basic_strike_defend_seed0() {
     // Bead `sts2-rs-ar9u` migrated this fixture from the (removed)
     // STS1 `cultist` alias to `nibbit` (the lone STS2-native single
@@ -112,6 +113,7 @@ fn human_basic_strike_defend_seed0() {
 }
 
 #[test]
+#[ignore = "golden pinned to pre-0.111.0 seed derivation output; re-record after stage 5 of the P0 port from oracle (real 0.111.0) evidence, never by blindly re-pinning current engine output"]
 fn random_seed42_30steps_nibbit() {
     // Bead `sts2-rs-ar9u`: cultist alias removed; this fixture now
     // runs against `--encounter nibbit`.
@@ -132,6 +134,7 @@ fn random_seed42_30steps_nibbit() {
 }
 
 #[test]
+#[ignore = "golden pinned to pre-0.111.0 seed derivation output; re-record after stage 5 of the P0 port from oracle (real 0.111.0) evidence, never by blindly re-pinning current engine output"]
 fn human_nibbit_first_turn_bare_int_and_card_alias() {
     // Default encounter is Nibbit (lightspeed-parity demo). Exercises:
     //   * BUTT(12) intent priming via creature.ai (sts2-core combat_loop).

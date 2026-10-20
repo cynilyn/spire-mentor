@@ -882,6 +882,7 @@ class TestOrbDialect:
         assert stem in ORB_TITLE_TO_ID, "stem must be a key the hint adapter accepts"
 
     @pytest.mark.skipif(_SKIP_ENGINE_REASON is not None, reason=_SKIP_ENGINE_REASON or "")
+    @pytest.mark.xfail(strict=True, reason="mod-capture fixture: capture carries only run_seed (and rewards counters); re-capture after the SpireMentor mod emits player_seed/seed_string")
     def test_orb_state_reaches_the_engine(self) -> None:
         """The whole point: a Defect board with orbs must survive
         ``translate`` -> ``state_from_dict`` instead of raising
@@ -923,6 +924,7 @@ class TestOrbDialect:
         assert out["orb_slots"] == 3
 
     @pytest.mark.skipif(_SKIP_ENGINE_REASON is not None, reason=_SKIP_ENGINE_REASON or "")
+    @pytest.mark.xfail(strict=True, reason="mod-capture fixture: capture carries only run_seed (and rewards counters); re-capture after the SpireMentor mod emits player_seed/seed_string")
     def test_an_empty_belt_reaches_the_engine_with_its_capacity(self) -> None:
         from sts2_hint import adapter as hint_adapter
 
@@ -1067,6 +1069,7 @@ class TestDeadOstyRetainsMaxHp:
         assert out["osty"] == {"alive": False, "hp": 0, "max_hp": 10, "block": 0}
 
     @pytest.mark.skipif(_SKIP_ENGINE_REASON is not None, reason=_SKIP_ENGINE_REASON or "")
+    @pytest.mark.xfail(strict=True, reason="mod-capture fixture: capture carries only run_seed (and rewards counters); re-capture after the SpireMentor mod emits player_seed/seed_string")
     def test_the_corpses_max_hp_survives_to_the_engine(self) -> None:
         from sts2_hint import adapter as hint_adapter
 

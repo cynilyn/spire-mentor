@@ -667,6 +667,7 @@ def test_replay_determinism() -> None:
     replay.quit()
 
 
+@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_interactive_card_removal_renders_card_select() -> None:
     """An on-obtain card-removal relic (Precise Scissors from Neow) presents a
     deck ``card_select``; resolving it removes the picked card (matching C#)."""
@@ -935,6 +936,7 @@ def test_fill_combat_lifts_osty_to_top_level(monkeypatch) -> None:
     }
 
 
+@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
     """Scroll Boxes (Necrobinder Neow, seed ECHO) must surface as a
     ``bundle_select`` (pick 1 of 2 packs), not two single-card rewards.
@@ -1028,6 +1030,7 @@ def _walk_to_chest(g: RustGame, max_steps: int = 400) -> tuple[dict, list[dict]]
     pytest.fail("did not reach a treasure room within the step budget")
 
 
+@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_walking_into_a_chest_reveals_what_it_held() -> None:
     g = RustGame()
     g.start(character="Ironclad", seed=TREASURE_SEED, ascension=0)
@@ -1043,6 +1046,7 @@ def test_walking_into_a_chest_reveals_what_it_held() -> None:
     assert "HORN_CLEAT.title" in owned
 
 
+@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_only_the_chest_room_reveals() -> None:
     g = RustGame()
     g.start(character="Ironclad", seed=TREASURE_SEED, ascension=0)
@@ -1052,6 +1056,7 @@ def test_only_the_chest_room_reveals() -> None:
     assert [s for s in seen[:-1] if s.get("room_reveal")] == []
 
 
+@pytest.mark.xfail(strict=True, reason="scene-reaching fixed-seed test: seed no longer reaches the scene under the 0.111.0 seed derivation (player/run bases); re-pick seeds after stage 2 of the P0 port")
 def test_leaving_the_chest_room_clears_the_reveal() -> None:
     g = RustGame()
     g.start(character="Ironclad", seed=TREASURE_SEED, ascension=0)

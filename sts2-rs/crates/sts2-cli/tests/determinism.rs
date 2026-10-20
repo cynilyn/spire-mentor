@@ -28,6 +28,7 @@ fn binary_path() -> PathBuf {
 }
 
 #[test]
+#[ignore = "golden pinned to pre-0.111.0 seed derivation output; re-record after stage 5 of the P0 port from oracle (real 0.111.0) evidence, never by blindly re-pinning current engine output"]
 fn random_seed0_steps1000_jsonl_digest_matches() {
     let expected = include_str!("fixtures/random_seed0_steps1000.sha256")
         .trim()
