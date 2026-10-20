@@ -9406,11 +9406,27 @@ mod tests {
         let mut cards = vec![nimble, glam, status, plain];
         let _ =
             sts2_core::run_effects::dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
-        assert_eq!(cards[0].enchantment(EnchantmentId::Glam), 0, "Nimble offer untouched");
+        assert_eq!(
+            cards[0].enchantment(EnchantmentId::Glam),
+            0,
+            "Nimble offer untouched"
+        );
         assert_eq!(cards[0].enchantment(EnchantmentId::Nimble), 2);
-        assert_eq!(cards[1].enchantment(EnchantmentId::Glam), 1, "no reapplication");
-        assert_eq!(cards[2].enchantment(EnchantmentId::Glam), 0, "Status rejected");
-        assert_eq!(cards[3].enchantment(EnchantmentId::Glam), 1, "plain card enchanted");
+        assert_eq!(
+            cards[1].enchantment(EnchantmentId::Glam),
+            1,
+            "no reapplication"
+        );
+        assert_eq!(
+            cards[2].enchantment(EnchantmentId::Glam),
+            0,
+            "Status rejected"
+        );
+        assert_eq!(
+            cards[3].enchantment(EnchantmentId::Glam),
+            1,
+            "plain card enchanted"
+        );
     }
 
     /// Bead `sts2-rs-5xg1w`: Glitter listener is noop without

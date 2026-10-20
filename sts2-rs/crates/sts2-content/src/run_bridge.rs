@@ -131,11 +131,8 @@ pub fn build_event_combat(
         EventEncounter::DenseVegetation => vec![MonsterKind::DenseVegetationWriggler; 4],
     };
     // One `Niche` draw per enemy, in roster order (see the doc above).
-    let hps = sts2_core::monsters::roll_unique_max_hps(
-        &kinds,
-        &mut rs.rng.niche,
-        rs.ascension_level,
-    );
+    let hps =
+        sts2_core::monsters::roll_unique_max_hps(&kinds, &mut rs.rng.niche, rs.ascension_level);
     let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = kinds
         .iter()
         .enumerate()

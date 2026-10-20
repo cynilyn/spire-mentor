@@ -935,11 +935,27 @@ mod tests {
         let plain = card_pod_from_id(CardId::Bash, false).expect("Bash POD");
         let mut cards = vec![nimble, glam, status, plain];
         let _ = listener_silken_tress_card_reward(&mut rs, &mut cards);
-        assert_eq!(cards[0].enchantment(EnchantmentId::Glam), 0, "Nimble offer untouched");
+        assert_eq!(
+            cards[0].enchantment(EnchantmentId::Glam),
+            0,
+            "Nimble offer untouched"
+        );
         assert_eq!(cards[0].enchantment(EnchantmentId::Nimble), 2);
-        assert_eq!(cards[1].enchantment(EnchantmentId::Glam), 1, "no reapplication");
-        assert_eq!(cards[2].enchantment(EnchantmentId::Glam), 0, "Status rejected");
-        assert_eq!(cards[3].enchantment(EnchantmentId::Glam), 1, "plain card enchanted");
+        assert_eq!(
+            cards[1].enchantment(EnchantmentId::Glam),
+            1,
+            "no reapplication"
+        );
+        assert_eq!(
+            cards[2].enchantment(EnchantmentId::Glam),
+            0,
+            "Status rejected"
+        );
+        assert_eq!(
+            cards[3].enchantment(EnchantmentId::Glam),
+            1,
+            "plain card enchanted"
+        );
     }
 
     /// Without owning SilkenTress, the card-reward listener is a no-op.

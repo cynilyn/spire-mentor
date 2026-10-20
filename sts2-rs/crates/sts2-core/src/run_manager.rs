@@ -9262,9 +9262,8 @@ mod tests {
 
     #[test]
     fn dense_vegetation_rest_page_then_fight_is_not_resumed_after_combat() {
-        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(
-            bridge_callbacks(resolve_dense_vegetation_rest_then_fight),
-        );
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(bridge_callbacks(resolve_dense_vegetation_rest_then_fight));
         rm.run_state.enter_event_room(EventId::DenseVegetation);
         rm.set_phase(Phase::Event);
 

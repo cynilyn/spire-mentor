@@ -71,7 +71,10 @@ fn glam_sword_boomerang_first_use_is_two_plays_of_three_hits() {
     let mut state = fresh(19);
     let (_, idx) = push_boomerang(&mut state, true);
     play(&mut state, idx);
-    assert_eq!(state.creatures[0].current_hp, 1, "2 plays x 3 hits x 3 = 18");
+    assert_eq!(
+        state.creatures[0].current_hp, 1,
+        "2 plays x 3 hits x 3 = 18"
+    );
 }
 
 #[test]
@@ -132,7 +135,11 @@ fn glam_anger_vs_vulnerable_enemy_is_two_hits_of_nine() {
     state.player.hand.push(uid);
     let idx = u8::try_from(state.player.hand.len() - 1).expect("u8");
     let _ = sts2_core::combat_loop::play_card(&mut state, idx, Some(0));
-    assert_eq!(state.creatures[0].current_hp, 48 - 18, "2 plays x 6 x 1.5 = 18");
+    assert_eq!(
+        state.creatures[0].current_hp,
+        48 - 18,
+        "2 plays x 6 x 1.5 = 18"
+    );
 }
 
 // ── Same-UID regressions across auto-play and manual play ────────────────
@@ -168,9 +175,7 @@ fn to_hand(state: &mut CombatState, uid: sts2_core::CardUid) -> u8 {
 
 fn auto(state: &mut CombatState, uid: sts2_core::CardUid) {
     to_discard(state, uid);
-    assert!(sts2_core::combat_loop::auto_play_specific_card_from_discard(
-        state, uid, false
-    ));
+    assert!(sts2_core::combat_loop::auto_play_specific_card_from_discard(state, uid, false));
 }
 
 /// Plays done = enemy HP lost / 9 (3 hits x 3 damage per play).
@@ -184,16 +189,32 @@ fn step(state: &mut CombatState, f: impl FnOnce(&mut CombatState)) -> (i32, u32)
 fn glam_auto_play_then_auto_play_same_uid_replays_only_the_first() {
     let mut state = fresh(400);
     let (uid, _) = push_boomerang(&mut state, true);
-    assert_eq!(step(&mut state, |s| auto(s, uid)), (18, 6), "first auto: 2 plays");
-    assert_eq!(step(&mut state, |s| auto(s, uid)), (9, 3), "second auto: 1 play");
-    assert_eq!(step(&mut state, |s| auto(s, uid)), (9, 3), "third auto: 1 play");
+    assert_eq!(
+        step(&mut state, |s| auto(s, uid)),
+        (18, 6),
+        "first auto: 2 plays"
+    );
+    assert_eq!(
+        step(&mut state, |s| auto(s, uid)),
+        (9, 3),
+        "second auto: 1 play"
+    );
+    assert_eq!(
+        step(&mut state, |s| auto(s, uid)),
+        (9, 3),
+        "third auto: 1 play"
+    );
 }
 
 #[test]
 fn glam_auto_play_then_manual_same_uid_replays_only_the_first() {
     let mut state = fresh(400);
     let (uid, _) = push_boomerang(&mut state, true);
-    assert_eq!(step(&mut state, |s| auto(s, uid)), (18, 6), "first auto: 2 plays");
+    assert_eq!(
+        step(&mut state, |s| auto(s, uid)),
+        (18, 6),
+        "first auto: 2 plays"
+    );
     let idx = to_hand(&mut state, uid);
     assert_eq!(
         step(&mut state, |s| play(s, idx)),
@@ -206,6 +227,14 @@ fn glam_auto_play_then_manual_same_uid_replays_only_the_first() {
 fn glam_manual_then_auto_same_uid_replays_only_the_first() {
     let mut state = fresh(400);
     let (uid, idx) = push_boomerang(&mut state, true);
-    assert_eq!(step(&mut state, |s| play(s, idx)), (18, 6), "first manual: 2 plays");
-    assert_eq!(step(&mut state, |s| auto(s, uid)), (9, 3), "auto after manual: 1 play");
+    assert_eq!(
+        step(&mut state, |s| play(s, idx)),
+        (18, 6),
+        "first manual: 2 plays"
+    );
+    assert_eq!(
+        step(&mut state, |s| auto(s, uid)),
+        (9, 3),
+        "auto after manual: 1 play"
+    );
 }

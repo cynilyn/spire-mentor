@@ -367,7 +367,6 @@ mod tests {
         }
     }
 
-
     use std::num::NonZeroU32;
     use sts2_core::cards::{CardId, TargetType};
 

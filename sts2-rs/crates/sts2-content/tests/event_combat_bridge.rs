@@ -319,7 +319,10 @@ fn dense_vegetation_rest_opens_fight_page_and_fight_stages_no_resume_combat() {
     let req = rs.event_combat.as_ref().expect("combat staged");
     assert!(!req.resume, "shouldResumeAfterCombat: false");
     assert!(req.victory_rewards.is_empty(), "no extra rewards");
-    assert!(req.monster_room_rewards, "normal Monster-room rewards follow");
+    assert!(
+        req.monster_room_rewards,
+        "normal Monster-room rewards follow"
+    );
     assert_eq!(req.encounter, EventEncounter::DenseVegetation);
     assert_eq!(rs.current_event, Some(EventId::DenseVegetation));
 }
@@ -349,14 +352,21 @@ fn build_event_combat_dense_vegetation_spawns_four_wrigglers_with_slot_openers()
         .collect();
     assert_eq!(wrigglers.len(), 4, "wriggler1..wriggler4");
     for w in &wrigglers {
-        assert!((17..=21).contains(&w.max_hp), "A0 HP 17-21, got {}", w.max_hp);
+        assert!(
+            (17..=21).contains(&w.max_hp),
+            "A0 HP 17-21, got {}",
+            w.max_hp
+        );
     }
     // Slots 1/3 open on NASTY_BITE, slots 2/4 on WRIGGLE; StartStunned=false.
     let openers: Vec<&str> = wrigglers
         .iter()
         .map(|w| w.ai.as_ref().expect("ai").current_move().id)
         .collect();
-    assert_eq!(openers, vec!["NASTY_BITE", "WRIGGLE", "NASTY_BITE", "WRIGGLE"]);
+    assert_eq!(
+        openers,
+        vec!["NASTY_BITE", "WRIGGLE", "NASTY_BITE", "WRIGGLE"]
+    );
 }
 
 #[test]
