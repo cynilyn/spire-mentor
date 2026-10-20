@@ -141,3 +141,34 @@ def test_game_version_env_is_the_default_for_calls_without_the_kwarg(monkeypatch
     monkeypatch.setenv("STS2_GAME_VERSION", "v9.9.9")
     with pytest.raises(ValueError):
         sts2_rs.RunManager(string_seed="P0A0", neow_start=True)
+
+
+# --- R0-s: seed-path fixes (witnesses: logs/engine/rust_resume/r0/witnesses.md) ---
+
+OLD_ANCHORS = [  # oracle f79d3a9 stage1_vectors.json: (seed, run_seed, player_seed)
+    ("oldP0A0", 273692109, 15676685915450073139),
+    ("oldP0A1", 3002575464, 18283884523336027873),
+    ("oldP0A2", 3405859991, 17731986911216078246),
+    ("oldP0A3", 1839776050, 13570675488851547012),
+    ("oldP0A4", 2599290937, 3030005280704353688),
+]
+
+
+@pytest.mark.parametrize("seed,run_seed,player_seed", OLD_ANCHORS)
+def test_old_prefix_seed_takes_the_migrated_save_rule(seed, run_seed, player_seed):
+    """(a) `old` is judged before normalisation: the run base is the legacy 32-bit hash of the rest, the oracle's
+    player base is the XxHash64 of the whole string (reported as `player_seed`; the engine's own player streams
+    still hang off the run base, see `engine_player_seed`)."""
+    rm = make(seed)
+    d = rm.rng_dump()
+    assert d["run_seed"] == run_seed == rm.run_seed
+    assert d["player_seed"] == player_seed == rm.player_seed
+    assert (d["prefix"], d["input_seed"]) == ("old", seed[3:])
+    assert d["engine_player_seed"] == run_seed != player_seed
+
+
+def test_old_prefix_rule_is_v0111_only_and_case_sensitive():
+    h = lambda s, v: sts2_rs.RunManager(string_seed=s, game_version=v).run_seed  # noqa: E731
+    assert h("oldP0A0", "v0.107.1") == sts2_rs.RunManager(string_seed="OLDP0A0", game_version="v0.107.1").run_seed
+    assert h("OLDP0A0", V) == 9137717999390313649  # canonicalised to 0LDP0A0, plain hash (pristine value)
+    assert h("P0A0", V) == 10883704133362413376

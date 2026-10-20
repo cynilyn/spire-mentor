@@ -147,6 +147,22 @@ impl PyRunManager {
     }
 }
 
+/// The text the run seed is hashed from for the seed string `raw`.
+///
+/// A typed seed is canonicalised first (`SeedHelper.CanonicalizeSeed`:
+/// upper-case, `O`->`0`, `I`->`1`, trimmed), which is why a typed `old…` can
+/// never reach v0.111.0's migrated-save rule (`RunRngSet.cs:104-116`). The seed
+/// of a migrated run is stored un-canonicalised, so on v0.111.0 a lowercase
+/// `old` prefix is judged before any normalisation and the string is hashed as
+/// given (else `oldX` becomes `0LDX` and takes the plain-hash path).
+fn seed_text_to_hash(raw: &str, version: sts2_core::GameVersion) -> std::borrow::Cow<'_, str> {
+    if version >= sts2_core::GameVersion::V0_111_0 && raw.starts_with("old") {
+        std::borrow::Cow::Borrowed(raw)
+    } else {
+        std::borrow::Cow::Owned(sts2_core::canonicalize_seed(raw))
+    }
+}
+
 #[pymethods]
 impl PyRunManager {
     #[new]
@@ -193,7 +209,7 @@ impl PyRunManager {
         // is applied below via `with_run_seed`; `effective_seed` is its i32
         // view). An integer `seed` is a `uint` master in both builds.
         let master_seed: u64 = match string_seed {
-            Some(s) => game_version.run_seed_hash(&sts2_core::canonicalize_seed(s)),
+            Some(s) => game_version.run_seed_hash(&seed_text_to_hash(s, game_version)),
             None => u64::from(seed as u32),
         };
         let effective_seed = master_seed as i32;
@@ -1943,6 +1959,29 @@ impl PyRunManager {
             self.inner.run_state.gold,
             self.inner.run_state.act_index,
         )
+    }
+}
+
+#[cfg(test)]
+mod seed_text_tests {
+    use super::seed_text_to_hash;
+    use sts2_core::GameVersion::{V0_107_1, V0_111_0};
+
+    #[test]
+    fn typed_seeds_are_canonicalised_by_default() {
+        for v in [V0_107_1, V0_111_0] {
+            assert_eq!(seed_text_to_hash("p0a0", v), "P0A0");
+            assert_eq!(seed_text_to_hash(" Io1 ", v), "101");
+            assert_eq!(seed_text_to_hash("OLDP0A0", v), "0LDP0A0");
+        }
+    }
+
+    /// R0-s(a): the lowercase `old` test runs before normalisation, v0.111.0 only.
+    #[test]
+    fn lowercase_old_prefix_is_kept_raw_on_v0111_only() {
+        assert_eq!(seed_text_to_hash("oldP0A0", V0_111_0), "oldP0A0");
+        assert_eq!(seed_text_to_hash("oldP0A0", V0_107_1), "0LDP0A0");
+        assert_eq!(seed_text_to_hash("Old1", V0_111_0), "0LD1");
     }
 }
 
