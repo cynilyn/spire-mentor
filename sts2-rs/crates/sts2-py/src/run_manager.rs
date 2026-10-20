@@ -1007,6 +1007,16 @@ impl PyRunManager {
         out.set_item("relics", relics)?;
         out.set_item("potions", potions)?;
         out.set_item("removal_cost", inv.removal_cost)?;
+        // What the engine charges (`merchant_price_with_modifiers`: TheCourier,
+        // MembershipCard) — `MerchantCardRemovalEntry.Cost`. `removal_cost` stays
+        // the rolled base.
+        out.set_item(
+            "removal_price",
+            sts2_core::shop::merchant_price_with_modifiers(
+                &self.inner.run_state.active_relics(),
+                inv.removal_cost,
+            ),
+        )?;
         out.set_item("shops_reads", shops_reads)?;
         out.set_item("rewards_reads", rewards_reads)?;
         Ok(out)
