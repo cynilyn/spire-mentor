@@ -1282,9 +1282,16 @@ impl RunManager {
         // option (C# `FromSimpleGridForRewards` grid). Mandatory, no skip.
         // Bead `sts2-rs-gorge-select`.
         if let Some(grant) = self.run_state.pending_card_grants.first() {
-            return (0..grant.options.len())
+            let mut v: Vec<RunAction> = (0..grant.options.len())
                 .map(|idx| RunAction::GrantDeckCard { idx })
                 .collect();
+            // An optional grid (`MinSelect == 0`, SeaGlass) may be ended early: `idx == options.len()` is "done".
+            if grant.min_pick == 0 {
+                v.push(RunAction::GrantDeckCard {
+                    idx: grant.options.len(),
+                });
+            }
+            return v;
         }
         // Interactive full-belt potion swap (GH #252): a potion reward
         // that found no free slot preempts the same way. Decline is
@@ -1455,7 +1462,10 @@ impl RunManager {
                     Vec::new()
                 }
             }
+            // A LOCKED option (`RelicId::DeprecatedRelic`, Orobas' empty third pool) stays in its slot but is
+            // not pickable, so it has no action.
             Phase::BossRelic => (0..self.boss_relic_options.len())
+                .filter(|&idx| self.boss_relic_options[idx] != crate::RelicId::DeprecatedRelic)
                 .map(|idx| RunAction::PickBossRelic { idx })
                 .collect(),
             Phase::Shop => {
@@ -3256,7 +3266,9 @@ impl RunManager {
     }
 
     fn do_boss_relic_pick(&mut self, idx: usize) -> ActionResult {
-        if idx >= self.boss_relic_options.len() {
+        if idx >= self.boss_relic_options.len()
+            || self.boss_relic_options[idx] == crate::RelicId::DeprecatedRelic
+        {
             return ActionResult::InvalidForPhase;
         }
         let relic = self.boss_relic_options[idx];
@@ -4062,14 +4074,34 @@ impl RunManager {
         let Some(grant) = self.run_state.pending_card_grants.first_mut() else {
             return ActionResult::InvalidForPhase;
         };
+        if idx == grant.options.len() && grant.min_pick == 0 {
+            // "Done": the optional grid is confirmed with the picks made so far.
+            self.run_state.pending_card_grants.remove(0);
+            return ActionResult::Advanced;
+        }
         if idx >= grant.options.len() {
             return ActionResult::InvalidForPhase;
         }
-        let card = grant.options.remove(idx);
+        let mut card = grant.options.remove(idx);
         grant.pick = grant.pick.saturating_sub(1);
+        grant.min_pick = grant.min_pick.saturating_sub(1);
         let done = grant.pick == 0 || grant.options.is_empty();
+        // v0.111.0: `CardPileCmd.Add` fires `ModifyCardBeingAddedToDeck` (egg relics) and `AfterCardChangedPiles`
+        // (LuckyFysh) for every card added to the deck, as the reward pick does.
+        let hooked = self.run_state.game_version >= crate::GameVersion::V0_111_0;
+        if hooked {
+            self.run_state.modify_card_being_added_to_deck(&mut card);
+        }
+        let ctx = crate::run_effects::CardAddedRunCtx {
+            card_id: card.card_id,
+            card_type: card.card_type,
+            source: crate::relic_effects::AddSource::Reward,
+        };
         // C# `CardPileCmd.Add(card, PileType.Deck)` — default index -1 = tail.
         self.run_state.master_deck.push(card);
+        if hooked {
+            let _ = crate::run_effects::dispatch_on_card_added_to_deck(&mut self.run_state, &ctx);
+        }
         if done {
             self.run_state.pending_card_grants.remove(0);
         }
@@ -7906,6 +7938,7 @@ mod tests {
                     mk(103, crate::cards::CardId::Bash),
                 ],
                 pick: 2,
+                min_pick: 2,
             });
         // Preempts the phase: one GrantDeckCard per current option.
         assert_eq!(
@@ -7944,6 +7977,120 @@ mod tests {
                 crate::cards::CardId::Bash
             ],
         );
+    }
+
+    /// SeaGlass' optional grid (`FromSimpleGridForRewards`, `MinSelect 0`, `MaxSelect 15`,
+    /// `SeaGlass.cs:89-91`): the player may confirm any number of picks, 0 through 15, and every selected card
+    /// joins the deck. `GrantDeckCard { idx: options.len() }` confirms early; a mandatory grid offers no such action.
+    /// Orobas' empty third pool is a LOCKED option (`Orobas.cs:88`): the slot stays in the offer list but has no
+    /// pick action and cannot be taken.
+    #[test]
+    fn locked_boss_relic_slot_is_listed_but_not_pickable() {
+        use crate::RelicId;
+        let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.set_phase(Phase::BossRelic);
+        rm.boss_relic_options = vec![
+            RelicId::ElectricShrymp,
+            RelicId::AlchemicalCoffer,
+            RelicId::DeprecatedRelic,
+        ];
+        assert_eq!(
+            rm.get_available_actions(),
+            vec![
+                RunAction::PickBossRelic { idx: 0 },
+                RunAction::PickBossRelic { idx: 1 },
+            ]
+        );
+        assert_eq!(
+            rm.boss_relic_options().len(),
+            3,
+            "the locked slot keeps its position"
+        );
+        assert_eq!(rm.do_boss_relic_pick(2), ActionResult::InvalidForPhase);
+        assert_eq!(
+            rm.boss_relic_options().len(),
+            3,
+            "a rejected pick leaves the offer intact"
+        );
+    }
+
+    #[test]
+    fn optional_card_grant_accepts_zero_some_or_all_picks() {
+        let mk = |uid: u32, id: crate::cards::CardId| crate::Card {
+            uid: crate::CardUid::new(uid).expect("nz"),
+            card_id: id,
+            ..crate::Card::pod_defaults()
+        };
+        let ids = [
+            crate::cards::CardId::StrikeIronclad,
+            crate::cards::CardId::DefendIronclad,
+            crate::cards::CardId::Bash,
+        ];
+        let fresh = |min_pick: usize| {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad);
+            rm.run_state.master_deck.clear();
+            let options: Vec<crate::Card> =
+                (0..15).map(|i| mk(200 + i as u32, ids[i % 3])).collect();
+            rm.run_state
+                .pending_card_grants
+                .push(crate::runstate::PendingCardGrant {
+                    options,
+                    pick: 15,
+                    min_pick,
+                });
+            rm
+        };
+
+        // A mandatory grid has no "done" action; the optional one does.
+        let mut mandatory = fresh(15);
+        assert_eq!(mandatory.get_available_actions().len(), 15);
+        assert_eq!(
+            mandatory.take_action(RunAction::GrantDeckCard { idx: 15 }),
+            ActionResult::InvalidForPhase
+        );
+        let mut rm = fresh(0);
+        assert_eq!(rm.get_available_actions().len(), 16);
+        assert!(rm
+            .get_available_actions()
+            .contains(&RunAction::GrantDeckCard { idx: 15 }));
+
+        // 0 picks: confirm at once -> deck unchanged, grant closed.
+        assert_eq!(
+            rm.take_action(RunAction::GrantDeckCard { idx: 15 }),
+            ActionResult::Advanced
+        );
+        assert!(rm.run_state.master_deck.is_empty());
+        assert!(rm.run_state.pending_card_grants.is_empty());
+
+        // 2 picks (current indices 4, then 0 -> original cards 4 and 0), then confirm.
+        let mut rm = fresh(0);
+        assert_eq!(
+            rm.take_action(RunAction::GrantDeckCard { idx: 4 }),
+            ActionResult::Advanced
+        );
+        assert_eq!(
+            rm.take_action(RunAction::GrantDeckCard { idx: 0 }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.pending_card_grants[0].options.len(), 13);
+        assert_eq!(
+            rm.take_action(RunAction::GrantDeckCard { idx: 13 }),
+            ActionResult::Advanced
+        );
+        let deck: Vec<_> = rm.run_state.master_deck.iter().map(|c| c.card_id).collect();
+        assert_eq!(deck, vec![ids[1], ids[0]]); // original card 4 is ids[4 % 3]
+        assert!(rm.run_state.pending_card_grants.is_empty());
+
+        // 15 picks: the grid closes by itself after the last one.
+        let mut rm = fresh(0);
+        for _ in 0..15 {
+            assert_eq!(
+                rm.take_action(RunAction::GrantDeckCard { idx: 0 }),
+                ActionResult::Advanced
+            );
+        }
+        assert_eq!(rm.run_state.master_deck.len(), 15);
+        assert!(rm.run_state.pending_card_grants.is_empty());
     }
 
     #[test]

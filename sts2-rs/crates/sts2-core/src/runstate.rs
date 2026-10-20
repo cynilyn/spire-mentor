@@ -429,6 +429,10 @@ pub struct PendingCardGrant {
     /// MaxSelect`). Each picked card is appended to the master deck; the
     /// unpicked remainder is discarded once `pick` reaches 0.
     pub pick: usize,
+    /// How many picks are still REQUIRED before the player may stop (C# `prefs.MinSelect`). Equal to
+    /// [`Self::pick`] for a mandatory pick-N (Gorge); `0` for an optional 0..=N grid (SeaGlass, `MinSelect 0`),
+    /// where `GrantDeckCard { idx: options.len() }` ends the grant early. Decremented with every pick.
+    pub min_pick: usize,
 }
 
 /// `CardRewardGenerationOptions` POD — mirrors
@@ -4127,14 +4131,12 @@ impl RunState {
         others[rng.next_int_exclusive(0, others.len() as i32) as usize]
     }
 
-    /// `Orobas.OptionPool3`: TouchOfOrobas iff the player owns a
-    /// Starter-rarity relic (`TouchOfOrobas.SetupForPlayer`), ArchaicTooth iff
-    /// the deck holds a transcendence starter card (`ArchaicTooth.
-    /// SetupForPlayer`: Bash / Neutralize / Unleash / FallingStar / Dualcast).
-    /// v0.111.0 only — earlier builds keep the unconditional pair. When
-    /// neither holds, C# offers a LOCKED placeholder: still one `NextItem`
-    /// read over a one-element list, so a TouchOfOrobas stand-in keeps the
-    /// stream aligned.
+    /// `Orobas.OptionPool3`: TouchOfOrobas iff the player owns a Starter-rarity relic
+    /// (`TouchOfOrobas.SetupForPlayer`), ArchaicTooth iff the deck holds a transcendence starter card
+    /// (`ArchaicTooth.SetupForPlayer`: Bash / Neutralize / Unleash / FallingStar / Dualcast). v0.111.0 only --
+    /// earlier builds keep the unconditional pair. When
+    /// neither holds, C# offers a LOCKED placeholder option (`Orobas.cs:88`): still one `NextItem` read over a
+    /// one-element list, and a locked, unselectable slot -- marked here with [`RelicId::DeprecatedRelic`].
     fn orobas_pool3(&self) -> Vec<RelicId> {
         use crate::cards::CardId;
         if self.game_version < crate::GameVersion::V0_111_0 {
@@ -4173,7 +4175,9 @@ impl RunState {
             pool.push(RelicId::ArchaicTooth);
         }
         if pool.is_empty() {
-            pool.push(RelicId::TouchOfOrobas);
+            // C# `OPTION_POOL_3_LOCKED`: a locked option with no relic. `DeprecatedRelic` is the locked-slot marker
+            // (see `RunManager::boss_relic_options`); it is never pickable.
+            pool.push(RelicId::DeprecatedRelic);
         }
         pool
     }
@@ -9085,7 +9089,7 @@ mod tests {
         rs.master_deck = vec![bash];
         assert_eq!(rs.orobas_pool3(), vec![RelicId::ArchaicTooth]);
         rs.master_deck = vec![strike];
-        assert_eq!(rs.orobas_pool3(), vec![RelicId::TouchOfOrobas]);
+        assert_eq!(rs.orobas_pool3(), vec![RelicId::DeprecatedRelic]);
         rs.game_version = crate::GameVersion::V0_107_1;
         assert_eq!(
             rs.orobas_pool3(),

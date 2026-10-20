@@ -663,13 +663,20 @@ impl Game {
                 if idxs.is_empty() {
                     return err("select_cards requires an index");
                 }
-                let acts = idxs
-                    .into_iter()
+                let mut acts: Vec<RunAction> = idxs
+                    .iter()
                     .enumerate()
                     .map(|(n, i)| RunAction::GrantDeckCard {
                         idx: usize_of(i - n as i64),
                     })
                     .collect();
+                // An optional grid (min 0, SeaGlass) stays open until confirmed: `idx == options.len()` is "done".
+                if rmx::pending_card_grant_min(rm) == 0 {
+                    let left = rmx::card_grant_options(rm).len().saturating_sub(idxs.len());
+                    if left > 0 {
+                        acts.push(RunAction::GrantDeckCard { idx: left });
+                    }
+                }
                 return self.take_all(action, acts);
             }
             // Multi-pick in-combat pending choice: MULTIPLE indices at once
@@ -688,6 +695,14 @@ impl Game {
                     return err(format!("{action} rejected by engine: {result}"));
                 }
                 return Ok(self.serialize());
+            }
+        }
+        // An optional grid (SeaGlass, min 0): confirming without a pick is `skip_select`.
+        if action == "skip_select" {
+            let rm = self.rm()?;
+            if rmx::pending_card_grants(rm) > 0 && rmx::pending_card_grant_min(rm) == 0 {
+                let idx = rmx::card_grant_options(rm).len();
+                return self.take_all(action, vec![RunAction::GrantDeckCard { idx }]);
             }
         }
         let rust_action = self.translate(action, args)?;
@@ -1196,7 +1211,9 @@ impl Game {
             .map(|(i, (cid, up))| deck_card(i as i64, cid, *up))
             .collect();
         let count = Self::clamp_count(rmx::pending_card_grants(rm), cards.len());
-        Self::set_select(state, cards, count, count, false, "grant");
+        // An optional grid (SeaGlass `MinSelect 0`) reports min_select 0 and is skippable.
+        let min = i64::from(rmx::pending_card_grant_min(rm)).min(count);
+        Self::set_select(state, cards, min, count, min == 0, "grant");
     }
 
     /// `_deck_subset_cards`: master-deck cards at `deck_indices`, indexed by
@@ -1580,6 +1597,36 @@ impl Game {
         let rm = self.rm.as_ref().expect("run");
         let actions = rmx::available_actions(rm);
         let ids = rmx::boss_relic_options(rm);
+        // A LOCKED slot (Orobas' empty third pool) keeps its position but has no action: render every slot.
+        if ids.iter().any(|r| r == "DeprecatedRelic") {
+            let options: Vec<Value> = ids
+                .iter()
+                .enumerate()
+                .map(|(i, rid)| {
+                    if rid == "DeprecatedRelic" {
+                        json!({
+                            "index": i,
+                            "title": "OROBAS.pages.INITIAL.options.OPTION_POOL_3_LOCKED.title",
+                            "is_locked": true,
+                        })
+                    } else {
+                        let loc = loc_id(rid);
+                        json!({
+                            "index": i,
+                            "title": format!("{loc}.title"),
+                            "text_key": loc,
+                            "is_locked": false,
+                        })
+                    }
+                })
+                .collect();
+            self.option_actions = actions;
+            let m = state.as_object_mut().expect("state dict");
+            m.insert("decision".into(), json!("event_choice"));
+            m.insert("options".into(), Value::Array(options));
+            m.insert("event_name".into(), json!(""));
+            return;
+        }
         let options: Vec<Value> = actions
             .iter()
             .enumerate()

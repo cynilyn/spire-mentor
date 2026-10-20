@@ -849,7 +849,10 @@ class RustGame(GameBackend):
                 result = self.rm.take_action({"action": "grant_deck_card", "idx": i - n})
                 if result not in ("advanced", "run_over"):
                     return _err(f"{action} rejected by engine: {result}")
-            return self._serialize()
+            return self._finish_optional_grant()
+        # An optional grid (SeaGlass, min_select 0): picking nothing confirms it empty.
+        if action == "skip_select" and getattr(self.rm, "pending_card_grants", 0) > 0 and self._grant_min_select() == 0:
+            return self._finish_optional_grant()
         # Multi-pick in-combat pending choice (e.g. Necrobinder's Dredge:
         # "choose up to 3 discard cards", min==max==3). When MULTIPLE indices are
         # supplied at once (C#'s exact fixed-count multi-select, e.g. discard
@@ -1442,11 +1445,26 @@ class RustGame(GameBackend):
             )
         count = int(getattr(self.rm, "pending_card_grants", 1) or 1)
         count = max(1, min(count, len(cards)))
+        # An optional grid (SeaGlass: ``FromSimpleGridForRewards`` min 0, max 15) reports min_select 0.
+        minimum = min(self._grant_min_select(), count)
         state["cards"] = cards
-        state["min_select"] = count
+        state["min_select"] = minimum
         state["max_select"] = count
-        state["can_skip"] = False
+        state["can_skip"] = minimum == 0
         state["context"] = "grant"
+
+    def _grant_min_select(self) -> int:
+        """Picks still required before the front card grant may be confirmed (0 for an optional grid)."""
+        value = getattr(self.rm, "pending_card_grant_min", None)
+        return int(value) if value is not None else int(getattr(self.rm, "pending_card_grants", 0) or 0)
+
+    def _finish_optional_grant(self) -> dict[str, Any]:
+        """Confirm a still-open optional grid with the picks made so far (``grant_deck_card`` at ``idx == len(options)``)."""
+        if getattr(self.rm, "pending_card_grants", 0) > 0 and self._grant_min_select() == 0:
+            result = self.rm.take_action({"action": "grant_deck_card", "idx": len(self.rm.card_grant_options())})
+            if result not in ("advanced", "run_over"):
+                return _err(f"confirm rejected by engine: {result}")
+        return self._serialize()
 
     def _deck_subset_cards(self, deck_indices: list[int]) -> list[dict[str, Any]]:
         """Render the master-deck cards at ``deck_indices`` as card_select
@@ -1886,6 +1904,29 @@ class RustGame(GameBackend):
         actions = rm.available_actions()
         self._option_actions = list(actions)
         ids = rm.boss_relic_options() if hasattr(rm, "boss_relic_options") else []
+        if "DeprecatedRelic" in ids:
+            # A LOCKED slot (Orobas' empty third pool, ``OPTION_POOL_3_LOCKED``) keeps its position but has no
+            # action; render every slot from the offer list so the option indices stay aligned with C#.
+            options = []
+            self._option_actions = []
+            for idx, rid in enumerate(ids):
+                if rid == "DeprecatedRelic":
+                    options.append(
+                        {
+                            "index": idx,
+                            "title": "OROBAS.pages.INITIAL.options.OPTION_POOL_3_LOCKED.title",
+                            "is_locked": True,
+                        }
+                    )
+                    self._option_actions.append({"action": "locked_option"})
+                else:
+                    loc = display_maps.loc_id(rid)
+                    options.append({"index": idx, "title": f"{loc}.title", "text_key": loc, "is_locked": False})
+                    self._option_actions.append({"action": "pick_boss_relic", "idx": idx})
+            state["decision"] = "event_choice"
+            state["options"] = options
+            state["event_name"] = ""
+            return
         options = []
         for i, a in enumerate(actions):
             kind = a.get("action")

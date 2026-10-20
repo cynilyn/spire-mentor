@@ -182,7 +182,11 @@ fn room_full_of_cheese_gorge(state: &mut RunState) -> EventOutcome {
     let pick = ROOM_FULL_OF_CHEESE_GORGE_PICK.min(options.len());
     state
         .pending_card_grants
-        .push(sts2_core::runstate::PendingCardGrant { options, pick });
+        .push(sts2_core::runstate::PendingCardGrant {
+            options,
+            pick,
+            min_pick: pick,
+        });
     EventOutcome::finished("Pick 2 of 8 common cards to gain.")
 }
 

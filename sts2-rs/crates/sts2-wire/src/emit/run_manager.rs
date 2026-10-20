@@ -470,7 +470,9 @@ pub fn effective_master_deck_indices(rm: &RunManager) -> Vec<usize> {
     let n = rm.run_state.master_deck.len();
     let by_uid = combat.game_version >= sts2_core::GameVersion::V0_111_0;
     for stolen in &combat.swipe_stolen {
-        if stolen.reclaimed {
+        // v0.111.0: a killed thief hands the card back only through an optional SpecialCardReward, so it stays out of
+        // the deck until that reward is taken; earlier builds restore it at once.
+        if stolen.reclaimed && !by_uid {
             continue;
         }
         if by_uid {

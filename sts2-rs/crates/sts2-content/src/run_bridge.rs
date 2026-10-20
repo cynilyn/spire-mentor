@@ -834,40 +834,56 @@ fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState)
     // v0.111.0 (R1c): `RemoveFromDeck(card.DeckVersion)` removes the run-deck original, whose upgrade state can
     // differ from the in-combat card (a mid-combat upgrade). Combat uid `u` maps to master index `n - u`; fall
     // back to the identity match when the uid does not line up.
+    //
+    // v0.111.0: a killed thief does NOT put the card back (`SwipePower.BeforeDeath`): it registers the card with
+    // the run and adds an OPTIONAL `SpecialCardReward` to the combat rewards, so the card is out of the deck until
+    // that reward is taken (and is appended to the deck's tail then). Earlier builds restored it in place.
     let n = rs.master_deck.len();
-    let by_uid = combat.game_version >= sts2_core::GameVersion::V0_111_0;
-    let mut uid_removals: Vec<usize> = Vec::new();
-    let mut identity: Vec<(sts2_core::cards::CardId, bool)> = Vec::new();
+    let v0111 = combat.game_version >= sts2_core::GameVersion::V0_111_0;
+    let mut uid_removals: Vec<(usize, bool)> = Vec::new();
+    let mut identity: Vec<(sts2_core::cards::CardId, bool, bool)> = Vec::new();
     for stolen in &combat.swipe_stolen {
-        if stolen.reclaimed {
+        if stolen.reclaimed && !v0111 {
             continue;
         }
-        if by_uid {
+        if v0111 {
             if let Some(u) = stolen.card_uid {
                 let u = u as usize;
                 if (1..=n).contains(&u)
                     && rs.master_deck[n - u].card_id == stolen.card_id
-                    && !uid_removals.contains(&(n - u))
+                    && !uid_removals.iter().any(|&(i, _)| i == n - u)
                 {
-                    uid_removals.push(n - u);
+                    uid_removals.push((n - u, stolen.reclaimed));
                     continue;
                 }
             }
         }
-        identity.push((stolen.card_id, stolen.upgraded));
+        identity.push((stolen.card_id, stolen.upgraded, stolen.reclaimed));
     }
-    uid_removals.sort_unstable_by(|a, b| b.cmp(a));
-    for idx in uid_removals {
-        rs.master_deck.remove(idx);
+    let mut returned: Vec<sts2_core::Card> = Vec::new();
+    uid_removals.sort_unstable_by_key(|&(idx, _)| std::cmp::Reverse(idx));
+    for (idx, reclaimed) in uid_removals {
+        let card = rs.master_deck.remove(idx);
+        if reclaimed {
+            returned.push(card);
+        }
     }
-    for (card_id, upgraded) in identity {
+    for (card_id, upgraded, reclaimed) in identity {
         if let Some(idx) = rs
             .master_deck
             .iter()
             .position(|c| c.card_id == card_id && c.upgraded == upgraded)
         {
-            rs.master_deck.remove(idx);
+            let card = rs.master_deck.remove(idx);
+            if reclaimed {
+                returned.push(card);
+            }
         }
+    }
+    for card in returned {
+        rs.pending_rewards.push(sts2_core::runstate::Reward::Card(
+            sts2_core::runstate::CardReward::from_cards(&[card]),
+        ));
     }
 }
 
@@ -2105,6 +2121,46 @@ mod tests {
         combat.record_swipe_steal_uid(thief, id, true, u);
         exit_combat(&mut rs, &combat);
         (before, rs.master_deck.len())
+    }
+
+    /// C# `SwipePower.BeforeDeath`: a killed thief returns the card only through an optional `SpecialCardReward`
+    /// (the card re-joins the deck's tail when that reward is taken). v0.111.0 takes the card out of the run deck at
+    /// combat end and queues a one-card reward for it; v0.107.1 restores it in place, with no reward.
+    fn killed_thief_outcome(version: sts2_core::GameVersion) -> (usize, usize, usize) {
+        use sts2_core::cards::CardId;
+        let mut rs = fresh_run();
+        rs.game_version = version;
+        for _ in 0..2 {
+            rs.master_deck.push(
+                crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false)
+                    .expect("strike spec"),
+            );
+        }
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        combat.game_version = version;
+        let before = rs.master_deck.len();
+        let rewards_before = rs.pending_rewards.len();
+        let thief = *combat.enemy_uids.first().expect("combat has an enemy");
+        combat.record_swipe_steal_uid(thief, CardId::StrikeIronclad, false, 1);
+        combat.reclaim_swipe_on_death(thief);
+        exit_combat(&mut rs, &combat);
+        let card_rewards = rs.pending_rewards[rewards_before..]
+            .iter()
+            .filter(|r| matches!(r, sts2_core::runstate::Reward::Card(c) if c.options == [CardId::StrikeIronclad]))
+            .count();
+        (before, rs.master_deck.len(), card_rewards)
+    }
+
+    #[test]
+    fn killed_thief_offers_the_stolen_card_as_a_reward_v0111() {
+        let (before, after, rewards) = killed_thief_outcome(sts2_core::GameVersion::V0_111_0);
+        assert_eq!((after, rewards), (before - 1, 1));
+    }
+
+    #[test]
+    fn killed_thief_restores_the_card_in_place_v0107_unchanged() {
+        let (before, after, rewards) = killed_thief_outcome(sts2_core::GameVersion::V0_107_1);
+        assert_eq!((after, rewards), (before, 0));
     }
 
     #[test]

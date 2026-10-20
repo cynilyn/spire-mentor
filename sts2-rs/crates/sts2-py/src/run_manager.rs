@@ -582,6 +582,18 @@ impl PyRunManager {
             .map_or(0, |g| u32::try_from(g.pick).unwrap_or(u32::MAX))
     }
 
+    /// Picks the FRONT pending card grant still REQUIRES before it may be confirmed (C# `prefs.MinSelect`): equal to
+    /// `pending_card_grants` for a mandatory pick-N (Gorge), `0` for an optional 0..=N grid (SeaGlass), where
+    /// `grant_deck_card` at `idx == len(card_grant_options())` confirms early. `0` when no grant is open.
+    #[getter]
+    fn pending_card_grant_min(&self) -> u32 {
+        self.inner
+            .run_state
+            .pending_card_grants
+            .first()
+            .map_or(0, |g| u32::try_from(g.min_pick).unwrap_or(u32::MAX))
+    }
+
     /// `(PascalCase id, upgraded)` of the FRONT pending card grant's generated
     /// options, in C# generation order — the option pool a UI host renders and
     /// the index space `grant_deck_card`'s `idx` selects. Empty when no grant
