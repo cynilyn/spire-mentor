@@ -74,11 +74,13 @@ fn relic_id_variant_count_is_stable() {
     // `sts2-rs-4rwv4`, W9a-c) + NEOWS_BONES (bead `sts2-rs-wjuoi`,
     // W9e) + HEFTY_TABLET (bead `sts2-rs-w6hdj`, W9d) + the three
     // v0.107.1 Ancient/Neow relics FISHING_ROD / KALEIDOSCOPE /
-    // SILKEN_TRESS (bead `sts2-rs-v0107-content-port-wb8lk.6`).
+    // SILKEN_TRESS (bead `sts2-rs-v0107-content-port-wb8lk.6`) + the two
+    // v0.111.0 Ancient/Neow curse relics DOWSING_ROD / NEOWS_SACRIFICE
+    // (stage 2 bundle alpha, markers only).
     // `relic_ids_generated.rs` is hand-maintained against the v0.107.1 C#
     // decompilation — bump this count in the same change that adds or
     // removes a variant. This assertion is the only guard.
-    assert_eq!(RelicId::all().len(), 289 + 5 + 3);
+    assert_eq!(RelicId::all().len(), 289 + 5 + 3 + 2);
 }
 
 /// `ascension` field defaults to 0 on a fresh `CombatState`. Pins

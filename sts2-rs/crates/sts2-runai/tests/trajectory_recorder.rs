@@ -43,8 +43,10 @@ use sts2_runai::trajectory::{Detail, Meta, RecordingPolicy, RECORDER_VERSION};
 const COMBAT_ROOM_TYPES: [&str; 3] = ["Monster", "Elite", "Boss"];
 
 /// Seed whose coverage-mode run wins and walks all three acts (shops,
-/// rest sites, boss relics, upgraded card rewards).
-const DEEP_SEED: i32 = 1;
+/// rest sites, boss relics, upgraded card rewards). Seed 1 (previous value)
+/// stopped winning when the Neow curse pool grew 8 -> 10 (stage 2 bundle
+/// alpha); seed 0 is the first of seeds 0..60 that wins in 3 acts.
+const DEEP_SEED: i32 = 0;
 /// Seed whose coverage-mode run dies to the act-2 boss.
 const DEATH_SEED: i32 = 2;
 

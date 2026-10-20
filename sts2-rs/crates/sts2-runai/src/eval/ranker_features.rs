@@ -86,7 +86,11 @@ pub fn card_index_table() -> &'static [CardId] {
 pub fn relic_index_table() -> &'static [RelicId] {
     static TABLE: OnceLock<Vec<RelicId>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let mut v: Vec<RelicId> = RelicId::all().to_vec();
+        let mut v: Vec<RelicId> = RelicId::all()
+            .iter()
+            .copied()
+            .filter(|r| r.in_ppo_vocab())
+            .collect();
         v.sort_by_key(|r| format!("{r:?}"));
         v
     })

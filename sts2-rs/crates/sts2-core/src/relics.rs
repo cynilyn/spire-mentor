@@ -408,6 +408,17 @@ pub enum RelicKind {
     /// `MegaCrit.Sts2.Core.Models.Relics/SilkenTress.cs`. Bead
     /// `sts2-rs-v0107-content-port-wb8lk.6`.
     SilkenTress,
+    /// Dowsing Rod -- v0.111.0 Ancient/Neow curse relic. Marker only (stage 2
+    /// bundle alpha): ID, name, Neow offer and acquisition record. The
+    /// `AfterObtained` quest card `Dowsing` (`DowsingRod.cs:21-22`) is NOT
+    /// ported (stage 5, ledger A3-d); acquisition leaves a diagnostic
+    /// `RunState::unported_effects` record. C# decomp at
+    /// `MegaCrit.Sts2.Core.Models.Relics/DowsingRod.cs`.
+    DowsingRod,
+    /// Neow's Sacrifice -- v0.111.0 Ancient/Neow curse relic. Marker only
+    /// (see [`Self::DowsingRod`]): `AfterObtained` procures potion Ambergris
+    /// and adds curse Guilty (`NeowsSacrifice.cs:31-33`), neither ported.
+    NeowsSacrifice,
     // ── fwxe.5 runtime-RelicKind blockers (bead `sts2-rs-8uvz`) ──────────
     //
     // Three RelicId variants that already exist in
@@ -640,6 +651,34 @@ pub enum RelicKind {
 }
 
 impl RelicId {
+    /// Whether this relic gets a row in the PPO embedding vocab. Relics whose
+    /// pickup effect is unported ([`Self::unported_after_obtained`]) are held
+    /// out: they are offer-and-record markers, and two extra `emb_relic` rows
+    /// would make every committed champion net fail its height guard
+    /// (GH #544). Stage 5 ports the effects and re-exports the nets, then this
+    /// exclusion goes away.
+    #[must_use]
+    pub const fn in_ppo_vocab(self) -> bool {
+        self.unported_after_obtained().is_none()
+    }
+
+    /// C# `AfterObtained` effect of this relic that the engine does **not**
+    /// port (diagnostic metadata only; stage 2 bundle alpha). `None` for every
+    /// relic whose pickup effect is ported or absent. Read by
+    /// `RunState::obtain_relic` to append a `RunState::unported_effects`
+    /// record; never consulted to gate or change behaviour. Ledger A3-d
+    /// (stage 5 ports the effects and removes these arms).
+    #[must_use]
+    pub const fn unported_after_obtained(self) -> Option<&'static str> {
+        match self {
+            // DowsingRod.cs:19-23
+            Self::DowsingRod => Some("add quest card Dowsing to deck"),
+            // NeowsSacrifice.cs:29-35
+            Self::NeowsSacrifice => Some("procure potion Ambergris and add curse Guilty to deck"),
+            _ => None,
+        }
+    }
+
     /// Map this run-side relic identifier to its combat-side
     /// [`RelicKind`] discriminant, or `None` when the relic has no
     /// combat-side representation.
@@ -968,6 +1007,8 @@ impl RelicId {
             Self::FishingRod => Some(RelicKind::FishingRod),
             Self::Kaleidoscope => Some(RelicKind::Kaleidoscope),
             Self::SilkenTress => Some(RelicKind::SilkenTress),
+            Self::DowsingRod => Some(RelicKind::DowsingRod),
+            Self::NeowsSacrifice => Some(RelicKind::NeowsSacrifice),
         }
     }
 }
@@ -1198,6 +1239,8 @@ impl RelicKind {
             RelicKind::FishingRod => "FISHING_ROD",
             RelicKind::Kaleidoscope => "KALEIDOSCOPE",
             RelicKind::SilkenTress => "SILKEN_TRESS",
+            RelicKind::DowsingRod => "DOWSING_ROD",
+            RelicKind::NeowsSacrifice => "NEOWS_SACRIFICE",
             // ── fwxe.5 runtime-RelicKind blockers (bead `sts2-rs-8uvz`) ─
             RelicKind::SmallCapsule => "SMALL_CAPSULE",
             RelicKind::ArchaicTooth => "ARCHAIC_TOOTH",

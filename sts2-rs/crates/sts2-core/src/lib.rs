@@ -155,7 +155,7 @@ pub mod potion_effects;
 pub mod runstate;
 pub use runstate::{
     CardReward, PendingDeckEnchant, PendingDeckTransform, PotionReward, RelicRarity, RelicReward,
-    Reward, Room, RoomType, RunState,
+    Reward, Room, RoomType, RunState, UnportedEffect,
 };
 
 // Bead sts2-rs-6ynt.4.1 (P7 events framework): Run-side events POD
@@ -321,7 +321,7 @@ pub mod boss_ancient_offers;
 // Lives in sts2-core (not sts2-content) so `runstate::RunState` can
 // cache the rolled offers as a typed field (sub-bead `sts2-rs-14cid`).
 pub mod neow_offers;
-pub use neow_offers::{roll_neow_offers, NeowOffers, NeowRelic};
+pub use neow_offers::{neow_all_possible_options, roll_neow_offers, NeowOffers, NeowRelic};
 
 // Bead sts2-rs-zfmfz (P9.0.d): top-level run orchestrator skeleton.
 // Phase enum + RunManager struct + new()/phase()/get_available_actions()

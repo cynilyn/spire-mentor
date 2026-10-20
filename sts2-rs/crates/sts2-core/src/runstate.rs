@@ -951,6 +951,15 @@ pub struct PinnedActBoss {
     pub display_name: &'static str,
 }
 
+/// One diagnostic entry of [`RunState::unported_effects`]: relic `relic` was
+/// acquired and its C# `AfterObtained` does `csharp_effect`, which this engine
+/// does not port. See the field doc for the (strictly metadata-only) contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnportedEffect {
+    pub relic: RelicId,
+    pub csharp_effect: &'static str,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunState {
     /// Reward queue. The combat-end / rest-site / event-room reward
@@ -1450,6 +1459,18 @@ pub struct RunState {
     /// via the `roll_neows_bones_curse` content callback once the batch settles.
     pub pending_neows_bones_curses: u32,
 
+    /// Diagnostic record of relics acquired whose C# `AfterObtained` effect
+    /// this engine does not port yet (stage 2 bundle alpha: `DowsingRod`,
+    /// `NeowsSacrifice`; effects deferred to stage 5, ledger A3-d). Appended by
+    /// [`Self::obtain_relic`] via [`RelicId::unported_after_obtained`].
+    ///
+    /// **Metadata only**: nothing reads it to gate, suppress, reorder or alter
+    /// any game state, RNG draw, observation or parity comparison, and it is
+    /// never classified as an "explained" mismatch by itself. A separate
+    /// reporting layer may read it to attach the expected C#-side difference to
+    /// a mismatch the (frozen) harness reports.
+    pub unported_effects: Vec<UnportedEffect>,
+
     /// Relics a multi-grant listener still owes, granted one at a time only
     /// AFTER the previously-granted relic's interactive `AfterObtained`
     /// (a card-select / transform / bundle pick) fully resolves. Models C#
@@ -1924,6 +1945,7 @@ impl Default for RunState {
             pending_post_removal_hp_loss: 0,
             pending_post_pick_cards: Vec::new(),
             pending_neows_bones_curses: 0,
+            unported_effects: Vec::new(),
             pending_post_pick_relic_grants: Vec::new(),
             interactive_card_upgrade: false,
             pending_deck_upgrades: 0,
@@ -2734,6 +2756,15 @@ impl RunState {
         // never clobbers an already-recorded counter. Relics with a
         // zero initial counter (the vast majority) stay absent, keeping
         // the map sparse. The five W9 Neow relics map to `None`.
+        // Diagnostic marker only (see `Self::unported_effects`): records that
+        // C# would run an `AfterObtained` effect we do not port. No state
+        // change beyond the record itself.
+        if let Some(effect) = relic_id.unported_after_obtained() {
+            self.unported_effects.push(UnportedEffect {
+                relic: relic_id,
+                csharp_effect: effect,
+            });
+        }
         if let Some(kind) = relic_id.to_relic_kind() {
             let initial = kind.initial_counter();
             if initial != 0 {

@@ -947,7 +947,9 @@ mod tests {
         // longer has a stochastic pickup under the new seed derivation.) The
         // guard below re-checks that property directly, so a drifting engine
         // fails here rather than being masked by a seed search.
-        const SEED: i32 = 5;
+        // (Seed 5 stopped qualifying when the Neow curse pool grew 8 -> 10 in
+        // stage 2 bundle alpha; seed 7 is the first of seeds 0..60 that does.)
+        const SEED: i32 = 7;
         let mut probe = fresh_ironclad_run(SEED);
         let first = probe.get_available_actions()[0];
         probe.take_action(first);

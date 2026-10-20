@@ -373,7 +373,18 @@ pub fn content_ids(kind: &str) -> Option<BTreeSet<&'static str>> {
         "card" => CardId::all().iter().map(|k| k.to_python_name()).collect(),
         "potion" => PotionKind::ALL.iter().map(|k| k.python_name()).collect(),
         "event" => EventId::all().iter().map(|k| k.python_name()).collect(),
-        "relic_id" => RelicId::all().iter().map(|k| k.to_python_name()).collect(),
+        // Relics whose C# pickup effect is not ported yet
+        // (`RelicId::unported_after_obtained`: DowsingRod / NeowsSacrifice,
+        // stage 2 bundle alpha) stay out of the embedding vocab: they are
+        // offer-and-record markers only, and adding two rows would make every
+        // committed champion net (299 `emb_relic` rows) fail its height guard
+        // (GH #544). Stage 5 ports the effects and re-exports the nets, at
+        // which point the filter goes away and the ids are appended to the pin.
+        "relic_id" => RelicId::all()
+            .iter()
+            .filter(|k| k.in_ppo_vocab())
+            .map(|k| k.to_python_name())
+            .collect(),
         // Straight from the generator's own `RoomKind::Boss` filter so the
         // vocab cannot drift from the content (see `all_boss_encounter_ids`).
         "boss" => sts2_core::run_room_gen::all_boss_encounter_ids()
@@ -455,6 +466,7 @@ pub fn registry_id_forms(kind: &str) -> Option<Vec<(String, String)>> {
             .collect(),
         "relic_id" => RelicId::all()
             .iter()
+            .filter(|k| k.in_ppo_vocab())
             .map(|k| (format!("{k:?}"), k.to_python_name().to_string()))
             .collect(),
         _ => return None,

@@ -100,7 +100,12 @@ const BEHAVIORLESS_RELICS: &[RelicId] = &[
 // *other*-character pools — now PORTED (`listener_kaleidoscope`, Niche-shuffled
 // non-owner pools + base-odds Rewards card creation), so it is no longer
 // unported. The list is empty again.
-const KNOWN_UNPORTED: &[RelicId] = &[];
+//
+// Stage 2 bundle alpha (ledger A3-d, stage 5): the v0.111.0 Neow curses
+// `DowsingRod` (adds quest card Dowsing, `DowsingRod.cs:19-23`) and
+// `NeowsSacrifice` (procures Ambergris + adds Guilty, `NeowsSacrifice.cs:29-35`)
+// are offered and recorded but their `AfterObtained` is deliberately unported.
+const KNOWN_UNPORTED: &[RelicId] = &[RelicId::DowsingRod, RelicId::NeowsSacrifice];
 
 /// True iff `id` resolves to at least one registered typed-channel
 /// listener on any of the combat-hook (`relic_effects`) or run-hook

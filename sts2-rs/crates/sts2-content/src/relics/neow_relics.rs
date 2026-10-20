@@ -198,61 +198,27 @@ fn listener_silken_tress_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
     EffectResult::Resolved
 }
 
-/// `NeowsBones::GetValidRelics` pool, in C# `Neow.AllPossibleOptions`
-/// order (`Neow.cs:53-63`): `CurseOptions`, then `PositiveOptions`, then
-/// the seven single add-in options. C# keeps every option relic with
-/// `IsAllowedAtNeow(owner) && !(relic is NeowsBones)` (v0.107.1
-/// `NeowsBones.cs:35`; v0.103.2 used `IsAllowed(state)`).
-///
-/// In single-player the only filter that fires is `MassiveScroll`
-/// (`MassiveScroll.cs:19` — `Players.Count > 1` → false), so it is
-/// dropped here. The only v0.107.1 `IsAllowedAtNeow` overrides among pool
-/// relics are `SilverCrucible`/`WingedBoots` (→ `Players.Count == 1`, true)
-/// and `ScrollBoxes` (→ `CanGenerateBundles`, always true for the shipped
-/// SP pool), and the base is unconditionally `true` — notably it does
-/// *not* exclude already-owned relics. So the SP valid pool is exactly
-/// these 26, fixed regardless of run state. `NeowsBones` itself is
-/// excluded per the `!(o.Relic is NeowsBones)` clause.
-///
-/// Order verified against v0.107.1 `Neow.AllPossibleOptions`
-/// (`Neow.cs:49-64`): `CurseOptions` (8, `:99-108`), then `PositiveOptions`
-/// (14, `:66-80`), then the six single add-in options (`:55-60`). SP drops
-/// `NeowsBones` (curse) and `MassiveScroll` (`MassiveScroll.cs:21`
-/// `Players.Count > 1`), leaving 7 + 13 + 6 = 26. v0.107.1 added
-/// `FishingRod`/`Kaleidoscope` to the positives and `SilkenTress` to the
-/// curses, and relocated `ScrollBoxes` from the curse pool into the
-/// positives (between `PreciseScissors` and `WingedBoots`).
-const NEOWS_BONES_VALID_POOL: &[NeowRelic] = &[
-    // CurseOptions (Neow.cs:99-108) minus NeowsBones.
-    NeowRelic::CursedPearl,
-    NeowRelic::HeftyTablet,
-    NeowRelic::LargeCapsule,
-    NeowRelic::LeafyPoultice,
-    NeowRelic::PrecariousShears,
-    NeowRelic::SilkenTress,
-    NeowRelic::SilverCrucible,
-    // PositiveOptions (Neow.cs:66-80) minus MassiveScroll (multiplayer).
-    NeowRelic::ArcaneScroll,
-    NeowRelic::BoomingConch,
-    NeowRelic::FishingRod,
-    NeowRelic::GoldenPearl,
-    NeowRelic::Kaleidoscope,
-    NeowRelic::LeadPaperweight,
-    NeowRelic::LostCoffer,
-    NeowRelic::NeowsTorment,
-    NeowRelic::NewLeaf,
-    NeowRelic::PhialHolster,
-    NeowRelic::PreciseScissors,
-    NeowRelic::ScrollBoxes,
-    NeowRelic::WingedBoots,
-    // Single add-in options (Neow.cs:55-60), in AddRange order.
-    NeowRelic::LavaRock,
-    NeowRelic::NeowsTalisman,
-    NeowRelic::NutritiousOyster,
-    NeowRelic::Pomander,
-    NeowRelic::SmallCapsule,
-    NeowRelic::StoneHumidifier,
-];
+/// `NeowsBones.GetValidRelics` (`NeowsBones.cs:31-36`):
+/// `Neow.AllPossibleOptions.Where(o => o.Relic != null &&
+/// o.Relic.IsAllowedAtNeow(owner) && !(o.Relic is NeowsBones))`, derived from
+/// [`sts2_core::neow_all_possible_options`] (v0.111.0 `Neow.cs:49-64`: curses
+/// 10 + positives 14 + singles 6 = 30, in that order) instead of a hand-copied
+/// list. In single player the only filters that fire are `NeowsBones` itself
+/// (the `!(is NeowsBones)` clause) and `MassiveScroll` (`MassiveScroll.cs:19`
+/// `IsAllowed` = `Players.Count > 1`), so the valid pool is 30 - 2 = 28. The
+/// other `IsAllowedAtNeow` overrides (`Kaleidoscope`, `ScrollBoxes` ->
+/// `CanGenerateBundles`) hold for every shipped pool and the base is
+/// unconditionally `true` (`RelicModel.cs:401-404`) — notably it does *not*
+/// exclude already-owned relics — so the pool is fixed regardless of run state.
+/// v0.107.1 had 26: the two v0.111.0 curses `DowsingRod`/`NeowsSacrifice` (A3-c)
+/// grow `Rewards.Shuffle`'s list to 28.
+#[must_use]
+pub fn neows_bones_valid_pool() -> Vec<NeowRelic> {
+    sts2_core::neow_all_possible_options()
+        .into_iter()
+        .filter(|r| *r != NeowRelic::NeowsBones && *r != NeowRelic::MassiveScroll)
+        .collect()
+}
 
 /// Curse `CardId`s eligible for the `NeowsBones` curse draw, in
 /// `CurseCardPool.GenerateAllCards` order (`CurseCardPool.cs`), filtered
@@ -309,7 +275,7 @@ fn listener_neows_bones(rs: &mut RunState) -> EffectResult {
     }
 
     // (1) Shuffle the valid pool with PlayerRng.Rewards (NeowsBones.cs:43).
-    let mut pool: Vec<NeowRelic> = NEOWS_BONES_VALID_POOL.to_vec();
+    let mut pool: Vec<NeowRelic> = neows_bones_valid_pool();
     rs.rng.rewards.shuffle(&mut pool);
 
     // (2) Grant the first 2, ONE AT A TIME. C# `RewardsSet(...).Offer()`
@@ -615,7 +581,7 @@ mod tests {
 
         // Predict the shuffle by replaying it on a clone of the stream.
         let mut probe = rs.rng.rewards.clone();
-        let mut pool = NEOWS_BONES_VALID_POOL.to_vec();
+        let mut pool = neows_bones_valid_pool();
         probe.shuffle(&mut pool);
         let expected_granted: Vec<RelicId> = pool
             .iter()
@@ -793,7 +759,7 @@ mod tests {
 
         // Predict the top-2 grants by replaying the shuffle.
         let mut probe = rs.rng.rewards.clone();
-        let mut pool = NEOWS_BONES_VALID_POOL.to_vec();
+        let mut pool = neows_bones_valid_pool();
         probe.shuffle(&mut pool);
         let expected_granted: Vec<RelicId> = pool
             .iter()

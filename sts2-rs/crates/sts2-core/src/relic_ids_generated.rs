@@ -620,6 +620,10 @@ pub enum RelicId {
     Kaleidoscope,
     /// `RelicId.SILKEN_TRESS` in Python.
     SilkenTress,
+    /// `RelicId.DOWSING_ROD` (v0.111.0 C#-only; marker, effect unported).
+    DowsingRod,
+    /// `RelicId.NEOWS_SACRIFICE` (v0.111.0 C#-only; marker, effect unported).
+    NeowsSacrifice,
 }
 
 impl RelicId {
@@ -924,6 +928,8 @@ impl RelicId {
             Self::FishingRod => "FISHING_ROD",
             Self::Kaleidoscope => "KALEIDOSCOPE",
             Self::SilkenTress => "SILKEN_TRESS",
+            Self::DowsingRod => "DOWSING_ROD",
+            Self::NeowsSacrifice => "NEOWS_SACRIFICE",
         }
     }
 
@@ -1228,6 +1234,8 @@ impl RelicId {
             Self::FishingRod,
             Self::Kaleidoscope,
             Self::SilkenTress,
+            Self::DowsingRod,
+            Self::NeowsSacrifice,
         ]
     }
 }

@@ -2800,6 +2800,7 @@ impl RunManager {
         // boss/map fall-through from running once a select is surfaced.
         if !self.run_state.pending_card_selects.is_empty()
             || !self.run_state.relic_rewards.is_empty()
+            || !self.run_state.pending_bundles.is_empty()
             || self.drain_pending_rewards()
         {
             self.phase = Phase::CardReward;
@@ -3359,9 +3360,16 @@ impl RunManager {
             || !self.run_state.pending_deck_enchants.is_empty();
         if !still_picking {
             let opened_card_reward = self.drain_pending_rewards();
+            // A deferred relic granted just above (NeowsBones -> NewLeaf then
+            // ScrollBoxes, C1Y118) may have queued a Scroll Boxes bundle pick
+            // on `pending_bundles`; it must surface here like any other
+            // follow-up reward (`ScrollBoxes.cs:32-40` opens the bundle screen
+            // inside `AfterObtained`), else the run falls to the map with the
+            // bundle never offered.
             if opened_card_reward
                 || !self.run_state.relic_rewards.is_empty()
                 || !self.run_state.pending_card_selects.is_empty()
+                || !self.run_state.pending_bundles.is_empty()
             {
                 self.phase = Phase::CardReward;
                 self.advance_after_card_reward();

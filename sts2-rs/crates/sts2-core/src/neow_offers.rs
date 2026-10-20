@@ -2,8 +2,9 @@
 //! (R3.1.1 under umbrella `sts2-rs-nr8l4`).
 //!
 //! Port pin:
-//! `../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Events/Neow.cs:213-296`
-//! (`Neow.GenerateInitialOptions`, no-modifiers branch).
+//! `../sts2-wiki/decompiled/v0.111.0/MegaCrit.Sts2.Core.Models.Events/Neow.cs:216-286`
+//! (`Neow.GenerateInitialOptions`, no-modifiers branch; stage 2 bundle alpha
+//! re-pinned the pools to v0.111.0: `CurseOptions[10]` `:96-107`).
 //!
 //! Pure function: [`roll_neow_offers`] takes a per-event RNG (seeded
 //! per v0.111.0 `EventModel.cs:197` — `RunState.Rng.Seed + slot 0 +
@@ -63,6 +64,16 @@ pub enum NeowRelic {
     /// option. On pickup loses all gold; the first card reward after is
     /// Glam-enchanted (one-time).
     SilkenTress,
+    /// v0.111.0 (stage 2 bundle alpha, ledger A3-a): new curse option
+    /// (`Neow.cs:96-107`). Offer + acquisition record only; the pickup effect
+    /// (quest card `Dowsing`, `DowsingRod.cs:21-22`) is unported (stage 5).
+    DowsingRod,
+    /// v0.111.0 (stage 2 bundle alpha, ledger A3-a/b): new curse option
+    /// (`Neow.cs:96-107`) that removes `PhialHolster` and `LostCoffer` from the
+    /// positive pool (`Neow.cs:244-248`). Offer + acquisition record only; the
+    /// pickup effect (potion `Ambergris` + curse `Guilty`,
+    /// `NeowsSacrifice.cs:31-33`) is unported (stage 5).
+    NeowsSacrifice,
     /// v0.107.1: `ScrollBoxes` moved out of the curse pool into the
     /// positive pool (it is a static `PositiveOptions` member now). The
     /// variant stays for exhaustive pattern-matching.
@@ -105,6 +116,8 @@ impl NeowRelic {
             Self::FishingRod => RelicId::FishingRod,
             Self::Kaleidoscope => RelicId::Kaleidoscope,
             Self::SilkenTress => RelicId::SilkenTress,
+            Self::DowsingRod => RelicId::DowsingRod,
+            Self::NeowsSacrifice => RelicId::NeowsSacrifice,
         })
     }
 
@@ -143,6 +156,8 @@ impl NeowRelic {
             Self::FishingRod => "FISHING_ROD",
             Self::Kaleidoscope => "KALEIDOSCOPE",
             Self::SilkenTress => "SILKEN_TRESS",
+            Self::DowsingRod => "DOWSING_ROD",
+            Self::NeowsSacrifice => "NEOWS_SACRIFICE",
         }
     }
 }
@@ -193,23 +208,76 @@ const POSITIVE_POOL: &[NeowRelic] = &[
     NeowRelic::WingedBoots,
 ];
 
-/// Curse pool — **v0.107.1** `Neow.cs:96-106` `CurseOptions[8]`, in the
+/// Curse pool — **v0.111.0** `Neow.cs:96-107` `CurseOptions[10]`, in the
 /// exact C# array order so the `next_item` curse draw is oracle-faithful
-/// (bead `sts2-rs-v0107-content-port-wb8lk.6`). The array grew 7→8 with
-/// the new `SilkenTress`; `ScrollBoxes` left the curse pool (it is now a
-/// static `PositiveOptions` member — see [`POSITIVE_POOL`]). All eight
-/// are unconditional `RelicOption`s here: in v0.103.2 `ScrollBoxes` was
-/// the only conditional curse add-in, and it no longer participates.
+/// (bead `sts2-rs-v0107-content-port-wb8lk.6`; stage 2 bundle alpha A3-a).
+/// The array grew 7→8 with `SilkenTress` (v0.107.1) and 8→10 with
+/// `DowsingRod` and `NeowsSacrifice` (v0.111.0); `ScrollBoxes` left the curse
+/// pool (it is a static `PositiveOptions` member — see [`POSITIVE_POOL`]).
+/// None of the ten is filtered by `IsAllowedAtNeow` in single player (only
+/// `Kaleidoscope`/`ScrollBoxes` override it, and neither is a curse), so the
+/// pre-`NextItem` `RemoveAll` (`Neow.cs:219-224`) is a no-op here.
 const CURSE_POOL: &[NeowRelic] = &[
     NeowRelic::CursedPearl,
+    NeowRelic::DowsingRod,
     NeowRelic::HeftyTablet,
     NeowRelic::LargeCapsule,
     NeowRelic::LeafyPoultice,
     NeowRelic::NeowsBones,
+    NeowRelic::NeowsSacrifice,
     NeowRelic::PrecariousShears,
     NeowRelic::SilkenTress,
     NeowRelic::SilverCrucible,
 ];
+
+/// `Neow.PositiveOptions` in the exact C# array order, **including**
+/// `MassiveScroll` (`Neow.cs:66-81`, 14 entries). [`POSITIVE_POOL`] is this
+/// list minus `MassiveScroll` (single-player `IsAllowed == false`); the full
+/// list is kept so [`neow_all_possible_options`] can reproduce
+/// `Neow.AllPossibleOptions` (`Neow.cs:49-64`) for `NeowsBones`.
+const POSITIVE_OPTIONS: &[NeowRelic] = &[
+    NeowRelic::ArcaneScroll,
+    NeowRelic::BoomingConch,
+    NeowRelic::FishingRod,
+    NeowRelic::GoldenPearl,
+    NeowRelic::Kaleidoscope,
+    NeowRelic::LeadPaperweight,
+    NeowRelic::LostCoffer,
+    NeowRelic::MassiveScroll,
+    NeowRelic::NeowsTorment,
+    NeowRelic::NewLeaf,
+    NeowRelic::PhialHolster,
+    NeowRelic::PreciseScissors,
+    NeowRelic::ScrollBoxes,
+    NeowRelic::WingedBoots,
+];
+
+/// The six single add-in options appended to `AllPossibleOptions`
+/// (`Neow.cs:55-61`, `AddRange` order: LavaRock, NeowsTalisman,
+/// NutritiousOyster, Pomander, SmallCapsule, StoneHumidifier).
+const SINGLE_OPTIONS: &[NeowRelic] = &[
+    NeowRelic::LavaRock,
+    NeowRelic::NeowsTalisman,
+    NeowRelic::NutritiousOyster,
+    NeowRelic::Pomander,
+    NeowRelic::SmallCapsule,
+    NeowRelic::StoneHumidifier,
+];
+
+/// `Neow.AllPossibleOptions` (`Neow.cs:49-64`): `CurseOptions` (10), then
+/// `PositiveOptions` (14), then the six single add-in options — 30 relics in
+/// C# order, before any `IsAllowedAtNeow` filtering. `NeowsBones.GetValidRelics`
+/// (`NeowsBones.cs:31-36`) derives its shuffle pool from this list, so the pool
+/// follows the Neow option lists instead of being hand-copied.
+#[must_use]
+pub fn neow_all_possible_options() -> Vec<NeowRelic> {
+    let mut all =
+        Vec::with_capacity(CURSE_POOL.len() + POSITIVE_OPTIONS.len() + SINGLE_OPTIONS.len());
+    all.extend_from_slice(CURSE_POOL);
+    all.extend_from_slice(POSITIVE_OPTIONS);
+    all.extend_from_slice(SINGLE_OPTIONS);
+    all
+}
 
 /// Inline `Rng.NextItem(IList<T>)` — uniform pick over a non-empty
 /// slice. C# `Rng.NextItem` calls `NextInt(0, list.Count - 1)`
@@ -267,6 +335,11 @@ pub fn roll_neow_offers(rng: &mut Rng) -> NeowOffers {
         NeowRelic::LeafyPoultice => positive_pool.retain(|r| *r != NeowRelic::NewLeaf),
         NeowRelic::PrecariousShears => {
             positive_pool.retain(|r| *r != NeowRelic::PreciseScissors);
+        }
+        // Neow.cs:244-248: NeowsSacrifice removes PhialHolster, then LostCoffer.
+        NeowRelic::NeowsSacrifice => {
+            positive_pool.retain(|r| *r != NeowRelic::PhialHolster);
+            positive_pool.retain(|r| *r != NeowRelic::LostCoffer);
         }
         _ => {}
     }
@@ -456,6 +529,26 @@ mod tests {
         assert_eq!(NeowRelic::LavaRock.to_relic_id(), Some(RelicId::LavaRock));
     }
 
+    /// `Neow.AllPossibleOptions` is `CurseOptions` + `PositiveOptions` + 6
+    /// singles (`Neow.cs:49-64`): 10 + 14 + 6 = 30, `POSITIVE_POOL` being the
+    /// 14 minus the single-player-gated `MassiveScroll`.
+    #[test]
+    fn all_possible_options_is_curse_positive_singles_in_decomp_order() {
+        let all = neow_all_possible_options();
+        assert_eq!(all.len(), 30);
+        assert_eq!(&all[..10], CURSE_POOL);
+        assert_eq!(&all[10..24], POSITIVE_OPTIONS);
+        assert_eq!(&all[24..], SINGLE_OPTIONS);
+        let without_massive: Vec<NeowRelic> = POSITIVE_OPTIONS
+            .iter()
+            .copied()
+            .filter(|r| *r != NeowRelic::MassiveScroll)
+            .collect();
+        assert_eq!(POSITIVE_POOL, without_massive.as_slice());
+        let distinct: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(distinct.len(), 30, "no relic listed twice");
+    }
+
     /// v0.107.1 `Neow.cs:66-82` `PositiveOptions[14]` in C# array order, minus
     /// `MassiveScroll` (single-player `IsAllowed`/`IsAllowedAtNeow == false` —
     /// removed by the RemoveAll pass before the shuffle, so dropping it from
@@ -489,23 +582,72 @@ mod tests {
         assert!(!POSITIVE_POOL.contains(&NeowRelic::MassiveScroll));
     }
 
-    /// v0.107.1 `Neow.cs:96-106` `CurseOptions[8]` in C# array order. The 7→8
-    /// growth adds `SilkenTress`; `NeowsBones` sorts up into alphabetical slot.
+    /// v0.111.0 `Neow.cs:96-107` `CurseOptions[10]` in C# array order. The
+    /// 8→10 growth adds `DowsingRod` (slot 1) and `NeowsSacrifice` (slot 6).
     #[test]
-    fn curse_pool_matches_v0107_decomp_order() {
+    fn curse_pool_matches_v0111_decomp_order() {
         assert_eq!(
             CURSE_POOL,
             &[
                 NeowRelic::CursedPearl,
+                NeowRelic::DowsingRod,
                 NeowRelic::HeftyTablet,
                 NeowRelic::LargeCapsule,
                 NeowRelic::LeafyPoultice,
                 NeowRelic::NeowsBones,
+                NeowRelic::NeowsSacrifice,
                 NeowRelic::PrecariousShears,
                 NeowRelic::SilkenTress,
                 NeowRelic::SilverCrucible,
             ],
         );
+    }
+
+    /// `Neow.cs:244-248`: a `NeowsSacrifice` curse removes `PhialHolster` and
+    /// `LostCoffer` from the positive pool before the add-ins and the shuffle.
+    /// Checked over 20k seeds: neither relic ever co-occurs with the curse,
+    /// while both still appear alongside other curses.
+    #[test]
+    fn neows_sacrifice_removes_phial_holster_and_lost_coffer() {
+        let (mut saw_sacrifice, mut saw_phial_other, mut saw_coffer_other) = (0, false, false);
+        for seed in 0..20_000 {
+            let mut rng = Rng::with_name(seed, "Neow");
+            let o = roll_neow_offers(&mut rng);
+            if o.cursed == NeowRelic::NeowsSacrifice {
+                saw_sacrifice += 1;
+                for p in [o.positive_1, o.positive_2] {
+                    assert_ne!(p, NeowRelic::PhialHolster, "seed {seed}");
+                    assert_ne!(p, NeowRelic::LostCoffer, "seed {seed}");
+                }
+            } else {
+                for p in [o.positive_1, o.positive_2] {
+                    saw_phial_other |= p == NeowRelic::PhialHolster;
+                    saw_coffer_other |= p == NeowRelic::LostCoffer;
+                }
+            }
+        }
+        assert!(
+            saw_sacrifice > 1000,
+            "NeowsSacrifice rolled {saw_sacrifice}x"
+        );
+        assert!(saw_phial_other && saw_coffer_other);
+    }
+
+    /// The two v0.111.0 curses map to their own `RelicId`s and names.
+    #[test]
+    fn v0111_new_curse_relics_present_and_mapped() {
+        assert!(CURSE_POOL.contains(&NeowRelic::DowsingRod));
+        assert!(CURSE_POOL.contains(&NeowRelic::NeowsSacrifice));
+        assert_eq!(
+            NeowRelic::DowsingRod.to_relic_id(),
+            Some(RelicId::DowsingRod)
+        );
+        assert_eq!(
+            NeowRelic::NeowsSacrifice.to_relic_id(),
+            Some(RelicId::NeowsSacrifice)
+        );
+        assert_eq!(NeowRelic::DowsingRod.snake_case_id(), "DOWSING_ROD");
+        assert_eq!(NeowRelic::NeowsSacrifice.snake_case_id(), "NEOWS_SACRIFICE");
     }
 
     /// The three relics new to the v0.107.1 Neow pools are present + map to
@@ -615,6 +757,8 @@ mod tests {
             NeowRelic::FishingRod,
             NeowRelic::Kaleidoscope,
             NeowRelic::SilkenTress,
+            NeowRelic::DowsingRod,
+            NeowRelic::NeowsSacrifice,
         ] {
             let rid = nr.to_relic_id().expect("variant has RelicId");
             assert_eq!(
