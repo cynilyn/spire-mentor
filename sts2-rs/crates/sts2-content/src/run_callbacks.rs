@@ -1609,7 +1609,7 @@ mod tests {
     /// `card_reward_enchantments`), holding `relic`. Returns the offered ids, the
     /// picked option index chosen by `choose` and the deck card that was added.
     fn reward_pick_with_relic(
-        seed: i32,
+        seed: u64,
         relic: RelicId,
         choose: impl Fn(&[sts2_core::cards::CardId]) -> Option<usize>,
     ) -> Option<(Vec<sts2_core::cards::CardId>, usize, sts2_core::cards::Card)> {
@@ -1661,7 +1661,7 @@ mod tests {
     #[test]
     fn fresnel_reward_pick_keeps_the_0c_baseline_nimble_2() {
         use sts2_core::cards::EnchantmentId;
-        for seed in 0..6 {
+        for seed in 0..6_u64 {
             let (_, _, card) = reward_pick_with_relic(seed, RelicId::FresnelLens, |o| {
                 (!o.is_empty()).then_some(0)
             })

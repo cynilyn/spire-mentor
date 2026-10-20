@@ -177,13 +177,10 @@ pub fn enchant_block_additive(card: &crate::cards::Card) -> i32 {
 /// `enchant_play_count_bonus`).
 #[must_use]
 pub fn enchant_glam_play_count_bonus(card: &crate::cards::Card) -> i32 {
-    if card.has_enchantment(EnchantmentId::Glam)
-        && (card.combat_var(VarKey::Generic) & GLAM_USED_BIT) == 0
-    {
-        1
-    } else {
-        0
-    }
+    i32::from(
+        card.has_enchantment(EnchantmentId::Glam)
+            && (card.combat_var(VarKey::Generic) & GLAM_USED_BIT) == 0,
+    )
 }
 
 /// Latch Glam's `UsedThisCombat` after a play (C# `Glam.AfterCardPlayed`,
