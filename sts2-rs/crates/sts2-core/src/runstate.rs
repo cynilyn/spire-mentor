@@ -5647,12 +5647,12 @@ mod tests {
         rs.relics.push(RelicId::Anchor);
         rs.strip_relic_from_bags(RelicId::Anchor);
         assert_eq!(
-            rs.pop_relic_from_grab_bag(RelicRarity::Common),
-            Some(RelicId::BloodVial)
-        );
-        assert_eq!(
             rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Common],
             vec![RelicId::BloodVial]
+        );
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Common),
+            Some(RelicId::BloodVial)
         );
     }
 
