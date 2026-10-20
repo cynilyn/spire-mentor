@@ -2703,23 +2703,38 @@ fn listener_sand_castle(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `GlassEye::after_obtained` — push `GLASS_EYE_CARDS = 5`
-/// `Reward::Card(CardReward::empty())` sentinels (Python
-/// `shop_event.py::GlassEye.after_obtained`: 5-iteration loop over
-/// `(COMMON, COMMON, UNCOMMON, UNCOMMON, RARE)` rarities, each
-/// pushing a `CardReward` with `option_count=3` + forced rarity).
-/// The rarity-forcing + `option_count=3` clauses are deferred —
-/// the current Rust `CardReward::empty()` placeholder has no rarity
-/// or option-count fields; umbrella `sts2-rs-01o` (random reward
-/// rolling) materializes both at flush time. Same convention as
-/// Orrery (`sts2-rs-psf9`) / MassiveScroll (`sts2-rs-64vb`). Bead
-/// `sts2-rs-66l9f`.
+/// `GlassEye::after_obtained` (`GlassEye.cs:14-34`) — five `CardReward`s of
+/// rarity (Common, Common, Uncommon, Uncommon, Rare), each
+/// `ForNonCombatWithUniformOdds(pool, c.Rarity == rarity).WithFlags(
+/// NoRarityModification)`: three uniform distinct picks of that rarity from the
+/// character pool, no upgrade roll. `RewardsCmd.OfferCustom` populates all five
+/// in order right away, so they are rolled NOW (like Kaleidoscope) and queued
+/// pre-resolved; each carries its fixed rarity as its `RerollOptions`
+/// ([`RerollSpec::UniformRarity`]).
 fn listener_glass_eye(rs: &mut RunState) -> EffectResult {
+    use sts2_core::card_rewards::RewardRarity as RR;
+    use sts2_core::runstate::RerollSpec;
     if rs.last_obtained_relic != Some(RelicId::GlassEye) {
         return EffectResult::NotImplemented;
     }
-    for _ in 0..GLASS_EYE_CARDS {
-        rs.pending_rewards.push(Reward::Card(CardReward::empty()));
+    let character = rs.character_id;
+    let rarities = [RR::Common, RR::Common, RR::Uncommon, RR::Uncommon, RR::Rare];
+    debug_assert_eq!(rarities.len(), GLASS_EYE_CARDS);
+    for rarity in rarities {
+        let card_rarity = match rarity {
+            RR::Common => crate::cards::CardRarity::Common,
+            RR::Uncommon => crate::cards::CardRarity::Uncommon,
+            RR::Rare => crate::cards::CardRarity::Rare,
+        };
+        let options = crate::cards::spec_index::sample_distinct_cards_of_rarity(
+            rs,
+            character,
+            card_rarity,
+            3,
+        );
+        rs.pending_rewards.push(Reward::Card(
+            CardReward::from_options(options).with_reroll(RerollSpec::UniformRarity(rarity)),
+        ));
     }
     EffectResult::Resolved
 }

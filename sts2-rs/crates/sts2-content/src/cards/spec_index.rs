@@ -1034,6 +1034,18 @@ pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     if rs.card_reward_gen_ctx.is_some_and(|c| c.colorless) {
         return roll_colorless_reward_options_no_upgrade(rs, 3);
     }
+    // A GlassEye reroll reuses the reward's fixed-rarity uniform options.
+    if let Some(rarity) = rs.card_reward_gen_ctx.and_then(|c| c.uniform_rarity) {
+        let character = rs.character_id;
+        rs.card_reward_upgraded_flags.clear();
+        rs.card_reward_enchantments.clear();
+        return sample_distinct_cards_of_rarity(
+            rs,
+            character,
+            reward_rarity_to_card_rarity(rarity),
+            3,
+        );
+    }
     let character = rs.character_id;
     roll_reward_options_base_odds(rs, 3, true, &[character], false)
 }

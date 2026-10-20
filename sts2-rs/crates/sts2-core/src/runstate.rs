@@ -307,6 +307,10 @@ pub enum RerollSpec {
     /// BrainLeech Rip: `ForNonCombatWithDefaultOdds(ColorlessCardPool)`
     /// (`BrainLeech.cs:54-57`), no upgrade roll.
     Colorless,
+    /// GlassEye (`GlassEye.cs:28`): `ForNonCombatWithUniformOdds(pool,
+    /// c.Rarity == rarity).WithFlags(NoRarityModification)` — uniform picks from
+    /// the character pool restricted to this fixed rarity, no upgrade roll.
+    UniformRarity(crate::card_rewards::RewardRarity),
 }
 
 impl CardReward {
@@ -366,6 +370,9 @@ pub struct CardRewardGenCtx {
     pub is_from_combat: bool,
     /// Reroll-only: roll the colorless pool (BrainLeech Rip, `RerollSpec::Colorless`).
     pub colorless: bool,
+    /// Reroll-only: uniform picks of one fixed rarity (GlassEye,
+    /// `RerollSpec::UniformRarity`).
+    pub uniform_rarity: Option<crate::card_rewards::RewardRarity>,
 }
 
 /// A pending "choose 1 of N cards (or skip)" screen raised by a run-side

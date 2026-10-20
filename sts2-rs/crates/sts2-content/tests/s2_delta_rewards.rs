@@ -77,6 +77,7 @@ fn extra_cards(rs: &mut RunState, room: RoomType) -> Vec<CardId> {
         room_type: room,
         is_from_combat: false,
         colorless: false,
+        uniform_rarity: None,
     });
     let cards = generate_card_reward_options(rs);
     rs.card_reward_gen_ctx = None;
@@ -846,4 +847,143 @@ fn card_select_screens_and_unsupported_slates_are_not_rerollable() {
         CardReward::from_options(vec![CardId::Bash]).reroll,
         sts2_core::runstate::RerollSpec::Unsupported
     );
+}
+
+// ---------------------------------------------------------------------------
+// Custom sets: no room context; unsupported rerolls are not advertised; GlassEye
+// ---------------------------------------------------------------------------
+
+/// Neow run on the event screen with a Lost Coffer offer; `pre` runs on the run
+/// state first (queueing rewards ahead of the Lost Coffer card + potion), and
+/// `current_room` is forced to `room`. Takes the Lost Coffer option so the queue
+/// drains.
+fn coffer_with(
+    seed: u64,
+    room: Option<RoomType>,
+    relics: &[RelicId],
+    pre: impl FnOnce(&mut RunState),
+) -> sts2_core::run_manager::RunManager {
+    use sts2_core::NeowRelic;
+    install();
+    let mut rm = new_run_manager_for_character(seed, CharacterId::Ironclad).with_neow_start();
+    initialize_run_setup(&mut rm);
+    rm.run_state.direct_event_relic_grant = true;
+    let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+    offers.positive_2 = NeowRelic::LostCoffer;
+    rm.run_state.neow_offers = Some(offers);
+    rm.run_state.relics.extend_from_slice(relics);
+    if let Some(room) = room {
+        rm.run_state.current_room = Some(Room::new(room));
+    }
+    pre(&mut rm.run_state);
+    let _ = rm.take_action(RunAction::EventChoice { idx: 1 });
+    rm
+}
+
+/// C# `RewardsSet.WithCustomRewards` leaves `Room == null`: a queued custom set
+/// drained while standing in a Monster room (e.g. a DreamCatcher reward after the
+/// next fight) must not re-trigger the room-gated listeners.
+#[test]
+fn custom_reward_sets_have_no_room_context() {
+    for seed in SEEDS {
+        let owned = [
+            RelicId::PrayerWheel,
+            RelicId::AmethystAubergine,
+            RelicId::Driftwood,
+        ];
+        let plain = coffer_with(seed, Some(RoomType::Monster), &[RelicId::Driftwood], |_| {});
+        let live = coffer_with(seed, Some(RoomType::Monster), &owned, |_| {});
+        assert!(
+            live.run_state.unoffered_card_rewards.is_empty(),
+            "seed {seed}"
+        );
+        assert_eq!(
+            live.run_state.gold, plain.run_state.gold,
+            "no Amethyst gold"
+        );
+        assert_eq!(cursor(&live.run_state), cursor(&plain.run_state));
+        assert_eq!(live.card_reward_options(), plain.card_reward_options());
+        // The Late pass still ran with a null room: Driftwood flagged the reward.
+        assert!(has_reroll(&live));
+    }
+}
+
+/// A slate the engine cannot reroll (Kaleidoscope-style, `RerollSpec::Unsupported`)
+/// is not advertised even though Driftwood set its `CanReroll`; the next supported
+/// reward in the same set still is. Asserted on the real legal-action list.
+#[test]
+fn unsupported_slates_do_not_advertise_a_reroll() {
+    let slate = vec![CardId::Bash, CardId::Anger, CardId::Headbutt];
+    let queued = slate.clone();
+    let mut rm = coffer_with(SEEDS[0], None, &[RelicId::Driftwood], move |rs| {
+        rs.pending_rewards
+            .push(Reward::Card(CardReward::from_options(queued)));
+    });
+    assert_eq!(rm.phase(), Phase::CardReward);
+    assert_eq!(rm.card_reward_options(), slate.as_slice());
+    assert!(!has_reroll(&rm), "{:?}", rm.get_available_actions());
+    assert_eq!(
+        rm.take_action(RunAction::RerollCardReward),
+        ActionResult::InvalidForPhase
+    );
+    // Resolve it: the following Lost Coffer card reward (supported) is rerollable.
+    let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+    assert_eq!(rm.phase(), Phase::CardReward);
+    assert!(has_reroll(&rm));
+}
+
+/// GlassEye (`GlassEye.cs:14-34`): five rewards of fixed rarity C, C, U, U, R at
+/// uniform odds (three distinct picks of that rarity, no rarity roll, no upgrade
+/// roll); a Driftwood reroll keeps the rarity and the uniform options.
+#[test]
+fn glass_eye_rewards_keep_their_fixed_rarity_through_a_reroll() {
+    use sts2_content::cards::spec_index::{rarity_for_card_id, sample_distinct_cards_of_rarity};
+    use sts2_content::cards::CardRarity;
+    let expected = [
+        CardRarity::Common,
+        CardRarity::Common,
+        CardRarity::Uncommon,
+        CardRarity::Uncommon,
+        CardRarity::Rare,
+    ];
+    for seed in SEEDS {
+        let mut rm = coffer_with(seed, None, &[RelicId::Driftwood, RelicId::GlassEye], |rs| {
+            rs.last_obtained_relic = Some(RelicId::GlassEye);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+            assert_eq!(rs.pending_rewards.len(), 5, "five queued rewards");
+        });
+        for (i, rarity) in expected.iter().enumerate() {
+            assert_eq!(rm.phase(), Phase::CardReward, "reward {i}");
+            let offered = rm.card_reward_options().to_vec();
+            assert_eq!(offered.len(), 3, "reward {i}");
+            assert!(
+                offered
+                    .iter()
+                    .all(|id| rarity_for_card_id(*id) == Some(*rarity)),
+                "reward {i} fixed rarity {rarity:?}"
+            );
+            assert!(has_reroll(&rm), "reward {i}");
+            let mut want = rm.clone();
+            let rerolled = sample_distinct_cards_of_rarity(
+                &mut want.run_state,
+                CharacterId::Ironclad,
+                *rarity,
+                3,
+            );
+            assert_eq!(
+                rm.take_action(RunAction::RerollCardReward),
+                ActionResult::Advanced
+            );
+            assert_eq!(rm.card_reward_options(), rerolled.as_slice(), "reward {i}");
+            assert!(
+                rerolled
+                    .iter()
+                    .all(|id| rarity_for_card_id(*id) == Some(*rarity)),
+                "rerolled reward {i} keeps rarity"
+            );
+            assert_eq!(cursor(&rm.run_state), cursor(&want.run_state));
+            assert!(!has_reroll(&rm));
+            let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+        }
+    }
 }

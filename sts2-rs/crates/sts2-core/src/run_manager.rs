@@ -2411,7 +2411,9 @@ impl RunManager {
             room_type,
         );
         if let Some(Reward::Card(c)) = rewards.first() {
-            self.card_reward_can_reroll = c.can_reroll && !self.card_reward_options.is_empty();
+            self.card_reward_can_reroll = c.can_reroll
+                && c.reroll != crate::runstate::RerollSpec::Unsupported
+                && !self.card_reward_options.is_empty();
             self.card_reward_reroll = c.reroll;
         }
         let added: Vec<Reward> = rewards.split_off(own_len.min(rewards.len()));
@@ -2425,6 +2427,7 @@ impl RunManager {
                         room_type: card.room_context.unwrap_or(room_type),
                         is_from_combat: false,
                         colorless: false,
+                        uniform_rarity: None,
                     };
                     self.run_state.card_reward_gen_ctx = Some(ctx);
                     card.options = self
@@ -2634,6 +2637,18 @@ impl RunManager {
                     room_type: crate::runstate::RoomType::Unknown,
                     is_from_combat: false,
                     colorless: true,
+                    uniform_rarity: None,
+                }),
+            ),
+            RerollSpec::UniformRarity(rarity) => (
+                self.callbacks
+                    .generate_noncombat_card_reward_options
+                    .or(self.callbacks.generate_card_reward_options),
+                Some(CardRewardGenCtx {
+                    room_type: crate::runstate::RoomType::Unknown,
+                    is_from_combat: false,
+                    colorless: false,
+                    uniform_rarity: Some(rarity),
                 }),
             ),
         };
@@ -2782,15 +2797,14 @@ impl RunManager {
         // is empty).
         if !self.run_state.pending_rewards.is_empty() && !self.run_state.reward_set_modified {
             self.run_state.reward_set_modified = true;
-            let room_type = self
-                .run_state
-                .current_room
-                .map_or(crate::runstate::RoomType::Unknown, |r| r.room_type);
+            // `RewardsSet.WithCustomRewards` never sets `Room`, so listeners see
+            // `room == null` (`RoomType::Unknown`): none of the room-gated ones
+            // (PrayerWheel, Amethyst, ...) fire, whatever room the player is in.
             let mut set = std::mem::take(&mut self.run_state.pending_rewards);
             let _ = crate::run_effects::dispatch_modify_rewards(
                 &mut self.run_state,
                 &mut set,
-                room_type,
+                crate::runstate::RoomType::Unknown,
             );
             self.run_state.pending_rewards = set;
         }
@@ -2871,7 +2885,9 @@ impl RunManager {
                     }
                     // Carry the reward's own reroll state onto the screen (set
                     // by Driftwood's Late pass above).
-                    self.card_reward_can_reroll = can_reroll;
+                    // Only advertise a reroll the engine can reproduce.
+                    self.card_reward_can_reroll =
+                        can_reroll && reroll != crate::runstate::RerollSpec::Unsupported;
                     self.card_reward_reroll = reroll;
                     opened = true;
                 }
