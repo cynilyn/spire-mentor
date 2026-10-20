@@ -979,24 +979,17 @@ fn roll_filtered_character_reward_id(
 ) -> Option<CardId> {
     use sts2_core::card_rewards::RarityContext;
     let character = rs.character_id;
-    let mut rarity = rs
+    let rolled = rs
         .card_rarity_odds
         .roll_with_base_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Regular);
-    let candidates: Vec<CardId> = loop {
-        let c = eligible_ids_for_rarity_filtered(
+    let (_rarity, candidates) = next_allowed_reward_rarity(rolled, |r| {
+        eligible_ids_for_rarity_filtered(
             &[character],
             false,
-            reward_rarity_to_card_rarity(rarity),
+            reward_rarity_to_card_rarity(r),
             predicate,
-        );
-        if !c.is_empty() {
-            break c;
-        }
-        match next_highest_reward_rarity(rarity) {
-            Some(next) => rarity = next,
-            None => break c,
-        }
-    };
+        )
+    });
     if candidates.is_empty() {
         return None;
     }
@@ -1195,30 +1188,23 @@ fn roll_reward_options_base_odds(
     let upgrade_base = combat_card_upgrade_base_chance();
     let mut chosen: Vec<CardId> = Vec::new();
     for _ in 0..count {
-        let mut rarity = rs
+        let rolled = rs
             .card_rarity_odds
             .roll_with_base_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Regular);
-        // C# `RollForRarity` escalates a rolled rarity absent from the
-        // post-blacklist pool to the next-highest until allowed
-        // (`GetNextHighestRarity`; Common → Uncommon → Rare). The shipped
-        // colorless pool has gaps per rarity once blacklisted, so this
-        // fires in practice.
-        let mut candidates: Vec<CardId>;
-        loop {
-            candidates = eligible_ids_for_rarity(
+        // C# `RollForRarity` moves a rolled rarity absent from the
+        // post-blacklist pool to the next allowed one with wrap-around
+        // (`GetNextAllowedRarity` / `GetNextHighestRarityWithWrapping`;
+        // Common -> Uncommon -> Rare -> Common). The shipped colorless pool
+        // has gaps per rarity once blacklisted, so this fires in practice.
+        let (rarity, candidates) = next_allowed_reward_rarity(rolled, |r| {
+            let mut c = eligible_ids_for_rarity(
                 character_ids,
                 include_colorless,
-                reward_rarity_to_card_rarity(rarity),
+                reward_rarity_to_card_rarity(r),
             );
-            candidates.retain(|id| !chosen.contains(id));
-            if !candidates.is_empty() {
-                break;
-            }
-            match next_highest_reward_rarity(rarity) {
-                Some(next) => rarity = next,
-                None => break,
-            }
-        }
+            c.retain(|id| !chosen.contains(id));
+            c
+        });
         if candidates.is_empty() {
             continue;
         }
@@ -2102,21 +2088,27 @@ pub fn roll_card_reward_cards(
     // same seed/floor/deck — breaking same-seed deck-parity replay.
     for _ in 0..num_cards {
         // 1. Rarity (consumes Rewards; updates the pity counter).
-        let rarity = rs
+        let rolled = rs
             .card_rarity_odds
             .roll_with_dotnet(&mut rs.rng.rewards, context);
-        let cr = reward_rarity_to_card_rarity(rarity);
-        // 2. Candidates for the rolled rarity, minus already-picked.
-        let mut candidates: Vec<CardId> = if has_custom {
-            custom_ids
-                .iter()
-                .copied()
-                .filter(|&id| rarity_for_card_id(id) == Some(cr))
-                .collect()
-        } else {
-            eligible_ids_for_rarity(&character_ids, include_colorless, cr)
-        };
-        candidates.retain(|id| !chosen_ids.contains(id));
+        // 2. Candidates for the rolled rarity, minus already-picked; a rolled
+        //    rarity with none falls back with wrap-around (`RollForRarity` ->
+        //    `GetNextAllowedRarity`). The pity update above already used the
+        //    rolled rarity, as in C#.
+        let (rarity, candidates) = next_allowed_reward_rarity(rolled, |r| {
+            let cr = reward_rarity_to_card_rarity(r);
+            let mut c: Vec<CardId> = if has_custom {
+                custom_ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| rarity_for_card_id(id) == Some(cr))
+                    .collect()
+            } else {
+                eligible_ids_for_rarity(&character_ids, include_colorless, cr)
+            };
+            c.retain(|id| !chosen_ids.contains(id));
+            c
+        });
         if candidates.is_empty() {
             continue;
         }
@@ -2262,19 +2254,12 @@ fn append_lasting_candy_power_reward(
     // 1. Base-odds rarity roll (`Source = Other` ⇒ `RollWithBaseOdds`,
     //    no pity read/update), then escalate to the next-highest rarity
     //    while the current one has no candidates.
-    let mut rarity = rs
+    let rolled = rs
         .card_rarity_odds
         .roll_with_base_odds_with_dotnet(&mut rs.rng.rewards, context);
-    let candidates: Vec<CardId> = loop {
-        let c = power_pool_for_rarity(reward_rarity_to_card_rarity(rarity), dedup);
-        if !c.is_empty() {
-            break c;
-        }
-        match next_highest_reward_rarity(rarity) {
-            Some(next) => rarity = next,
-            None => break c,
-        }
-    };
+    let (rarity, candidates) = next_allowed_reward_rarity(rolled, |r| {
+        power_pool_for_rarity(reward_rarity_to_card_rarity(r), dedup)
+    });
     if candidates.is_empty() {
         return;
     }
@@ -2300,20 +2285,42 @@ fn append_lasting_candy_power_reward(
     }
 }
 
-/// Next-highest reward rarity for the merchant card-rarity escalation
-/// loop (`CardFactory.CreateForMerchant`'s `while list.Count == 0:
-/// rolledRarity = rolledRarity.GetNextHighestRarity()`). Common →
-/// Uncommon → Rare → exhausted (`None`). Mirrors C#
-/// `CardRarityExtensions.GetNextHighestRarity` for the three reachable
-/// shop rarities.
-const fn next_highest_reward_rarity(
+/// `CardRarityExtensions.GetNextHighestRarityWithWrapping` restricted to the
+/// three reward rarities (`CardRarityExtensions.cs:8`): Common -> Uncommon ->
+/// Rare -> Common.
+const fn next_highest_reward_rarity_with_wrapping(
     r: sts2_core::card_rewards::RewardRarity,
-) -> Option<sts2_core::card_rewards::RewardRarity> {
+) -> sts2_core::card_rewards::RewardRarity {
     use sts2_core::card_rewards::RewardRarity as RR;
     match r {
-        RR::Common => Some(RR::Uncommon),
-        RR::Uncommon => Some(RR::Rare),
-        RR::Rare => None,
+        RR::Common => RR::Uncommon,
+        RR::Uncommon => RR::Rare,
+        RR::Rare => RR::Common,
+    }
+}
+
+/// C# `CardFactory.GetNextAllowedRarity` (`CardFactory.cs:215-233`): starting
+/// at the `rolled` rarity, step with
+/// [`next_highest_reward_rarity_with_wrapping`] until `candidates_for` yields a
+/// non-empty candidate list, stopping (C# returns `CardRarity.None` and the
+/// callers throw) once the walk returns to `rolled`. Returns the accepted
+/// rarity with its candidates; on exhaustion `(rolled, empty)`. The caller's
+/// `NextItem` then runs over the accepted rarity's list, so a fallback also
+/// changes which list the stream index is drawn over.
+fn next_allowed_reward_rarity(
+    rolled: sts2_core::card_rewards::RewardRarity,
+    mut candidates_for: impl FnMut(sts2_core::card_rewards::RewardRarity) -> Vec<CardId>,
+) -> (sts2_core::card_rewards::RewardRarity, Vec<CardId>) {
+    let mut rarity = rolled;
+    loop {
+        let c = candidates_for(rarity);
+        if !c.is_empty() {
+            return (rarity, c);
+        }
+        rarity = next_highest_reward_rarity_with_wrapping(rarity);
+        if rarity == rolled {
+            return (rolled, Vec::new());
+        }
     }
 }
 
@@ -2391,19 +2398,12 @@ fn merchant_roll_character_card_slot(
 ) -> sts2_core::shop::ShopCardEntry {
     use sts2_core::card_rewards::RarityContext;
     use sts2_core::shop::{card_price, ShopCardEntry};
-    let mut rarity = rs
+    let rolled = rs
         .card_rarity_odds
         .roll_without_changing_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Shop);
-    let mut candidates = merchant_character_candidates(character, rarity, want_type, chosen);
-    while candidates.is_empty() {
-        match next_highest_reward_rarity(rarity) {
-            Some(next) => {
-                rarity = next;
-                candidates = merchant_character_candidates(character, rarity, want_type, chosen);
-            }
-            None => break,
-        }
-    }
+    let (rarity, candidates) = next_allowed_reward_rarity(rolled, |r| {
+        merchant_character_candidates(character, r, want_type, chosen)
+    });
     let pick = if candidates.is_empty() {
         None
     } else {
@@ -3279,15 +3279,17 @@ mod tests {
             ..Default::default()
         };
         let cards = roll_card_reward_cards(&mut rs, opts, CharacterId::Ironclad);
-        // Every produced card is Uncommon (pool is all-Uncommon) — the
-        // discriminating signal is the COUNT, not the rarity.
-        assert!(
-            cards.len() <= 5,
-            "Common-dominated rolls should yield only the few Uncommon-roll \
-             slots ({} cards) — a ballooned slate means the rarity filter \
-             admitted off-rarity cards (== → != mutant)",
-            cards.len()
-        );
+        // Stage 2 beta (RL-B5/S3): a rolled rarity absent from the custom pool
+        // now falls back with wrap-around to the next allowed rarity (C#
+        // `RollForRarity` -> `GetNextAllowedRarity`), so every one of the 12
+        // rolls yields a card from the all-Uncommon pool. Before the fallback
+        // only the few Uncommon rolls did (the count discriminated the rarity
+        // filter); the filter itself is now pinned by
+        // `next_allowed_reward_rarity_wraps_and_terminates`.
+        assert_eq!(cards.len(), 12, "one card per roll via the rarity fallback");
+        for c in &cards {
+            assert_eq!(rarity_for_card_id(c.card_id), Some(CardRarity::Uncommon));
+        }
     }
 
     /// The upgrade short-circuit `roll_upgrade && roll_for_upgrade(...)`
@@ -3527,7 +3529,6 @@ mod tests {
             CardId::Anger,
             CardId::Armaments,
             CardId::BloodWall,
-            CardId::Bloodletting,
             CardId::BodySlam,
             CardId::Breakthrough,
             CardId::Cinder,
@@ -3540,6 +3541,7 @@ mod tests {
             CardId::SetupStrikeCard,
             CardId::ShrugItOff,
             CardId::SwordBoomerang,
+            CardId::Taunt,
             CardId::Thunderclap,
             CardId::Tremble,
             CardId::TrueGrit,
@@ -3552,12 +3554,13 @@ mod tests {
         let expected_uncommon: &[CardId] = &[
             CardId::AshenStrike,
             CardId::BattleTrance,
+            CardId::Bloodletting,
             CardId::Bludgeon,
             CardId::Bully,
             CardId::BurningPact,
             CardId::ColossusCard,
+            CardId::CrueltyCard,
             CardId::Dismantle,
-            CardId::Dominate,
             CardId::DrumOfBattleCard,
             CardId::EvilEye,
             CardId::ExpectAFight,
@@ -3580,7 +3583,6 @@ mod tests {
             CardId::StampedeCard,
             CardId::Stomp,
             CardId::StoneArmor,
-            CardId::Taunt,
             CardId::Unrelenting,
             CardId::Uppercut,
             CardId::ViciousCard,
@@ -3597,9 +3599,9 @@ mod tests {
             CardId::Cascade,
             CardId::Conflagration,
             CardId::CrimsonMantle,
-            CardId::CrueltyCard,
             CardId::DarkEmbraceCard,
             CardId::DemonFormCard,
+            CardId::Dominate,
             CardId::Feed,
             CardId::FiendFire,
             CardId::HellraiserCard,
@@ -4206,5 +4208,726 @@ mod tests {
                 "restocked card {id:?} must not duplicate another stocked slot",
             );
         }
+    }
+
+    /// Stage 2 bundle beta RA-1..12: the 12 rarity reassignments of 0.111.0
+    /// (C# `Bloodletting.cs:23`, `Cruelty.cs:19`, `Dominate.cs:32`,
+    /// `Taunt.cs:27`, `Accelerant.cs:21`, `EchoingSlash.cs:19`,
+    /// `Ignition.cs:25`, `Salvo.cs:21`, `Flanking.cs:15`, `Outbreak.cs:24`,
+    /// `Splash.cs:16`, `WellLaidPlans.cs:12`) — rarity field only; the
+    /// cost/type rework of Outbreak and WellLaidPlans is stage 5.
+    #[test]
+    fn card_rarities_match_0_111_0_reassignments() {
+        let expected = [
+            (CardId::Bloodletting, CardRarity::Uncommon),
+            (CardId::CrueltyCard, CardRarity::Uncommon),
+            (CardId::Dominate, CardRarity::Rare),
+            (CardId::Taunt, CardRarity::Common),
+            (CardId::Accelerant, CardRarity::Uncommon),
+            (CardId::EchoingSlash, CardRarity::Uncommon),
+            (CardId::Ignition, CardRarity::Uncommon),
+            (CardId::Salvo, CardRarity::Uncommon),
+            (CardId::Flanking, CardRarity::Rare),
+            (CardId::OutbreakCard, CardRarity::Rare),
+            (CardId::Splash, CardRarity::Rare),
+            (CardId::WellLaidPlans, CardRarity::Rare),
+        ];
+        for (id, rarity) in expected {
+            assert_eq!(rarity_for_card_id(id), Some(rarity), "{id:?}");
+        }
+    }
+
+    /// `GetNextHighestRarityWithWrapping` (`CardRarityExtensions.cs:8`) over the
+    /// three reward rarities: Rare wraps to Common.
+    #[test]
+    fn next_highest_reward_rarity_wraps_rare_to_common() {
+        use sts2_core::card_rewards::RewardRarity as RR;
+        assert_eq!(
+            next_highest_reward_rarity_with_wrapping(RR::Common),
+            RR::Uncommon
+        );
+        assert_eq!(
+            next_highest_reward_rarity_with_wrapping(RR::Uncommon),
+            RR::Rare
+        );
+        assert_eq!(
+            next_highest_reward_rarity_with_wrapping(RR::Rare),
+            RR::Common
+        );
+    }
+
+    /// `GetNextAllowedRarity` (`CardFactory.cs:215-233`): the walk from the
+    /// rolled rarity wraps (Rare -> Common), accepts the first rarity with
+    /// candidates, and gives up after a full cycle (C# returns `None`).
+    #[test]
+    fn next_allowed_reward_rarity_wraps_and_terminates() {
+        use sts2_core::card_rewards::RewardRarity as RR;
+        let only = |has: RR| {
+            move |r: RR| {
+                if r == has {
+                    vec![CardId::Bash]
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+        for rolled in [RR::Common, RR::Uncommon, RR::Rare] {
+            // A non-empty rolled rarity is taken as is.
+            assert_eq!(next_allowed_reward_rarity(rolled, only(rolled)).0, rolled);
+        }
+        // Rolled Rare with only Common populated wraps to Common (the old
+        // non-wrapping escalation gave up here and skipped the NextItem draw).
+        assert_eq!(
+            next_allowed_reward_rarity(RR::Rare, only(RR::Common)).0,
+            RR::Common
+        );
+        // Rolled Uncommon, only Common populated: Uncommon -> Rare -> Common.
+        assert_eq!(
+            next_allowed_reward_rarity(RR::Uncommon, only(RR::Common)).0,
+            RR::Common
+        );
+        // Rolled Common, only Rare populated: Common -> Uncommon -> Rare.
+        assert_eq!(
+            next_allowed_reward_rarity(RR::Common, only(RR::Rare)).0,
+            RR::Rare
+        );
+        // Everything empty: terminates with the rolled rarity and no candidates.
+        for rolled in [RR::Common, RR::Uncommon, RR::Rare] {
+            let (r, c) = next_allowed_reward_rarity(rolled, |_| Vec::new());
+            assert_eq!((r, c.is_empty()), (rolled, true));
+        }
+    }
+
+    /// Stage 2 inventory §3 item 11: after the 12 reassignments no Ironclad
+    /// shop slot (rarity, type) cell is left without a candidate, and the
+    /// per-cell counts equal the 0.111.0 single-player pool (`cs_pools.json`
+    /// from the decompile). The only empty cell is (Common, Power) — empty in
+    /// 0.107.1 too — which falls back to Uncommon without needing the wrap.
+    /// Colorless slots are fixed Uncommon/Rare and must be non-empty as well.
+    #[test]
+    fn ironclad_shop_slot_rarity_type_cells_are_never_empty_after_fallback() {
+        use sts2_core::card_rewards::RewardRarity as RR;
+        let chosen = std::collections::BTreeSet::new();
+        // [Common, Uncommon, Rare] per type.
+        let counts = [
+            (CardType::Attack, [13, 14, 7]),
+            (CardType::Skill, [7, 12, 9]),
+            (CardType::Power, [0, 9, 9]),
+        ];
+        for (ty, expected) in counts {
+            for (i, r) in [RR::Common, RR::Uncommon, RR::Rare].into_iter().enumerate() {
+                let n = merchant_character_candidates(CharacterId::Ironclad, r, ty, &chosen).len();
+                assert_eq!(n, expected[i], "{ty:?} {r:?}");
+                let (acc, c) = next_allowed_reward_rarity(r, |x| {
+                    merchant_character_candidates(CharacterId::Ironclad, x, ty, &chosen)
+                });
+                assert!(!c.is_empty(), "{ty:?} rolled {r:?} -> empty after fallback");
+                // Only the empty cell falls back, and it never needs the wrap.
+                assert_eq!(acc != r, n == 0, "{ty:?} {r:?}");
+                assert!(acc >= r, "{ty:?} {r:?} wrapped to {acc:?}");
+            }
+        }
+        // The empty cell falls back to Uncommon Powers (9 in 0.111.0).
+        let (acc, c) = next_allowed_reward_rarity(RR::Common, |x| {
+            merchant_character_candidates(CharacterId::Ironclad, x, CardType::Power, &chosen)
+        });
+        assert_eq!((acc, c.len()), (RR::Uncommon, 9));
+        for r in [CardRarity::Uncommon, CardRarity::Rare] {
+            assert!(
+                !eligible_ids_for_rarity(&[], true, r).is_empty(),
+                "colorless {r:?}",
+            );
+        }
+    }
+
+    /// Stage 2 inventory §3 item 12: the single-player Ironclad and Colorless
+    /// pools list the same cards in the same order as the 0.111.0
+    /// `IroncladCardPool.cs` / `ColorlessCardPool.cs` declarations (Basic and
+    /// `MultiplayerOnly` entries dropped on both sides; names compared
+    /// without underscores, case-insensitively, minus the Rust `_CARD`
+    /// suffix).
+    #[test]
+    fn ironclad_and_colorless_pool_order_matches_0_111_0() {
+        let names = |slice: &[fn() -> super::super::types::CardSpec]| -> Vec<String> {
+            slice
+                .iter()
+                .map(|f| f())
+                .filter(|s| s.rarity != CardRarity::Basic && !is_multiplayer_only(s.id))
+                .map(|s| {
+                    let n = s.id.to_python_name().replace('_', "");
+                    n.strip_suffix("CARD").unwrap_or(&n).to_string()
+                })
+                .collect()
+        };
+        let ironclad = [
+            "AGGRESSION",
+            "ANGER",
+            "ARMAMENTS",
+            "ASHENSTRIKE",
+            "BARRICADE",
+            "BATTLETRANCE",
+            "BLOODWALL",
+            "BLOODLETTING",
+            "BLUDGEON",
+            "BODYSLAM",
+            "BRAND",
+            "BREAK",
+            "BREAKTHROUGH",
+            "BULLY",
+            "BURNINGPACT",
+            "CASCADE",
+            "CINDER",
+            "COLOSSUS",
+            "CONFLAGRATION",
+            "CORRUPTION",
+            "CRIMSONMANTLE",
+            "CRUELTY",
+            "DARKEMBRACE",
+            "DEMONFORM",
+            "DISMANTLE",
+            "DOMINATE",
+            "DRUMOFBATTLE",
+            "EVILEYE",
+            "EXPECTAFIGHT",
+            "FEED",
+            "FEELNOPAIN",
+            "FIENDFIRE",
+            "FIGHTME",
+            "FLAMEBARRIER",
+            "FORGOTTENRITUAL",
+            "HAVOC",
+            "HEADBUTT",
+            "HELLRAISER",
+            "HEMOKINESIS",
+            "HOWLFROMBEYOND",
+            "IMPERVIOUS",
+            "INFERNALBLADE",
+            "INFERNO",
+            "INFLAME",
+            "IRONWAVE",
+            "JUGGERNAUT",
+            "JUGGLING",
+            "MANGLE",
+            "MOLTENFIST",
+            "NOTYET",
+            "OFFERING",
+            "ONETWOPUNCH",
+            "PACTSEND",
+            "PERFECTEDSTRIKE",
+            "PILLAGE",
+            "POMMELSTRIKE",
+            "PRIMALFORCE",
+            "PYRE",
+            "RAGE",
+            "RAMPAGE",
+            "RUPTURE",
+            "SECONDWIND",
+            "SETUPSTRIKE",
+            "SHRUGITOFF",
+            "SPITE",
+            "STAMPEDE",
+            "STOKE",
+            "STOMP",
+            "STONEARMOR",
+            "SWORDBOOMERANG",
+            "TAUNT",
+            "TEARASUNDER",
+            "THRASH",
+            "THUNDERCLAP",
+            "TREMBLE",
+            "TRUEGRIT",
+            "TWINSTRIKE",
+            "UNMOVABLE",
+            "UNRELENTING",
+            "UPPERCUT",
+            "VICIOUS",
+            "WHIRLWIND",
+        ];
+        let colorless = [
+            "ALCHEMIZE",
+            "ANOINTED",
+            "AUTOMATION",
+            "BEATDOWN",
+            "BOLAS",
+            "CALAMITY",
+            "CATASTROPHE",
+            "DARKSHACKLES",
+            "DISCOVERY",
+            "DRAMATICENTRANCE",
+            "ENTROPY",
+            "EQUILIBRIUM",
+            "ETERNALARMOR",
+            "FASTEN",
+            "FINESSE",
+            "FISTICUFFS",
+            "FLASHOFSTEEL",
+            "GOLDAXE",
+            "HANDOFGREED",
+            "HIDDENGEM",
+            "IMPATIENCE",
+            "JACKOFALLTRADES",
+            "JACKPOT",
+            "MASTEROFSTRATEGY",
+            "MAYHEM",
+            "MINDBLAST",
+            "NOSTALGIA",
+            "OMNISLICE",
+            "PANACHE",
+            "PANICBUTTON",
+            "PREPTIME",
+            "PRODUCTION",
+            "PROLONG",
+            "PROWESS",
+            "PURITY",
+            "REND",
+            "RESTLESSNESS",
+            "ROLLINGBOULDER",
+            "SALVO",
+            "SCRAWL",
+            "SECRETTECHNIQUE",
+            "SECRETWEAPON",
+            "SEEKERSTRIKE",
+            "SHOCKWAVE",
+            "SPLASH",
+            "STRATAGEM",
+            "THEBOMB",
+            "THEGAMBIT",
+            "THINKINGAHEAD",
+            "THRUMMINGHATCHET",
+            "ULTIMATEDEFEND",
+            "ULTIMATESTRIKE",
+            "VOLLEY",
+        ];
+        assert_eq!(names(IRONCLAD_SPECS), ironclad);
+        assert_eq!(names(COLORLESS_SPECS), colorless);
+    }
+
+    /// Stage 2 baseline §6: with the `Rewards`/`Shops` initial states of
+    /// P0A0..29 (Ironclad, A0), the first Monster card reward (3 cards) and
+    /// the 7 shop card slots equal the 0.111.0 oracle (`cards_oracle.json`):
+    /// 30/30 rewards, 30/30 shops, 210/210 slots. Shop price and sale flag are
+    /// compared as well.
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn first_card_reward_and_shop_cards_match_the_oracle_p0a0_to_29() {
+        let rows: [(&str, [&str; 3], [(&str, bool, i32); 5], [(&str, i32); 2]); 30] = [
+            (
+                "P0A0",
+                ["JUGGLING", "EXPECT_A_FIGHT", "BULLY"],
+                [
+                    ("DISMANTLE", true, 38),
+                    ("TWIN_STRIKE", false, 48),
+                    ("EVIL_EYE", false, 77),
+                    ("SECOND_WIND", false, 74),
+                    ("RUPTURE", false, 72),
+                ],
+                [("FISTICUFFS", 86), ("SECRET_TECHNIQUE", 179)],
+            ),
+            (
+                "P0A1",
+                ["DISMANTLE", "BLUDGEON", "BLOOD_WALL"],
+                [
+                    ("BLUDGEON", true, 37),
+                    ("THUNDERCLAP", false, 51),
+                    ("EXPECT_A_FIGHT", false, 74),
+                    ("HAVOC", false, 50),
+                    ("STONE_ARMOR", false, 76),
+                ],
+                [("THE_BOMB", 84), ("SECRET_TECHNIQUE", 175)],
+            ),
+            (
+                "P0A2",
+                ["RAMPAGE", "UNRELENTING", "ARMAMENTS"],
+                [
+                    ("STOMP", false, 76),
+                    ("MOLTEN_FIST", false, 49),
+                    ("BLOOD_WALL", false, 49),
+                    ("HAVOC", false, 52),
+                    ("STONE_ARMOR", true, 36),
+                ],
+                [("SALVO", 84), ("ALCHEMIZE", 166)],
+            ),
+            (
+                "P0A3",
+                ["BLOOD_WALL", "IRON_WAVE", "RAMPAGE"],
+                [
+                    ("BREAKTHROUGH", false, 52),
+                    ("SETUP_STRIKE", false, 51),
+                    ("FLAME_BARRIER", false, 78),
+                    ("OFFERING", false, 153),
+                    ("INFLAME", true, 36),
+                ],
+                [("EQUILIBRIUM", 84), ("ENTROPY", 172)],
+            ),
+            (
+                "P0A4",
+                ["VICIOUS", "TWIN_STRIKE", "ANGER"],
+                [
+                    ("BULLY", false, 78),
+                    ("SETUP_STRIKE", true, 26),
+                    ("BLOOD_WALL", false, 50),
+                    ("TAUNT", false, 52),
+                    ("JUGGLING", false, 77),
+                ],
+                [("ULTIMATE_DEFEND", 90), ("SPLASH", 165)],
+            ),
+            (
+                "P0A5",
+                ["BLOOD_WALL", "DRUM_OF_BATTLE", "INFERNAL_BLADE"],
+                [
+                    ("SWORD_BOOMERANG", false, 51),
+                    ("PILLAGE", false, 76),
+                    ("FLAME_BARRIER", false, 77),
+                    ("OFFERING", true, 75),
+                    ("INFLAME", false, 76),
+                ],
+                [("FINESSE", 90), ("ENTROPY", 170)],
+            ),
+            (
+                "P0A6",
+                ["THUNDERCLAP", "BATTLE_TRANCE", "HEADBUTT"],
+                [
+                    ("BODY_SLAM", true, 26),
+                    ("CINDER", false, 50),
+                    ("STOKE", false, 150),
+                    ("SHRUG_IT_OFF", false, 50),
+                    ("INFLAME", false, 74),
+                ],
+                [("SHOCKWAVE", 83), ("REND", 171)],
+            ),
+            (
+                "P0A7",
+                ["FORGOTTEN_RITUAL", "SHRUG_IT_OFF", "HAVOC"],
+                [
+                    ("FIGHT_ME", false, 71),
+                    ("TWIN_STRIKE", false, 48),
+                    ("SHRUG_IT_OFF", false, 49),
+                    ("TREMBLE", false, 48),
+                    ("RUPTURE", true, 38),
+                ],
+                [("CATASTROPHE", 90), ("REND", 180)],
+            ),
+            (
+                "P0A8",
+                ["TRUE_GRIT", "HEADBUTT", "CINDER"],
+                [
+                    ("MOLTEN_FIST", false, 50),
+                    ("WHIRLWIND", false, 73),
+                    ("HAVOC", true, 24),
+                    ("TRUE_GRIT", false, 52),
+                    ("INFLAME", false, 74),
+                ],
+                [("JACK_OF_ALL_TRADES", 89), ("MASTER_OF_STRATEGY", 165)],
+            ),
+            (
+                "P0A9",
+                ["INFLAME", "RAGE", "SETUP_STRIKE"],
+                [
+                    ("ASHEN_STRIKE", false, 77),
+                    ("PILLAGE", false, 78),
+                    ("BLOOD_WALL", true, 24),
+                    ("TREMBLE", false, 48),
+                    ("PYRE", false, 147),
+                ],
+                [("MIND_BLAST", 86), ("REND", 181)],
+            ),
+            (
+                "P0A10",
+                ["CRUELTY", "FIGHT_ME", "ANGER"],
+                [
+                    ("BULLY", false, 75),
+                    ("RAMPAGE", false, 77),
+                    ("DRUM_OF_BATTLE", false, 78),
+                    ("ARMAMENTS", true, 26),
+                    ("RUPTURE", false, 74),
+                ],
+                [("PREP_TIME", 82), ("ENTROPY", 177)],
+            ),
+            (
+                "P0A11",
+                ["TREMBLE", "POMMEL_STRIKE", "BULLY"],
+                [
+                    ("THUNDERCLAP", false, 49),
+                    ("WHIRLWIND", false, 74),
+                    ("HAVOC", false, 50),
+                    ("INFERNAL_BLADE", true, 37),
+                    ("VICIOUS", false, 73),
+                ],
+                [("ULTIMATE_STRIKE", 85), ("ALCHEMIZE", 172)],
+            ),
+            (
+                "P0A12",
+                ["BODY_SLAM", "IRON_WAVE", "SWORD_BOOMERANG"],
+                [
+                    ("MOLTEN_FIST", false, 51),
+                    ("BODY_SLAM", false, 48),
+                    ("BATTLE_TRANCE", true, 38),
+                    ("ARMAMENTS", false, 52),
+                    ("RUPTURE", false, 78),
+                ],
+                [("PROLONG", 90), ("THE_GAMBIT", 172)],
+            ),
+            (
+                "P0A13",
+                ["FEEL_NO_PAIN", "BLUDGEON", "SWORD_BOOMERANG"],
+                [
+                    ("DISMANTLE", true, 35),
+                    ("ANGER", false, 52),
+                    ("INFERNAL_BLADE", false, 73),
+                    ("BLOOD_WALL", false, 52),
+                    ("CRUELTY", false, 75),
+                ],
+                [("PANIC_BUTTON", 82), ("HIDDEN_GEM", 174)],
+            ),
+            (
+                "P0A14",
+                ["SETUP_STRIKE", "HEADBUTT", "BLOOD_WALL"],
+                [
+                    ("POMMEL_STRIKE", false, 52),
+                    ("SWORD_BOOMERANG", false, 49),
+                    ("SECOND_WIND", true, 38),
+                    ("TREMBLE", false, 48),
+                    ("STAMPEDE", false, 78),
+                ],
+                [("EQUILIBRIUM", 86), ("ETERNAL_ARMOR", 166)],
+            ),
+            (
+                "P0A15",
+                ["MOLTEN_FIST", "INFERNO", "BLOOD_WALL"],
+                [
+                    ("HEADBUTT", false, 49),
+                    ("SWORD_BOOMERANG", true, 24),
+                    ("ARMAMENTS", false, 49),
+                    ("TAUNT", false, 51),
+                    ("INFERNO", false, 74),
+                ],
+                [("DISCOVERY", 87), ("NOSTALGIA", 163)],
+            ),
+            (
+                "P0A16",
+                ["RAGE", "THUNDERCLAP", "FORGOTTEN_RITUAL"],
+                [
+                    ("WHIRLWIND", false, 72),
+                    ("SETUP_STRIKE", true, 24),
+                    ("TRUE_GRIT", false, 52),
+                    ("FORGOTTEN_RITUAL", false, 73),
+                    ("STAMPEDE", false, 77),
+                ],
+                [("JACK_OF_ALL_TRADES", 87), ("SECRET_TECHNIQUE", 171)],
+            ),
+            (
+                "P0A17",
+                ["ARMAMENTS", "MOLTEN_FIST", "ANGER"],
+                [
+                    ("SETUP_STRIKE", false, 48),
+                    ("SPITE", false, 76),
+                    ("TAUNT", true, 24),
+                    ("BLOOD_WALL", false, 51),
+                    ("JUGGLING", false, 76),
+                ],
+                [("THE_BOMB", 88), ("CALAMITY", 174)],
+            ),
+            (
+                "P0A18",
+                ["ANGER", "IRON_WAVE", "PERFECTED_STRIKE"],
+                [
+                    ("TWIN_STRIKE", false, 51),
+                    ("SPITE", false, 74),
+                    ("BURNING_PACT", true, 36),
+                    ("TREMBLE", false, 52),
+                    ("CRUELTY", false, 75),
+                ],
+                [("PANIC_BUTTON", 86), ("JACKPOT", 169)],
+            ),
+            (
+                "P0A19",
+                ["THUNDERCLAP", "SWORD_BOOMERANG", "ARMAMENTS"],
+                [
+                    ("POMMEL_STRIKE", false, 50),
+                    ("IRON_WAVE", false, 50),
+                    ("HAVOC", true, 25),
+                    ("TREMBLE", false, 48),
+                    ("INFLAME", false, 73),
+                ],
+                [("SALVO", 82), ("HAND_OF_GREED", 167)],
+            ),
+            (
+                "P0A20",
+                ["TAUNT", "SPITE", "STONE_ARMOR"],
+                [
+                    ("UPPERCUT", false, 76),
+                    ("IRON_WAVE", false, 49),
+                    ("BLOOD_WALL", true, 24),
+                    ("BURNING_PACT", false, 78),
+                    ("FEEL_NO_PAIN", false, 75),
+                ],
+                [("PRODUCTION", 83), ("ROLLING_BOULDER", 169)],
+            ),
+            (
+                "P0A21",
+                ["VICIOUS", "BULLY", "BREAKTHROUGH"],
+                [
+                    ("SPITE", false, 73),
+                    ("ANGER", false, 50),
+                    ("SECOND_WIND", false, 73),
+                    ("FLAME_BARRIER", true, 39),
+                    ("STAMPEDE", false, 72),
+                ],
+                [("PROWESS", 88), ("ALCHEMIZE", 169)],
+            ),
+            (
+                "P0A22",
+                ["BODY_SLAM", "PERFECTED_STRIKE", "TREMBLE"],
+                [
+                    ("HEADBUTT", true, 25),
+                    ("TWIN_STRIKE", false, 49),
+                    ("TAUNT", false, 52),
+                    ("ARMAMENTS", false, 52),
+                    ("RUPTURE", false, 75),
+                ],
+                [("SALVO", 84), ("MAYHEM", 174)],
+            ),
+            (
+                "P0A23",
+                ["BREAKTHROUGH", "TAUNT", "ANGER"],
+                [
+                    ("THUNDERCLAP", false, 52),
+                    ("WHIRLWIND", false, 71),
+                    ("TAUNT", true, 24),
+                    ("ARMAMENTS", false, 51),
+                    ("VICIOUS", false, 76),
+                ],
+                [("MIND_BLAST", 85), ("MASTER_OF_STRATEGY", 165)],
+            ),
+            (
+                "P0A24",
+                ["ARMAMENTS", "MOLTEN_FIST", "COLOSSUS"],
+                [
+                    ("POMMEL_STRIKE", false, 50),
+                    ("HEADBUTT", false, 51),
+                    ("ARMAMENTS", false, 48),
+                    ("EVIL_EYE", true, 36),
+                    ("BARRICADE", false, 145),
+                ],
+                [("CATASTROPHE", 82), ("ETERNAL_ARMOR", 168)],
+            ),
+            (
+                "P0A25",
+                ["EVIL_EYE", "MOLTEN_FIST", "BLOOD_WALL"],
+                [
+                    ("HOWL_FROM_BEYOND", false, 78),
+                    ("UNRELENTING", true, 38),
+                    ("ARMAMENTS", false, 48),
+                    ("TREMBLE", false, 50),
+                    ("STAMPEDE", false, 75),
+                ],
+                [("PURITY", 89), ("ALCHEMIZE", 169)],
+            ),
+            (
+                "P0A26",
+                ["HOWL_FROM_BEYOND", "THUNDERCLAP", "SWORD_BOOMERANG"],
+                [
+                    ("UNRELENTING", false, 75),
+                    ("WHIRLWIND", false, 74),
+                    ("TAUNT", true, 26),
+                    ("TREMBLE", false, 48),
+                    ("STONE_ARMOR", false, 72),
+                ],
+                [("THE_BOMB", 86), ("JACKPOT", 167)],
+            ),
+            (
+                "P0A27",
+                ["STAMPEDE", "SHRUG_IT_OFF", "SETUP_STRIKE"],
+                [
+                    ("UNRELENTING", false, 76),
+                    ("CINDER", false, 49),
+                    ("TREMBLE", true, 25),
+                    ("BLOOD_WALL", false, 49),
+                    ("INFERNO", false, 78),
+                ],
+                [("SALVO", 86), ("ALCHEMIZE", 172)],
+            ),
+            (
+                "P0A28",
+                ["BODY_SLAM", "ANGER", "SHRUG_IT_OFF"],
+                [
+                    ("BREAKTHROUGH", false, 51),
+                    ("IRON_WAVE", false, 49),
+                    ("DOMINATE", true, 74),
+                    ("HAVOC", false, 51),
+                    ("CRUELTY", false, 78),
+                ],
+                [("SEEKER_STRIKE", 90), ("ANOINTED", 175)],
+            ),
+            (
+                "P0A29",
+                ["HOWL_FROM_BEYOND", "TRUE_GRIT", "BREAKTHROUGH"],
+                [
+                    ("UNRELENTING", true, 36),
+                    ("MOLTEN_FIST", false, 51),
+                    ("ARMAMENTS", false, 49),
+                    ("FLAME_BARRIER", false, 78),
+                    ("RUPTURE", false, 76),
+                ],
+                [("OMNISLICE", 85), ("ANOINTED", 165)],
+            ),
+        ];
+        let norm = |id: CardId| {
+            let n = id.to_python_name();
+            n.strip_suffix("_CARD").unwrap_or(n).to_string()
+        };
+        let (mut reward_ok, mut shop_ok, mut slot_ok) = (0, 0, 0);
+        for (seed, reward, shop, colorless) in rows {
+            let mut rm = crate::run_callbacks::new_run_manager_for_character_from_string_seed(
+                seed,
+                CharacterId::Ironclad,
+            );
+            let opts = sts2_core::runstate::CardRewardGenerationOptions {
+                context: "regular",
+                num_cards: 3,
+                ..Default::default()
+            };
+            let got = roll_card_reward_cards(&mut rm.run_state, opts, CharacterId::Ironclad);
+            let got_ids: Vec<String> = got.iter().map(|c| norm(c.card_id)).collect();
+            assert!(got.iter().all(|c| !c.upgraded), "{seed} reward upgraded");
+            if got_ids == reward {
+                reward_ok += 1;
+            } else {
+                eprintln!("{seed} reward {got_ids:?} != {reward:?}");
+            }
+
+            let mut rm = crate::run_callbacks::new_run_manager_for_character_from_string_seed(
+                seed,
+                CharacterId::Ironclad,
+            );
+            let inv = generate_merchant_inventory(&mut rm.run_state, CharacterId::Ironclad);
+            let mut seed_ok = true;
+            let slots = inv
+                .cards
+                .iter()
+                .zip(shop.iter().map(|&(i, s, p)| (i, Some(s), p)))
+                .chain(
+                    inv.colorless_cards
+                        .iter()
+                        .zip(colorless.iter().map(|&(i, p)| (i, None, p))),
+                );
+            for (entry, (id, on_sale, price)) in slots {
+                let got_id = entry.card.as_ref().map(|c| norm(c.card_id));
+                let ok = got_id.as_deref() == Some(id)
+                    && on_sale.is_none_or(|s| s == entry.on_sale)
+                    && entry.price == price;
+                if ok {
+                    slot_ok += 1;
+                } else {
+                    seed_ok = false;
+                    eprintln!(
+                        "{seed} shop slot {got_id:?}/{}/{} != {id}/{on_sale:?}/{price}",
+                        entry.on_sale, entry.price
+                    );
+                }
+            }
+            shop_ok += usize::from(seed_ok);
+        }
+        assert_eq!((reward_ok, shop_ok, slot_ok), (30, 30, 210));
     }
 }

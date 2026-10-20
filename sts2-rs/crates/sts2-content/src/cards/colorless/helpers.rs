@@ -1459,7 +1459,7 @@ pub const fn splash() -> CardSpec {
         cost: 1,
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
-        rarity: CardRarity::Uncommon,
+        rarity: CardRarity::Rare,
         base_damage: 0,
         base_block: 0,
         keywords: CardKeywords::NONE,

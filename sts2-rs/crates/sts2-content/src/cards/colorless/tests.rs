@@ -2015,7 +2015,7 @@ fn splash_spec_matches_csharp_pin() {
     assert_eq!(spec.cost, 1);
     assert_eq!(spec.card_type, CardType::Skill);
     assert_eq!(spec.target_type, TargetType::Self_);
-    assert_eq!(spec.rarity, crate::cards::CardRarity::Uncommon);
+    assert_eq!(spec.rarity, crate::cards::CardRarity::Rare);
 }
 
 #[test]

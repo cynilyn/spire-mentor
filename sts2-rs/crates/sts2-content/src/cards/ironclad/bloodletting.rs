@@ -26,7 +26,7 @@ pub(crate) const fn spec() -> CardSpec {
         cost: 0,
         card_type: CardType::Skill,
         target_type: TargetType::Self_,
-        rarity: CardRarity::Common,
+        rarity: CardRarity::Uncommon,
         base_damage: 0,
         base_block: 0,
         keywords: CardKeywords::NONE,

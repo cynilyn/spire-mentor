@@ -19,7 +19,7 @@ pub(crate) const fn spec() -> CardSpec {
         cost: 1,
         card_type: CardType::Power,
         target_type: TargetType::Self_,
-        rarity: CardRarity::Rare,
+        rarity: CardRarity::Uncommon,
         base_damage: 0,
         base_block: 0,
         keywords: CardKeywords::NONE,
