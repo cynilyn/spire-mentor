@@ -770,7 +770,11 @@ mod tests {
             ]
         );
         assert_eq!(rooms[0].boss_id, "THE_KIN_BOSS");
-        assert_eq!(rng.counter(), 413, "oracle up_front counter after GenerateRooms");
+        assert_eq!(
+            rng.counter(),
+            413,
+            "oracle up_front counter after GenerateRooms"
+        );
     }
 
     #[test]
