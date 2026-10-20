@@ -115,6 +115,10 @@ pub struct PyRunManager {
     /// `seed_string`/`input_seed`/`prefix` and to derive the player base of an
     /// `old` seed.
     seed_string: Option<String>,
+    /// Whether the run was built with `raw_seed_hash=True` (the seed string
+    /// hashed verbatim): the derived bases `rng_dump`/`player_seed` report must
+    /// then be the raw ones too.
+    raw_seed_hash: bool,
     /// When `true`, the live combat records its card play-log (workbench event
     /// log). Default false; only the workbench enables it. Propagated onto the
     /// live `CombatState` so it survives combat-start resets of `TurnEvents`.
@@ -250,8 +254,13 @@ impl PyRunManager {
                     )
                 } else {
                     match string_seed {
-                        Some(s) => new_run_manager_for_character_from_string_seed(s, cid),
-                        None => new_run_manager_for_character(effective_seed, cid),
+                        // Raw mode must not route through the canonicalising
+                        // factory; `with_run_seed` below installs the verbatim
+                        // hash either way.
+                        Some(s) if !raw_seed_hash => {
+                            new_run_manager_for_character_from_string_seed(s, cid)
+                        }
+                        _ => new_run_manager_for_character(effective_seed, cid),
                     }
                 };
                 if let Some(hp) = max_hp {
@@ -363,6 +372,7 @@ impl PyRunManager {
             inner,
             seed: effective_seed,
             seed_string: string_seed.map(str::to_owned),
+            raw_seed_hash,
             record_card_plays: false,
             record_combat_log: false,
         })
@@ -676,7 +686,7 @@ impl PyRunManager {
         let v = self.inner.game_version;
         match self.seed_string.as_deref() {
             Some(raw) if v == sts2_core::GameVersion::V0_111_0 => {
-                sts2_core::seed_bases(raw).player_seed
+                sts2_core::seed_bases_with(raw, self.raw_seed_hash).player_seed
             }
             _ => v.seed_offset(self.inner.run_state.rng.seed, 0),
         }
@@ -745,6 +755,7 @@ impl PyRunManager {
             parsed.as_deref(),
             predict_next_floor,
             self.seed_string.as_deref(),
+            self.raw_seed_hash,
         );
         if let serde_json::Value::Object(m) = &mut v {
             m.insert(
@@ -2053,6 +2064,7 @@ mod reseed_tests {
                 .with_run_seed(7),
             seed: 7,
             seed_string: None,
+            raw_seed_hash: false,
             record_card_plays: false,
             record_combat_log: false,
         }

@@ -82,6 +82,15 @@ pub struct SeedBases<'a> {
 /// canonical string.
 #[must_use]
 pub fn seed_bases(raw: &str) -> SeedBases<'_> {
+    seed_bases_with(raw, false)
+}
+
+/// [`seed_bases`] with the opt-in verbatim-hash mode (`raw_seed_hash`, as
+/// sts2-cli hashes): when `raw_hash` is set the string is **not** canonicalised,
+/// so every base (run, player, `act_selection`) is the XxHash64 of the string as
+/// given. The lowercase `old` rule is the same in both modes.
+#[must_use]
+pub fn seed_bases_with(raw: &str, raw_hash: bool) -> SeedBases<'_> {
     use crate::GameVersion::V0_111_0 as V;
     if let Some(rest) = raw.strip_prefix("old") {
         let full_hash = V.seed_hash(raw);
@@ -92,7 +101,11 @@ pub fn seed_bases(raw: &str) -> SeedBases<'_> {
             prefix: &raw[..3],
         }
     } else {
-        let full_hash = V.seed_hash(&canonicalize_seed(raw));
+        let full_hash = if raw_hash {
+            V.seed_hash(raw)
+        } else {
+            V.seed_hash(&canonicalize_seed(raw))
+        };
         SeedBases {
             run_seed: full_hash,
             player_seed: full_hash,
@@ -1001,5 +1014,21 @@ mod tests {
             seed_bases("old").run_seed,
             u64::from(deterministic_hash_code("") as u32)
         );
+    }
+
+    /// Raw mode hashes the string verbatim for every base; the `old` rule and
+    /// already-canonical strings are unchanged.
+    #[test]
+    fn seed_bases_with_raw_hashes_every_base_verbatim() {
+        let raw = seed_bases_with("p0a0", true);
+        assert_eq!(raw.run_seed, 9_004_872_484_816_525_140);
+        assert_eq!(raw.player_seed, raw.run_seed);
+        assert_eq!(raw.full_hash, raw.run_seed);
+        // default mode canonicalises (P0A0)
+        assert_eq!(seed_bases_with("p0a0", false), seed_bases("p0a0"));
+        assert_eq!(seed_bases("p0a0").run_seed, 10_883_704_133_362_413_376);
+        for s in ["P0A0", "oldP0A0"] {
+            assert_eq!(seed_bases_with(s, true), seed_bases_with(s, false));
+        }
     }
 }

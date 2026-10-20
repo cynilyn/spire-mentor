@@ -222,6 +222,7 @@ pub fn rng_dump(
     schedule: Option<&[TraceCall]>,
     predict_next_floor: bool,
     seed_string: Option<&str>,
+    raw_seed_hash: bool,
 ) -> Value {
     let default = default_schedule();
     let sch: &[TraceCall] = match schedule {
@@ -238,7 +239,7 @@ pub fn rng_dump(
     // seeded its player streams from.
     let bases = seed_string
         .filter(|_| ver == GameVersion::V0_111_0)
-        .map(sts2_core::seed_bases);
+        .map(|raw| sts2_core::seed_bases_with(raw, raw_seed_hash));
     let engine_player_seed = ver.seed_offset(run_seed, 0);
     let player_seed = bases.map_or(engine_player_seed, |b| b.player_seed);
     let act_base = bases.map_or(run_seed, |b| b.full_hash);

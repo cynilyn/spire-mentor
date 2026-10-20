@@ -200,3 +200,52 @@ def test_old_seed_act_selection_uses_the_full_string_hash():
     )
     names = set(rm.rng_dump()["streams"])
     assert {"event:WAR_HISTORIAN_REPY", "encounter:CORPSE_SLUGS_WEAK"} <= names
+
+
+# --- raw_seed_hash lineage (Codex R0 recheck): expected values from the independent pure-Python XXH64
+# (logs/engine/rust_resume/r0/tools/raw_expected.py, validated against the W1-W4 vectors), recorded in witnesses.md
+# before the fix: (seed, run == player base, act_selection stream seed, rewards stream seed, event:NEOW stream seed)
+RAW_EXPECTED = [
+    ('p0a0', 9004872484816525140, 17770519109280449700, 11379324285232481031, 10849268856306660801),
+    ('p0a1', 6790534906590905955, 15556181531054830515, 9164986707006861846, 8634931278081041616),
+    ('p0a2', 16047895033405140421, 6366797584159513365, 18422346833821096312, 17892291404895276082),
+    ('P0AO', 1062546349297132942, 9828192973761057502, 3436998149713088833, 2906942720787268603),
+    ('Io1', 15108717234682158997, 5427619785436531941, 17483169035098114888, 16953113606172294658),
+    (' P0A0', 8344762209911765837, 17110408834375690397, 10719214010327721728, 10189158581401901498),
+]
+
+
+@pytest.mark.parametrize("seed,base,act_seed,rewards_seed,neow_seed", RAW_EXPECTED)
+def test_raw_seed_hash_every_derived_base_is_raw(seed, base, act_seed, rewards_seed, neow_seed):
+    rm = make(seed, raw_seed_hash=True)
+    d = rm.rng_dump(n=3)
+    assert d["run_seed"] == d["player_seed"] == d["engine_player_seed"] == rm.run_seed == rm.player_seed == base
+    assert (d["prefix"], d["input_seed"]) == ("", seed)
+    assert d["streams"]["act_selection"]["seed"] == act_seed
+    assert d["streams"]["rewards"]["seed"] == rewards_seed
+    assert d["streams"]["event:NEOW"]["seed"] == neow_seed
+    # reconstructed initial state must be the live state wherever the stream is untouched
+    for name in ("rewards", "shops", "transformations", "shuffle", "niche"):
+        s = d["streams"][name]
+        assert s["current"] is not None and s["current"]["counter"] == 0, name
+        assert s["current"] == s["initial"], name
+    # the Neow event Rng starts from the same raw base and has only rolled the offers
+    assert d["streams"]["event:NEOW"]["initial"]["counter"] == 0
+    assert d["streams"]["event:NEOW"]["current"]["counter"] > 0
+
+
+def test_raw_seed_hash_act_selection_roll_uses_the_raw_hash():
+    """act1="roll" under raw mode seeds act_selection from H(raw string) == the run base."""
+    for seed, _base, act_seed, _r, _n in RAW_EXPECTED:
+        rm = sts2_rs.RunManager(string_seed=seed, character="Ironclad", ascension_level=0, neow_start=True,
+                                act1="roll", game_version=V, raw_seed_hash=True)
+        assert rm.rng_dump()["streams"]["act_selection"]["seed"] == act_seed
+
+
+def test_default_mode_lineage_is_unchanged_by_the_raw_fix():
+    for seed in ("P0A0", "p0a0", "OLDP0A0", "oldP0A0"):
+        d = make(seed).rng_dump()
+        if seed == "oldP0A0":
+            assert d["player_seed"] == 15676685915450073139 and d["engine_player_seed"] == d["run_seed"] == 273692109
+        else:
+            assert d["run_seed"] == d["player_seed"] == d["engine_player_seed"]
