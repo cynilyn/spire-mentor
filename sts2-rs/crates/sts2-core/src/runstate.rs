@@ -1264,6 +1264,14 @@ pub struct RunState {
     /// Bead `sts2-rs-14cid` (R3.1.2 under `sts2-rs-nr8l4`).
     pub neow_offers: Option<crate::NeowOffers>,
 
+    /// The Neow event's own `Rng` (`run_seed + slot 0 + H("NEOW")`), kept after
+    /// [`Self::roll_neow_offers_if_needed`] has rolled the offers so a dump can
+    /// report its live cursor (C# keeps the `EventModel.Rng` alive while the
+    /// event is open; the oracle's `event:NEOW` is at counter 19 on that
+    /// screen). Pure observation state: nothing in the engine reads it back,
+    /// and the dump reports it only while Neow is the open event.
+    pub neow_event_rng: Option<crate::DotNetRng>,
+
     /// Number of potion-belt slots the player currently has. Mirrors
     /// Python `RunState.max_potion_slots` (`run_state.py:45`,
     /// default `3`). Bumped by `PotionBelt::after_obtained`
@@ -1963,6 +1971,7 @@ impl Default for RunState {
             event_state: crate::events::MultiPageEventState::default(),
             event_combat: None,
             neow_offers: None,
+            neow_event_rng: None,
             // Python pin `sts2-rl-agent@01c094d:sts2_env/run/run_state.py:45`.
             max_potion_slots: 3,
             // Bead `sts2-rs-01o`: run-level potion belt starts empty.
@@ -2600,6 +2609,7 @@ impl RunState {
             self.game_version,
             &mut event_rng,
         ));
+        self.neow_event_rng = Some(event_rng);
     }
 
     /// Clear [`Self::current_event`]. Called by the events dispatcher
