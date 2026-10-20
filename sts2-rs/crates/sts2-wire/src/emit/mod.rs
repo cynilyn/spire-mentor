@@ -63,6 +63,7 @@ use std::fmt;
 pub mod combat;
 pub mod mcts;
 pub mod names;
+pub mod rng_dump;
 pub mod run_action;
 pub mod run_manager;
 
