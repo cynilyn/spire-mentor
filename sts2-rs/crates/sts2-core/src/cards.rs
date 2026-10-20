@@ -1151,10 +1151,22 @@ impl Card {
         // cards (A9P1: SpoilsMap counted as a 7th WarPaint candidate).
         !self.upgraded
             && !matches!(self.card_type, CardType::Curse | CardType::Status)
-            && !matches!(
-                self.card_id,
-                CardId::ByrdonisEgg | CardId::LanternKey | CardId::SpoilsMap | CardId::Dowsing
-            )
+            && !self.is_quest()
+    }
+
+    /// Whether this is one of the four `CardType.Quest` cards (`ByrdonisEgg`,
+    /// `LanternKey`, `SpoilsMap`, `Dowsing`: `Models.Cards/<Name>.cs`
+    /// `Type => CardType.Quest`). The Rust [`CardType`] has no Quest variant
+    /// (they are modelled as `Skill`), so the type-based C# filters —
+    /// `CardSelectCmd.FromDeckForTransformation` (`CardSelectCmd.cs:491`
+    /// `c.Type != Quest`), `EnchantmentModel.CanEnchant` (`EnchantmentModel.cs:247-251`,
+    /// `(uint)(type - 4) <= 2u` = Status/Curse/Quest) — must test the id.
+    #[must_use]
+    pub const fn is_quest(&self) -> bool {
+        matches!(
+            self.card_id,
+            CardId::ByrdonisEgg | CardId::LanternKey | CardId::SpoilsMap | CardId::Dowsing
+        )
     }
 
     /// The downstream relic bodies (`BoneTea`, `HistoryCourse`,

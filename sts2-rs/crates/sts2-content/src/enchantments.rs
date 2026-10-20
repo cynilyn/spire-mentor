@@ -45,7 +45,7 @@ use crate::cards::{CardKeywords, CardRarity, CardSpec};
 #[must_use]
 pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId) -> bool {
     // Unplayable / status / curse / quest can never be enchanted.
-    if matches!(card.card_type, CardType::Status | CardType::Curse) {
+    if matches!(card.card_type, CardType::Status | CardType::Curse) || card.is_quest() {
         return false;
     }
     if spec.keywords.contains(CardKeywords::UNPLAYABLE) {
@@ -475,6 +475,31 @@ mod tests {
         let mut spec = basic_strike_spec();
         spec.keywords = CardKeywords::UNPLAYABLE;
         assert!(!can_enchant_card(&spec, &c, EnchantmentId::Sharp));
+    }
+
+    /// R1: a Quest card (modelled as a Skill) can never be enchanted
+    /// (`EnchantmentModel.cs:247-251`: Status/Curse/Quest).
+    #[test]
+    fn cannot_enchant_quest_cards() {
+        let spec = basic_strike_spec();
+        for id in [
+            sts2_core::cards::CardId::Dowsing,
+            sts2_core::cards::CardId::LanternKey,
+            sts2_core::cards::CardId::ByrdonisEgg,
+            sts2_core::cards::CardId::SpoilsMap,
+        ] {
+            let mut c = defend_card();
+            c.card_id = id;
+            assert!(
+                !can_enchant_card(&spec, &c, EnchantmentId::Imbued),
+                "{id:?}"
+            );
+        }
+        assert!(can_enchant_card(
+            &spec,
+            &defend_card(),
+            EnchantmentId::Imbued
+        ));
     }
 
     #[test]

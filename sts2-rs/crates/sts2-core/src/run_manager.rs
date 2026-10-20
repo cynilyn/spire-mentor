@@ -3773,8 +3773,10 @@ impl RunManager {
     /// `CardKeyword.Eternal`, `AscendersBane.cs:12-17`; appended to the
     /// starter deck at Ascension 5+). This is load-bearing: an over-offer
     /// here shifts every later deck index, so a fixed-index pick lands on the
-    /// wrong card (PARITY127, Silent A5). Quest exclusion needs no analogue —
-    /// Rust has no Quest card type.
+    /// wrong card (PARITY127, Silent A5). The Quest exclusion is by id
+    /// ([`crate::cards::Card::is_quest`]): Rust has no Quest `CardType`, the
+    /// four Quest cards are modelled as Skills (R1: a Dowsing / LanternKey in
+    /// the deck was over-offered here).
     ///
     /// `basic_only` entries (Wood Carvings) additionally filter to Basic
     /// rarity via the registered [`crate::lookup_card_rarity_rank`] fn (C#
@@ -3795,6 +3797,11 @@ impl RunManager {
             .iter()
             .enumerate()
             .filter(|(_, c)| {
+                // `c.Type != Quest` (`CardSelectCmd.cs:491`): the Quest cards
+                // are modelled as Skills, so test the id.
+                if c.is_quest() {
+                    return false;
+                }
                 // C# `IsTransformable` in the Deck pile == `IsRemovable`:
                 // drop the Eternal curses (Ascender's Bane / Greed).
                 if let Some(f) = removable {
@@ -3847,6 +3854,7 @@ impl RunManager {
                 // identified by rarity); Status/Curse covers C#'s
                 // `(uint)(type - 4) <= 2u` exclusion for the live decks.
                 !matches!(c.card_type, CardType::Status | CardType::Curse)
+                    && !c.is_quest()
                     && c.enchantments.is_empty()
                     && (c.cost >= 0 || (allow_x_cost && c.is_x_cost()))
                     && (!requires_block || c.base_block > 0)
@@ -5726,6 +5734,48 @@ mod tests {
             });
         // Attack (0) + Skill (1); the Power (2) is filtered out.
         assert_eq!(rm.enchant_eligible_deck_indices(), vec![0, 1]);
+    }
+
+    /// R1: the four Quest cards (modelled as Skills) are neither enchantable
+    /// (`EnchantmentModel.cs:247-251`: Status/Curse/Quest) nor transformable
+    /// (`CardSelectCmd.cs:491`: `c.Type != Quest`). A Dowsing in the deck
+    /// (Neow's cursed pick) was offered to Kifuda / SelfHelpBook / WoodCarvings.
+    #[test]
+    fn quest_cards_are_not_offered_for_enchant_or_transform() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.interactive_card_transform = true;
+        let mut defend = crate::cards::Card::pod_defaults();
+        defend.card_id = crate::cards::CardId::DefendIronclad;
+        defend.card_type = crate::cards::CardType::Skill;
+        let mut quest: Vec<crate::cards::Card> = Vec::new();
+        for id in [
+            crate::cards::CardId::Dowsing,
+            crate::cards::CardId::LanternKey,
+            crate::cards::CardId::ByrdonisEgg,
+            crate::cards::CardId::SpoilsMap,
+        ] {
+            let mut c = crate::cards::Card::pod_defaults();
+            c.card_id = id;
+            c.card_type = crate::cards::CardType::Skill;
+            assert!(c.is_quest(), "{id:?}");
+            quest.push(c);
+        }
+        assert!(!defend.is_quest());
+        rm.run_state.master_deck.push(defend);
+        rm.run_state.master_deck.extend(quest);
+        rm.run_state
+            .pending_deck_enchants
+            .push(crate::runstate::PendingDeckEnchant {
+                enchantment: crate::cards::EnchantmentId::Adroit,
+                amount: 3,
+                type_restriction: None,
+                secondary_type: None,
+            });
+        assert_eq!(rm.enchant_eligible_deck_indices(), vec![0]);
+        rm.run_state
+            .pending_deck_transforms
+            .push(crate::runstate::PendingDeckTransform::default());
+        assert_eq!(rm.transform_eligible_deck_indices(), vec![0]);
     }
 
     #[test]
