@@ -99,6 +99,9 @@ pub fn run_action_to_value(a: &RunAction) -> Value {
         RunAction::SacrificeCardReward => {
             set(&mut d, "action", "sacrifice_card_reward");
         }
+        RunAction::RerollCardReward => {
+            set(&mut d, "action", "reroll_card_reward");
+        }
         RunAction::CombatResolveChoice { option } => {
             set(&mut d, "action", "combat_resolve_choice");
             set(&mut d, "option", *option);
@@ -244,6 +247,7 @@ pub fn run_action_from_value(v: &Value) -> Result<RunAction, EmitError> {
         },
         "collect_treasure" => RunAction::CollectTreasure,
         "sacrifice_card_reward" => RunAction::SacrificeCardReward,
+        "reroll_card_reward" => RunAction::RerollCardReward,
         // Bead `sts2-rs-i6h9i.1`: surface in-combat pending-choice
         // resolution (added to the core RunManager API in `sts2-rs-6dtxp`)
         // so the replay driver can resolve choices MCTS opens mid-combat.
@@ -362,6 +366,7 @@ mod tests {
             RunAction::EventChoice { idx: 2 },
             RunAction::CollectTreasure,
             RunAction::SacrificeCardReward,
+            RunAction::RerollCardReward,
             RunAction::CombatResolveChoice { option: Some(0) },
             RunAction::CombatResolveChoice { option: None },
             RunAction::CombatResolveChoiceTakeFirst { count: 2 },

@@ -1210,22 +1210,54 @@ run_hook_channel!(
     fn(&mut RunState, rewards: &mut Vec<Reward>, room_type: RoomType) -> EffectResult
 );
 
-/// Dispatch the run-side `modify_rewards` channel. Listeners may
-/// mutate `rewards` in place. Same accumulation convention as
-/// [`dispatch_after_obtained`].
+/// Dispatch the run-side `modify_rewards` channels, mirroring C#
+/// `Hook.ModifyRewards` (`Hook.cs:1584-1600`): one full pass of
+/// `TryModifyRewards` over every hook listener, then a SECOND, fresh pass of
+/// `TryModifyRewardsLate`. Each pass walks the run-state listeners in C#
+/// `RunState.IterateHookListeners(null)` order (`RunState.cs:367-418`): the
+/// owner's non-melted relics in acquisition order, with the per-item
+/// `Contains` membership check applied when each is reached. (Deck cards,
+/// potions, modifiers and badges are listeners in C# too, but none of them
+/// implements either hook in this port.)
+///
+/// The previous implementation walked the registry (a `BTreeMap` keyed by
+/// [`RelicId`]), i.e. relic-id order rather than acquisition order, and had no
+/// Late pass. Listeners may mutate `rewards` in place. Returns
+/// [`EffectResult::Resolved`] if any listener (either pass) fired.
 pub fn dispatch_modify_rewards(
     run_state: &mut RunState,
     rewards: &mut Vec<Reward>,
     room_type: RoomType,
 ) -> EffectResult {
-    if is_empty_modify_rewards() {
-        return EffectResult::NotImplemented;
+    let normal = dispatch_modify_rewards_pass(run_state, rewards, room_type, lookup_modify_rewards);
+    let late =
+        dispatch_modify_rewards_pass(run_state, rewards, room_type, lookup_modify_rewards_late);
+    if normal == EffectResult::Resolved || late == EffectResult::Resolved {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
     }
-    let listeners = listeners_modify_rewards();
+}
+
+/// One `IterateHookListeners` traversal of the rewards hook: snapshot the
+/// listener list now (C# builds `list` before yielding), then re-check run
+/// membership as each item is reached.
+fn dispatch_modify_rewards_pass(
+    run_state: &mut RunState,
+    rewards: &mut Vec<Reward>,
+    room_type: RoomType,
+    lookup: fn(RelicId) -> Option<ModifyRewardsRunFn>,
+) -> EffectResult {
+    let snapshot: Vec<RelicId> = run_state.active_relics().into_owned();
     let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(run_state, rewards, room_type) == EffectResult::Resolved {
-            any_resolved = true;
+    for id in snapshot {
+        if !run_state.relics.contains(&id) {
+            continue;
+        }
+        if let Some(f) = lookup(id) {
+            if f(run_state, rewards, room_type) == EffectResult::Resolved {
+                any_resolved = true;
+            }
         }
     }
     if any_resolved {
@@ -1234,6 +1266,22 @@ pub fn dispatch_modify_rewards(
         EffectResult::NotImplemented
     }
 }
+
+// `modify_rewards_late` — C# `AbstractModel.TryModifyRewardsLate`, the second
+// pass of `Hook.ModifyRewards` (`Hook.cs:1591-1597`). Same shape as
+// `modify_rewards`. Implemented by `Driftwood` (sets `CardReward.CanReroll`)
+// and the Midas / Vintage run modifiers (not modeled in this port).
+run_hook_channel!(
+    ModifyRewardsLateRunFn,
+    HOOK_MODIFY_REWARDS_LATE_RUN,
+    registry_modify_rewards_late,
+    register_modify_rewards_late,
+    register_many_modify_rewards_late,
+    lookup_modify_rewards_late,
+    listeners_modify_rewards_late,
+    is_empty_modify_rewards_late,
+    fn(&mut RunState, rewards: &mut Vec<Reward>, room_type: RoomType) -> EffectResult
+);
 
 // `modify_rest_site_heal_amount` — fired by
 // `RunState::compute_rest_site_heal_amount(base)` when the rest-site
@@ -2431,11 +2479,128 @@ mod tests {
             h_modify_rewards as ModifyRewardsRunFn,
         );
         let mut rs = RunState::new();
+        // C# iterates the owner's relics (`RunState.IterateHookListeners`), so the
+        // listener only fires once the relic is owned.
         let mut rewards: Vec<Reward> = Vec::new();
+        assert_eq!(
+            dispatch_modify_rewards(&mut rs, &mut rewards, RoomType::Monster),
+            EffectResult::NotImplemented,
+            "an un-owned relic's listener must not fire"
+        );
+        rs.relics.push(RelicId::WongosMysteryTicket);
         let result = dispatch_modify_rewards(&mut rs, &mut rewards, RoomType::Monster);
         assert_eq!(result, EffectResult::Resolved);
         assert!(C_MODIFY_REWARDS.load(Ordering::SeqCst) > baseline);
         assert!(!rewards.is_empty());
+    }
+
+    fn tag(id: RelicId) -> Reward {
+        Reward::Relic(RelicReward::new(id))
+    }
+    fn n_a(_: &mut RunState, r: &mut Vec<Reward>, _: RoomType) -> EffectResult {
+        r.push(tag(RelicId::Anchor));
+        EffectResult::Resolved
+    }
+    fn n_b(_: &mut RunState, r: &mut Vec<Reward>, _: RoomType) -> EffectResult {
+        r.push(tag(RelicId::Akabeko));
+        EffectResult::Resolved
+    }
+    fn l_c(_: &mut RunState, r: &mut Vec<Reward>, _: RoomType) -> EffectResult {
+        r.push(tag(RelicId::BagOfMarbles));
+        EffectResult::Resolved
+    }
+    fn l_d(_: &mut RunState, r: &mut Vec<Reward>, _: RoomType) -> EffectResult {
+        r.push(tag(RelicId::BloodVial));
+        EffectResult::Resolved
+    }
+
+    /// C# `Hook.ModifyRewards` (`Hook.cs:1584-1600`): listeners run in the
+    /// owner's relic ACQUISITION order, not relic-id order, and the Late pass
+    /// runs only after the whole normal pass.
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn modify_rewards_dispatch_uses_acquisition_order_then_a_late_pass() {
+        register_modify_rewards(RelicId::Anchor, n_a as ModifyRewardsRunFn);
+        register_modify_rewards(RelicId::Akabeko, n_b as ModifyRewardsRunFn);
+        register_modify_rewards_late(RelicId::BagOfMarbles, l_c as ModifyRewardsLateRunFn);
+        register_modify_rewards_late(RelicId::BloodVial, l_d as ModifyRewardsLateRunFn);
+        let run = |relics: &[RelicId]| {
+            let mut rs = RunState::new();
+            rs.relics.extend_from_slice(relics);
+            let mut rewards = Vec::new();
+            let _ = dispatch_modify_rewards(&mut rs, &mut rewards, RoomType::Monster);
+            rewards
+        };
+        // Late relics acquired FIRST must still run after both normal ones.
+        let forward = run(&[
+            RelicId::BagOfMarbles,
+            RelicId::BloodVial,
+            RelicId::Anchor,
+            RelicId::Akabeko,
+        ]);
+        assert_eq!(
+            forward,
+            vec![
+                tag(RelicId::Anchor),
+                tag(RelicId::Akabeko),
+                tag(RelicId::BagOfMarbles),
+                tag(RelicId::BloodVial)
+            ]
+        );
+        // Acquisition order reversed => listener order reversed within a pass.
+        let reversed = run(&[
+            RelicId::BloodVial,
+            RelicId::BagOfMarbles,
+            RelicId::Akabeko,
+            RelicId::Anchor,
+        ]);
+        assert_eq!(
+            reversed,
+            vec![
+                tag(RelicId::Akabeko),
+                tag(RelicId::Anchor),
+                tag(RelicId::BloodVial),
+                tag(RelicId::BagOfMarbles)
+            ]
+        );
+    }
+
+    static TAKE_LATE_RELIC_AWAY: AtomicUsize = AtomicUsize::new(0);
+    fn n_removes_late_owner(rs: &mut RunState, r: &mut Vec<Reward>, _: RoomType) -> EffectResult {
+        TAKE_LATE_RELIC_AWAY.fetch_add(1, Ordering::SeqCst);
+        rs.relics.retain(|id| *id != RelicId::BagOfMarbles);
+        r.push(tag(RelicId::Anchor));
+        EffectResult::Resolved
+    }
+
+    /// The Late pass is a FRESH traversal: a relic that left the run during
+    /// the normal pass is not visited (C# `IterateHookListeners` is re-run and
+    /// every item is membership-checked, `RunState.cs:399-405`).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn modify_rewards_late_pass_is_a_fresh_traversal() {
+        register_modify_rewards(RelicId::Anchor, n_removes_late_owner as ModifyRewardsRunFn);
+        register_modify_rewards_late(RelicId::BagOfMarbles, l_c as ModifyRewardsLateRunFn);
+        let mut rs = RunState::new();
+        rs.relics.extend([RelicId::Anchor, RelicId::BagOfMarbles]);
+        let mut rewards = Vec::new();
+        let _ = dispatch_modify_rewards(&mut rs, &mut rewards, RoomType::Monster);
+        assert_eq!(rewards, vec![tag(RelicId::Anchor)]);
+        // Restore the plain fixture listener for later tests in this binary.
+        register_modify_rewards(RelicId::Anchor, n_a as ModifyRewardsRunFn);
+    }
+
+    /// Melted relics are not listeners (`RunState.cs:148`).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn modify_rewards_skips_melted_relics() {
+        register_modify_rewards(RelicId::Anchor, n_a as ModifyRewardsRunFn);
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::Anchor);
+        rs.melted_relics.insert(RelicId::Anchor);
+        let mut rewards = Vec::new();
+        let _ = dispatch_modify_rewards(&mut rs, &mut rewards, RoomType::Monster);
+        assert!(rewards.is_empty());
     }
 
     // --- should_gain_gold / on_gold_gained — bead `sts2-rs-wag75` --------

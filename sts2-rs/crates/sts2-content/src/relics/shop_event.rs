@@ -64,16 +64,17 @@ use sts2_core::run_effects::{
     register_after_shop_inventory_generated, register_allow_card_reward_reroll,
     register_modify_card_reward_creation_options, register_modify_card_reward_options_late,
     register_modify_generated_map, register_modify_generated_map_late,
-    register_modify_rest_site_options, register_modify_rewards,
+    register_modify_rest_site_options, register_modify_rewards, register_modify_rewards_late,
     register_modify_unknown_map_point_room_types, register_on_gold_gained,
     register_should_disable_remaining_rest_site_options, register_should_gain_gold,
     register_should_generate_treasure, register_should_procure_potion, AfterObtainedRunFn,
     AfterRestSiteHealRunFn, AfterRoomEnteredRunFn, AfterShopInventoryGeneratedRunFn,
     AllowCardRewardRerollRunFn, ModifyCardRewardCreationOptionsRunFn,
     ModifyCardRewardOptionsLateRunFn, ModifyGeneratedMapLateRunFn, ModifyGeneratedMapRunFn,
-    ModifyRestSiteOptionsRunFn, ModifyRewardsRunFn, ModifyUnknownMapPointRoomTypesRunFn,
-    OnGoldGainedRunFn, ShouldDisableRemainingRestSiteOptionsRunFn, ShouldGainGoldRunFn,
-    ShouldGenerateTreasureRunFn, ShouldProcurePotionRunFn,
+    ModifyRestSiteOptionsRunFn, ModifyRewardsLateRunFn, ModifyRewardsRunFn,
+    ModifyUnknownMapPointRoomTypesRunFn, OnGoldGainedRunFn,
+    ShouldDisableRemainingRestSiteOptionsRunFn, ShouldGainGoldRunFn, ShouldGenerateTreasureRunFn,
+    ShouldProcurePotionRunFn,
 };
 use sts2_core::runstate::{
     CardReward, CardRewardGenerationOptions, PotionReward, RelicRarity, RelicReward,
@@ -464,6 +465,12 @@ pub fn install_pool() {
     register_allow_card_reward_reroll(
         RelicId::Driftwood,
         listener_driftwood_allow_reroll as AllowCardRewardRerollRunFn,
+    );
+    // RL-B10: the C# mechanism is `Driftwood.TryModifyRewardsLate` setting
+    // `CardReward.CanReroll` on every CardReward of the set (`Driftwood.cs:14-22`).
+    register_modify_rewards_late(
+        RelicId::Driftwood,
+        listener_driftwood_rewards_late as ModifyRewardsLateRunFn,
     );
     // Bead `sts2-rs-70anj.4` (Wave 4 body-fill, batch 8):
     // VelvetChoker — per-turn play cap of `VELVET_CHOKER_MAX_CARDS = 6`.
@@ -3399,6 +3406,25 @@ fn listener_driftwood_allow_reroll(rs: &mut RunState, allow: &mut bool) -> Effec
         return EffectResult::NotImplemented;
     }
     *allow = true;
+    EffectResult::Resolved
+}
+
+/// `Driftwood::TryModifyRewardsLate` (`Driftwood.cs:14-22`): every `CardReward`
+/// in the set gets `CanReroll = true`; returns `true` (resolved) even when the
+/// set holds no card reward. Owner-gated like the other run listeners.
+fn listener_driftwood_rewards_late(
+    rs: &mut RunState,
+    rewards: &mut Vec<Reward>,
+    _room_type: RoomType,
+) -> EffectResult {
+    if !rs.owns_active_relic(RelicId::Driftwood) {
+        return EffectResult::NotImplemented;
+    }
+    for reward in rewards.iter_mut() {
+        if let Reward::Card(card) = reward {
+            card.can_reroll = true;
+        }
+    }
     EffectResult::Resolved
 }
 

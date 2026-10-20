@@ -272,6 +272,18 @@ pub struct CardReward {
     /// `modify_card_reward_options_late` hook bus mutates this vector
     /// in place.
     pub options: Vec<CardId>,
+    /// C# `CardReward.CanReroll` (`CardReward.cs:63`). Defaults to `false`;
+    /// `Driftwood::TryModifyRewardsLate` (`Driftwood.cs:14-22`) sets it on every
+    /// `CardReward` in the set.
+    pub can_reroll: bool,
+    /// The `RoomType` a listener-appended reward rolls its options for —
+    /// C# `CardCreationOptions.ForRoom(player, roomType)`. `None` for the
+    /// room's own reward (its options are already rolled). PrayerWheel
+    /// appends `Some(Monster)`, WhiteStar `Some(Boss)` even in an Elite room.
+    /// Listener-appended rewards are populated AFTER the whole set is
+    /// modified (`RewardsSet.cs:101-108`) and without
+    /// `CardCreationFlags.IsFromCombat` (only `GenerateRewardsFor` sets it).
+    pub room_context: Option<RoomType>,
 }
 
 impl CardReward {
@@ -280,14 +292,45 @@ impl CardReward {
     pub fn empty() -> Self {
         Self {
             options: Vec::new(),
+            can_reroll: false,
+            room_context: None,
         }
     }
 
     /// Construct a `CardReward` from the given option list.
     #[must_use]
     pub fn from_options(options: Vec<CardId>) -> Self {
-        Self { options }
+        Self {
+            options,
+            can_reroll: false,
+            room_context: None,
+        }
     }
+
+    /// An unpopulated listener-appended reward: C#
+    /// `new CardReward(CardCreationOptions.ForRoom(player, room), 3, player)`.
+    /// Its options are rolled when the reward set is populated.
+    #[must_use]
+    pub fn for_room(room_type: RoomType) -> Self {
+        Self {
+            options: Vec::new(),
+            can_reroll: false,
+            room_context: Some(room_type),
+        }
+    }
+}
+
+/// Transient override read by the content-side `generate_card_reward_options`
+/// callback (whose signature carries no room argument): which room the
+/// options are rolled for and whether `CardCreationFlags.IsFromCombat` is
+/// set. `None` on [`RunState::card_reward_gen_ctx`] means the default — the
+/// current room, `IsFromCombat` set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardRewardGenCtx {
+    /// `CardCreationOptions.ForRoom(player, room_type)`.
+    pub room_type: RoomType,
+    /// `CardCreationFlags.IsFromCombat` (`RewardsSet.cs:188-199` only).
+    pub is_from_combat: bool,
 }
 
 /// A pending "choose 1 of N cards (or skip)" screen raised by a run-side
@@ -451,6 +494,11 @@ pub struct CardRewardGenerationOptions {
     /// Python `custom_card_ids` — explicit card-id slate consumed when
     /// `has_custom_card_pool` is true.
     pub custom_card_ids: Vec<CardId>,
+    /// C# `CardCreationFlags.IsFromCombat` (`CardCreationFlags.cs:16`) —
+    /// set only on the room's own combat `CardReward` (`RewardsSet.cs:188-199`).
+    /// `LastingCandy.TryModifyCardRewardOptions` ignores rewards without it
+    /// (`LastingCandy.cs:120`). Default `true` (every pre-existing caller).
+    pub is_from_combat: bool,
 }
 
 impl Default for CardRewardGenerationOptions {
@@ -470,6 +518,7 @@ impl Default for CardRewardGenerationOptions {
             allow_hook_upgrades: true,
             has_custom_card_pool: false,
             custom_card_ids: Vec::new(),
+            is_from_combat: true,
         }
     }
 }
@@ -1057,6 +1106,16 @@ pub struct RunState {
     /// Silken Tress Glam on Sword Boomerang was lost, C# kept it). Set by the
     /// content-side callback, `take`n like [`Self::card_reward_upgraded_flags`].
     pub card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
+    /// Room / `IsFromCombat` override for the next `generate_card_reward_options`
+    /// call (see [`CardRewardGenCtx`]). Set around populating a
+    /// listener-appended `CardReward`, `None` otherwise.
+    pub card_reward_gen_ctx: Option<CardRewardGenCtx>,
+    /// Listener-appended `CardReward`s (PrayerWheel / WhiteStar) that were
+    /// populated (their `Rewards` draws consumed, `RewardsSet.cs:101-108`) but
+    /// are not offered: the C# headless oracle presents only the set's first
+    /// `CardReward` (`RunSimulator.cs` `_pendingCardReward = cardRewards[0]`)
+    /// and drops the rest once it resolves.
+    pub unoffered_card_rewards: Vec<CardReward>,
 
     /// Relics the player has acquired this run. Mirrors Python
     /// `RunState.relics` (`run_state.py`). Bead `sts2-rs-zq8` (j87-b)
@@ -1917,6 +1976,8 @@ impl Default for RunState {
             pending_bundles: Vec::new(),
             card_reward_upgraded_flags: Vec::new(),
             card_reward_enchantments: Vec::new(),
+            card_reward_gen_ctx: None,
+            unoffered_card_rewards: Vec::new(),
             relics: Vec::new(),
             last_obtained_relic: None,
             last_combat_gold_proportion: 1.0,

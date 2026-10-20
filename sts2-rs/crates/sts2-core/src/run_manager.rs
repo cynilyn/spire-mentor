@@ -199,6 +199,12 @@ pub enum RunAction {
     /// Mirrors Python `_do_card_reward_sacrifice` at
     /// `sts2-rl-agent@01c094d:sts2_env/run/run_manager.py:1380-1399`.
     SacrificeCardReward,
+    /// CardReward: reroll the current card reward (Driftwood). Available when
+    /// the offering's C# `CardReward.CanReroll` is set (Driftwood's
+    /// `TryModifyRewardsLate`) and unused; it regenerates the options once
+    /// (`CardReward.Reroll` -> `Populate`, `CardReward.cs:294-304`), then
+    /// `CanReroll` is false. The C# headless oracle exposes no reroll command.
+    RerollCardReward,
     /// Remove the master-deck card at `idx`, draining one pending
     /// interactive removal (see [`crate::runstate::RunState::pending_deck_removals`]).
     /// Phase-agnostic: an on-obtain card-removal relic (Precise Scissors,
@@ -643,6 +649,10 @@ pub struct RunManager {
     /// SilkenTress / Glitter), taken from
     /// `RunState::card_reward_enchantments`. Empty when the offering carries none.
     card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
+    /// C# `CardReward.CanReroll` of the current combat card reward (set by the
+    /// Late `ModifyRewards` pass, `Driftwood`). Cleared once the reward is
+    /// resolved or rerolled.
+    card_reward_can_reroll: bool,
     /// When `Some`, the current `Phase::CardReward` offering is a Scroll
     /// Boxes *bundle* pick rather than a single-card reward: each inner
     /// `Vec<CardId>` is one pack, the player picks one pack index and **all**
@@ -859,6 +869,7 @@ impl RunManager {
             card_reward_options: Vec::new(),
             card_reward_upgraded: Vec::new(),
             card_reward_enchantments: Vec::new(),
+            card_reward_can_reroll: false,
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
             pending_boss_act_advance: false,
@@ -1353,6 +1364,11 @@ impl RunManager {
                         .map(|i| RunAction::PickCardReward { idx: Some(i) })
                         .collect();
                     v.push(RunAction::PickCardReward { idx: None });
+                    // C# `CardRewardAlternative.Generate` order: Skip, Reroll,
+                    // then hook-added alternatives (Pael's Wing sacrifice).
+                    if self.card_reward_can_reroll && !self.card_offer_choose_screen {
+                        v.push(RunAction::RerollCardReward);
+                    }
                     // PAELS_WING surface: only offered when the player
                     // owns the relic AND a card-reward is currently up.
                     // Mirrors Python `_actions` arm at
@@ -1578,6 +1594,7 @@ impl RunManager {
             (Phase::CardReward, RunAction::PickRelicReward) => self.do_relic_reward_pick(),
             (Phase::CardReward, RunAction::SkipRelic) => self.do_relic_reward_skip(),
             (Phase::CardReward, RunAction::SacrificeCardReward) => self.do_card_reward_sacrifice(),
+            (Phase::CardReward, RunAction::RerollCardReward) => self.do_card_reward_reroll(),
             (Phase::BossRelic, RunAction::PickBossRelic { idx }) => self.do_boss_relic_pick(idx),
             (Phase::Shop, RunAction::LeaveShop) => {
                 self.shop_inventory = None;
@@ -2290,6 +2307,10 @@ impl RunManager {
             // calls `advance_boss_act`.
             self.pending_boss_act_advance = true;
             self.enter_card_reward_phase();
+            // C# `Hook.ModifyRewards` over the boss set (LavaRock after the Act 1
+            // boss, Wongos, Amethyst): the listener-appended rewards are populated
+            // after the boss card reward, as in `GenerateWithoutOffering`.
+            self.modify_combat_rewards(reward_room_type);
             return ActionResult::Advanced;
         }
         // Normal / Elite combat win → combat rewards + CardReward.
@@ -2348,9 +2369,83 @@ impl RunManager {
             // list — and the rewards-stream cursor — in lockstep with the
             // oracle. Without this the relic surfaced one step late, so the
             // card-reward-screen relic-list diff diverged (RP109/RP72).
+            // (The drain itself happens in `modify_combat_rewards` below: the
+            // set is sorted by `RewardsSetIndex` AFTER `ModifyRewards` and only
+            // then collected, so listener-appended gold lands before this
+            // relic and listener-appended relics after it.)
+        }
+        // C# `Hook.ModifyRewards` + population of whatever the listeners add.
+        self.modify_combat_rewards(reward_room_type);
+        ActionResult::Advanced
+    }
+
+    /// C# `RewardsSet.GenerateWithoutOffering` tail (`RewardsSet.cs:93-116`) for a
+    /// combat room: run `Hook.ModifyRewards` (normal pass, then Late pass) over
+    /// the room's reward set, populate whatever the listeners appended — in list
+    /// order, AFTER the room's own rewards were populated — and collect them the
+    /// way the headless oracle does (gold, then relics; extra `CardReward`s are
+    /// populated but never offered, see [`RunState::unoffered_card_rewards`]).
+    ///
+    /// Called once the room's own card reward (and, for elites, its queued relic)
+    /// has been rolled, i.e. at the point the `Rewards` stream has reached the
+    /// end of `GenerateRewardsFor`'s populate loop. `room_type` is the combat
+    /// room's type. The room's own rewards are represented by placeholders in
+    /// the list the listeners see (no listener in this port inspects them; the
+    /// Late `CardReward.CanReroll` flag is read back off the first one).
+    fn modify_combat_rewards(&mut self, room_type: crate::runstate::RoomType) {
+        use crate::runstate::{CardReward, CardRewardGenCtx, Reward};
+        let own_card = CardReward::from_options(self.card_reward_options.clone());
+        let mut rewards: Vec<Reward> = vec![Reward::Card(own_card)];
+        // The elite relic was queued (rolled) but not collected yet.
+        if let Some(first) = self.run_state.relic_rewards.first() {
+            rewards.push(Reward::Relic(*first));
+        }
+        let own_len = rewards.len();
+        let _ = crate::run_effects::dispatch_modify_rewards(
+            &mut self.run_state,
+            &mut rewards,
+            room_type,
+        );
+        if let Some(Reward::Card(c)) = rewards.first() {
+            self.card_reward_can_reroll = c.can_reroll && !self.card_reward_options.is_empty();
+        }
+        let added: Vec<Reward> = rewards.split_off(own_len.min(rewards.len()));
+        let relics_before = self.run_state.relic_rewards.len();
+        let mut gold: Vec<i32> = Vec::new();
+        // Populate in list order (`RewardsSet.cs:101-108`).
+        for reward in added {
+            match reward {
+                Reward::Card(mut card) => {
+                    let ctx = CardRewardGenCtx {
+                        room_type: card.room_context.unwrap_or(room_type),
+                        is_from_combat: false,
+                    };
+                    self.run_state.card_reward_gen_ctx = Some(ctx);
+                    card.options = self
+                        .callbacks
+                        .generate_card_reward_options
+                        .map(|f| f(&mut self.run_state))
+                        .unwrap_or_default();
+                    self.run_state.card_reward_gen_ctx = None;
+                    // Offer-aligned upgrade / enchantment side channels belong
+                    // to the offered reward only.
+                    self.run_state.card_reward_upgraded_flags.clear();
+                    self.run_state.card_reward_enchantments.clear();
+                    self.run_state.unoffered_card_rewards.push(card);
+                }
+                // `new RelicReward(player)`: `RollRarity(Rewards)` + front pull.
+                Reward::Relic(_) => self.run_state.offer_random_relic_rewards(1, &[None]),
+                Reward::Gold { amount } => gold.push(amount),
+                _ => {}
+            }
+        }
+        // Collect in `RewardsSetIndex` order: gold (1) < relic (3).
+        for amount in gold {
+            self.run_state.gain_gold(amount);
+        }
+        if self.run_state.relic_rewards.len() > relics_before || relics_before > 0 {
             self.run_state.drain_relic_rewards_directly();
         }
-        ActionResult::Advanced
     }
 
     fn enter_card_reward_phase(&mut self) {
@@ -2495,6 +2590,35 @@ impl RunManager {
             }
         }
         self.advance_after_card_reward();
+        ActionResult::Advanced
+    }
+
+    /// Driftwood: C# `CardReward.Reroll` (`CardReward.cs:294-304`) — `CanReroll`
+    /// goes false, the offered cards are discarded and `Populate()` rolls a
+    /// fresh set with the reward's `RerollOptions` (the same
+    /// `ForRoom(...).WithFlags(IsFromCombat)` options as the original), i.e.
+    /// another `[rarity, NextItem, upgrade] x 3` interleave on the `Rewards`
+    /// stream (+ the per-reward option hooks).
+    fn do_card_reward_reroll(&mut self) -> ActionResult {
+        if !self.card_reward_can_reroll
+            || self.card_reward_options.is_empty()
+            || self.card_reward_bundles.is_some()
+            || self.card_offer_choose_screen
+        {
+            return ActionResult::InvalidForPhase;
+        }
+        let Some(gen) = self.callbacks.generate_card_reward_options else {
+            return ActionResult::NotImplemented;
+        };
+        self.card_reward_can_reroll = false;
+        self.run_state.card_reward_gen_ctx = None;
+        self.card_reward_options = gen(&mut self.run_state);
+        self.card_reward_upgraded = std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+        self.card_reward_enchantments =
+            std::mem::take(&mut self.run_state.card_reward_enchantments);
+        if self.card_reward_options.is_empty() {
+            self.advance_after_card_reward();
+        }
         ActionResult::Advanced
     }
 
@@ -2727,6 +2851,8 @@ impl RunManager {
         if !self.card_reward_options.is_empty() {
             return;
         }
+        // The reward this flag belonged to has been resolved.
+        self.card_reward_can_reroll = false;
         if !self.run_state.relic_rewards.is_empty() {
             // Stay in CardReward; the caller picks PickRelicReward/SkipRelic next.
             return;
@@ -3877,6 +4003,9 @@ impl RunManager {
                 apply(&mut self.run_state, room_type);
             }
             self.enter_card_reward_phase();
+            // The encounter's CombatRoom is a Monster room: `ModifyRewards`
+            // (PrayerWheel, Wongos, Amethyst) applies as for a map fight.
+            self.modify_combat_rewards(room_type);
         }
         self.route_after_event_rewards()
     }

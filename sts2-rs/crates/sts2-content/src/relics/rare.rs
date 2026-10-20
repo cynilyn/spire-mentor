@@ -486,6 +486,10 @@ fn listener_old_coin(rs: &mut RunState) -> EffectResult {
 /// `rare.py::PrayerWheel.modify_rewards`, room-type gate
 /// `RoomType.MONSTER`). Elite / Boss / Shop / Treasure / Event /
 /// RestSite rooms are unchanged. Ownership-gated. Bead `sts2-rs-4ihz`.
+///
+/// C# (`PrayerWheel.cs:15-26`): `new CardReward(CardCreationOptions.ForRoom(
+/// player, RoomType.Monster), 3, player)` — the options roll later, when the set
+/// is populated (see `RunManager::modify_combat_rewards`).
 fn listener_prayer_wheel(
     rs: &mut RunState,
     rewards: &mut Vec<Reward>,
@@ -497,17 +501,16 @@ fn listener_prayer_wheel(
     if room_type != RoomType::Monster {
         return EffectResult::NotImplemented;
     }
-    rewards.push(Reward::Card(CardReward::empty()));
+    rewards.push(Reward::Card(CardReward::for_room(RoomType::Monster)));
     EffectResult::Resolved
 }
 
 /// `WhiteStar::modify_rewards` — append a (boss-rarity) CardReward to
 /// the rewards vec when the player just cleared an Elite room (Python
 /// `rare.py::WhiteStar.modify_rewards`, room-type gate `RoomType.ELITE`).
-/// The `context='boss'` tag in Python is deferred — current `CardReward`
-/// POD has no `context` field (umbrella `sts2-rs-01o`); the rarity bias
-/// will land once the rewards-flow surface grows the tag. Ownership-gated.
-/// Bead `sts2-rs-b4tb`.
+/// C# (`WhiteStar.cs:21-32`): `CardCreationOptions.ForRoom(Owner,
+/// RoomType.Boss)` — the all-Rare `BossEncounter` odds even in an Elite room,
+/// carried by `CardReward::room_context`. Ownership-gated. Bead `sts2-rs-b4tb`.
 fn listener_white_star(
     rs: &mut RunState,
     rewards: &mut Vec<Reward>,
@@ -519,7 +522,7 @@ fn listener_white_star(
     if room_type != RoomType::Elite {
         return EffectResult::NotImplemented;
     }
-    rewards.push(Reward::Card(CardReward::empty()));
+    rewards.push(Reward::Card(CardReward::for_room(RoomType::Boss)));
     EffectResult::Resolved
 }
 

@@ -544,29 +544,11 @@ fn apply_combat_gold_and_potion(rs: &mut RunState, room_type: RoomType) {
             let _ = rs.claim_potion_reward(kind);
         }
     }
-    // (4) `modify_rewards` relic bonuses (C# `RelicModel.TryModifyRewards`,
-    // applied to the combat reward set). The hook bus exists + is tested but
-    // was never wired into the LIVE combat-reward path, so AmethystAubergine's
-    // `GoldReward(15)` per Monster/Elite (`AmethystAubergine.cs:42`) was never
-    // granted — the rs-lower half of the gold class (IC:1009 elite @266:
-    // C# +15). The headless auto-collects gold rewards, so credit the appended
-    // `Reward::Gold` here. Listeners are pure pushes (no RNG), so this consumes
-    // no `Rewards` reads and stays stream-faithful. Card/Relic bonuses from the
-    // same hook (PrayerWheel / WhiteStar / LavaRock / BlackStar / Wongo) still
-    // need their own presentation wiring — tracked separately; ignoring them
-    // here is the current (unmodeled) behavior, so no regression. Bead
-    // `sts2-rs-RP16`.
-    let bonus_gold: i32 = rs
-        .offer_rewards(room_type, Vec::new())
-        .iter()
-        .filter_map(|r| match r {
-            sts2_core::runstate::Reward::Gold { amount } => Some(*amount),
-            _ => None,
-        })
-        .sum();
-    if bonus_gold > 0 {
-        rs.gain_gold(bonus_gold);
-    }
+    // `Hook.ModifyRewards` is NOT applied here: C# runs it after the room's own
+    // rewards (including the card reward and an elite's relic) are populated, so
+    // `RunManager::modify_combat_rewards` does it (listener order, Late pass,
+    // stream-consuming appended rewards). Bead `sts2-rs-RP16` credited
+    // AmethystAubergine's gold from this point; that now happens there.
 }
 
 /// Seeded encounter picker for Acts 1–3. Mirrors Python
@@ -1287,13 +1269,22 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // rolled "regular" odds, so elite kills under-weighted rares and
     // boss kills offered mostly-common cards instead of the expected 3
     // rares (GH #25).
-    let context = match rs.current_room.map(|r| r.room_type) {
+    //
+    // A listener-appended reward (PrayerWheel `ForRoom(Monster)`, WhiteStar
+    // `ForRoom(Boss)`) overrides the room and clears `IsFromCombat` via
+    // `RunState::card_reward_gen_ctx`; the room's own reward uses the current room.
+    let (room, is_from_combat) = match rs.card_reward_gen_ctx {
+        Some(ctx) => (Some(ctx.room_type), ctx.is_from_combat),
+        None => (rs.current_room.map(|r| r.room_type), true),
+    };
+    let context = match room {
         Some(RoomType::Elite) => "elite",
         Some(RoomType::Boss) => "boss",
         _ => "regular",
     };
     let opts = CardRewardGenerationOptions {
         context,
+        is_from_combat,
         ..CardRewardGenerationOptions::default()
     };
     let cards = crate::cards::spec_index::roll_card_reward_cards(rs, opts, character);
@@ -1660,36 +1651,25 @@ mod tests {
         }
     }
 
-    /// Bead `sts2-rs-RP16`: the combat gold-reward path credits the
-    /// `modify_rewards` relic gold bonus. C# `AmethystAubergine.TryModifyRewards`
-    /// adds a fixed `GoldReward(15)` per Monster/Elite; the headless auto-collects
-    /// it. Base Monster gold is `[10, 20]`, so with the relic the player gains
-    /// `[25, 35]`; without it only `[10, 20]` — the disjoint ranges prove the
-    /// +15 is credited.
+    /// Bead `sts2-rs-RP16` (moved by stage 2 delta): `apply_combat_gold_and_potion`
+    /// grants only the room's own gold + potion. The `modify_rewards` relic gold
+    /// (C# `AmethystAubergine.TryModifyRewards`, fixed `GoldReward(15)`) is
+    /// credited later by `RunManager::modify_combat_rewards`, after the card
+    /// reward is populated (`RewardsSet.cs:93-116`) — see
+    /// `tests/s2_delta_rewards.rs::amethyst_aubergine_adds_gold_without_stream_draws`.
     #[test]
-    fn apply_combat_gold_credits_amethyst_aubergine_bonus() {
+    fn apply_combat_gold_leaves_modify_rewards_to_the_run_manager() {
         crate::relics::dispatch::ensure_installed();
         let mut rm = new_run_manager_for_character(42, CharacterId::Ironclad).with_neow_start();
         initialize_run_setup(&mut rm);
         let rs = &mut rm.run_state;
         rs.last_combat_gold_proportion = 1.0;
-
-        // Control: no AmethystAubergine ⇒ base Monster gold only.
-        rs.gold = 0;
-        apply_combat_gold_and_potion(rs, RoomType::Monster);
-        let base_only = rs.gold;
-        assert!(
-            (10..=20).contains(&base_only),
-            "base Monster gold in [10,20], got {base_only}"
-        );
-
-        // With the relic ⇒ base + 15.
         rs.relics.push(RelicId::AmethystAubergine);
         rs.gold = 0;
         apply_combat_gold_and_potion(rs, RoomType::Monster);
         assert!(
-            (25..=35).contains(&rs.gold),
-            "base+15 bonus in [25,35], got {}",
+            (10..=20).contains(&rs.gold),
+            "base Monster gold only, got {}",
             rs.gold
         );
     }

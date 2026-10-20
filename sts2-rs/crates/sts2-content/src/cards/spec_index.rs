@@ -2144,6 +2144,7 @@ pub fn roll_card_reward_cards(
     // channel used by `_late`.
     append_lasting_candy_power_reward(
         rs,
+        opts.is_from_combat,
         &mut cards,
         &character_ids,
         include_colorless,
@@ -2184,6 +2185,7 @@ pub fn roll_card_reward_cards(
 #[allow(clippy::too_many_arguments)]
 fn append_lasting_candy_power_reward(
     rs: &mut RunState,
+    is_from_combat: bool,
     cards: &mut Vec<sts2_core::cards::Card>,
     character_ids: &[CharacterId],
     include_colorless: bool,
@@ -2200,6 +2202,10 @@ fn append_lasting_candy_power_reward(
     // `on_after_combat_end_lasting_candy` bump by `run_bridge::exit_combat`
     // before the reward is rolled.
     if !rs.owns_active_relic(sts2_core::RelicId::LastingCandy) {
+        return;
+    }
+    // `LastingCandy.cs:120`: only rewards created with `IsFromCombat`.
+    if !is_from_combat {
         return;
     }
     let combats_seen = rs
