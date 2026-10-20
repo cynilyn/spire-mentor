@@ -2767,6 +2767,15 @@ impl RunState {
         // treasure-room pull. Stackable relics never live in the grab
         // bags, so this is a no-op for them (no stackable gate needed).
         self.strip_relic_from_bags(relic_id);
+        // Diagnostic marker only (see `Self::unported_effects`): records that
+        // C# would run an `AfterObtained` effect we do not port. No state
+        // change beyond the record itself.
+        if let Some(effect) = relic_id.unported_after_obtained() {
+            self.unported_effects.0.push(UnportedEffect {
+                relic: relic_id,
+                csharp_effect: effect,
+            });
+        }
         // Bead `sts2-rs-pfiwm`: initialize the run-side counter for
         // countdown relics at pickup, mirroring C# constructing the
         // relic instance with its `_combatsLeft` seeded (EmberTea = 5,
@@ -2779,15 +2788,6 @@ impl RunState {
         // never clobbers an already-recorded counter. Relics with a
         // zero initial counter (the vast majority) stay absent, keeping
         // the map sparse. The five W9 Neow relics map to `None`.
-        // Diagnostic marker only (see `Self::unported_effects`): records that
-        // C# would run an `AfterObtained` effect we do not port. No state
-        // change beyond the record itself.
-        if let Some(effect) = relic_id.unported_after_obtained() {
-            self.unported_effects.0.push(UnportedEffect {
-                relic: relic_id,
-                csharp_effect: effect,
-            });
-        }
         if let Some(kind) = relic_id.to_relic_kind() {
             let initial = kind.initial_counter();
             if initial != 0 {
