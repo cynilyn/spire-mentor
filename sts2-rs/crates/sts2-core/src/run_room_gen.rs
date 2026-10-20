@@ -244,6 +244,7 @@ const SCROLLS: Tag = 11;
 const SEAPUNK: Tag = 12;
 const SLUGS: Tag = 13;
 const EXOSKELETONS: Tag = 14;
+const JAXFRUIT: Tag = 15;
 
 // ── Act 1 (Overgrowth) — Overgrowth.cs GenerateAllEncounters (22) ───────────
 #[rustfmt::skip]
@@ -265,8 +266,8 @@ const ACT1: &[GenEnc] = &[
     GenEnc { id: "SHRINKER_BEETLE_WEAK",     room: RoomKind::Monster, weak: true,  tags: &[SHRINKER] },
     GenEnc { id: "SLIMES_NORMAL",            room: RoomKind::Monster, weak: false, tags: &[SLIMES] },
     GenEnc { id: "SLIMES_WEAK",              room: RoomKind::Monster, weak: true,  tags: &[SLIMES] },
-    GenEnc { id: "SLITHERING_STRANGLER_NORMAL", room: RoomKind::Monster, weak: false, tags: &[] },
-    GenEnc { id: "SNAPPING_JAXFRUIT_NORMAL", room: RoomKind::Monster, weak: false, tags: &[MUSHROOM] },
+    GenEnc { id: "SLITHERING_STRANGLER_NORMAL", room: RoomKind::Monster, weak: false, tags: &[JAXFRUIT, SLIMES] },
+    GenEnc { id: "SNAPPING_JAXFRUIT_NORMAL", room: RoomKind::Monster, weak: false, tags: &[MUSHROOM, JAXFRUIT] },
     GenEnc { id: "THE_KIN_BOSS",             room: RoomKind::Boss,    weak: false, tags: &[] },
     GenEnc { id: "VANTOM_BOSS",              room: RoomKind::Boss,    weak: false, tags: &[] },
     GenEnc { id: "VINE_SHAMBLER_NORMAL",     room: RoomKind::Monster, weak: false, tags: &[] },
@@ -719,6 +720,58 @@ pub fn generate_all_rooms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v0.111.0 added `EncounterTag.Jaxfruit` (EncounterTag.cs:20) and gave it to
+    /// `SlitheringStranglerNormal` (`{Jaxfruit, Slimes}`, SlitheringStranglerNormal.cs:34-37)
+    /// and `SnappingJaxfruitNormal` (`{Mushroom, Jaxfruit}`, SnappingJaxfruitNormal.cs:12-15).
+    /// The tags drive `AddWithoutRepeatingTags`, so a wrong set shifts every later
+    /// `up_front` read (and the boss) — the R2 rng-parity failure of 2026-10-20.
+    #[test]
+    fn act1_jaxfruit_tags_match_v0_111_0() {
+        let tags = |id: &str| -> Vec<Tag> {
+            let mut v = ACT1.iter().find(|e| e.id == id).unwrap().tags.to_vec();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(JAXFRUIT, 15);
+        assert_eq!(tags("SLITHERING_STRANGLER_NORMAL"), [SLIMES, JAXFRUIT]);
+        assert_eq!(tags("SNAPPING_JAXFRUIT_NORMAL"), [MUSHROOM, JAXFRUIT]);
+    }
+
+    /// Seed `P0A0` against the frozen 0.111.0 oracle (`dump_rooms` + `dump_rng_trace`,
+    /// oracle f79d3a9, default act 1 = Overgrowth): the `up_front` stream (seed from the
+    /// trace) read to counter 230 before `GenerateRooms`. The pre-fix tag table drew
+    /// `SLITHERING_STRANGLER_NORMAL` at normal[12] and boss CEREMONIAL_BEAST.
+    #[test]
+    fn act1_rooms_for_p0a0_match_the_0_111_0_oracle() {
+        let run_seed = 10_883_704_133_362_413_376_u64;
+        let up_front = 12_796_180_781_041_495_488_u64;
+        assert_eq!(Rng::with_name(run_seed, "up_front").seed(), up_front);
+        let mut rng = Rng::with_counter(up_front, 230);
+        let rooms = generate_all_rooms(&mut rng, false, ActVariant::Overgrowth);
+        assert_eq!(
+            rooms[0].normal_encounters,
+            [
+                "SLIMES_WEAK",
+                "SHRINKER_BEETLE_WEAK",
+                "NIBBITS_WEAK",
+                "SLIMES_NORMAL",
+                "RUBY_RAIDERS_NORMAL",
+                "FOGMOG_NORMAL",
+                "CUBEX_CONSTRUCT_NORMAL",
+                "MAWLER_NORMAL",
+                "INKLETS_NORMAL",
+                "VINE_SHAMBLER_NORMAL",
+                "OVERGROWTH_CRAWLERS",
+                "SNAPPING_JAXFRUIT_NORMAL",
+                "NIBBITS_NORMAL",
+                "SLITHERING_STRANGLER_NORMAL",
+                "FLYCONID_NORMAL"
+            ]
+        );
+        assert_eq!(rooms[0].boss_id, "THE_KIN_BOSS");
+        assert_eq!(rng.counter(), 413, "oracle up_front counter after GenerateRooms");
+    }
 
     #[test]
     fn act1_sublists_match_csharp_filters() {
