@@ -3292,6 +3292,48 @@ mod tests {
         }
     }
 
+    /// Mixed-rarity custom pool (4 Common + 4 Rare, no Uncommon): each roll's
+    /// candidates are the pool cards of the rolled rarity, and a rolled
+    /// Uncommon falls back with wrap-around to Rare. Pinned selections for
+    /// seed 2 fail if the rarity filter in `roll_card_reward_cards` is
+    /// inverted (`==` -> `!=`) or the fallback is dropped.
+    #[test]
+    fn roll_card_reward_cards_mixed_rarity_custom_pool_pins_selection() {
+        let pick = |r: CardRarity| -> Vec<CardId> {
+            specs_for_character(CharacterId::Ironclad)
+                .iter()
+                .map(|f| f())
+                .filter(|s| s.rarity == r && !is_multiplayer_only(s.id))
+                .map(|s| s.id)
+                .take(4)
+                .collect()
+        };
+        let mut pool = pick(CardRarity::Common);
+        pool.extend(pick(CardRarity::Rare));
+        let mut rs = RunState::new();
+        rs.rng = sts2_core::run_rng_set::RunRngSet::from_run_seed(2);
+        let opts = sts2_core::runstate::CardRewardGenerationOptions {
+            has_custom_card_pool: true,
+            custom_card_ids: pool,
+            num_cards: 6,
+            roll_upgrade: false,
+            ..Default::default()
+        };
+        let got: Vec<CardId> = roll_card_reward_cards(&mut rs, opts, CharacterId::Ironclad)
+            .iter()
+            .map(|c| c.card_id)
+            .collect();
+        let expected = vec![
+            CardId::BodySlam,
+            CardId::BloodWall,
+            CardId::Anger,
+            CardId::Armaments,
+            CardId::Brand,
+            CardId::Cascade,
+        ];
+        assert_eq!(got, expected);
+    }
+
     /// The upgrade short-circuit `roll_upgrade && roll_for_upgrade(...)`
     /// (1868:13) must NOT roll for upgrade when `roll_upgrade == false`.
     /// At act 3 (`act_index == 2`) the non-rare upgrade odds are 50%, so
