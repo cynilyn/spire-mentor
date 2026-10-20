@@ -5831,8 +5831,10 @@ mod tests {
             c.card_id = CardId::SpoilsMap;
             c
         };
-        let mut rs = RunState::default();
-        rs.game_version = crate::GameVersion::V0_111_0;
+        let mut rs = RunState {
+            game_version: crate::GameVersion::V0_111_0,
+            ..RunState::default()
+        };
         rs.master_deck.push(spoils);
 
         let mut swapped = ActMap::new(rooms);
@@ -5861,8 +5863,10 @@ mod tests {
             c.card_id = CardId::SpoilsMap;
             c
         };
-        let mut rs = RunState::default();
-        rs.game_version = crate::GameVersion::V0_111_0;
+        let mut rs = RunState {
+            game_version: crate::GameVersion::V0_111_0,
+            ..RunState::default()
+        };
         rs.master_deck.push(spoils);
         rs.act_index = 2;
         let mut map = ActMap::new(rooms);
@@ -9070,12 +9074,12 @@ mod tests {
         let mut strike = Card::pod_defaults();
         strike.card_id = CardId::StrikeIronclad;
         rs.relics = vec![RelicId::BurningBlood];
-        rs.master_deck = vec![strike.clone(), bash.clone()];
+        rs.master_deck = vec![strike, bash];
         assert_eq!(
             rs.orobas_pool3(),
             vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth]
         );
-        rs.master_deck = vec![strike.clone()];
+        rs.master_deck = vec![strike];
         assert_eq!(rs.orobas_pool3(), vec![RelicId::TouchOfOrobas]);
         rs.relics = vec![RelicId::Anchor];
         rs.master_deck = vec![bash];
