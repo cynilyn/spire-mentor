@@ -1200,12 +1200,12 @@ fn wongo_featured_relic(state: &RunState) -> Option<RelicId> {
 /// re-derived on every observation and must stay side-effect free, so the pull
 /// is committed here instead and **every** Wongo handler calls it. Exactly one
 /// handler runs per visit, so the bag ends up in the state C# leaves it in.
-fn wongo_take_featured(state: &mut RunState) -> Option<RelicId> {
+fn wongo_take_featured(state: &mut RunState) -> RelicId {
     // WelcomeToWongos.cs:80: `PullNextRelicFromFront(owner, Rare, ..)` (Circlet on empty).
-    Some(state.pull_next_relic_from_front(
+    state.pull_next_relic_from_front(
         sts2_core::runstate::RelicRarity::Rare,
         sts2_core::shop::is_relic_allowed_in_shops,
-    ))
+    )
 }
 
 fn wongo_bargain_bin(state: &mut RunState) -> EventOutcome {
@@ -1236,17 +1236,10 @@ fn wongo_featured(state: &mut RunState) -> EventOutcome {
     // pulled when the event opened, not a fresh roll.
     let featured = wongo_take_featured(state);
     lose_gold_saturating(state, WONGO_FEATURED_COST);
-    match featured {
-        Some(id) => {
-            state.grant_event_relic(id);
-            EventOutcome::finished(format!(
-                "Paid {WONGO_FEATURED_COST}g for the featured item."
-            ))
-        }
-        None => EventOutcome::finished(format!(
-            "Paid {WONGO_FEATURED_COST}g — the counter was bare."
-        )),
-    }
+    state.grant_event_relic(featured);
+    EventOutcome::finished(format!(
+        "Paid {WONGO_FEATURED_COST}g for the featured item."
+    ))
 }
 
 fn wongo_mystery(state: &mut RunState) -> EventOutcome {
