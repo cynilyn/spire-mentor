@@ -14,14 +14,23 @@ use super::prelude::*;
 /// then re-evaluate alive enemies for the Vulnerable apply.
 pub(crate) fn play_thunderclap(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let dmg = current_damage(state);
-    let dmg_uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
-    for uid in dmg_uids {
-        if state
-            .creatures
-            .iter()
-            .any(|c| c.id == uid.0 && c.current_hp > 0)
-        {
-            let _ = deal_damage_player_to_enemy(state, uid, dmg);
+    if crate::cards::v0111::is_v0111(state.game_version) {
+        // R1c (seed LSA_23/24): `DamageCmd.Attack(..).TargetingAllOpponents` resolves every
+        // target's `ModifyDamage` against the pre-death dealer state before any death is
+        // processed (CreatureCmd.cs:134-151, Kill at :285), so a Shrink whose applier dies in
+        // this very attack (ShrinkPower.cs:88-92 AfterDeath -> Remove) still shrinks the
+        // later targets' hits. The per-enemy loop below removed it mid-AoE.
+        deal_damage_all_enemies(state, dmg);
+    } else {
+        let dmg_uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
+        for uid in dmg_uids {
+            if state
+                .creatures
+                .iter()
+                .any(|c| c.id == uid.0 && c.current_hp > 0)
+            {
+                let _ = deal_damage_player_to_enemy(state, uid, dmg);
+            }
         }
     }
     // Re-snapshot AFTER damage: C# applies Vulnerable to `HittableEnemies`

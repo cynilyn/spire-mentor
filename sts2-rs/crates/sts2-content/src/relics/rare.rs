@@ -282,20 +282,40 @@ pub fn install_pool() {
 // added to the master deck — reward, event, merchant — is upgraded
 // pre-add). Curse/Status cards never upgrade.
 
-fn upgrade_cards_of_type(cards: &mut [Card], ct: CardType) -> bool {
+/// Mark a card upgraded the way the eggs do.
+///
+/// v0.111.0 (R1c, seed LSA_38): C# `CardCmd.Upgrade` runs `OnUpgrade`, which moves the card's real
+/// values (Finesse 4 -> 7 block, Finesse.cs:26-29; every `UpgradeValueBy`), so the egg-upgraded
+/// card must carry the upgraded stats. The old flag-only flip left `base_block`/`base_damage`/cost at
+/// their un-upgraded values (an "upgraded" Finesse gained 4 block). v0.107.1 keeps the flag flip.
+fn mark_upgraded(version: sts2_core::GameVersion, card: &mut Card) {
+    if version >= sts2_core::GameVersion::V0_111_0 {
+        if !card.upgrade_for(version) {
+            card.upgraded = true;
+        }
+    } else {
+        card.upgraded = true;
+    }
+}
+
+fn upgrade_cards_of_type(
+    version: sts2_core::GameVersion,
+    cards: &mut [Card],
+    ct: CardType,
+) -> bool {
     let mut any = false;
     for card in cards {
         if card.card_type == ct && !card.upgraded {
-            card.upgraded = true;
+            mark_upgraded(version, card);
             any = true;
         }
     }
     any
 }
 
-fn upgrade_card_of_type(card: &mut Card, ct: CardType) -> bool {
+fn upgrade_card_of_type(version: sts2_core::GameVersion, card: &mut Card, ct: CardType) -> bool {
     if card.card_type == ct && !card.upgraded {
-        card.upgraded = true;
+        mark_upgraded(version, card);
         true
     } else {
         false
@@ -312,7 +332,7 @@ fn listener_frozen_egg_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> 
     if !run_owns_rare(rs, RelicId::FrozenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_cards_of_type(cards, CardType::Power) {
+    if upgrade_cards_of_type(rs.game_version, cards, CardType::Power) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -325,7 +345,7 @@ fn listener_frozen_egg_deck_add(rs: &mut RunState, card: &mut Card) -> EffectRes
     if !run_owns_rare(rs, RelicId::FrozenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Power) {
+    if upgrade_card_of_type(rs.game_version, card, CardType::Power) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -342,7 +362,7 @@ fn listener_frozen_egg_merchant(
     if !run_owns_rare(rs, RelicId::FrozenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Power) {
+    if upgrade_card_of_type(rs.game_version, card, CardType::Power) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -354,7 +374,7 @@ fn listener_molten_egg_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> 
     if !run_owns_rare(rs, RelicId::MoltenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_cards_of_type(cards, CardType::Attack) {
+    if upgrade_cards_of_type(rs.game_version, cards, CardType::Attack) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -365,7 +385,7 @@ fn listener_molten_egg_deck_add(rs: &mut RunState, card: &mut Card) -> EffectRes
     if !run_owns_rare(rs, RelicId::MoltenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Attack) {
+    if upgrade_card_of_type(rs.game_version, card, CardType::Attack) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -380,7 +400,7 @@ fn listener_molten_egg_merchant(
     if !run_owns_rare(rs, RelicId::MoltenEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Attack) {
+    if upgrade_card_of_type(rs.game_version, card, CardType::Attack) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -392,7 +412,7 @@ fn listener_toxic_egg_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> E
     if !run_owns_rare(rs, RelicId::ToxicEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_cards_of_type(cards, CardType::Skill) {
+    if upgrade_cards_of_type(rs.game_version, cards, CardType::Skill) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -403,7 +423,7 @@ fn listener_toxic_egg_deck_add(rs: &mut RunState, card: &mut Card) -> EffectResu
     if !run_owns_rare(rs, RelicId::ToxicEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Skill) {
+    if upgrade_card_of_type(rs.game_version, card, CardType::Skill) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -418,7 +438,7 @@ fn listener_toxic_egg_merchant(
     if !run_owns_rare(rs, RelicId::ToxicEgg) {
         return EffectResult::NotImplemented;
     }
-    if upgrade_card_of_type(card, CardType::Skill) {
+    if upgrade_card_of_type(rs.game_version, card, CardType::Skill) {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -1890,6 +1910,37 @@ mod tests {
         let mut card = egg_test_card(50_030, CardType::Skill);
         let _ = dispatch_modify_merchant_card_creation_results(&mut rs, &mut card, false);
         assert!(card.upgraded, "ToxicEgg upgrades Skill merchant entries");
+    }
+
+    /// R1c witness (triage seed LSA_38): an egg-upgraded Finesse carries the upgraded stats on v0.111.0
+    /// (C# `Finesse.cs:26-29` `Block.UpgradeValueBy(3)` -> 7), while v0.107.1 keeps the old flag-only flip (4).
+    fn toxic_egg_merchant_finesse_block(version: sts2_core::GameVersion) -> (bool, i32) {
+        use sts2_core::run_effects::dispatch_modify_merchant_card_creation_results;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = version;
+        rs.relics.push(RelicId::ToxicEgg);
+        let mut card =
+            crate::cards::v0111::card_pod_for(sts2_core::cards::CardId::Finesse, false, version)
+                .expect("pod");
+        let _ = dispatch_modify_merchant_card_creation_results(&mut rs, &mut card, true);
+        (card.upgraded, card.base_block)
+    }
+
+    #[test]
+    fn toxic_egg_upgraded_finesse_has_upgraded_block_v0111() {
+        assert_eq!(
+            toxic_egg_merchant_finesse_block(sts2_core::GameVersion::V0_111_0),
+            (true, 7)
+        );
+    }
+
+    #[test]
+    fn toxic_egg_finesse_flag_only_v0107_unchanged() {
+        assert_eq!(
+            toxic_egg_merchant_finesse_block(sts2_core::GameVersion::V0_107_1),
+            (true, 4)
+        );
     }
 
     // ------------------------------------------------------------------

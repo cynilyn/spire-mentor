@@ -3944,6 +3944,17 @@ pub fn card_exhausts_inst(card: &Card) -> bool {
     }
 }
 
+/// [`card_exhausts_inst`] plus the Goopy enchantment's keyword: C# `Goopy.OnEnchant` calls
+/// `Card.AddKeyword(CardKeyword.Exhaust)` (Enchantments/Goopy.cs), so a Goopy Defend exhausts when played.
+/// R1c (triage seed LSA_65): the enchantment was modelled as extra block only, so the card went to the discard
+/// pile instead of the exhaust pile. v0.111.0 only (v0.107.1 behaviour stays as shipped).
+#[must_use]
+pub fn card_exhausts_for(state: &crate::CombatState, card: &Card) -> bool {
+    card_exhausts_inst(card)
+        || (state.game_version >= crate::GameVersion::V0_111_0
+            && card.has_enchantment(crate::cards::EnchantmentId::Goopy))
+}
+
 /// `true` iff `card` is ETHEREAL, honoring an upgrade-aware
 /// [`Card::keyword_override`] when set and otherwise deferring to the
 /// `CardId`-keyed ETHEREAL registry. Bead `sts2-rs-59atd`.

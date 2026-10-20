@@ -609,6 +609,28 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         "energy_regen_per_turn",
         i32::from(state.player.max_energy).max(0),
     );
+    // R1c (triage seeds LSA_1/110/118): C# `PlayerCombatState.MaxEnergy` is live —
+    // `Hook.ModifyMaxEnergy` is evaluated on every read (PaelsFlesh from turn 3, Pyre/Demesne/WasteAway powers,
+    // Bread, ...), whereas `state.player.max_energy` above is only refreshed at turn start, so a
+    // Pyre played this turn (or Pael's Flesh arriving at turn 3) is invisible until the next turn.
+    // `max_energy` itself stays the stored mirror (the parser reads it back: emitting the modified value
+    // there would double-count on a round trip), so the live value is an ADDITIVE key, emitted for
+    // v0.111.0 only (v0.107.1 bytes unchanged).
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        let mut live = sts2_core::combat_loop::BASE_MAX_ENERGY.saturating_add(
+            sts2_core::hooks::dispatch_modify_max_energy(
+                state,
+                &sts2_core::hooks::MaxEnergyCtx::default(),
+            ),
+        );
+        // PaelsFlesh.ModifyMaxEnergy (PaelsFlesh.cs: +1 from turn 3): the Rust port grants that energy from an
+        // `after_side_turn_start` listener instead of the hook (see `dispatch_modify_max_energy`'s doc), so the hook
+        // total misses it; add it here for the reported value only (no double grant).
+        if state.relics.owns(sts2_core::RelicKind::PaelsFlesh) && state.turn_number() >= 3 {
+            live = live.saturating_add(1);
+        }
+        set(&mut player, "max_energy_effective", live.max(0));
+    }
     // Gold: gates SealOfGold's turn-start hook, so an engine -> dict ->
     // engine round-trip must not silently zero it.
     set(&mut player, "gold", state.gold);
@@ -1412,6 +1434,65 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect()
+    }
+
+    /// R1c witness (seeds LSA_1/110/118): the live `Hook.ModifyMaxEnergy` total is an additive v0.111.0-only key
+    /// (`BASE_MAX_ENERGY + ModifyMaxEnergy`), so a Pyre played this turn shows immediately, while
+    /// `max_energy` stays the stored turn-start mirror and v0.107.1 emits no extra key.
+    fn pyre_state(version: sts2_core::GameVersion) -> serde_json::Value {
+        use std::num::NonZeroU32;
+        let mut state = CombatState {
+            game_version: version,
+            ..CombatState::default()
+        };
+        state.player.max_energy = 3;
+        let pid = NonZeroU32::new(77).expect("nz");
+        state
+            .powers
+            .push(sts2_core::Power::new(pid, sts2_core::PowerKind::Pyre, 2));
+        state.player.powers.push(sts2_core::PowerUid(pid));
+        combat_state_to_value(&state).expect("serializes")
+    }
+
+    #[test]
+    fn live_max_energy_is_emitted_for_v0111() {
+        let v = pyre_state(sts2_core::GameVersion::V0_111_0);
+        assert_eq!(v["player"]["max_energy"], 3, "stored mirror unchanged");
+        assert_eq!(
+            v["player"]["max_energy_effective"], 5,
+            "3 + Pyre 2 (PyrePower.cs ModifyMaxEnergy)"
+        );
+    }
+
+    #[test]
+    fn live_max_energy_counts_paels_flesh_from_turn_three_v0111() {
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        state.player.max_energy = 3;
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::PaelsFlesh,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        state.round = 2;
+        let v = combat_state_to_value(&state).expect("serializes");
+        assert_eq!(v["player"]["max_energy_effective"], 3, "turn 2: not yet");
+        state.round = 3;
+        let v = combat_state_to_value(&state).expect("serializes");
+        assert_eq!(
+            v["player"]["max_energy_effective"], 4,
+            "PaelsFlesh.cs ModifyMaxEnergy +1 from turn 3"
+        );
+    }
+
+    #[test]
+    fn no_live_max_energy_key_for_v0107_unchanged() {
+        let v = pyre_state(sts2_core::GameVersion::V0_107_1);
+        assert!(v["player"].get("max_energy_effective").is_none());
     }
 
     #[test]

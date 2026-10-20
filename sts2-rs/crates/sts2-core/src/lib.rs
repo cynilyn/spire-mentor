@@ -4154,15 +4154,56 @@ impl CombatState {
     /// zero `amount` is a no-op and no event is broadcast). Bead
     /// `sts2-rs-tcf` (P7-surf).
     pub fn creature_lose_max_hp(&mut self, owner: CreatureUid, amount: i32) -> i32 {
+        self.creature_lose_max_hp_from(owner, amount, false)
+    }
+
+    /// [`Self::creature_lose_max_hp`] with C#'s `isFromCard` flag.
+    ///
+    /// v0.111.0 (R1c, triage seed LSA_34): C# `CreatureCmd.LoseMaxHp` (CreatureCmd.cs:643-660) does NOT
+    /// just shrink the cap — when `newMaxHp < CurrentHp` it first deals `CurrentHp - newMaxHp` of
+    /// Unblockable|Unpowered damage (plus `Move` when `isFromCard`, which BrightestFlame passes and
+    /// PaperCuts does not), so every after-damage listener fires (Centennial Puzzle's draw 3, Rupture,
+    /// Plated Armor ...). A full-HP Brightest Flame drew 3 extra cards in C# and none here.
+    pub fn creature_lose_max_hp_from(
+        &mut self,
+        owner: CreatureUid,
+        amount: i32,
+        from_card: bool,
+    ) -> i32 {
         if amount <= 0 {
             return 0;
         }
-        let Some(idx) = self.creatures.iter().position(|c| c.id == owner.0) else {
+        let Some(mut idx) = self.creatures.iter().position(|c| c.id == owner.0) else {
             panic!(
                 "creature_lose_max_hp: creature uid {} not found",
                 owner.get()
             )
         };
+        if self.game_version >= crate::GameVersion::V0_111_0
+            && self.player.creature_uid == Some(owner)
+        {
+            let (cur, max) = (self.creatures[idx].current_hp, self.creatures[idx].max_hp);
+            let new_max = max - amount;
+            if new_max < cur && cur > 0 {
+                let mut props = crate::hooks::ValueProps::UNBLOCKABLE
+                    .union(crate::hooks::ValueProps::UNPOWERED);
+                if from_card {
+                    props = props.union(crate::hooks::ValueProps::MOVE);
+                }
+                let _ = crate::combat_loop::apply_damage_to_player(
+                    self,
+                    crate::hooks::CreatureRef::Player,
+                    cur - new_max,
+                    props,
+                    None,
+                );
+                idx = self
+                    .creatures
+                    .iter()
+                    .position(|c| c.id == owner.0)
+                    .expect("player creature");
+            }
+        }
         // Capture the pre-shrink current HP so a max-hp clamp that pulls
         // current HP down can be detected (C# `AfterCurrentHpChanged` fires
         // only on a CURRENT-hp move, so a non-clamping max loss must NOT
@@ -6912,6 +6953,14 @@ impl CombatState {
         let mut moved = 0usize;
         while remaining > 0 {
             if crate::cards::is_hand_full(&self.player) {
+                break;
+            }
+            // R1c: `DrawInternal` re-checks `IsOverOrEnding` at the top of every iteration (CardPileCmd.cs
+            // DrawInternal loop) — an on-draw auto-play (Hellraiser) that kills the last enemy mid-draw stops
+            // the draw there. v0.111.0 only.
+            if self.game_version >= crate::GameVersion::V0_111_0
+                && (self.is_over || crate::combat_loop::combat_is_ending(self))
+            {
                 break;
             }
             // C# `CardPileCmd.Shuffle` (`CardPileCmd.cs:806`) early-returns on

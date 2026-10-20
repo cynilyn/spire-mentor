@@ -2864,6 +2864,17 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
     // piles, full hand) so a caller like Pillage can distinguish "no card
     // drawn" from "card drawn then auto-played out of hand by Hellraiser".
     state.last_drawn_card = None;
+    // R1c (triage seeds LSA_59/71 and the shuffle/energy-cost counter drift): C# `CardPileCmd.DrawInternal`
+    // returns an EMPTY draw at the top when `CombatManager.IsOverOrEnding` (CardPileCmd.cs, DrawInternal head)
+    // and breaks the per-card loop on it again each iteration. A card-effect draw issued after the lethal hit
+    // (Pillage / Pommel Strike) therefore moves NO card — the earlier "cap to the cards in the pile" only
+    // dodged the reshuffle, but the cards it still moved fired Confused/Snecko cost rolls and on-draw riders,
+    // reading `combat_energy_costs` (and `shuffle` via the next turn's pile) ahead of C#. v0.111.0 only.
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && (state.is_over || crate::combat_loop::combat_is_ending(state))
+    {
+        return 0;
+    }
     if card_effect_draw_blocked(state) {
         // C# `NoDrawPower.cs:29` flashes inside `ShouldDraw` on the path that
         // returns false — `!fromHandDraw && player == Owner.Player`.
