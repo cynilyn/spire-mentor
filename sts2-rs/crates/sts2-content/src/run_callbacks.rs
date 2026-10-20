@@ -388,6 +388,9 @@ pub fn initialize_run_setup(rm: &mut sts2_core::run_manager::RunManager) {
 
     // (1) shared-only bag first (its shuffle consumes ~111 `up_front` reads).
     let mut shared = crate::relics::grab_bag::shared_grab_bag_buckets();
+    // C# `_originalRelics` (`RelicGrabBag.cs:65`): the unshuffled composition the
+    // shared bag refills a rarity from when it empties (RL-C10).
+    rm.run_state.shared_relic_grab_bag_original = shared.clone();
     for rarity in GRAB_BAG_SHUFFLE_ORDER {
         if let Some(bucket) = shared.get_mut(&rarity) {
             rm.run_state.rng.up_front.shuffle(bucket);
@@ -2668,6 +2671,81 @@ mod tests {
                     c.card_id
                 );
             }
+        }
+    }
+
+    /// Stage 2 gamma regression: the 30 R2 `relic-reward-parity` outcomes of the
+    /// stage-2 baseline (`logs/engine/p0/s2/baseline/r2/relic-reward-parity`,
+    /// slates 30/30, relics 30/30 against the C# oracle) must not move when
+    /// RL-C9/C10/C11 land. Same call sequence as `dump_relic_reward(1)` on
+    /// `Ironclad`, A0, `neow_start`, seeds `P0A0..P0A29`.
+    #[test]
+    fn r2_relic_reward_baseline_30_seeds_unchanged_by_grab_bag_membership() {
+        const BASELINE: [&str; 30] = [
+            "VenerableTeaSet",
+            "FestivePopper",
+            "JuzuBracelet",
+            "Vajra",
+            "Strawberry",
+            "MummifiedHand",
+            "Permafrost",
+            "BloodVial",
+            "Planisphere",
+            "Whetstone",
+            "WarPaint",
+            "EternalFeather",
+            "Planisphere",
+            "AmethystAubergine",
+            "TungstenRod",
+            "TuningFork",
+            "HappyFlower",
+            "BookOfFiveRings",
+            "LetterOpener",
+            "Nunchaku",
+            "JuzuBracelet",
+            "JuzuBracelet",
+            "RainbowRing",
+            "RedMask",
+            "Candelabra",
+            "Strawberry",
+            "Strawberry",
+            "FestivePopper",
+            "BookOfFiveRings",
+            "RedSkull",
+        ];
+        for (i, expected) in BASELINE.iter().enumerate() {
+            let seed = format!("P0A{i}");
+            let mut rm = new_run_manager_for_character_from_string_seed_with_ascension(
+                &seed,
+                CharacterId::Ironclad,
+                0,
+            )
+            .with_neow_start();
+            initialize_run_setup(&mut rm);
+            let rs = &mut rm.run_state;
+            let rarity = rs.roll_reward_relic_rarity();
+            let got = rs.pull_next_relic_from_front(rarity, |_| true);
+            assert_eq!(format!("{got:?}"), *expected, "seed {seed}");
+        }
+    }
+
+    /// RL-C10 wiring: the run initializer keeps the UNSHUFFLED shared
+    /// composition (C# `_originalRelics`), which equals the shuffled bag as a set.
+    #[test]
+    fn initialize_run_setup_keeps_unshuffled_shared_original() {
+        let mut rm = new_run_manager_for_character(7, CharacterId::Ironclad).with_neow_start();
+        initialize_run_setup(&mut rm);
+        let rs = &rm.run_state;
+        assert_eq!(
+            rs.shared_relic_grab_bag_original,
+            crate::relics::grab_bag::shared_grab_bag_buckets()
+        );
+        for (rarity, shuffled) in &rs.shared_relic_grab_bag_by_rarity {
+            let mut a = shuffled.clone();
+            let mut b = rs.shared_relic_grab_bag_original[rarity].clone();
+            a.sort();
+            b.sort();
+            assert_eq!(a, b, "{rarity:?}");
         }
     }
 

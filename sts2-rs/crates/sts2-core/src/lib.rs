@@ -129,6 +129,7 @@ pub use monster_ai::MonsterAi;
 // `BurningBlood` variant; Phase 7 (umbrella bead sts2-rs-h9u) adds the
 // rest of the pool plus the relic-effect interpreter that fires
 // `RelicEffect::HealAtCombatEnd` and friends.
+pub mod relic_allowed;
 pub mod relics;
 pub use relics::{RelicId, RelicKind};
 

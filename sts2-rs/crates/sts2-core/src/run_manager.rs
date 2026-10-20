@@ -1845,7 +1845,11 @@ impl RunManager {
             crate::card_rewards::RewardRarity::Uncommon => crate::runstate::RelicRarity::Uncommon,
             crate::card_rewards::RewardRarity::Rare => crate::runstate::RelicRarity::Rare,
         };
-        let picked = self.run_state.pop_relic_from_shared_grab_bag(rarity);
+        // C# `TreasureRoomRelicSynchronizer.cs:87`: `PullFromFront(..) ?? FallbackRelic`.
+        let picked = self
+            .run_state
+            .pop_relic_from_shared_grab_bag(rarity)
+            .unwrap_or(crate::RelicId::Circlet);
         // C# `OneOffSynchronizer.DoTreasureRoomRewards`
         // (`OneOffSynchronizer.cs:104-117`): `double gold =
         // Rewards.NextInt(42, 53)`, then A3 Poverty multiplies the ROLLED
@@ -1857,9 +1861,7 @@ impl RunManager {
             gold *= crate::runstate::POVERTY_ASCENSION_GOLD_MULTIPLIER;
         }
         self.run_state.gain_gold(gold.trunc() as i32);
-        if let Some(id) = picked {
-            self.run_state.obtain_relic(id);
-        }
+        self.run_state.obtain_relic(picked);
         // AfterObtained listeners may have queued follow-up rewards
         // (same routing as the event path).
         let opened_card_reward = self.drain_pending_rewards();

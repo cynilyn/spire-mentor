@@ -2486,18 +2486,19 @@ fn merchant_roll_relic_slot(
     use sts2_core::shop::{
         ShopRelicEntry, MERCHANT_RELIC_PRICE_VARIANCE_MAX, MERCHANT_RELIC_PRICE_VARIANCE_MIN,
     };
-    let pulled = rs.pop_relic_from_grab_bag_back(slot_rarity, |id| {
+    // `RelicFactory.PullNextRelicFromBack` falls back to Circlet (RL-C11).
+    let pulled = rs.pull_next_relic_from_back(slot_rarity, |id| {
         sts2_core::shop::is_relic_allowed_in_shops(id) && !extra_exclude.contains(&id)
     });
     let jitter = rs.rng.shops.next_float_range(
         MERCHANT_RELIC_PRICE_VARIANCE_MIN,
         MERCHANT_RELIC_PRICE_VARIANCE_MAX,
     );
-    let (relic_id, cost_rarity) = match pulled {
-        Some((id, bucket_rarity)) => (Some(id), bucket_rarity),
-        None => (None, slot_rarity),
-    };
-    let price = (f64::from(merchant_relic_cost(cost_rarity)) * jitter).round_ties_even() as i32;
+    // Circlet is `RelicRarity.None`: `MerchantCost` 1 (`RelicModel.cs:286`).
+    let (id, bucket_rarity) = pulled;
+    let base_cost = bucket_rarity.map_or(1, merchant_relic_cost);
+    let relic_id = Some(id);
+    let price = (f64::from(base_cost) * jitter).round_ties_even() as i32;
     ShopRelicEntry {
         relic_rarity: relic_rarity_to_shop(slot_rarity),
         relic_id,
@@ -3998,6 +3999,20 @@ mod tests {
     /// `merchant_relic_cost` returns the distinct per-rarity base price (kills
     /// the `-> 0 / 1 / -1` body replacements on line 1948 — those would
     /// collapse every rarity to one constant).
+    /// RL-C11, `RelicFactory.cs:44` + `RelicModel.cs:286`: with the bag empty
+    /// a shop relic slot holds Circlet (`RelicRarity.None`, `MerchantCost` 1),
+    /// priced `round(1 * jitter)` = 1, and the jitter read is still consumed.
+    #[test]
+    fn merchant_relic_slot_from_empty_bag_is_circlet_at_cost_one() {
+        use sts2_core::runstate::{RelicRarity, RunState};
+        let mut rs = RunState::new();
+        let shops0 = rs.rng.shops.counter();
+        let entry = merchant_roll_relic_slot(&mut rs, RelicRarity::Common, &Default::default());
+        assert_eq!(entry.relic_id, Some(sts2_core::relics::RelicId::Circlet));
+        assert_eq!(entry.price, 1);
+        assert_eq!(rs.rng.shops.counter() - shops0, 1);
+    }
+
     #[test]
     fn merchant_relic_cost_per_rarity_base_prices() {
         use sts2_core::runstate::RelicRarity;

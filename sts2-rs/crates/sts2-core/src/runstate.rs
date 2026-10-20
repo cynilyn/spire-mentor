@@ -1730,6 +1730,16 @@ pub struct RunState {
     /// run initializer stores the shuffled buckets.
     pub shared_relic_grab_bag_by_rarity: BTreeMap<RelicRarity, Vec<RelicId>>,
 
+    /// Pre-shuffle composition of [`Self::shared_relic_grab_bag_by_rarity`]
+    /// (C# `RelicGrabBag._originalRelics`, `RelicGrabBag.cs:30,65`): the list a
+    /// shared bag (`refreshAllowed = true`) re-appends from when a rarity
+    /// deque empties (`RefreshRarity`, `RelicGrabBag.cs:292-308`). RL-C10.
+    pub shared_relic_grab_bag_original: BTreeMap<RelicRarity, Vec<RelicId>>,
+
+    /// `UnlockState.NumberOfRuns` of the run's player (`LastingCandy.cs:91`).
+    /// Defaults to the oracle save's value, so the "first run" gate is off.
+    pub number_of_runs: i32,
+
     /// Shared trackers for the Pael relic cluster (pet level,
     /// cumulative sacrifices, cumulative feeds). Per-relic listeners
     /// (`PaelsWing`, `PaelsTears`, …) read / mutate this field via
@@ -1954,6 +1964,8 @@ impl Default for RunState {
             relic_grab_bag_fallback: Vec::new(),
             boss_relic_pool: Vec::new(),
             shared_relic_grab_bag_by_rarity: BTreeMap::new(),
+            shared_relic_grab_bag_original: BTreeMap::new(),
+            number_of_runs: crate::relic_allowed::ORACLE_NUMBER_OF_RUNS,
             // Bead `sts2-rs-70anj.3.20`: Pael cluster trackers default
             // to zero — fresh run, pet at level 0, no sacrifices /
             // feeds yet.
@@ -2248,13 +2260,14 @@ impl RunState {
                 .copied()
                 .flatten()
                 .unwrap_or_else(|| self.roll_reward_relic_rarity());
-            if let Some(id) = self.pop_relic_from_grab_bag(rarity) {
-                self.relic_rewards.push(if is_wax {
-                    RelicReward::new_wax(id)
-                } else {
-                    RelicReward::new(id)
-                });
-            }
+            // C# `RelicReward.Populate` -> `RelicFactory.PullNextRelicFromFront`
+            // (`RelicReward.cs:74-83`): an empty pool yields Circlet (RL-C11).
+            let id = self.pull_next_relic_from_front(rarity, |_| true);
+            self.relic_rewards.push(if is_wax {
+                RelicReward::new_wax(id)
+            } else {
+                RelicReward::new(id)
+            });
         }
     }
 
@@ -3660,6 +3673,7 @@ impl RunState {
         rarity: RelicRarity,
         filter: impl Fn(RelicId) -> bool,
     ) -> Option<RelicId> {
+        self.remove_disallowed_relics_from_player_deques();
         let (bucket, idx, picked) = self.find_relic_in_grab_bag(rarity, &filter, &[])?;
         match bucket {
             Some(bucket_rarity) => {
@@ -3713,7 +3727,13 @@ impl RunState {
         excluded: &[RelicId],
     ) -> Option<(Option<RelicRarity>, usize, RelicId)> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
-        let eligible = |id: &RelicId| !owned.contains(id) && !excluded.contains(id) && filter(*id);
+        let ctx = self.relic_allow_ctx();
+        let eligible = |id: &RelicId| {
+            !owned.contains(id)
+                && !excluded.contains(id)
+                && crate::relic_allowed::relic_is_allowed(*id, &ctx)
+                && filter(*id)
+        };
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get(&candidate_rarity) else {
                 continue;
@@ -3757,6 +3777,20 @@ impl RunState {
     /// exhausted bag returns `None` (C# `FallbackRelic` = Circlet, not
     /// modeled, consistent with the player-bag pop).
     pub fn pop_relic_from_shared_grab_bag(&mut self, rarity: RelicRarity) -> Option<RelicId> {
+        // C# `GetAvailableDeque` (`RelicGrabBag.cs:185-193`), in this order:
+        // drop disallowed relics; if the requested rarity's deque is empty and
+        // the bag was built with `refreshAllowed` (the shared bag,
+        // `RunState.cs:149`), re-append that rarity from the original list;
+        // drop disallowed relics again (RL-C9 / RL-C10).
+        self.remove_disallowed_relics_from_shared_deques();
+        if self
+            .shared_relic_grab_bag_by_rarity
+            .get(&rarity)
+            .map_or(true, Vec::is_empty)
+        {
+            self.refresh_shared_relic_rarity(rarity);
+            self.remove_disallowed_relics_from_shared_deques();
+        }
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self
@@ -3798,6 +3832,7 @@ impl RunState {
         rarity: RelicRarity,
         filter: impl Fn(RelicId) -> bool,
     ) -> Option<(RelicId, RelicRarity)> {
+        self.remove_disallowed_relics_from_player_deques();
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get_mut(&candidate_rarity) else {
@@ -3824,6 +3859,94 @@ impl RunState {
             return Some((picked, rarity));
         }
         None
+    }
+
+    /// The run facts `RelicModel.IsAllowed(runState)` reads (RL-C9). The
+    /// engine is solo-only, so `Players.Count` is 1.
+    #[must_use]
+    pub fn relic_allow_ctx(&self) -> crate::relic_allowed::RelicAllowCtx {
+        crate::relic_allowed::RelicAllowCtx {
+            total_floor: self.total_floor,
+            player_count: 1,
+            ironclad_first_run: self.character_id == crate::potions::CharacterId::Ironclad
+                && self.number_of_runs == 0,
+        }
+    }
+
+    /// `relic.IsAllowed(runState)` for this run.
+    #[must_use]
+    pub fn relic_is_allowed(&self, id: RelicId) -> bool {
+        crate::relic_allowed::relic_is_allowed(id, &self.relic_allow_ctx())
+    }
+
+    /// C# `RelicGrabBag.RemoveDisallowedRelicsFromDeques`
+    /// (`RelicGrabBag.cs:217-239`) on the PLAYER bag: every rarity deque and
+    /// the fallback deque lose the relics whose `IsAllowed` is false. The flat
+    /// [`Self::relic_grab_bag`] view is kept in lockstep. No RNG is read.
+    fn remove_disallowed_relics_from_player_deques(&mut self) {
+        let ctx = self.relic_allow_ctx();
+        let allowed = |id: &RelicId| crate::relic_allowed::relic_is_allowed(*id, &ctx);
+        for bucket in self.relic_grab_bag_by_rarity.values_mut() {
+            bucket.retain(allowed);
+        }
+        self.relic_grab_bag_fallback.retain(allowed);
+        self.relic_grab_bag.retain(allowed);
+    }
+
+    /// [`Self::remove_disallowed_relics_from_player_deques`] for the SHARED bag.
+    fn remove_disallowed_relics_from_shared_deques(&mut self) {
+        let ctx = self.relic_allow_ctx();
+        for bucket in self.shared_relic_grab_bag_by_rarity.values_mut() {
+            bucket.retain(|id| crate::relic_allowed::relic_is_allowed(*id, &ctx));
+        }
+    }
+
+    /// C# `RelicGrabBag.RefreshRarity` (`RelicGrabBag.cs:292-308`): append the
+    /// original (pre-shuffle, unfiltered) relics of `rarity` to that deque,
+    /// creating it if absent. No shuffle, so no RNG is read. Shared bag only.
+    fn refresh_shared_relic_rarity(&mut self, rarity: RelicRarity) {
+        let Some(original) = self.shared_relic_grab_bag_original.get(&rarity) else {
+            return;
+        };
+        let original = original.clone();
+        self.shared_relic_grab_bag_by_rarity
+            .entry(rarity)
+            .or_default()
+            .extend(original);
+    }
+
+    /// C# `RelicFactory.PullNextRelicFromFront(player, rarity, filter)`
+    /// (`RelicFactory.cs:30-35`): the player-bag front pull, falling back to
+    /// `FallbackRelic` (Circlet) when the pool is empty (RL-C11), then
+    /// `SharedRelicGrabBag.Remove(relic)`.
+    pub fn pull_next_relic_from_front(
+        &mut self,
+        rarity: RelicRarity,
+        filter: impl Fn(RelicId) -> bool,
+    ) -> RelicId {
+        let id = self
+            .pop_relic_from_grab_bag_where(rarity, filter)
+            .unwrap_or(RelicId::Circlet);
+        self.remove_relic_from_shared_grab_bag(id);
+        id
+    }
+
+    /// C# `RelicFactory.PullNextRelicFromBack` (`RelicFactory.cs:42-47`), the
+    /// shop-slot pull, with the same Circlet fallback (RL-C11). Returns the
+    /// relic and the bucket rarity it came from; `None` rarity means the
+    /// Circlet fallback (`RelicRarity.None`, `Circlet.cs:7`).
+    pub fn pull_next_relic_from_back(
+        &mut self,
+        rarity: RelicRarity,
+        filter: impl Fn(RelicId) -> bool,
+    ) -> (RelicId, Option<RelicRarity>) {
+        match self.pop_relic_from_grab_bag_back(rarity, filter) {
+            Some((id, bucket)) => (id, Some(bucket)),
+            None => {
+                self.remove_relic_from_shared_grab_bag(RelicId::Circlet);
+                (RelicId::Circlet, None)
+            }
+        }
     }
 
     /// Strip `relic_id` from every relic-reward pool. Mirrors Python
@@ -5269,6 +5392,283 @@ mod tests {
 
     /// Obtaining a relic strips it from the shared bag too
     /// (`RelicCmd.cs:29-30`).
+    // --- RL-C9 / RL-C10 / RL-C11 (stage 2 bundle gamma) ---------------------
+
+    fn bag(entries: &[(RelicRarity, &[RelicId])]) -> BTreeMap<RelicRarity, Vec<RelicId>> {
+        entries.iter().map(|(r, v)| (*r, v.to_vec())).collect()
+    }
+
+    /// RL-C9, `RelicGrabBag.cs:187,217-239`: a floor-gated relic is dropped
+    /// from the player deques before the pull once `TotalFloor >= 41`, and
+    /// the pull then lands on the next relic.
+    #[test]
+    fn rl_c9_player_pull_drops_disallowed_relics_before_pulling() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity = bag(&[
+            (RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor]),
+            (RelicRarity::Uncommon, &[RelicId::Planisphere]),
+        ]);
+        rs.relic_grab_bag_fallback = vec![RelicId::OldCoin];
+        rs.relic_grab_bag = vec![RelicId::MealTicket, RelicId::Anchor, RelicId::Planisphere];
+        rs.total_floor = 41;
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Common),
+            Some(RelicId::Anchor)
+        );
+        // The disallowed relics are gone from EVERY deque, the fallback and
+        // the flat view, not merely skipped.
+        assert!(rs.relic_grab_bag_by_rarity[&RelicRarity::Common].is_empty());
+        assert!(rs.relic_grab_bag_by_rarity[&RelicRarity::Uncommon].is_empty());
+        assert!(rs.relic_grab_bag_fallback.is_empty());
+        assert!(rs.relic_grab_bag.is_empty());
+    }
+
+    /// Same bag below the limit: nothing is dropped and the front relic pulls.
+    #[test]
+    fn rl_c9_floor_below_limit_keeps_floor_gated_relics() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity =
+            bag(&[(RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor])]);
+        rs.total_floor = 40;
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Common),
+            Some(RelicId::MealTicket)
+        );
+    }
+
+    /// RL-C9 consumes no RNG: the removal is membership only.
+    #[test]
+    fn rl_c9_removal_reads_no_rng() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity =
+            bag(&[(RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor])]);
+        rs.total_floor = 41;
+        let before = rs.rng.rewards.counter();
+        let _ = rs.pop_relic_from_grab_bag(RelicRarity::Common);
+        let _ = rs.pop_relic_from_grab_bag_back(RelicRarity::Common, |_| true);
+        let _ = rs.pop_relic_from_shared_grab_bag(RelicRarity::Common);
+        assert_eq!(rs.rng.rewards.counter(), before);
+        assert_eq!(rs.rng.shops.counter(), 0);
+    }
+
+    /// `peek` must agree with `pop` (same allowed filtering), and the shop
+    /// back-pull applies the same removal.
+    #[test]
+    fn rl_c9_peek_and_back_pull_agree_with_front_pull() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity = bag(&[(
+            RelicRarity::Common,
+            &[RelicId::Anchor, RelicId::BowlerHat, RelicId::BloodVial],
+        )]);
+        rs.total_floor = 45;
+        assert_eq!(
+            rs.peek_relic_from_grab_bag_where(RelicRarity::Common, |_| true, &[RelicId::Anchor]),
+            Some(RelicId::BloodVial)
+        );
+        let back =
+            rs.pop_relic_from_grab_bag_back(RelicRarity::Common, |id| id != RelicId::BloodVial);
+        assert_eq!(back, Some((RelicId::Anchor, RelicRarity::Common)));
+        assert_eq!(
+            rs.relic_grab_bag_by_rarity[&RelicRarity::Common],
+            vec![RelicId::BloodVial],
+            "BowlerHat dropped by the back pull removal pass"
+        );
+    }
+
+    /// `Players.Count` is 1 here, so `MassiveScroll` is dropped and
+    /// `WingedBoots`/`SilverCrucible` stay.
+    #[test]
+    fn rl_c9_solo_run_drops_massive_scroll_keeps_winged_boots() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity = bag(&[(
+            RelicRarity::Rare,
+            &[
+                RelicId::MassiveScroll,
+                RelicId::WingedBoots,
+                RelicId::SilverCrucible,
+            ],
+        )]);
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Rare),
+            Some(RelicId::WingedBoots)
+        );
+        assert_eq!(
+            rs.relic_grab_bag_by_rarity[&RelicRarity::Rare],
+            vec![RelicId::SilverCrucible]
+        );
+    }
+
+    /// `LastingCandy.cs:84-95`: gated off for an Ironclad run whose
+    /// `NumberOfRuns == 0`; the oracle value (999999999) leaves it on.
+    #[test]
+    fn rl_c9_lasting_candy_first_run_gate() {
+        let mut rs = RunState::default();
+        assert_eq!(rs.character_id, crate::potions::CharacterId::Ironclad);
+        assert!(rs.relic_is_allowed(RelicId::LastingCandy));
+        rs.number_of_runs = 0;
+        assert!(!rs.relic_is_allowed(RelicId::LastingCandy));
+        rs.number_of_runs = 1;
+        assert!(rs.relic_is_allowed(RelicId::LastingCandy));
+    }
+
+    /// RL-C10, `RelicGrabBag.cs:188-192`: an emptied shared rarity deque is
+    /// re-appended from the original (pre-shuffle) list, in original order.
+    #[test]
+    fn rl_c10_shared_bag_refills_empty_rarity_from_original() {
+        let mut rs = RunState::default();
+        rs.shared_relic_grab_bag_original = bag(&[
+            (
+                RelicRarity::Common,
+                &[RelicId::Anchor, RelicId::BloodVial, RelicId::Lantern],
+            ),
+            (RelicRarity::Rare, &[RelicId::Kunai]),
+        ]);
+        rs.shared_relic_grab_bag_by_rarity = bag(&[
+            (RelicRarity::Common, &[]),
+            (RelicRarity::Rare, &[RelicId::Kunai]),
+        ]);
+        assert_eq!(
+            rs.pop_relic_from_shared_grab_bag(RelicRarity::Common),
+            Some(RelicId::Anchor)
+        );
+        assert_eq!(
+            rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Common],
+            vec![RelicId::BloodVial, RelicId::Lantern]
+        );
+        // The other rarity was non-empty and is untouched.
+        assert_eq!(
+            rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Rare],
+            vec![RelicId::Kunai]
+        );
+    }
+
+    /// A non-empty requested deque is never refilled (`list.Count == 0` only).
+    #[test]
+    fn rl_c10_no_refill_while_requested_deque_has_relics() {
+        let mut rs = RunState::default();
+        rs.shared_relic_grab_bag_original =
+            bag(&[(RelicRarity::Common, &[RelicId::Anchor, RelicId::BloodVial])]);
+        rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[RelicId::BloodVial])]);
+        assert_eq!(
+            rs.pop_relic_from_shared_grab_bag(RelicRarity::Common),
+            Some(RelicId::BloodVial)
+        );
+        assert!(rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Common].is_empty());
+    }
+
+    /// RL-C9 -> RL-C10 -> RL-C9 order (`RelicGrabBag.cs:187-193`): the refill
+    /// is followed by a second removal pass, so a refilled relic that is
+    /// disallowed never reaches the pull. A removal-only-before-refill order
+    /// would hand out `MealTicket` here.
+    #[test]
+    fn rl_c10_refill_is_followed_by_second_removal_pass() {
+        let mut rs = RunState::default();
+        rs.shared_relic_grab_bag_original = bag(&[(
+            RelicRarity::Common,
+            &[RelicId::MealTicket, RelicId::Anchor],
+        )]);
+        rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
+        rs.total_floor = 41;
+        assert_eq!(
+            rs.pop_relic_from_shared_grab_bag(RelicRarity::Common),
+            Some(RelicId::Anchor)
+        );
+        assert!(rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Common].is_empty());
+    }
+
+    /// Refill reads no RNG (no shuffle, `RelicGrabBag.cs:292-308`).
+    #[test]
+    fn rl_c10_refill_reads_no_rng() {
+        let mut rs = RunState::default();
+        rs.shared_relic_grab_bag_original = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
+        rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
+        let up_front = rs.rng.up_front.counter();
+        let rewards = rs.rng.rewards.counter();
+        let _ = rs.pop_relic_from_shared_grab_bag(RelicRarity::Common);
+        assert_eq!(rs.rng.up_front.counter(), up_front);
+        assert_eq!(rs.rng.rewards.counter(), rewards);
+    }
+
+    /// Player bags are built without `refreshAllowed` (`RelicGrabBag()`,
+    /// `RelicGrabBag.cs:47-49`): an emptied deque is not refilled.
+    #[test]
+    fn rl_c10_player_bag_does_not_refill() {
+        let mut rs = RunState::default();
+        rs.shared_relic_grab_bag_original = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
+        rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
+        assert_eq!(rs.pop_relic_from_grab_bag(RelicRarity::Common), None);
+        assert!(rs.relic_grab_bag_by_rarity[&RelicRarity::Common].is_empty());
+    }
+
+    /// A shared bag with no original list (raw-core runs) cannot refill and
+    /// returns `None` rather than panicking.
+    #[test]
+    fn rl_c10_shared_bag_without_original_list_stays_empty() {
+        let mut rs = RunState::default();
+        rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
+        assert_eq!(rs.pop_relic_from_shared_grab_bag(RelicRarity::Common), None);
+    }
+
+    /// RL-C11, `RelicFactory.cs:32`: an empty player pool falls back to
+    /// Circlet instead of `None`.
+    #[test]
+    fn rl_c11_front_pull_falls_back_to_circlet() {
+        let mut rs = RunState::default();
+        assert_eq!(
+            rs.pull_next_relic_from_front(RelicRarity::Common, |_| true),
+            RelicId::Circlet
+        );
+        // A real relic still wins over the fallback.
+        rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
+        assert_eq!(
+            rs.pull_next_relic_from_front(RelicRarity::Common, |_| true),
+            RelicId::Anchor
+        );
+    }
+
+    /// A filter that rejects everything also yields Circlet (the C# pull
+    /// returns null when no relic passes the filter).
+    #[test]
+    fn rl_c11_filter_rejecting_all_falls_back_to_circlet() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
+        assert_eq!(
+            rs.pull_next_relic_from_front(RelicRarity::Common, |_| false),
+            RelicId::Circlet
+        );
+        assert_eq!(
+            rs.relic_grab_bag_by_rarity[&RelicRarity::Common],
+            vec![RelicId::Anchor],
+            "rejected relic stays in the bag"
+        );
+    }
+
+    /// `RelicFactory.cs:44`: the shop back-pull falls back to Circlet with
+    /// no bucket rarity (`RelicRarity.None`).
+    #[test]
+    fn rl_c11_back_pull_falls_back_to_circlet_without_rarity() {
+        let mut rs = RunState::default();
+        assert_eq!(
+            rs.pull_next_relic_from_back(RelicRarity::Rare, |_| true),
+            (RelicId::Circlet, None)
+        );
+        rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Rare, &[RelicId::Kunai])]);
+        assert_eq!(
+            rs.pull_next_relic_from_back(RelicRarity::Rare, |_| true),
+            (RelicId::Kunai, Some(RelicRarity::Rare))
+        );
+    }
+
+    /// Elite relic reward (`RelicReward.cs:74-83`): an exhausted bag now
+    /// queues a Circlet reward instead of silently skipping the slot.
+    #[test]
+    fn rl_c11_elite_relic_reward_from_empty_bag_is_circlet() {
+        let mut rs = RunState::default();
+        rs.offer_random_relic_rewards(1, &[Some(RelicRarity::Common)]);
+        assert_eq!(rs.relic_rewards.len(), 1);
+        assert_eq!(rs.relic_rewards[0].relic_id, RelicId::Circlet);
+    }
+
     #[test]
     fn obtain_relic_strips_shared_bag() {
         let mut rs = RunState::default();

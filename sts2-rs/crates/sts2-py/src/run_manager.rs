@@ -877,11 +877,11 @@ impl PyRunManager {
         let list = PyList::empty(py);
         for _ in 0..count {
             let rarity = rs.roll_reward_relic_rarity();
-            if let Some(id) = rs.pop_relic_from_grab_bag(rarity) {
-                let d = PyDict::new(py);
-                d.set_item("id", format!("{id:?}"))?;
-                list.append(d)?;
-            }
+            // `RelicFactory.PullNextRelicFromFront`: an empty pool is Circlet.
+            let id = rs.pull_next_relic_from_front(rarity, |_| true);
+            let d = PyDict::new(py);
+            d.set_item("id", format!("{id:?}"))?;
+            list.append(d)?;
         }
         Ok(list)
     }
