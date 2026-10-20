@@ -294,6 +294,10 @@ pub struct CardReward {
     pub upgraded: Vec<bool>,
     /// Offer-time enchantments parallel to [`Self::options`] (empty = none).
     pub enchantments: Vec<crate::cards::CardEnchantments>,
+    /// C# `Reward.IsPopulated`: the options (and offer state) are final. Sentinels
+    /// (`empty()` / `for_room()`) start unpopulated and are rolled when their
+    /// reward set is populated; pre-resolved slates are born populated.
+    pub populated: bool,
 }
 
 /// The options a [`CardReward`] rerolls with.
@@ -350,6 +354,7 @@ impl CardReward {
 
             upgraded: Vec::new(),
             enchantments: Vec::new(),
+            populated: false,
         }
     }
 
@@ -364,6 +369,7 @@ impl CardReward {
 
             upgraded: Vec::new(),
             enchantments: Vec::new(),
+            populated: true,
         }
     }
 
@@ -380,6 +386,7 @@ impl CardReward {
 
             upgraded: Vec::new(),
             enchantments: Vec::new(),
+            populated: false,
         }
     }
 }

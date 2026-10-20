@@ -2761,6 +2761,53 @@ impl RunManager {
         ActionResult::Advanced
     }
 
+    /// Populate the unpopulated rewards of `pending_rewards[from..]` in list order
+    /// (C# `Reward.Populate`): card sentinels roll their options through the
+    /// reward-creation + modification hooks (non-combat base-odds roller, or the
+    /// room roller for a `ForRoom` sentinel), potion sentinels roll their kind.
+    fn populate_pending_rewards(&mut self, from: usize) {
+        use crate::runstate::{CardRewardGenCtx, Reward};
+        let mut set = std::mem::take(&mut self.run_state.pending_rewards);
+        for reward in set.iter_mut().skip(from) {
+            match reward {
+                Reward::Card(card) if !card.populated => {
+                    let room_ctx = card.room_context.map(|room_type| CardRewardGenCtx {
+                        room_type,
+                        is_from_combat: false,
+                        colorless: false,
+                        uniform_rarity: None,
+                    });
+                    // Non-combat (`CardCreationSource.Other`) rewards roll BASE
+                    // odds, not the pity-updating combat roller (PARITY132); a
+                    // `ForRoom(room)` sentinel (DreamCatcher: Monster) uses the
+                    // room roller without `IsFromCombat`.
+                    let roller = if room_ctx.is_some() {
+                        self.callbacks.generate_card_reward_options
+                    } else {
+                        self.callbacks
+                            .generate_noncombat_card_reward_options
+                            .or(self.callbacks.generate_card_reward_options)
+                    };
+                    self.run_state.card_reward_gen_ctx = room_ctx;
+                    card.options = roller.map(|f| f(&mut self.run_state)).unwrap_or_default();
+                    self.run_state.card_reward_gen_ctx = None;
+                    card.upgraded = std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+                    card.enchantments =
+                        std::mem::take(&mut self.run_state.card_reward_enchantments);
+                    card.populated = true;
+                }
+                Reward::Potion(potion) if potion.potion_kind.is_none() => {
+                    potion.potion_kind = self
+                        .callbacks
+                        .roll_potion_reward_kind
+                        .and_then(|f| f(&mut self.run_state));
+                }
+                _ => {}
+            }
+        }
+        self.run_state.pending_rewards = set;
+    }
+
     /// Materialize the otherwise write-only `pending_rewards` queue
     /// (bead `sts2-rs-01o`). Drains every [`Reward::Potion`] sentinel
     /// into the run-level potion belt (rolling a random kind via
@@ -2803,7 +2850,18 @@ impl RunManager {
         // e.g. Driftwood flags an event's / relic's CardRewards `CanReroll`
         // (BrainLeech.cs:51-58). Once per set (the flag survives until the queue
         // is empty).
-        if !self.run_state.pending_rewards.is_empty() && !self.run_state.reward_set_modified {
+        // `RewardsSet.GenerateWithoutOffering` (`RewardsSet.cs:93-116`) populates EVERY
+        // reward of the set (in list order) before it modifies the set and before
+        // the player can touch any of them; whatever the listeners add is populated
+        // after. Doing it here, not as each screen opens, keeps hook budgets
+        // (SilverCrucible uses) and the `Rewards` stream in C# order.
+        let populate_from = self.run_state.pending_rewards.len();
+        let fresh_set =
+            !self.run_state.pending_rewards.is_empty() && !self.run_state.reward_set_modified;
+        // (Rewards queued after the set was generated — a relic obtained mid-screen —
+        // are populated here too, once: `populated` makes this idempotent.)
+        self.populate_pending_rewards(0);
+        if fresh_set {
             self.run_state.reward_set_modified = true;
             // `RewardsSet.WithCustomRewards` never sets `Room`, so listeners see
             // `room == null` (`RoomType::Unknown`): none of the room-gated ones
@@ -2815,6 +2873,7 @@ impl RunManager {
                 crate::runstate::RoomType::Unknown,
             );
             self.run_state.pending_rewards = set;
+            self.populate_pending_rewards(populate_from);
         }
         let mut i = 0;
         while i < self.run_state.pending_rewards.len() {
@@ -2859,12 +2918,7 @@ impl RunManager {
             self.run_state.pending_rewards.remove(i);
             match resolve {
                 Resolve::Potion(kind_opt) => {
-                    let kind = kind_opt.or_else(|| {
-                        self.callbacks
-                            .roll_potion_reward_kind
-                            .and_then(|f| f(&mut self.run_state))
-                    });
-                    if let Some(kind) = kind {
+                    if let Some(kind) = kind_opt {
                         // Full belt: queue an interactive swap or count the
                         // drop — never silently evaporate (GH #252).
                         let _ = self.run_state.claim_potion_reward(kind);
@@ -2885,44 +2939,16 @@ impl RunManager {
                     enchantments,
                     room,
                 ) => {
-                    if pre_resolved.is_empty() {
-                        // Non-combat (`CardCreationSource.Other`) reward: roll
-                        // BASE odds, NOT the pity-updating combat roller. These
-                        // sentinels (Lost Coffer, Orrery, event card grants)
-                        // must not mutate the run pity counter — doing so
-                        // over-accumulated the offset and flipped a later
-                        // combat reward's rarity (PARITY132). Falls back to the
-                        // pity roller only if the base-odds callback is unwired.
-                        // A sentinel with a room context is `CardCreationOptions
-                        // .ForRoom(room)` (DreamCatcher: Monster) — the room
-                        // roller (Encounter source, pity), without `IsFromCombat`.
-                        let room_ctx = room.map(|room_type| crate::runstate::CardRewardGenCtx {
+                    self.card_reward_options = pre_resolved;
+                    self.card_reward_upgraded = upgraded;
+                    self.card_reward_enchantments = enchantments;
+                    self.card_reward_reroll_ctx =
+                        room.map(|room_type| crate::runstate::CardRewardGenCtx {
                             room_type,
                             is_from_combat: false,
                             colorless: false,
                             uniform_rarity: None,
                         });
-                        let roller = if room_ctx.is_some() {
-                            self.callbacks.generate_card_reward_options
-                        } else {
-                            self.callbacks
-                                .generate_noncombat_card_reward_options
-                                .or(self.callbacks.generate_card_reward_options)
-                        };
-                        self.run_state.card_reward_gen_ctx = room_ctx;
-                        self.card_reward_options =
-                            roller.map(|f| f(&mut self.run_state)).unwrap_or_default();
-                        self.run_state.card_reward_gen_ctx = None;
-                        self.card_reward_reroll_ctx = room_ctx;
-                        self.card_reward_upgraded =
-                            std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
-                        self.card_reward_enchantments =
-                            std::mem::take(&mut self.run_state.card_reward_enchantments);
-                    } else {
-                        self.card_reward_options = pre_resolved;
-                        self.card_reward_upgraded = upgraded;
-                        self.card_reward_enchantments = enchantments;
-                    }
                     // Carry the reward's own reroll state onto the screen (set
                     // by Driftwood's Late pass above).
                     // Only advertise a reroll the engine can reproduce.

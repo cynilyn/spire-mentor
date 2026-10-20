@@ -1249,3 +1249,48 @@ fn rolled_upgrade_reaches_the_deck() {
     }
     panic!("no seed produced a rolled upgrade");
 }
+
+/// `RewardsSet.cs:100-104` populates EVERY reward of an `OfferCustom` set before the
+/// first screen opens. Orrery (5 rewards) + SilverCrucible (3 uses,
+/// `SilverCrucible.cs:94-123`) + Driftwood: the instant screen 1 is up all three
+/// uses are spent (counter 3, not 1); rerolling reward 1 therefore comes back plain
+/// (no use left) and leaves reward 3 upgraded and rewards 4-5 plain.
+#[test]
+fn whole_reward_set_is_populated_before_the_first_screen() {
+    for seed in SEEDS {
+        let mut rm = coffer_with(
+            seed,
+            None,
+            &[RelicId::Orrery, RelicId::SilverCrucible, RelicId::Driftwood],
+            |rs| {
+                rs.last_obtained_relic = Some(RelicId::Orrery);
+                let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+            },
+        );
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert_eq!(
+            rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+            3,
+            "seed {seed}: all uses consumed at population, before screen 1 is touched"
+        );
+        assert_eq!(rm.card_reward_upgraded_flags(), [true, true, true]);
+        assert!(has_reroll(&rm));
+        assert_eq!(
+            rm.take_action(RunAction::RerollCardReward),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.card_reward_upgraded_flags(), [false, false, false]);
+        assert_eq!(
+            rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+            3
+        );
+        let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+        // Reward 2 untouched; reward 3 still upgraded; 4-5 plain.
+        let mut flags = Vec::new();
+        for _ in 0..4 {
+            flags.push(rm.card_reward_upgraded_flags().iter().all(|f| *f));
+            let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+        }
+        assert_eq!(flags, [true, true, false, false], "seed {seed}");
+    }
+}
