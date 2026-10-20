@@ -249,3 +249,28 @@ fn draw_after_lethal_hit_draws_nothing_v0111() {
 fn draw_after_lethal_hit_still_draws_v0107_unchanged() {
     assert_eq!(pommel_strike_lethal_hand(V107), 1);
 }
+
+// ── Goopy adds the Exhaust keyword (seed LSA_65) ───────────────────────────────────────────────────
+
+/// Plays a Goopy-enchanted Defend; returns (exhaust pile size, discard pile size).
+fn goopy_defend_piles(version: GameVersion) -> (usize, usize) {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    let _ = add_enemy(&mut state, 2, 100);
+    let i = push_hand(&mut state, CardId::DefendIronclad, false);
+    let uid = state.player.hand[usize::from(i)];
+    let idx = uid.0.get() as usize - 1;
+    state.cards[idx].add_enchantment(sts2_core::cards::EnchantmentId::Goopy, 1);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    (state.player.exhaust.len(), state.player.discard.len())
+}
+
+/// `Goopy.OnEnchant` (Enchantments/Goopy.cs): `Card.AddKeyword(CardKeyword.Exhaust)`.
+#[test]
+fn goopy_card_exhausts_when_played_v0111() {
+    assert_eq!(goopy_defend_piles(V111), (1, 0));
+}
+
+#[test]
+fn goopy_card_goes_to_discard_v0107_unchanged() {
+    assert_eq!(goopy_defend_piles(V107), (0, 1));
+}

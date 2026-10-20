@@ -7809,7 +7809,7 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
                 state.player.discard.push(card_uid);
             }
         }
-    } else if ((crate::card_effects::card_exhausts_inst(&card) && !played_card_is_dupe)
+    } else if ((crate::card_effects::card_exhausts_for(state, &card) && !played_card_is_dupe)
         || corruption_exhausts_skill)
         && state.pending_choice.is_none()
     {
@@ -8123,7 +8123,7 @@ pub fn flush_played_cards_after_choice(state: &mut CombatState) {
             }
             continue;
         }
-        if crate::card_effects::card_exhausts_inst(&card) || corruption_exhausts_skill {
+        if crate::card_effects::card_exhausts_for(state, &card) || corruption_exhausts_skill {
             let _ = cards::move_card(&mut state.player, uid, PileKind::Play, PileKind::Exhaust);
             fire_after_card_exhausted(state, card.card_id, uid, None, card.tags, card.card_type);
             continue;
@@ -8876,7 +8876,7 @@ pub(crate) fn resolve_auto_played_card_at_target(
     // listeners. Bead `sts2-rs-ane8r`.
     if crate::card_effects::card_unplayable_inst(&state.cards[top_idx]) {
         if state.player.play.contains(&top_uid) {
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
+            let self_exhausts = crate::card_effects::card_exhausts_for(state, &state.cards[top_idx]);
             let dest = if force_exhaust || self_exhausts {
                 PileKind::Exhaust
             } else {
@@ -8927,7 +8927,7 @@ pub(crate) fn resolve_auto_played_card_at_target(
             // pile (fuzz seed 1111: discard cs=3 rs=4, exhaust cs=4 rs=3).
             // Bead `sts2-rs-ngwsg` follow-up. Same shape as the unplayable
             // guard above.
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
+            let self_exhausts = crate::card_effects::card_exhausts_for(state, &state.cards[top_idx]);
             let dest = if force_exhaust || self_exhausts {
                 PileKind::Exhaust
             } else {
@@ -8959,7 +8959,7 @@ pub(crate) fn resolve_auto_played_card_at_target(
     // and the card immutably, so no `Card` clone is needed here.
     if player_should_play_blocked(state, &state.cards[top_idx]) {
         if state.player.play.contains(&top_uid) {
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
+            let self_exhausts = crate::card_effects::card_exhausts_for(state, &state.cards[top_idx]);
             let dest = if force_exhaust || self_exhausts {
                 PileKind::Exhaust
             } else {
@@ -9788,7 +9788,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
     let auto_is_zero_cost_attack =
         top_card_type == cards::CardType::Attack && auto_resolved_cost == 0;
     if state.player.play.contains(&top_uid) {
-        let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
+        let self_exhausts = crate::card_effects::card_exhausts_for(state, &state.cards[top_idx]);
         // CorruptionPower routes the owner's played Skills to Exhaust — the
         // auto-play mirror of the same branch in `play_card`, using the
         // pre-dispatch Corruption snapshot (C# pre-OnPlay result-pile).
