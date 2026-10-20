@@ -6937,6 +6937,14 @@ impl CombatState {
             if crate::cards::is_hand_full(&self.player) {
                 break;
             }
+            // R1c: `DrawInternal` re-checks `IsOverOrEnding` at the top of every iteration (CardPileCmd.cs
+            // DrawInternal loop) — an on-draw auto-play (Hellraiser) that kills the last enemy mid-draw stops
+            // the draw there. v0.111.0 only.
+            if self.game_version >= crate::GameVersion::V0_111_0
+                && (self.is_over || crate::combat_loop::combat_is_ending(self))
+            {
+                break;
+            }
             // C# `CardPileCmd.Shuffle` (`CardPileCmd.cs:806`) early-returns on
             // `IsOverOrEnding`: when an on-draw auto-play (Hellraiser) downs the
             // last enemy MID-DRAW, C# does NOT reshuffle the discard pile for
