@@ -598,7 +598,11 @@ fn thieving_hopper_thievery_effect(state: &mut CombatState, owner: CreatureUid) 
         (c.card_id, c.upgraded)
     };
     let _ = sts2_core::card_effects::remove_card_from_any_pile(state, stolen);
-    state.record_swipe_steal(owner, stolen_card_id, stolen_upgraded);
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        state.record_swipe_steal_uid(owner, stolen_card_id, stolen_upgraded, stolen.get());
+    } else {
+        state.record_swipe_steal(owner, stolen_card_id, stolen_upgraded);
+    }
 
     // `ThievingHopper.cs:234-236`: one `SwipePower` stack per stolen card.
     // Exactly one card is stolen per THIEVERY, so apply a single stack. The

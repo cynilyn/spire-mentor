@@ -831,14 +831,40 @@ const fn is_run_persistent_damage_scaler(id: sts2_core::cards::CardId) -> bool {
 /// `DeckVersion != null` filter guarantees a match in practice). Bead
 /// `sts2-rs-RP13`.
 fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState) {
+    // v0.111.0 (R1c): `RemoveFromDeck(card.DeckVersion)` removes the run-deck original, whose upgrade state can
+    // differ from the in-combat card (a mid-combat upgrade). Combat uid `u` maps to master index `n - u`; fall
+    // back to the identity match when the uid does not line up.
+    let n = rs.master_deck.len();
+    let by_uid = combat.game_version >= sts2_core::GameVersion::V0_111_0;
+    let mut uid_removals: Vec<usize> = Vec::new();
+    let mut identity: Vec<(sts2_core::cards::CardId, bool)> = Vec::new();
     for stolen in &combat.swipe_stolen {
         if stolen.reclaimed {
             continue;
         }
+        if by_uid {
+            if let Some(u) = stolen.card_uid {
+                let u = u as usize;
+                if (1..=n).contains(&u)
+                    && rs.master_deck[n - u].card_id == stolen.card_id
+                    && !uid_removals.contains(&(n - u))
+                {
+                    uid_removals.push(n - u);
+                    continue;
+                }
+            }
+        }
+        identity.push((stolen.card_id, stolen.upgraded));
+    }
+    uid_removals.sort_unstable_by(|a, b| b.cmp(a));
+    for idx in uid_removals {
+        rs.master_deck.remove(idx);
+    }
+    for (card_id, upgraded) in identity {
         if let Some(idx) = rs
             .master_deck
             .iter()
-            .position(|c| c.card_id == stolen.card_id && c.upgraded == stolen.upgraded)
+            .position(|c| c.card_id == card_id && c.upgraded == upgraded)
         {
             rs.master_deck.remove(idx);
         }
@@ -2056,6 +2082,43 @@ mod tests {
     /// Bead `sts2-rs-RP13`: a SwipePower thief that escapes/survives keeps the
     /// stolen card — `exit_combat` removes it from the run `master_deck`
     /// (mirroring C# `SwipePower.Steal` → `RemoveFromDeck`, never restored).
+    /// R1c: a card upgraded mid-combat and then stolen — C# removes `card.DeckVersion` (the un-upgraded run
+    /// deck original). v0.111.0 maps combat uid -> master index; v0.107.1 keeps the identity match (no match, no removal).
+    fn stolen_upgraded_in_combat(version: sts2_core::GameVersion) -> (usize, usize) {
+        use sts2_core::cards::CardId;
+        let mut rs = fresh_run();
+        rs.game_version = version;
+        for _ in 0..2 {
+            rs.master_deck.push(
+                crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false)
+                    .expect("strike spec"),
+            );
+        }
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        let before = rs.master_deck.len();
+        let n = before as u32;
+        // Last master card = combat uid 1. Pretend the combat copy was upgraded mid-fight.
+        let u = 1u32;
+        let id = rs.master_deck[(n - u) as usize].card_id;
+        assert!(!rs.master_deck[(n - u) as usize].upgraded);
+        let thief = *combat.enemy_uids.first().expect("combat has an enemy");
+        combat.record_swipe_steal_uid(thief, id, true, u);
+        exit_combat(&mut rs, &combat);
+        (before, rs.master_deck.len())
+    }
+
+    #[test]
+    fn swiped_card_upgraded_in_combat_is_removed_from_master_deck_v0111() {
+        let (before, after) = stolen_upgraded_in_combat(sts2_core::GameVersion::V0_111_0);
+        assert_eq!(after, before - 1);
+    }
+
+    #[test]
+    fn swiped_card_upgraded_in_combat_keeps_identity_match_v0107_unchanged() {
+        let (before, after) = stolen_upgraded_in_combat(sts2_core::GameVersion::V0_107_1);
+        assert_eq!(after, before);
+    }
+
     #[test]
     fn exit_combat_removes_escaped_swiped_card_from_master_deck() {
         use sts2_core::cards::CardId;

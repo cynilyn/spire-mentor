@@ -3579,6 +3579,10 @@ pub struct SwipeStolen {
     pub card_id: crate::cards::CardId,
     /// Upgrade flag of the stolen card, part of the master-deck pairing key.
     pub upgraded: bool,
+    /// Combat uid of the stolen card (v0.111.0 only). Combat uids are assigned in draw-pile build order
+    /// (master deck reversed, uid 1 = last master card), so the run-deck original — whose upgrade state can
+    /// differ from the in-combat card — sits at `deck_len - uid`. C# removes `card.DeckVersion`. R1c.
+    pub card_uid: Option<u32>,
     /// `true` once the thief died (C# `SwipePower.BeforeDeath` restored the
     /// card); such entries are NOT removed from the run deck.
     pub reclaimed: bool,
@@ -7829,8 +7833,23 @@ impl CombatState {
             thief,
             card_id,
             upgraded,
+            card_uid: None,
             reclaimed: false,
         });
+    }
+
+    /// [`Self::record_swipe_steal`] plus the stolen card's combat uid (see [`SwipeStolen::card_uid`]).
+    pub fn record_swipe_steal_uid(
+        &mut self,
+        thief: CreatureUid,
+        card_id: crate::cards::CardId,
+        upgraded: bool,
+        card_uid: u32,
+    ) {
+        self.record_swipe_steal(thief, card_id, upgraded);
+        if let Some(last) = self.swipe_stolen.last_mut() {
+            last.card_uid = Some(card_uid);
+        }
     }
 
     /// Mark every card stolen by `dead` as reclaimed (C#
