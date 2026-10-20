@@ -2668,8 +2668,7 @@ impl RunState {
         // off the reward/event path can't later resurface from the
         // treasure-room pull. Stackable relics never live in the grab
         // bags, so this is a no-op for them (no stackable gate needed).
-        self.remove_relic_from_shared_grab_bag(relic_id);
-        self.remove_relic_from_player_grab_bag(relic_id);
+        self.strip_relic_from_bags(relic_id);
         // Bead `sts2-rs-pfiwm`: initialize the run-side counter for
         // countdown relics at pickup, mirroring C# constructing the
         // relic instance with its `_combatsLeft` seeded (EmberTea = 5,
@@ -3748,6 +3747,25 @@ impl RunState {
         Some((None, idx, self.relic_grab_bag_fallback[idx]))
     }
 
+    /// C# `RelicGrabBag.Remove` on the PLAYER bag (`RelicGrabBag.cs:150-157`):
+    /// only the rarity deques lose the relic; the multiplayer fallback deque is
+    /// untouched. The flat view is kept in lockstep.
+    fn remove_relic_from_player_grab_bag(&mut self, relic_id: RelicId) {
+        self.relic_grab_bag.retain(|&r| r != relic_id);
+        for bucket in self.relic_grab_bag_by_rarity.values_mut() {
+            bucket.retain(|&r| r != relic_id);
+        }
+    }
+
+    /// The bag bookkeeping of `RelicCmd.Obtain` (`RelicCmd.cs:26-30`): the relic
+    /// leaves the player bag and the shared bag. For grant helpers that push a
+    /// relic onto `relics` themselves (replay import, workbench graft, the
+    /// boss-relic fallback grant) and keep their own effect dispatch timing.
+    pub fn strip_relic_from_bags(&mut self, relic_id: RelicId) {
+        self.remove_relic_from_shared_grab_bag(relic_id);
+        self.remove_relic_from_player_grab_bag(relic_id);
+    }
+
     /// Strip `relic_id` from every per-rarity bucket of the SHARED relic
     /// grab bag. Mirrors C# `player.RunState.SharedRelicGrabBag.Remove(
     /// relicModel)`, which fires on EVERY player-bag pull (front or back)
@@ -3763,15 +3781,6 @@ impl RunState {
     /// removed here or it shifts the later treasure pull. The owned-skip
     /// on the treasure side only covers relics the player actually
     /// obtained, not ones merely pulled-and-offered.
-    fn remove_relic_from_player_grab_bag(&mut self, relic_id: RelicId) {
-        // `RelicCmd.cs:29`: `player.RelicGrabBag.Remove(relic)` on obtain.
-        self.relic_grab_bag.retain(|&r| r != relic_id);
-        for bucket in self.relic_grab_bag_by_rarity.values_mut() {
-            bucket.retain(|&r| r != relic_id);
-        }
-        self.relic_grab_bag_fallback.retain(|&r| r != relic_id);
-    }
-
     fn remove_relic_from_shared_grab_bag(&mut self, relic_id: RelicId) {
         for bucket in self.shared_relic_grab_bag_by_rarity.values_mut() {
             bucket.retain(|&r| r != relic_id);
@@ -5606,6 +5615,44 @@ mod tests {
         assert_eq!(
             rs.pop_relic_from_shared_grab_bag(RelicRarity::Common),
             Some(RelicId::Anchor)
+        );
+    }
+
+    /// Codex r2 P3: `RelicGrabBag.Remove` clears only the rarity deques
+    /// (`RelicGrabBag.cs:150-157`); the multiplayer fallback deque keeps it.
+    #[test]
+    fn obtain_relic_leaves_the_mp_fallback_deque_alone() {
+        let mut rs = RunState::new();
+        rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
+        rs.relic_grab_bag_fallback = vec![RelicId::Anchor, RelicId::BloodVial];
+        rs.obtain_relic(RelicId::Anchor);
+        assert_eq!(
+            rs.relic_grab_bag_fallback,
+            vec![RelicId::Anchor, RelicId::BloodVial]
+        );
+        assert!(rs.relic_grab_bag_by_rarity[&RelicRarity::Common].is_empty());
+    }
+
+    /// Codex r2 P2/#3: grant helpers that push `relics` directly strip both
+    /// bags through `strip_relic_from_bags` (`RelicCmd.cs:26-30`), so the relic
+    /// is undrawable afterwards.
+    #[test]
+    fn strip_relic_from_bags_makes_a_pushed_relic_undrawable() {
+        let mut rs = RunState::new();
+        rs.relic_grab_bag_by_rarity =
+            bag(&[(RelicRarity::Common, &[RelicId::Anchor, RelicId::BloodVial])]);
+        rs.relic_grab_bag = vec![RelicId::Anchor, RelicId::BloodVial];
+        rs.shared_relic_grab_bag_by_rarity =
+            bag(&[(RelicRarity::Common, &[RelicId::Anchor, RelicId::BloodVial])]);
+        rs.relics.push(RelicId::Anchor);
+        rs.strip_relic_from_bags(RelicId::Anchor);
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Common),
+            Some(RelicId::BloodVial)
+        );
+        assert_eq!(
+            rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Common],
+            vec![RelicId::BloodVial]
         );
     }
 

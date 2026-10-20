@@ -1224,6 +1224,7 @@ impl PyRunManager {
             return Ok(false);
         }
         rs.relics.push(rid);
+        rs.strip_relic_from_bags(rid);
         rs.last_obtained_relic = Some(rid);
         let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
         rs.last_obtained_relic = None;

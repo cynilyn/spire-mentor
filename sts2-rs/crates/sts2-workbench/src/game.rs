@@ -1742,6 +1742,7 @@ fn graft_add_relic(rm: &mut RunManager, relic_id: &str) {
         return;
     }
     rs.relics.push(rid);
+    rs.strip_relic_from_bags(rid);
     rs.last_obtained_relic = Some(rid);
     let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
     rm.run_state.last_obtained_relic = None;
@@ -1969,6 +1970,28 @@ pub fn build_faithful_run_manager(cid: CharacterId, seed: i32, ascension: u8) ->
 mod tests {
     use super::*;
     use crate::state_import::parse_pasted_state;
+
+    /// Codex r2 P2: importing a relic through the graft makes it undrawable
+    /// from the (already initialized) player and shared bags.
+    #[test]
+    fn graft_add_relic_removes_the_relic_from_both_bags() {
+        let mut rm = sts2_content::run_callbacks::new_run_manager_for_character(
+            3,
+            sts2_core::potions::CharacterId::Ironclad,
+        );
+        sts2_content::run_callbacks::initialize_run_setup(&mut rm);
+        let in_bags = |rm: &RunManager| {
+            rm.run_state
+                .relic_grab_bag_by_rarity
+                .values()
+                .chain(rm.run_state.shared_relic_grab_bag_by_rarity.values())
+                .any(|b| b.contains(&sts2_core::RelicId::Anchor))
+        };
+        assert!(in_bags(&rm), "Anchor starts in the bags");
+        graft_add_relic(&mut rm, "RELIC.ANCHOR");
+        assert!(rm.run_state.relics.contains(&sts2_core::RelicId::Anchor));
+        assert!(!in_bags(&rm), "Anchor is undrawable after the import");
+    }
 
     /// A mod-shape map block built from a real run's act-1 map, standing on
     /// one of its row-1 nodes — the same trick `test_run_import.py` uses to

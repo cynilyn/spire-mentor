@@ -2869,6 +2869,9 @@ impl RunManager {
         let _ = std::mem::take(&mut self.pending_boss_act_advance);
         self.advance_boss_act();
         self.run_state.relics.push(relic);
+        // The fallback boss pool can supply bag relics (e.g. Shop rarity) when the
+        // generated Ancient is absent; `RelicCmd.Obtain` removes them from the bags.
+        self.run_state.strip_relic_from_bags(relic);
         self.run_state.last_obtained_relic = Some(relic);
         // Bead `sts2-rs-wt4w1`: fire the on-obtain channel so boss-relic
         // `after_obtained` listeners apply (matches the shop path, which
@@ -7965,6 +7968,36 @@ mod tests {
                 .any(|a| matches!(a, RunAction::PickCardReward { .. })),
             "a PickCardReward action must be offered"
         );
+    }
+
+    /// Codex r2 #3: the fallback boss pool can offer a bag relic (e.g. Shop
+    /// rarity); the boss grant removes it from the player and shared bags like
+    /// `RelicCmd.Obtain` (`RelicCmd.cs:26-30`).
+    #[test]
+    fn boss_relic_pick_strips_a_bag_relic_from_both_bags() {
+        use crate::runstate::RelicRarity;
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(drain_test_callbacks());
+        rm.boss_relic_options = vec![RelicId::BeltBuckle];
+        for rarity in [RelicRarity::Shop, RelicRarity::Common] {
+            rm.run_state
+                .relic_grab_bag_by_rarity
+                .insert(rarity, vec![RelicId::BeltBuckle, RelicId::Anchor]);
+            rm.run_state
+                .shared_relic_grab_bag_by_rarity
+                .insert(rarity, vec![RelicId::BeltBuckle, RelicId::Anchor]);
+        }
+        let result = rm.do_boss_relic_pick(0);
+        assert_eq!(result, ActionResult::Advanced);
+        assert!(rm.run_state.relics.contains(&RelicId::BeltBuckle));
+        for bag in rm
+            .run_state
+            .relic_grab_bag_by_rarity
+            .values()
+            .chain(rm.run_state.shared_relic_grab_bag_by_rarity.values())
+        {
+            assert_eq!(bag, &vec![RelicId::Anchor]);
+        }
     }
 
     #[test]
