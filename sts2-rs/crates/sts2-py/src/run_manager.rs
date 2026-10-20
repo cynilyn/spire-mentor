@@ -151,12 +151,22 @@ impl PyRunManager {
 ///
 /// A typed seed is canonicalised first (`SeedHelper.CanonicalizeSeed`:
 /// upper-case, `O`->`0`, `I`->`1`, trimmed), which is why a typed `old…` can
-/// never reach v0.111.0's migrated-save rule (`RunRngSet.cs:104-116`). The seed
-/// of a migrated run is stored un-canonicalised, so on v0.111.0 a lowercase
-/// `old` prefix is judged before any normalisation and the string is hashed as
-/// given (else `oldX` becomes `0LDX` and takes the plain-hash path).
-fn seed_text_to_hash(raw: &str, version: sts2_core::GameVersion) -> std::borrow::Cow<'_, str> {
-    if version >= sts2_core::GameVersion::V0_111_0 && raw.starts_with("old") {
+/// never reach v0.111.0's migrated-save rule (`RunRngSet.cs:104-116`). Two cases
+/// hash the string exactly as given:
+///
+/// * v0.111.0 and a lowercase `old` prefix -- the seed of a migrated run, which
+///   the game stores un-canonicalised (the prefix test must run before any
+///   normalisation, else `oldX` becomes `0LDX` and takes the plain-hash path);
+/// * `raw_seed_hash` -- an explicit opt-in that hashes the string verbatim, as
+///   sts2-cli does, so the same string gives the same run in both.
+fn seed_text_to_hash(
+    raw: &str,
+    version: sts2_core::GameVersion,
+    raw_seed_hash: bool,
+) -> std::borrow::Cow<'_, str> {
+    if raw_seed_hash
+        || (version >= sts2_core::GameVersion::V0_111_0 && raw.starts_with("old"))
+    {
         std::borrow::Cow::Borrowed(raw)
     } else {
         std::borrow::Cow::Owned(sts2_core::canonicalize_seed(raw))
@@ -166,7 +176,7 @@ fn seed_text_to_hash(raw: &str, version: sts2_core::GameVersion) -> std::borrow:
 #[pymethods]
 impl PyRunManager {
     #[new]
-    #[pyo3(signature = (seed = 0, character = "Ironclad", deck = None, max_hp = None, string_seed = None, ascension_level = 0, neow_start = false, interactive_card_removal = false, direct_event_relic_grant = false, interactive_card_upgrade = false, interactive_card_transform = false, interactive_potion_swap = false, act1 = "overgrowth", game_version = None))]
+    #[pyo3(signature = (seed = 0, character = "Ironclad", deck = None, max_hp = None, string_seed = None, ascension_level = 0, neow_start = false, interactive_card_removal = false, direct_event_relic_grant = false, interactive_card_upgrade = false, interactive_card_transform = false, interactive_potion_swap = false, act1 = "overgrowth", game_version = None, raw_seed_hash = false))]
     // A PyO3 constructor mirroring the optional-kwarg surface; the arg list
     // tracks the run's configurable knobs (seed forms, deck/hp overrides,
     // neow-start, C#-faithful UI toggles) rather than a bundled options struct.
@@ -189,6 +199,7 @@ impl PyRunManager {
         interactive_potion_swap: bool,
         act1: &str,
         game_version: Option<&str>,
+        raw_seed_hash: bool,
     ) -> PyResult<Self> {
         let cid = character_from_str(character)?;
         let game_version = crate::parse_game_version(game_version)?;
@@ -209,7 +220,7 @@ impl PyRunManager {
         // is applied below via `with_run_seed`; `effective_seed` is its i32
         // view). An integer `seed` is a `uint` master in both builds.
         let master_seed: u64 = match string_seed {
-            Some(s) => game_version.run_seed_hash(&seed_text_to_hash(s, game_version)),
+            Some(s) => game_version.run_seed_hash(&seed_text_to_hash(s, game_version, raw_seed_hash)),
             None => u64::from(seed as u32),
         };
         let effective_seed = master_seed as i32;
@@ -1970,18 +1981,28 @@ mod seed_text_tests {
     #[test]
     fn typed_seeds_are_canonicalised_by_default() {
         for v in [V0_107_1, V0_111_0] {
-            assert_eq!(seed_text_to_hash("p0a0", v), "P0A0");
-            assert_eq!(seed_text_to_hash(" Io1 ", v), "101");
-            assert_eq!(seed_text_to_hash("OLDP0A0", v), "0LDP0A0");
+            assert_eq!(seed_text_to_hash("p0a0", v, false), "P0A0");
+            assert_eq!(seed_text_to_hash(" Io1 ", v, false), "101");
+            assert_eq!(seed_text_to_hash("OLDP0A0", v, false), "0LDP0A0");
         }
     }
 
     /// R0-s(a): the lowercase `old` test runs before normalisation, v0.111.0 only.
     #[test]
     fn lowercase_old_prefix_is_kept_raw_on_v0111_only() {
-        assert_eq!(seed_text_to_hash("oldP0A0", V0_111_0), "oldP0A0");
-        assert_eq!(seed_text_to_hash("oldP0A0", V0_107_1), "0LDP0A0");
-        assert_eq!(seed_text_to_hash("Old1", V0_111_0), "0LD1");
+        assert_eq!(seed_text_to_hash("oldP0A0", V0_111_0, false), "oldP0A0");
+        assert_eq!(seed_text_to_hash("oldP0A0", V0_107_1, false), "0LDP0A0");
+        assert_eq!(seed_text_to_hash("Old1", V0_111_0, false), "0LD1");
+    }
+
+    /// R0-s(b): the opt-in hashes the string verbatim on every build.
+    #[test]
+    fn raw_seed_hash_hashes_verbatim() {
+        for v in [V0_107_1, V0_111_0] {
+            for s in ["p0a0", " P0A0", "P0AO", "OLDP0A0", "oldP0A0", "P0A0"] {
+                assert_eq!(seed_text_to_hash(s, v, true), s);
+            }
+        }
     }
 }
 

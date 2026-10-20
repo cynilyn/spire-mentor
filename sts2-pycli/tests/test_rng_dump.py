@@ -172,3 +172,21 @@ def test_old_prefix_rule_is_v0111_only_and_case_sensitive():
     assert h("oldP0A0", "v0.107.1") == sts2_rs.RunManager(string_seed="OLDP0A0", game_version="v0.107.1").run_seed
     assert h("OLDP0A0", V) == 9137717999390313649  # canonicalised to 0LDP0A0, plain hash (pristine value)
     assert h("P0A0", V) == 10883704133362413376
+
+
+@pytest.mark.parametrize(
+    "seed,canonical_run_seed,raw_run_seed",
+    [
+        ("P0A0", 10883704133362413376, 10883704133362413376),  # already canonical: the option changes nothing
+        ("P0A1", 5101801426979218024, 5101801426979218024),
+        ("p0a0", 10883704133362413376, 9004872484816525140),
+        ("P0AO", 10883704133362413376, 1062546349297132942),
+        (" P0A0", 10883704133362413376, 8344762209911765837),
+        ("OLDP0A0", 9137717999390313649, 101060511391403812),
+        ("oldP0A0", 273692109, 273692109),
+    ],
+)
+def test_raw_seed_hash_option(seed, canonical_run_seed, raw_run_seed):
+    assert make(seed).run_seed == canonical_run_seed  # default unchanged
+    assert make(seed, raw_seed_hash=True).run_seed == raw_run_seed
+    assert make(seed, raw_seed_hash=True).run_seed == sts2_rs.run_seed_hash(seed, V)
