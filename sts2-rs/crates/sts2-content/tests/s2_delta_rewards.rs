@@ -1058,3 +1058,127 @@ fn glass_eye_rewards_run_the_silver_crucible_hook() {
     });
     assert!(rm.card_reward_upgraded_flags().iter().all(|f| !*f));
 }
+
+// ---------------------------------------------------------------------------
+// Non-combat OfferCustom rewards run the modification hooks too
+// ---------------------------------------------------------------------------
+
+/// `LostCoffer.cs:18-24`: `CardCreationOptions(pool, Other, RegularEncounter)`, no
+/// `NoModifyHooks` => `CardFactory.CreateForReward` fires the hooks
+/// (`CardFactory.cs:84-87`); `SilverCrucible.cs:94-123` (Cards var 3) upgrades every
+/// card of the first 3 card rewards and counts a use per reward. So the Lost
+/// Coffer reward arrives fully upgraded, `TimesUsed == 1`; a Driftwood reroll
+/// re-populates it (hooks again, use 2, still upgraded); the picked card enters
+/// the deck upgraded.
+#[test]
+fn lost_coffer_reward_and_reroll_run_the_silver_crucible_hook() {
+    for seed in SEEDS {
+        let mut rm = coffer_with(
+            seed,
+            None,
+            &[RelicId::Driftwood, RelicId::SilverCrucible],
+            |_| {},
+        );
+        assert_eq!(rm.phase(), Phase::CardReward);
+        let used = |rm: &sts2_core::run_manager::RunManager| {
+            rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF
+        };
+        assert_eq!(used(&rm), 1, "seed {seed}");
+        assert_eq!(rm.card_reward_upgraded_flags(), [true, true, true]);
+        assert_eq!(
+            rm.take_action(RunAction::RerollCardReward),
+            ActionResult::Advanced
+        );
+        assert_eq!(used(&rm), 2, "the reroll re-fires the hooks");
+        assert_eq!(rm.card_reward_upgraded_flags(), [true, true, true]);
+        let before = rm.run_state.master_deck.len();
+        let _ = rm.take_action(RunAction::PickCardReward { idx: Some(0) });
+        assert_eq!(rm.run_state.master_deck.len(), before + 1);
+        assert!(rm.run_state.master_deck.last().expect("picked").upgraded);
+    }
+}
+
+/// `Orrery.cs:14-32`: five card rewards `OfferCustom`ed together => all populated up
+/// front; with SilverCrucible rewards 1-3 are fully upgraded, 4-5 plain,
+/// `TimesUsed == 3`.
+#[test]
+fn orrery_rewards_run_the_silver_crucible_hook() {
+    for seed in SEEDS {
+        let mut rm = coffer_with(
+            seed,
+            None,
+            &[RelicId::Orrery, RelicId::SilverCrucible],
+            |rs| {
+                rs.last_obtained_relic = Some(RelicId::Orrery);
+                let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+                assert!(rs.pending_rewards.len() >= 5, "Orrery queues its 5 rewards");
+            },
+        );
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            assert_eq!(rm.phase(), Phase::CardReward);
+            seen.push(rm.card_reward_upgraded_flags().to_vec());
+            let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+        }
+        for (i, flags) in seen.iter().enumerate() {
+            assert_eq!(flags.len(), 3, "reward {i}");
+            assert!(
+                flags.iter().all(|f| *f == (i < 3)),
+                "reward {i}: upgraded == {} got {flags:?}",
+                i < 3
+            );
+        }
+        assert_eq!(
+            rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+            3
+        );
+    }
+}
+
+/// BrainLeech Rip (`BrainLeech.cs:51-57`, no `NoModifyHooks`): the colorless
+/// reward is populated through the hooks (SilverCrucible upgrades all 3, one use)
+/// and its reroll re-fires them.
+#[test]
+fn brain_leech_rip_reward_runs_the_silver_crucible_hook() {
+    use sts2_core::events::EventId;
+    install();
+    let mut rm = new_run_manager_for_character(SEEDS[1], CharacterId::Ironclad).with_neow_start();
+    initialize_run_setup(&mut rm);
+    rm.run_state
+        .relics
+        .extend([RelicId::Driftwood, RelicId::SilverCrucible]);
+    rm.run_state.enter_event_room(EventId::BrainLeech);
+    let _ = rm.take_action(RunAction::EventChoice { idx: 1 });
+    assert_eq!(rm.phase(), Phase::CardReward);
+    assert_eq!(rm.card_reward_upgraded_flags(), [true, true, true]);
+    assert_eq!(
+        rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+        1
+    );
+    let _ = rm.take_action(RunAction::RerollCardReward);
+    assert_eq!(rm.card_reward_upgraded_flags(), [true, true, true]);
+    assert_eq!(
+        rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+        2
+    );
+}
+
+/// DreamCatcher (`DreamCatcher.cs:19`, offered via `HealRestSiteOption`'s
+/// `OfferCustom`): `ForRoom(player, Monster)` — the Encounter-source roller with
+/// pity — without `IsFromCombat`; the earlier sentinel used the base-odds roller.
+#[test]
+fn dream_catcher_reward_rolls_with_the_monster_room_context() {
+    for seed in SEEDS {
+        let mut want = None;
+        let rm = coffer_with(seed, None, &[RelicId::Driftwood], |rs| {
+            rs.pending_rewards
+                .push(Reward::Card(CardReward::for_room(RoomType::Monster)));
+            want = Some(rs.clone());
+        });
+        // The sentinel surfaces first; reference rolls from the state just before.
+        let mut reference = want.expect("snapshot");
+        let expect = extra_cards(&mut reference, RoomType::Monster);
+        assert_eq!(rm.card_reward_options(), expect.as_slice(), "seed {seed}");
+        assert!(has_reroll(&rm), "Driftwood flags it; Room spec rerolls");
+    }
+}

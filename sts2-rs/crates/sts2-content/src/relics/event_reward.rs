@@ -1790,7 +1790,8 @@ fn listener_dream_catcher(rs: &mut RunState, rewards: &mut Vec<Reward>) -> Effec
         return EffectResult::NotImplemented;
     }
     *entry -= 1;
-    rewards.push(Reward::Card(CardReward::empty()));
+    // `DreamCatcher.cs:19`: `CardCreationOptions.ForRoom(player, Monster)`.
+    rewards.push(Reward::Card(CardReward::for_room(RoomType::Monster)));
     EffectResult::Resolved
 }
 

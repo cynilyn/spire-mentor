@@ -1070,7 +1070,12 @@ pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // A BrainLeech-Rip reroll (`RerollSpec::Colorless`) reuses the reward's own
     // colorless `ForNonCombatWithDefaultOdds` options.
     if rs.card_reward_gen_ctx.is_some_and(|c| c.colorless) {
-        return roll_colorless_reward_options_no_upgrade(rs, 3);
+        let ids = roll_colorless_reward_options_no_upgrade(rs, 3);
+        // `Populate` -> `CreateForReward` re-fires the modification hooks.
+        let (ids, upgraded, enchantments) = apply_card_reward_late_hooks(rs, ids);
+        rs.card_reward_upgraded_flags = upgraded;
+        rs.card_reward_enchantments = enchantments;
+        return ids;
     }
     // A GlassEye reroll reuses the reward's fixed-rarity uniform options.
     if let Some(rarity) = rs.card_reward_gen_ctx.and_then(|c| c.uniform_rarity) {
@@ -1084,7 +1089,15 @@ pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
         return ids;
     }
     let character = rs.character_id;
-    roll_reward_options_base_odds(rs, 3, true, &[character], false)
+    let ids = roll_reward_options_base_odds(rs, 3, true, &[character], false);
+    // C# `CardFactory.CreateForReward` fires `Hook.TryModifyCardRewardOptions`
+    // (`CardFactory.cs:84-87`) for these `OfferCustom` rewards too (none sets
+    // `NoModifyHooks`); the offer state rides the side channel the run manager
+    // takes after the roller returns.
+    let (ids, upgraded, enchantments) = apply_card_reward_late_hooks(rs, ids);
+    rs.card_reward_upgraded_flags = upgraded;
+    rs.card_reward_enchantments = enchantments;
+    ids
 }
 
 /// The ordinal sort key C# uses for a character's `CardPoolModel` inside

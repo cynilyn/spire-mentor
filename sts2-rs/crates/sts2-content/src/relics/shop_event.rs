@@ -2784,8 +2784,13 @@ fn listener_kaleidoscope(rs: &mut RunState) -> EffectResult {
     let owner = rs.character_id;
     let rewards = crate::cards::spec_index::roll_kaleidoscope_card_rewards(rs, owner);
     for reward in rewards {
-        rs.pending_rewards
-            .push(Reward::Card(CardReward::from_options(reward)));
+        // `CardReward.Populate` of a pre-set slate fires
+        // `Hook.TryModifyCardRewardOptions` (`CardReward.cs:111-117`).
+        let (reward, upgraded, enchantments) =
+            crate::cards::spec_index::apply_card_reward_late_hooks(rs, reward);
+        rs.pending_rewards.push(Reward::Card(
+            CardReward::from_options(reward).with_offer_state(upgraded, enchantments),
+        ));
     }
     EffectResult::Resolved
 }

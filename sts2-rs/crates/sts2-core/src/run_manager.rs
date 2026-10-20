@@ -655,6 +655,9 @@ pub struct RunManager {
     card_reward_can_reroll: bool,
     /// How the current reward rerolls (its own `RerollOptions`).
     card_reward_reroll: crate::runstate::RerollSpec,
+    /// Room / `IsFromCombat` context a `RerollSpec::Room` reward rerolls under
+    /// (`None` = the current room, from combat — the room's own reward).
+    card_reward_reroll_ctx: Option<crate::runstate::CardRewardGenCtx>,
     /// When `Some`, the current `Phase::CardReward` offering is a Scroll
     /// Boxes *bundle* pick rather than a single-card reward: each inner
     /// `Vec<CardId>` is one pack, the player picks one pack index and **all**
@@ -873,6 +876,7 @@ impl RunManager {
             card_reward_enchantments: Vec::new(),
             card_reward_can_reroll: false,
             card_reward_reroll: crate::runstate::RerollSpec::Unsupported,
+            card_reward_reroll_ctx: None,
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
             pending_boss_act_advance: false,
@@ -2415,6 +2419,7 @@ impl RunManager {
                 && c.reroll != crate::runstate::RerollSpec::Unsupported
                 && !self.card_reward_options.is_empty();
             self.card_reward_reroll = c.reroll;
+            self.card_reward_reroll_ctx = None;
         }
         let added: Vec<Reward> = rewards.split_off(own_len.min(rewards.len()));
         let relics_before = self.run_state.relic_rewards.len();
@@ -2622,7 +2627,10 @@ impl RunManager {
         // pool for BrainLeech's Rip).
         let (roller, ctx) = match self.card_reward_reroll {
             RerollSpec::Unsupported => return ActionResult::InvalidForPhase,
-            RerollSpec::Room => (self.callbacks.generate_card_reward_options, None),
+            RerollSpec::Room => (
+                self.callbacks.generate_card_reward_options,
+                self.card_reward_reroll_ctx,
+            ),
             RerollSpec::NonCombat => (
                 self.callbacks
                     .generate_noncombat_card_reward_options
@@ -2821,6 +2829,7 @@ impl RunManager {
                     crate::runstate::RerollSpec,
                     Vec<bool>,
                     Vec<crate::cards::CardEnchantments>,
+                    Option<crate::runstate::RoomType>,
                 ),
             }
             let queued = match &self.run_state.pending_rewards[i] {
@@ -2837,6 +2846,7 @@ impl RunManager {
                         reward.reroll,
                         reward.upgraded.clone(),
                         reward.enchantments.clone(),
+                        reward.room_context,
                     ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
@@ -2867,7 +2877,14 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved, can_reroll, reroll, upgraded, enchantments) => {
+                Resolve::SurfaceCard(
+                    pre_resolved,
+                    can_reroll,
+                    reroll,
+                    upgraded,
+                    enchantments,
+                    room,
+                ) => {
                     if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
@@ -2876,12 +2893,27 @@ impl RunManager {
                         // over-accumulated the offset and flipped a later
                         // combat reward's rarity (PARITY132). Falls back to the
                         // pity roller only if the base-odds callback is unwired.
-                        let roller = self
-                            .callbacks
-                            .generate_noncombat_card_reward_options
-                            .or(self.callbacks.generate_card_reward_options);
+                        // A sentinel with a room context is `CardCreationOptions
+                        // .ForRoom(room)` (DreamCatcher: Monster) — the room
+                        // roller (Encounter source, pity), without `IsFromCombat`.
+                        let room_ctx = room.map(|room_type| crate::runstate::CardRewardGenCtx {
+                            room_type,
+                            is_from_combat: false,
+                            colorless: false,
+                            uniform_rarity: None,
+                        });
+                        let roller = if room_ctx.is_some() {
+                            self.callbacks.generate_card_reward_options
+                        } else {
+                            self.callbacks
+                                .generate_noncombat_card_reward_options
+                                .or(self.callbacks.generate_card_reward_options)
+                        };
+                        self.run_state.card_reward_gen_ctx = room_ctx;
                         self.card_reward_options =
                             roller.map(|f| f(&mut self.run_state)).unwrap_or_default();
+                        self.run_state.card_reward_gen_ctx = None;
+                        self.card_reward_reroll_ctx = room_ctx;
                         self.card_reward_upgraded =
                             std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
                         self.card_reward_enchantments =
