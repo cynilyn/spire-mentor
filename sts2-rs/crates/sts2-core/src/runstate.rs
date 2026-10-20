@@ -3940,12 +3940,11 @@ impl RunState {
         rarity: RelicRarity,
         filter: impl Fn(RelicId) -> bool,
     ) -> (RelicId, Option<RelicRarity>) {
-        match self.pop_relic_from_grab_bag_back(rarity, filter) {
-            Some((id, bucket)) => (id, Some(bucket)),
-            None => {
-                self.remove_relic_from_shared_grab_bag(RelicId::Circlet);
-                (RelicId::Circlet, None)
-            }
+        if let Some((id, bucket)) = self.pop_relic_from_grab_bag_back(rarity, filter) {
+            (id, Some(bucket))
+        } else {
+            self.remove_relic_from_shared_grab_bag(RelicId::Circlet);
+            (RelicId::Circlet, None)
         }
     }
 

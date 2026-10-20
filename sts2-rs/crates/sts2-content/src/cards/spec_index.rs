@@ -4069,6 +4069,10 @@ mod tests {
                 seed,
                 CharacterId::Ironclad,
             );
+            // The oracle's shop pulls real relics from a stocked bag; with an empty
+            // bag the slots are Circlet (RL-C11, cost 1) rather than the slot rarity.
+            // Setup reads only `up_front`, so the shops/rewards counters are unaffected.
+            crate::run_callbacks::initialize_run_setup(&mut rm);
             let inv = generate_merchant_inventory(&mut rm.run_state, CharacterId::Ironclad);
             let got = |v: Vec<i32>| v;
             assert_eq!(
