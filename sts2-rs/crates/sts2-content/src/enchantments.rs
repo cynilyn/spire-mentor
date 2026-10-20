@@ -44,8 +44,24 @@ use crate::cards::{CardKeywords, CardRarity, CardSpec};
 /// some criteria (`cost`, `base_block`) read instance state.
 #[must_use]
 pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId) -> bool {
+    can_enchant_card_for(sts2_core::GameVersion::default(), spec, card, enchantment)
+}
+
+/// [`can_enchant_card`] for game build `version`: from v0.111.0 on, Quest cards
+/// (modelled as Skills, see [`Card::is_quest`]) are rejected like Status/Curse
+/// (`EnchantmentModel.cs:247-251`); the default build keeps its pre-R1 behaviour.
+#[must_use]
+pub fn can_enchant_card_for(
+    version: sts2_core::GameVersion,
+    spec: &CardSpec,
+    card: &Card,
+    enchantment: EnchantmentId,
+) -> bool {
     // Unplayable / status / curse / quest can never be enchanted.
-    if matches!(card.card_type, CardType::Status | CardType::Curse) || card.is_quest() {
+    if matches!(card.card_type, CardType::Status | CardType::Curse) {
+        return false;
+    }
+    if version >= sts2_core::GameVersion::V0_111_0 && card.is_quest() {
         return false;
     }
     if spec.keywords.contains(CardKeywords::UNPLAYABLE) {
@@ -481,6 +497,7 @@ mod tests {
     /// (`EnchantmentModel.cs:247-251`: Status/Curse/Quest).
     #[test]
     fn cannot_enchant_quest_cards() {
+        use sts2_core::GameVersion::{V0_107_1, V0_111_0};
         let spec = basic_strike_spec();
         for id in [
             sts2_core::cards::CardId::Dowsing,
@@ -491,9 +508,15 @@ mod tests {
             let mut c = defend_card();
             c.card_id = id;
             assert!(
-                !can_enchant_card(&spec, &c, EnchantmentId::Imbued),
+                !can_enchant_card_for(V0_111_0, &spec, &c, EnchantmentId::Imbued),
                 "{id:?}"
             );
+            // paired: the default build is unchanged
+            assert!(
+                can_enchant_card_for(V0_107_1, &spec, &c, EnchantmentId::Imbued),
+                "{id:?}"
+            );
+            assert!(can_enchant_card(&spec, &c, EnchantmentId::Imbued), "{id:?}");
         }
         assert!(can_enchant_card(
             &spec,

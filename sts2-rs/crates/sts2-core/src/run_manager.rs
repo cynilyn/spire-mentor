@@ -3808,6 +3808,7 @@ impl RunManager {
             .is_some_and(|t| t.basic_only);
         let rank = crate::lookup_card_rarity_rank();
         let removable = crate::lookup_card_removable();
+        let quest_excluded = self.run_state.game_version >= crate::GameVersion::V0_111_0;
         self.run_state
             .master_deck
             .iter()
@@ -3815,7 +3816,7 @@ impl RunManager {
             .filter(|(_, c)| {
                 // `c.Type != Quest` (`CardSelectCmd.cs:491`): the Quest cards
                 // are modelled as Skills, so test the id.
-                if c.is_quest() {
+                if quest_excluded && c.is_quest() {
                     return false;
                 }
                 // C# `IsTransformable` in the Deck pile == `IsRemovable`:
@@ -3857,6 +3858,7 @@ impl RunManager {
         let front = self.run_state.pending_deck_enchants.first();
         let restriction = front.and_then(|e| e.type_restriction);
         let secondary = front.and_then(|e| e.secondary_type);
+        let quest_excluded = self.run_state.game_version >= crate::GameVersion::V0_111_0;
         let allow_x_cost =
             front.is_some_and(|e| e.enchantment != crate::cards::EnchantmentId::Slither);
         let requires_block =
@@ -3870,7 +3872,7 @@ impl RunManager {
                 // identified by rarity); Status/Curse covers C#'s
                 // `(uint)(type - 4) <= 2u` exclusion for the live decks.
                 !matches!(c.card_type, CardType::Status | CardType::Curse)
-                    && !c.is_quest()
+                    && !(quest_excluded && c.is_quest())
                     && c.enchantments.is_empty()
                     && (c.cost >= 0 || (allow_x_cost && c.is_x_cost()))
                     && (!requires_block || c.base_block > 0)
@@ -5787,10 +5789,14 @@ mod tests {
                 type_restriction: None,
                 secondary_type: None,
             });
-        assert_eq!(rm.enchant_eligible_deck_indices(), vec![0]);
         rm.run_state
             .pending_deck_transforms
             .push(crate::runstate::PendingDeckTransform::default());
+        // paired: the default build keeps offering them
+        assert_eq!(rm.enchant_eligible_deck_indices(), vec![0, 1, 2, 3, 4]);
+        assert_eq!(rm.transform_eligible_deck_indices(), vec![0, 1, 2, 3, 4]);
+        rm.run_state.game_version = crate::GameVersion::V0_111_0;
+        assert_eq!(rm.enchant_eligible_deck_indices(), vec![0]);
         assert_eq!(rm.transform_eligible_deck_indices(), vec![0]);
     }
 

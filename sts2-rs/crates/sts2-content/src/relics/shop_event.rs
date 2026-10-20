@@ -2999,7 +2999,8 @@ fn enchantable_candidate_card_ids(
         .iter()
         .filter_map(|card| {
             let spec = pool.iter().find(|s| s.id == card.card_id)?;
-            crate::enchantments::can_enchant_card(spec, card, ench).then_some(card.card_id)
+            crate::enchantments::can_enchant_card_for(rs.game_version, spec, card, ench)
+                .then_some(card.card_id)
         })
         .collect()
 }
@@ -3022,7 +3023,7 @@ fn enchant_eligible_deck_cards(
         let Some(spec) = pool.iter().find(|s| s.id == card.card_id) else {
             continue;
         };
-        if !crate::enchantments::can_enchant_card(spec, card, ench) {
+        if !crate::enchantments::can_enchant_card_for(rs.game_version, spec, card, ench) {
             continue;
         }
         let _ = crate::enchantments::apply_static_enchantment(card, ench, amount);
