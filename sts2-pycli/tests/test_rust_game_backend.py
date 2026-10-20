@@ -940,7 +940,7 @@ def test_fill_combat_lifts_osty_to_top_level(monkeypatch) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="golden pack contents pinned to the v0.107.1 oracle capture (ECHO/Necrobinder); not a seed problem - no seed reproduces these exact packs on 0.111.0. Re-record the packs from the 0.111.0 oracle (stage 5), never by re-pinning engine output",
+    reason="golden pack contents pinned to the v0.107.1 oracle capture (ECHO/Necrobinder); not a seed problem - no match among ECHO0..ECHO2999 (bounded search) for these exact packs on 0.111.0. Re-record the packs from the 0.111.0 oracle (stage 5), never by re-pinning engine output",
 )
 def test_scroll_boxes_renders_bundle_select_and_adds_whole_pack() -> None:
     """Scroll Boxes (Necrobinder Neow, seed ECHO) must surface as a
