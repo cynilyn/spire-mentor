@@ -230,19 +230,19 @@ pub fn rng_dump(
     };
     let rs = &rm.run_state;
     let rr = &rs.rng;
-    let v = rm.game_version;
+    let ver = rm.game_version;
     let run_seed = rr.seed;
     // The bases the C# game derives from the seed string. Only v0.111.0 has
     // the `old` two-base rule; other builds, and runs built from a numeric
     // seed, have one base. `engine_player_seed` is what this engine actually
     // seeded its player streams from.
     let bases = seed_string
-        .filter(|_| v == GameVersion::V0_111_0)
+        .filter(|_| ver == GameVersion::V0_111_0)
         .map(sts2_core::seed_bases);
-    let engine_player_seed = v.seed_offset(run_seed, 0);
+    let engine_player_seed = ver.seed_offset(run_seed, 0);
     let player_seed = bases.map_or(engine_player_seed, |b| b.player_seed);
     let act_base = bases.map_or(run_seed, |b| b.full_hash);
-    let h = |name: &str| v.seed_hash(name);
+    let h = |name: &str| ver.seed_hash(name);
     let mut streams = Map::new();
 
     // Run-level streams (`RunRngType`, in the oracle's enum order).
@@ -266,7 +266,7 @@ pub fn rng_dump(
             stream(
                 "run",
                 "run_seed + hash(name)",
-                v.seed_add(run_seed, h(name)),
+                ver.seed_add(run_seed, h(name)),
                 Some(live),
                 n,
                 sch,
@@ -285,7 +285,7 @@ pub fn rng_dump(
             stream(
                 "player",
                 "player_seed + hash(name)",
-                v.seed_add(player_seed, h(name)),
+                ver.seed_add(player_seed, h(name)),
                 Some(live),
                 n,
                 sch,
@@ -298,7 +298,7 @@ pub fn rng_dump(
         stream(
             "derived",
             "hash(seed_string) + hash(\"act_selection\")",
-            v.seed_add(act_base, h("act_selection")),
+            ver.seed_add(act_base, h("act_selection")),
             None,
             n,
             sch,
@@ -306,7 +306,7 @@ pub fn rng_dump(
     );
     for a in 1..=3 {
         let nm = format!("act_{a}_map");
-        let seed = v.seed_add(run_seed, h(&nm));
+        let seed = ver.seed_add(run_seed, h(&nm));
         streams.insert(
             nm,
             stream(
@@ -356,7 +356,7 @@ pub fn rng_dump(
             stream(
                 "derived",
                 "run_seed + slot + hash(event_id)",
-                v.content_seed(run_seed, 0, eid),
+                ver.content_seed(run_seed, 0, eid),
                 live,
                 n,
                 sch,
@@ -374,7 +374,7 @@ pub fn rng_dump(
             stream(
                 "derived",
                 "run_seed + total_floor + hash(encounter_id), total_floor = current+1",
-                v.content_seed(run_seed, floor, &enc_id),
+                ver.content_seed(run_seed, floor, &enc_id),
                 None,
                 n,
                 sch,
