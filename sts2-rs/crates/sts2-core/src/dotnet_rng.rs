@@ -55,6 +55,53 @@ pub fn canonicalize_seed(seed: &str) -> String {
     folded.trim().to_string()
 }
 
+/// Seed bases derived from a run's seed string (v0.111.0), for diagnostics.
+///
+/// Instrumentation only: nothing in the engine reads this. It spells out the
+/// bases the C# game derives from one seed string so a dump can report them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeedBases<'a> {
+    /// `RunRngSet.Seed`: base of the 12 run streams, maps, events, encounters.
+    pub run_seed: u64,
+    /// `PlayerRngSet` base (`H(full string) + slot 0`): rewards/shops/transformations.
+    pub player_seed: u64,
+    /// `H(full string)`: also the `act_selection` base (`StartRunLobby.cs:468`).
+    pub full_hash: u64,
+    /// `"old"` for migrated seed strings, else `""`.
+    pub prefix: &'a str,
+}
+
+/// Derive the run and player seed bases of a v0.111.0 seed string.
+///
+/// The lowercase `old` test runs on `raw` **before** normalization and is
+/// case-sensitive (`OLD…` does not match; `RunRngSet.cs:104-116`). `old`
+/// seeds: `run_seed` is the legacy 32-bit hash of the rest, zero-extended; the
+/// player base and `act_selection` still use the XxHash64 of the **whole**
+/// string, prefix included (`Player.cs:332`). Other seeds are canonicalized
+/// first (`SeedHelper.CanonicalizeSeed`) and every base is the XxHash64 of the
+/// canonical string.
+#[must_use]
+pub fn seed_bases(raw: &str) -> SeedBases<'_> {
+    use crate::GameVersion::V0_111_0 as V;
+    if let Some(rest) = raw.strip_prefix("old") {
+        let full_hash = V.seed_hash(raw);
+        SeedBases {
+            run_seed: u64::from(deterministic_hash_code(rest) as u32),
+            player_seed: full_hash,
+            full_hash,
+            prefix: &raw[..3],
+        }
+    } else {
+        let full_hash = V.seed_hash(&canonicalize_seed(raw));
+        SeedBases {
+            run_seed: full_hash,
+            player_seed: full_hash,
+            full_hash,
+            prefix: "",
+        }
+    }
+}
+
 /// Whether per-read RNG tracing is on (env `STS2_TRACE_RNG` set). Cached
 /// once so the gate is a single relaxed load on the hot `next_int` path —
 /// zero overhead when unset. Symmetric with the C# headless `RngTracePatches`
@@ -152,6 +199,12 @@ impl MegaRandom {
             s2: 0,
             s3: 0,
         }
+    }
+
+    /// The four state words `[s0, s1, s2, s3]` (read-only, for dumps).
+    #[must_use]
+    pub const fn state(&self) -> [u64; 4] {
+        [self.s0, self.s1, self.s2, self.s3]
     }
 
     /// Core Xoshiro256\*\* step (`MegaRandom.NextULongInner`). Returns the next
@@ -427,6 +480,13 @@ impl Rng {
     #[must_use]
     pub const fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// The four xoshiro256** state words of the live generator (dump/debug
+    /// accessor; the stream position, not the seed).
+    #[must_use]
+    pub const fn state(&self) -> [u64; 4] {
+        self.base.state()
     }
 
     /// Number of public `next_*` calls so far.
@@ -907,5 +967,36 @@ mod tests {
         for _ in 0..50 {
             assert_eq!(a.next_int(0, 1_000), b.next_int(0, 1_000));
         }
+    }
+
+    /// Oracle vectors (`stage1_vectors.json`, oracle f79d3a9, game 0.111.0):
+    /// the run and player bases of a plain seed and of a migrated `old` seed.
+    #[test]
+    fn seed_bases_match_the_oracle_vectors() {
+        let b = seed_bases("P0A0");
+        assert_eq!(b.run_seed, 10_883_704_133_362_413_376);
+        assert_eq!(b.player_seed, b.run_seed);
+        assert_eq!(b.full_hash, b.run_seed);
+        assert_eq!(b.prefix, "");
+
+        let b = seed_bases("oldP0A0");
+        assert_eq!(b.run_seed, 273_692_109);
+        assert_eq!(b.player_seed, 15_676_685_915_450_073_139);
+        assert_eq!(b.full_hash, b.player_seed);
+        assert_eq!(b.prefix, "old");
+    }
+
+    /// The lowercase `old` test runs on the raw string; `OLD…` is a plain
+    /// seed that canonicalization turns into `0LD…`.
+    #[test]
+    fn seed_bases_old_prefix_is_judged_before_normalisation() {
+        let up = seed_bases("OLDP0A0");
+        assert_eq!(up.prefix, "");
+        assert_eq!(up.run_seed, up.player_seed);
+        assert_eq!(
+            up.run_seed,
+            crate::GameVersion::V0_111_0.seed_hash("0LDP0A0")
+        );
+        assert_eq!(seed_bases("old").run_seed, u64::from(deterministic_hash_code("") as u32));
     }
 }
