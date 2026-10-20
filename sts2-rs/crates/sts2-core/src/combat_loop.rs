@@ -9173,6 +9173,21 @@ pub(crate) fn resolve_auto_played_card_at_target(
         .map(|p| (p.id, p.kind, p.counter, p.skip_next_tick))
         .collect();
 
+    // R1c (triage seeds LSA_53, 73): the relic-side `BeforeCardPlayed` channel also fires for auto-plays.
+    // `CardCmd.AutoPlay` builds `ResourceInfo { EnergySpent = 0, EnergyValue = card.EnergyCost.GetAmountToSpend() }`
+    // (CardCmd.cs, AutoPlay tail), so IntimidatingHelmet (`Resources.EnergyValue >= 2`, IntimidatingHelmet.cs:25)
+    // still grants its 4 block for an auto-played >=2-cost card (Havoc, an Imbued card at combat start).
+    // The hand-play path dispatches this at ~6851; the auto-play path skipped it.
+    if state.game_version >= crate::GameVersion::V0_111_0 && relic_channel_live(state, PlannedChannel::BeforeCardPlayed) {
+        let auto_ctx = crate::relic_effects::CardEventCtx {
+            card_id: state.cards[top_idx].card_id,
+            card_uid: Some(top_uid),
+            target: target_uid,
+            card_tags: state.cards[top_idx].tags,
+            energy_spent: auto_resolved_cost,
+        };
+        let _ = crate::relic_effects::dispatch_before_card_played(state, &auto_ctx);
+    }
     crate::hooks::dispatch_before_card_played_powers(
         state,
         auto_resolved_cost,

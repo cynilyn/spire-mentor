@@ -189,3 +189,36 @@ fn burning_sticks_latch_is_rearmed_at_combat_end_v0111() {
 fn burning_sticks_latch_stays_spent_v0107_unchanged() {
     assert_eq!(burning_sticks_latch_after_combat(V107), (1, 1));
 }
+
+// ── Intimidating Helmet on auto-played cards (seeds LSA_53, 73) ────────────────────────────────────
+
+/// Havoc (cost 1) auto-plays the draw pile's top card, a Bash (cost 2). Returns the player's block afterwards.
+fn helmet_block_after_havoc(version: GameVersion) -> i32 {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    let _ = add_enemy(&mut state, 2, 100);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::IntimidatingHelmet,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let bash = new_card(&mut state, CardId::Bash, false);
+    state.player.draw.push(bash);
+    let i = push_hand(&mut state, CardId::Havoc, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    state.player.block
+}
+
+/// `CardCmd.AutoPlay` passes `EnergyValue = card.EnergyCost.GetAmountToSpend()` (2 for Bash) with `EnergySpent = 0`;
+/// `IntimidatingHelmet.BeforeCardPlayed` (IntimidatingHelmet.cs:25) tests `EnergyValue >= 2`: block 4 for the
+/// auto-played Bash. (Havoc itself costs 1: no block from the hand play.)
+#[test]
+fn intimidating_helmet_fires_for_auto_played_card_v0111() {
+    assert_eq!(helmet_block_after_havoc(V111), 4);
+}
+
+#[test]
+fn intimidating_helmet_ignores_auto_play_v0107_unchanged() {
+    assert_eq!(helmet_block_after_havoc(V107), 0);
+}
