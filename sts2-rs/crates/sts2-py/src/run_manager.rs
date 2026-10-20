@@ -164,9 +164,7 @@ fn seed_text_to_hash(
     version: sts2_core::GameVersion,
     raw_seed_hash: bool,
 ) -> std::borrow::Cow<'_, str> {
-    if raw_seed_hash
-        || (version >= sts2_core::GameVersion::V0_111_0 && raw.starts_with("old"))
-    {
+    if raw_seed_hash || (version >= sts2_core::GameVersion::V0_111_0 && raw.starts_with("old")) {
         std::borrow::Cow::Borrowed(raw)
     } else {
         std::borrow::Cow::Owned(sts2_core::canonicalize_seed(raw))
@@ -220,7 +218,9 @@ impl PyRunManager {
         // is applied below via `with_run_seed`; `effective_seed` is its i32
         // view). An integer `seed` is a `uint` master in both builds.
         let master_seed: u64 = match string_seed {
-            Some(s) => game_version.run_seed_hash(&seed_text_to_hash(s, game_version, raw_seed_hash)),
+            Some(s) => {
+                game_version.run_seed_hash(&seed_text_to_hash(s, game_version, raw_seed_hash))
+            }
             None => u64::from(seed as u32),
         };
         let effective_seed = master_seed as i32;
