@@ -1177,9 +1177,11 @@ pub struct RolloutConfig {
 ///
 /// Not an engine path: it only seeds the advisor's non-parity rollouts and is
 /// echoed to the frontend as JSON, so it is kept to 31 bits (JS-safe,
-/// non-negative). It folds the HIGH 32 bits of the run seed into the low ones
-/// first, so run seeds that differ only in the high word do not get the same
-/// default (the plain `& 0x7FFF_FFFF` mask used to drop them).
+/// non-negative). Seeds stay full-width everywhere else; this default is an
+/// intentional 64-to-31-bit compression, so distinct run seeds can still
+/// collide. It folds the HIGH 32 bits into the low ones before masking, so the
+/// common case of run seeds differing only in the high word is not collapsed
+/// (the plain `& 0x7FFF_FFFF` mask dropped them).
 fn default_advisor_seed(run_seed: u64) -> i64 {
     let folded = (run_seed ^ (run_seed >> 32)) & 0x7FFF_FFFF;
     i64::try_from(folded).unwrap_or(0) ^ 0x5EED

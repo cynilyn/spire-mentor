@@ -5235,8 +5235,8 @@ kind = "VANTOM"
 
     /// `rollouts` seeds playout k from the whole u64 base: two bases that differ
     /// only in the high word get different playout RNGs for every k. (The
-    /// aggregate `rollouts` result is seed-insensitive — random play never wins
-    /// and always runs 16 turns — so the derivation is tested directly.)
+    /// aggregate `rollouts` result is seed-insensitive — passive EndTurn-only play never
+    /// wins and always runs 16 turns — so the derivation is tested directly.)
     #[test]
     fn rollout_playout_rng_keeps_the_high_32_bits() {
         let lo = 7_u64;
