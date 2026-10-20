@@ -2669,6 +2669,7 @@ impl RunState {
         // treasure-room pull. Stackable relics never live in the grab
         // bags, so this is a no-op for them (no stackable gate needed).
         self.remove_relic_from_shared_grab_bag(relic_id);
+        self.remove_relic_from_player_grab_bag(relic_id);
         // Bead `sts2-rs-pfiwm`: initialize the run-side counter for
         // countdown relics at pickup, mirroring C# constructing the
         // relic instance with its `_combatsLeft` seeded (EmberTea = 5,
@@ -3726,11 +3727,12 @@ impl RunState {
         filter: &impl Fn(RelicId) -> bool,
         excluded: &[RelicId],
     ) -> Option<(Option<RelicRarity>, usize, RelicId)> {
-        let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
+        // No ownership exclusion: C# `PullFromFront` (`RelicGrabBag.cs:103-121`) only
+        // applies `filter`; owned relics are already gone because `RelicCmd.Obtain`
+        // removes them from the bag (`RelicCmd.cs:29`, see `obtain_relic`).
         let ctx = self.relic_allow_ctx();
         let eligible = |id: &RelicId| {
-            !owned.contains(id)
-                && !excluded.contains(id)
+            !excluded.contains(id)
                 && crate::relic_allowed::relic_is_allowed(*id, &ctx)
                 && filter(*id)
         };
@@ -3761,6 +3763,15 @@ impl RunState {
     /// removed here or it shifts the later treasure pull. The owned-skip
     /// on the treasure side only covers relics the player actually
     /// obtained, not ones merely pulled-and-offered.
+    fn remove_relic_from_player_grab_bag(&mut self, relic_id: RelicId) {
+        // `RelicCmd.cs:29`: `player.RelicGrabBag.Remove(relic)` on obtain.
+        self.relic_grab_bag.retain(|&r| r != relic_id);
+        for bucket in self.relic_grab_bag_by_rarity.values_mut() {
+            bucket.retain(|&r| r != relic_id);
+        }
+        self.relic_grab_bag_fallback.retain(|&r| r != relic_id);
+    }
+
     fn remove_relic_from_shared_grab_bag(&mut self, relic_id: RelicId) {
         for bucket in self.shared_relic_grab_bag_by_rarity.values_mut() {
             bucket.retain(|&r| r != relic_id);
@@ -3791,7 +3802,9 @@ impl RunState {
             self.refresh_shared_relic_rarity(rarity);
             self.remove_disallowed_relics_from_shared_deques();
         }
-        let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
+        // No ownership exclusion (`RelicGrabBag.cs:103-121`,
+        // `TreasureRoomRelicSynchronizer.cs:87`): an owned relic that a refill
+        // re-appended is pulled like any other.
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self
                 .shared_relic_grab_bag_by_rarity
@@ -3799,8 +3812,8 @@ impl RunState {
             else {
                 continue;
             };
-            if let Some(idx) = bucket.iter().position(|id| !owned.contains(id)) {
-                return Some(bucket.remove(idx));
+            if !bucket.is_empty() {
+                return Some(bucket.remove(0));
             }
         }
         None
@@ -3833,15 +3846,11 @@ impl RunState {
         filter: impl Fn(RelicId) -> bool,
     ) -> Option<(RelicId, RelicRarity)> {
         self.remove_disallowed_relics_from_player_deques();
-        let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get_mut(&candidate_rarity) else {
                 continue;
             };
-            if let Some(idx) = bucket
-                .iter()
-                .rposition(|id| !owned.contains(id) && filter(*id))
-            {
+            if let Some(idx) = bucket.iter().rposition(|id| filter(*id)) {
                 let picked = bucket.remove(idx);
                 self.relic_grab_bag.retain(|&r| r != picked);
                 self.remove_relic_from_shared_grab_bag(picked);
@@ -3851,7 +3860,7 @@ impl RunState {
         if let Some(idx) = self
             .relic_grab_bag_fallback
             .iter()
-            .rposition(|id| !owned.contains(id) && filter(*id))
+            .rposition(|id| filter(*id))
         {
             let picked = self.relic_grab_bag_fallback.remove(idx);
             self.relic_grab_bag.retain(|&r| r != picked);
@@ -5582,6 +5591,42 @@ mod tests {
         let _ = rs.pop_relic_from_shared_grab_bag(RelicRarity::Common);
         assert_eq!(rs.rng.up_front.counter(), up_front);
         assert_eq!(rs.rng.rewards.counter(), rewards);
+    }
+
+    /// Codex review: C# `PullFromFront` has no ownership exclusion
+    /// (`RelicGrabBag.cs:103-121`, `TreasureRoomRelicSynchronizer.cs:87`), so a
+    /// refill that re-appends an OWNED relic hands it out.
+    #[test]
+    fn rl_c10_shared_pull_after_refill_does_not_skip_owned_relics() {
+        let mut rs = RunState::new();
+        rs.shared_relic_grab_bag_original =
+            bag(&[(RelicRarity::Common, &[RelicId::Anchor, RelicId::BloodVial])]);
+        rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
+        rs.relics.push(RelicId::Anchor);
+        assert_eq!(
+            rs.pop_relic_from_shared_grab_bag(RelicRarity::Common),
+            Some(RelicId::Anchor)
+        );
+    }
+
+    /// Owned relics leave the PLAYER bag at obtain (`RelicCmd.cs:29`), which
+    /// replaces the old owned-skip in the pull.
+    #[test]
+    fn obtain_relic_strips_the_player_bag_and_pulls_do_not_skip_owned() {
+        let mut rs = RunState::new();
+        rs.relic_grab_bag_by_rarity =
+            bag(&[(RelicRarity::Common, &[RelicId::Anchor, RelicId::BloodVial])]);
+        rs.relic_grab_bag = vec![RelicId::Anchor, RelicId::BloodVial];
+        rs.obtain_relic(RelicId::Anchor);
+        assert_eq!(
+            rs.relic_grab_bag_by_rarity[&RelicRarity::Common],
+            vec![RelicId::BloodVial]
+        );
+        assert_eq!(rs.relic_grab_bag, vec![RelicId::BloodVial]);
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Common),
+            Some(RelicId::BloodVial)
+        );
     }
 
     /// Player bags are built without `refreshAllowed` (`RelicGrabBag()`,

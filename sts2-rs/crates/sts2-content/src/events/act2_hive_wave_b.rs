@@ -123,9 +123,11 @@ fn relic_trader_stock(state: &RunState) -> Vec<RelicId> {
     let mut stock: Vec<RelicId> = Vec::with_capacity(RELIC_TRADER_TRADE_COUNT);
     for _ in 0..RELIC_TRADER_TRADE_COUNT {
         let rarity = sts2_core::runstate::roll_relic_rarity(&mut rewards);
-        let Some(id) = state.peek_relic_from_grab_bag_where(rarity, |_| true, &stock) else {
-            break;
-        };
+        // An exhausted bag shows the Circlet fallback C# stored before the options
+        // were built (`RelicTrader.cs:68,117,122,127`); still no RNG is consumed.
+        let id = state
+            .peek_relic_from_grab_bag_where(rarity, |_| true, &stock)
+            .unwrap_or(RelicId::Circlet);
         stock.push(id);
     }
     stock
@@ -1184,12 +1186,16 @@ pub const WONGO_MYSTERY_COMBAT_COUNT: i32 = 5;
 ///
 /// Read-only, for the option that names it. [`wongo_take_featured`] commits
 /// the same pull.
-fn wongo_featured_relic(state: &RunState) -> Option<RelicId> {
-    state.peek_relic_from_grab_bag_where(
-        sts2_core::runstate::RelicRarity::Rare,
-        sts2_core::shop::is_relic_allowed_in_shops,
-        &[],
-    )
+fn wongo_featured_relic(state: &RunState) -> RelicId {
+    // An empty pool shows Circlet, as `PullNextRelicFromFront` would
+    // (`WelcomeToWongos.cs:80`, `RelicFactory.cs:32`).
+    state
+        .peek_relic_from_grab_bag_where(
+            sts2_core::runstate::RelicRarity::Rare,
+            sts2_core::shop::is_relic_allowed_in_shops,
+            &[],
+        )
+        .unwrap_or(RelicId::Circlet)
 }
 
 /// Consume the featured relic from the bag, whether or not it is bought.
@@ -1366,15 +1372,13 @@ const WELCOME_TO_WONGOS_OPTIONS: &[EventOptionSpec] = &[
             EventVarSpec::Int(WONGO_FEATURED_COST as i64),
         )],
         vars_fn: Some(|s| {
-            wongo_featured_relic(s)
-                .map(|id| {
-                    (
-                        "RandomRelic",
-                        sts2_core::EventVar::Text(format!("{}.title", id.to_python_name())),
-                    )
-                })
-                .into_iter()
-                .collect()
+            vec![(
+                "RandomRelic",
+                sts2_core::EventVar::Text(format!(
+                    "{}.title",
+                    wongo_featured_relic(s).to_python_name()
+                )),
+            )]
         }),
         title_vars_fn: None,
         handler: wongo_featured,
@@ -1917,11 +1921,31 @@ mod tests {
         assert!(!rs.relics.contains(&RelicId::AmethystAubergine));
     }
 
+    /// Exhausted bags: the previews show Circlet (the model C# stores before the
+    /// options are built) and consume no RNG, so preview and commit agree.
+    #[test]
+    fn previews_show_circlet_from_exhausted_bags_without_rng() {
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = trader_state();
+        rs.relic_grab_bag_by_rarity.clear();
+        let rewards = rs.rng.rewards.counter();
+        assert_eq!(
+            relic_trader_stock(&rs),
+            vec![RelicId::Circlet; RELIC_TRADER_TRADE_COUNT]
+        );
+        assert_eq!(wongo_featured_relic(&rs), RelicId::Circlet);
+        assert_eq!(rs.rng.rewards.counter(), rewards, "previews read no RNG");
+        // The commit hands out exactly what the preview named.
+        let taken = relic_trader_take_stock(&mut rs);
+        assert_eq!(taken, vec![RelicId::Circlet; RELIC_TRADER_TRADE_COUNT]);
+        assert_eq!(wongo_take_featured(&mut rs), RelicId::Circlet);
+    }
+
     #[test]
     fn wongo_featured_buys_the_relic_the_option_named() {
         crate::cards::dispatch::ensure_installed();
         let mut rs = wongo_state();
-        let featured = wongo_featured_relic(&rs).expect("a rare on the counter");
+        let featured = wongo_featured_relic(&rs);
         run(&WELCOME_TO_WONGOS, "featured", &mut rs);
         assert_eq!(rs.gold, 300);
         assert!(rs.relics.contains(&featured), "{featured:?} bought");
@@ -1934,7 +1958,7 @@ mod tests {
         crate::cards::dispatch::ensure_installed();
         for option in ["bargain_bin", "mystery", "leave"] {
             let mut rs = wongo_state();
-            let featured = wongo_featured_relic(&rs).expect("a rare on the counter");
+            let featured = wongo_featured_relic(&rs);
             run(&WELCOME_TO_WONGOS, option, &mut rs);
             assert!(
                 !rs.relic_grab_bag_by_rarity
