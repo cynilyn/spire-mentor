@@ -520,8 +520,17 @@ class Game:
         ready = self._read()
         if ready.get("type") != "ready":
             raise RuntimeError(f"Expected ready, got: {ready}")
-        # Builds before GH #789 do not report a version; they are all v0.107.1.
-        built_for = ready.get("game_version", DEFAULT_GAME_VERSION)
+        # Builds before GH #789 do not report a version; they are all v0.107.1 --
+        # except a pinned external oracle (STS2_ORACLE=1: the caller supplies the
+        # binary through STS2_HEADLESS_BIN and vouches for its build), whose
+        # version is the one selected through STS2_GAME_VERSION.
+        built_for = ready.get("game_version")
+        if built_for is None:
+            built_for = (
+                GAME_VERSION
+                if os.environ.get("STS2_ORACLE") == "1"
+                else DEFAULT_GAME_VERSION
+            )
         if built_for != GAME_VERSION:
             self.close()
             raise RuntimeError(
