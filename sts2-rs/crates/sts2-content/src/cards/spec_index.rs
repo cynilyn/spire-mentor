@@ -4007,7 +4007,11 @@ mod tests {
         use sts2_core::runstate::{RelicRarity, RunState};
         let mut rs = RunState::new();
         let shops0 = rs.rng.shops.counter();
-        let entry = merchant_roll_relic_slot(&mut rs, RelicRarity::Common, &std::collections::BTreeSet::default());
+        let entry = merchant_roll_relic_slot(
+            &mut rs,
+            RelicRarity::Common,
+            &std::collections::BTreeSet::default(),
+        );
         assert_eq!(entry.relic_id, Some(sts2_core::relics::RelicId::Circlet));
         assert_eq!(entry.price, 1);
         assert_eq!(rs.rng.shops.counter() - shops0, 1);
