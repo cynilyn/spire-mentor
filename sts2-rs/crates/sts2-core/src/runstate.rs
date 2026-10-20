@@ -4326,6 +4326,33 @@ impl RunState {
     /// channel picks coords off the post-swap layout (FurCoat). Beads
     /// `sts2-rs-fchti` (early channel) + `sts2-rs-eboqq` (late channel).
     pub fn modify_generated_map(&mut self, act_map: &mut crate::map::ActMap, act_index: u8) {
+        // v0.111.0 `SpoilsMap.ModifyGeneratedMap` (`SpoilsMap.cs:50-62`): a
+        // SpoilsMap in the deck swaps act 2's map (`SpoilsActIndex` is always 1,
+        // 0-based) for `new SpoilsActMap(runState)`, seeded
+        // `Rng(seed, "spoils_map")`. Cards are hook listeners ahead of relics
+        // (`RunState.IterateHookListeners`), so a GoldenCompass layout swap
+        // below still wins.
+        if self.game_version >= crate::GameVersion::V0_111_0
+            && act_index == 2
+            && self
+                .master_deck
+                .iter()
+                .any(|c| c.card_id == crate::cards::CardId::SpoilsMap)
+        {
+            let num_rooms = self
+                .acts
+                .get(usize::from(act_index).saturating_sub(1))
+                .map_or(crate::acts::DEFAULT_ACT_NUM_ROOMS, |a| {
+                    i32::from(a.num_rooms)
+                });
+            let mut rng = self.rng.with_name_stream("spoils_map");
+            *act_map = crate::map_generator::generate_spoils_act_map(
+                num_rooms,
+                &mut rng,
+                i32::from(self.ascension_level),
+                i32::from(act_index),
+            );
+        }
         let _ = crate::run_effects::dispatch_modify_generated_map(self, act_map, act_index);
         let _ = crate::run_effects::dispatch_modify_generated_map_late(self, act_map, act_index);
     }
@@ -5745,6 +5772,36 @@ mod tests {
                 .contains_key(&MapCoord::new(99, 99)),
             "post-generate map must carry the listener's mutation"
         );
+    }
+
+    /// v0.111.0 `SpoilsMap.ModifyGeneratedMap`: with the card in the deck,
+    /// act 2's map becomes the hourglass `SpoilsActMap` (one treasure node on
+    /// the treasure row); other acts and 0.107.1 keep the map untouched.
+    #[test]
+    fn spoils_map_card_swaps_act_two_map_on_v0111_only() {
+        use crate::map::ActMap;
+        let rooms = crate::acts::DEFAULT_ACT_NUM_ROOMS;
+        let spoils = {
+            let mut c = Card::pod_defaults();
+            c.card_id = CardId::SpoilsMap;
+            c
+        };
+        let mut rs = RunState::default();
+        rs.game_version = crate::GameVersion::V0_111_0;
+        rs.master_deck.push(spoils);
+
+        let mut swapped = ActMap::new(rooms);
+        rs.modify_generated_map(&mut swapped, 2);
+        assert_eq!(swapped.get_row(swapped.map_length - 7).len(), 1);
+
+        let mut act1 = ActMap::new(rooms);
+        rs.modify_generated_map(&mut act1, 1);
+        assert!(act1.points.is_empty(), "only act 2 is swapped");
+
+        rs.game_version = crate::GameVersion::V0_107_1;
+        let mut old = ActMap::new(rooms);
+        rs.modify_generated_map(&mut old, 2);
+        assert!(old.points.is_empty(), "0.107.1 never swaps");
     }
 
     // ── Bead sts2-rs-2mjei: enter_room auto-invocation ──────────────────

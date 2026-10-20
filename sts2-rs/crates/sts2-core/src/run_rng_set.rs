@@ -294,6 +294,14 @@ impl RunRngSet {
         self.named_at(0, name)
     }
 
+    /// C# `new Rng(RunState.Rng.Seed, name)` — the two-argument constructor
+    /// (e.g. `SpoilsActMap`'s `"spoils_map"`), a fresh stream each call; the
+    /// same derivation [`Self::map_rng`] uses for `act_N_map`.
+    #[must_use]
+    pub fn with_name_stream(&self, name: &str) -> Rng {
+        Rng::with_name_for(self.game_version, self.seed, name)
+    }
+
     /// [`Self::named`] with a signed `int` offset folded into the master seed
     /// first: `Rng(Seed + offset + hash(name))` — e.g. the per-encounter roster
     /// RNG, whose offset is `TotalFloor` (`EncounterModel.GenerateMonstersWithSlots`).
