@@ -155,7 +155,7 @@ pub mod potion_effects;
 pub mod runstate;
 pub use runstate::{
     CardReward, PendingDeckEnchant, PendingDeckTransform, PotionReward, RelicRarity, RelicReward,
-    Reward, Room, RoomType, RunState, UnportedEffect,
+    Reward, Room, RoomType, RunState, UnportedEffect, UnportedEffectLog,
 };
 
 // Bead sts2-rs-6ynt.4.1 (P7 events framework): Run-side events POD

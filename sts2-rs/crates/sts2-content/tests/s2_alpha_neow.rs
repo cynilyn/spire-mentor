@@ -188,6 +188,16 @@ fn new_curse_relics_leave_unported_marker_and_no_state_change() {
         assert_eq!((rs.gold, rs.current_hp, rs.max_hp), (gold, hp, max_hp));
         assert_eq!(rs.potions, potions, "{relic:?}: no potion change");
     }
+    // The marker is excluded from equality: clearing only it keeps the state equal.
+    let mut rm = new_ironclad_run_manager(0);
+    rm.run_state.obtain_relic(RelicId::DowsingRod);
+    let mut cleared = rm.run_state.clone();
+    cleared.unported_effects = sts2_core::runstate::UnportedEffectLog::default();
+    assert!(cleared.unported_effects.is_empty());
+    assert_eq!(
+        rm.run_state, cleared,
+        "unported_effects must not affect RunState equality"
+    );
     // A ported relic leaves no marker.
     let mut rm = new_ironclad_run_manager(0);
     rm.run_state.obtain_relic(RelicId::NeowsTalisman);
@@ -213,19 +223,23 @@ fn new_curse_relic_ids_and_names() {
 /// Find a `Rewards` stream seed whose `NeowsBones` shuffle puts `NewLeaf`
 /// first and `ScrollBoxes` second (the C1Y118 chain). Replays exactly what
 /// `listener_neows_bones` does: `Rewards.Shuffle(valid_pool)` (`NeowsBones.cs:41`).
-fn rewards_seed_for_new_leaf_then_scroll_boxes() -> u64 {
+fn rewards_seed_for_first_then_scroll_boxes(first: NeowRelic) -> u64 {
     (0..2_000_000_u64)
         .find(|&s| {
             let mut pool = neows_bones_valid_pool();
             DotNetRng::new(s).shuffle(&mut pool);
-            pool[0] == NeowRelic::NewLeaf && pool[1] == NeowRelic::ScrollBoxes
+            pool[0] == first && pool[1] == NeowRelic::ScrollBoxes
         })
-        .expect("a seed with the NewLeaf,ScrollBoxes shuffle exists")
+        .expect("a seed with the requested shuffle exists")
 }
 
 fn neows_bones_new_leaf_scroll_boxes_run() -> sts2_core::RunManager {
+    neows_bones_first_then_scroll_boxes_run(NeowRelic::NewLeaf)
+}
+
+fn neows_bones_first_then_scroll_boxes_run(first: NeowRelic) -> sts2_core::RunManager {
     sts2_content::relics::dispatch::ensure_installed();
-    let seed = rewards_seed_for_new_leaf_then_scroll_boxes();
+    let seed = rewards_seed_for_first_then_scroll_boxes(first);
     let mut rm = new_ironclad_run_manager(7).with_neow_start();
     rm.run_state.interactive_card_transform = true;
     rm.run_state.direct_event_relic_grant = true;
@@ -297,4 +311,34 @@ fn neows_bones_new_leaf_then_scroll_boxes_opens_the_bundle_pick() {
     for c in chosen {
         assert!(deck.contains(&c), "bundle card {c:?} added to the deck");
     }
+}
+
+/// Reward-first variant: NeowsBones -> [LostCoffer, ScrollBoxes]. LostCoffer
+/// opens a card reward; ScrollBoxes is owed until that pick resolves, then its
+/// bundle screen must open (the `advance_after_card_reward` surfacing site).
+#[test]
+fn neows_bones_reward_first_then_scroll_boxes_opens_the_bundle_pick() {
+    let mut rm = neows_bones_first_then_scroll_boxes_run(NeowRelic::LostCoffer);
+    assert_eq!(
+        rm.take_action(RunAction::EventChoice { idx: 2 }),
+        ActionResult::Advanced
+    );
+    assert!(rm.run_state.relics.contains(&RelicId::LostCoffer));
+    assert!(!rm.run_state.relics.contains(&RelicId::ScrollBoxes));
+    assert_eq!(
+        rm.phase(),
+        Phase::CardReward,
+        "LostCoffer card reward is open"
+    );
+    assert!(rm.card_reward_bundles().is_none());
+
+    assert_eq!(
+        rm.take_action(RunAction::PickCardReward { idx: Some(0) }),
+        ActionResult::Advanced
+    );
+    assert!(rm.run_state.relics.contains(&RelicId::ScrollBoxes));
+    assert_eq!(rm.phase(), Phase::CardReward, "bundle screen must be open");
+    let bundles = rm.card_reward_bundles().expect("bundle_select is surfaced");
+    assert_eq!(bundles.len(), 2);
+    assert!(bundles.iter().all(|b| b.len() == 3));
 }

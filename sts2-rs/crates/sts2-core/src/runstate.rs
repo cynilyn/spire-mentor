@@ -960,6 +960,29 @@ pub struct UnportedEffect {
     pub csharp_effect: &'static str,
 }
 
+/// Storage for [`RunState::unported_effects`]. Its `PartialEq` is always true
+/// (same pattern as `EventLog`): the marker is diagnostic metadata and must not
+/// take part in `RunState` equality, so a run that acquired an unported relic
+/// still compares equal to an otherwise identical one (search dedup,
+/// determinism checks, parity comparison).
+#[derive(Clone, Debug, Default)]
+pub struct UnportedEffectLog(pub Vec<UnportedEffect>);
+
+impl PartialEq for UnportedEffectLog {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for UnportedEffectLog {}
+
+impl std::ops::Deref for UnportedEffectLog {
+    type Target = Vec<UnportedEffect>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunState {
     /// Reward queue. The combat-end / rest-site / event-room reward
@@ -1469,7 +1492,7 @@ pub struct RunState {
     /// never classified as an "explained" mismatch by itself. A separate
     /// reporting layer may read it to attach the expected C#-side difference to
     /// a mismatch the (frozen) harness reports.
-    pub unported_effects: Vec<UnportedEffect>,
+    pub unported_effects: UnportedEffectLog,
 
     /// Relics a multi-grant listener still owes, granted one at a time only
     /// AFTER the previously-granted relic's interactive `AfterObtained`
@@ -1945,7 +1968,7 @@ impl Default for RunState {
             pending_post_removal_hp_loss: 0,
             pending_post_pick_cards: Vec::new(),
             pending_neows_bones_curses: 0,
-            unported_effects: Vec::new(),
+            unported_effects: UnportedEffectLog::default(),
             pending_post_pick_relic_grants: Vec::new(),
             interactive_card_upgrade: false,
             pending_deck_upgrades: 0,
@@ -2760,7 +2783,7 @@ impl RunState {
         // C# would run an `AfterObtained` effect we do not port. No state
         // change beyond the record itself.
         if let Some(effect) = relic_id.unported_after_obtained() {
-            self.unported_effects.push(UnportedEffect {
+            self.unported_effects.0.push(UnportedEffect {
                 relic: relic_id,
                 csharp_effect: effect,
             });
