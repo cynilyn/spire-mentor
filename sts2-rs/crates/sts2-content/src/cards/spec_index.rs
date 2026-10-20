@@ -1029,6 +1029,11 @@ pub fn roll_infested_touch_core_card(rs: &mut RunState) -> Option<CardId> {
 /// `RunManager::drain_pending_rewards` (PARITY132).
 #[must_use]
 pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
+    // A BrainLeech-Rip reroll (`RerollSpec::Colorless`) reuses the reward's own
+    // colorless `ForNonCombatWithDefaultOdds` options.
+    if rs.card_reward_gen_ctx.is_some_and(|c| c.colorless) {
+        return roll_colorless_reward_options_no_upgrade(rs, 3);
+    }
     let character = rs.character_id;
     roll_reward_options_base_odds(rs, 3, true, &[character], false)
 }

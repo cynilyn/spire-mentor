@@ -653,6 +653,8 @@ pub struct RunManager {
     /// Late `ModifyRewards` pass, `Driftwood`). Cleared once the reward is
     /// resolved or rerolled.
     card_reward_can_reroll: bool,
+    /// How the current reward rerolls (its own `RerollOptions`).
+    card_reward_reroll: crate::runstate::RerollSpec,
     /// When `Some`, the current `Phase::CardReward` offering is a Scroll
     /// Boxes *bundle* pick rather than a single-card reward: each inner
     /// `Vec<CardId>` is one pack, the player picks one pack index and **all**
@@ -870,6 +872,7 @@ impl RunManager {
             card_reward_upgraded: Vec::new(),
             card_reward_enchantments: Vec::new(),
             card_reward_can_reroll: false,
+            card_reward_reroll: crate::runstate::RerollSpec::Unsupported,
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
             pending_boss_act_advance: false,
@@ -2394,7 +2397,8 @@ impl RunManager {
     /// Late `CardReward.CanReroll` flag is read back off the first one).
     fn modify_combat_rewards(&mut self, room_type: crate::runstate::RoomType) {
         use crate::runstate::{CardReward, CardRewardGenCtx, Reward};
-        let own_card = CardReward::from_options(self.card_reward_options.clone());
+        let own_card = CardReward::from_options(self.card_reward_options.clone())
+            .with_reroll(crate::runstate::RerollSpec::Room);
         let mut rewards: Vec<Reward> = vec![Reward::Card(own_card)];
         // The elite relic was queued (rolled) but not collected yet.
         if let Some(first) = self.run_state.relic_rewards.first() {
@@ -2408,6 +2412,7 @@ impl RunManager {
         );
         if let Some(Reward::Card(c)) = rewards.first() {
             self.card_reward_can_reroll = c.can_reroll && !self.card_reward_options.is_empty();
+            self.card_reward_reroll = c.reroll;
         }
         let added: Vec<Reward> = rewards.split_off(own_len.min(rewards.len()));
         let relics_before = self.run_state.relic_rewards.len();
@@ -2419,6 +2424,7 @@ impl RunManager {
                     let ctx = CardRewardGenCtx {
                         room_type: card.room_context.unwrap_or(room_type),
                         is_from_combat: false,
+                        colorless: false,
                     };
                     self.run_state.card_reward_gen_ctx = Some(ctx);
                     card.options = self
@@ -2600,6 +2606,7 @@ impl RunManager {
     /// another `[rarity, NextItem, upgrade] x 3` interleave on the `Rewards`
     /// stream (+ the per-reward option hooks).
     fn do_card_reward_reroll(&mut self) -> ActionResult {
+        use crate::runstate::{CardRewardGenCtx, RerollSpec};
         if !self.card_reward_can_reroll
             || self.card_reward_options.is_empty()
             || self.card_reward_bundles.is_some()
@@ -2607,12 +2614,36 @@ impl RunManager {
         {
             return ActionResult::InvalidForPhase;
         }
-        let Some(gen) = self.callbacks.generate_card_reward_options else {
+        // The reward's OWN `RerollOptions`: combat rewards reroll with the
+        // combat roller, non-combat sets with the base-odds roller (colorless
+        // pool for BrainLeech's Rip).
+        let (roller, ctx) = match self.card_reward_reroll {
+            RerollSpec::Unsupported => return ActionResult::InvalidForPhase,
+            RerollSpec::Room => (self.callbacks.generate_card_reward_options, None),
+            RerollSpec::NonCombat => (
+                self.callbacks
+                    .generate_noncombat_card_reward_options
+                    .or(self.callbacks.generate_card_reward_options),
+                None,
+            ),
+            RerollSpec::Colorless => (
+                self.callbacks
+                    .generate_noncombat_card_reward_options
+                    .or(self.callbacks.generate_card_reward_options),
+                Some(CardRewardGenCtx {
+                    room_type: crate::runstate::RoomType::Unknown,
+                    is_from_combat: false,
+                    colorless: true,
+                }),
+            ),
+        };
+        let Some(roller) = roller else {
             return ActionResult::NotImplemented;
         };
         self.card_reward_can_reroll = false;
+        self.run_state.card_reward_gen_ctx = ctx;
+        self.card_reward_options = roller(&mut self.run_state);
         self.run_state.card_reward_gen_ctx = None;
-        self.card_reward_options = gen(&mut self.run_state);
         self.card_reward_upgraded = std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
         self.card_reward_enchantments =
             std::mem::take(&mut self.run_state.card_reward_enchantments);
@@ -2744,6 +2775,25 @@ impl RunManager {
         // position); processing stops at a SECOND Card sentinel, whose rolls
         // belong to a later drain.
         let mut opened = false;
+        // C# `RewardsCmd.OfferCustom` -> `RewardsSet.GenerateWithoutOffering`
+        // runs `Hook.ModifyRewards` (normal + Late) over the offered set too, so
+        // e.g. Driftwood flags an event's / relic's CardRewards `CanReroll`
+        // (BrainLeech.cs:51-58). Once per set (the flag survives until the queue
+        // is empty).
+        if !self.run_state.pending_rewards.is_empty() && !self.run_state.reward_set_modified {
+            self.run_state.reward_set_modified = true;
+            let room_type = self
+                .run_state
+                .current_room
+                .map_or(crate::runstate::RoomType::Unknown, |r| r.room_type);
+            let mut set = std::mem::take(&mut self.run_state.pending_rewards);
+            let _ = crate::run_effects::dispatch_modify_rewards(
+                &mut self.run_state,
+                &mut set,
+                room_type,
+            );
+            self.run_state.pending_rewards = set;
+        }
         let mut i = 0;
         while i < self.run_state.pending_rewards.len() {
             // Copy the resolvable payload out before mutating — the branches
@@ -2751,7 +2801,7 @@ impl RunManager {
             enum Resolve {
                 Potion(Option<crate::potions::PotionKind>),
                 RemoveCard(u32),
-                SurfaceCard(Vec<crate::cards::CardId>),
+                SurfaceCard(Vec<crate::cards::CardId>, bool, crate::runstate::RerollSpec),
             }
             let queued = match &self.run_state.pending_rewards[i] {
                 Reward::Potion(reward) => Some(Resolve::Potion(reward.potion_kind)),
@@ -2761,7 +2811,11 @@ impl RunManager {
                     // already-populated CardReward — BrainLeech's
                     // colorless 3) surface verbatim; an empty sentinel
                     // rolls at queue position below.
-                    Some(Resolve::SurfaceCard(reward.options.clone()))
+                    Some(Resolve::SurfaceCard(
+                        reward.options.clone(),
+                        reward.can_reroll,
+                        reward.reroll,
+                    ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
                 _ => None,
@@ -2791,7 +2845,7 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved) => {
+                Resolve::SurfaceCard(pre_resolved, can_reroll, reroll) => {
                     if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
@@ -2815,10 +2869,17 @@ impl RunManager {
                         self.card_reward_upgraded = Vec::new();
                         self.card_reward_enchantments = Vec::new();
                     }
+                    // Carry the reward's own reroll state onto the screen (set
+                    // by Driftwood's Late pass above).
+                    self.card_reward_can_reroll = can_reroll;
+                    self.card_reward_reroll = reroll;
                     opened = true;
                 }
             }
             // Do not advance `i`: the vector shifted left.
+        }
+        if self.run_state.pending_rewards.is_empty() {
+            self.run_state.reward_set_modified = false;
         }
         opened
     }

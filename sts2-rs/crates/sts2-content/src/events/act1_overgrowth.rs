@@ -85,9 +85,9 @@ fn brain_leech_rip(state: &mut RunState) -> EventOutcome {
     // at option time); the drain surfaces the options verbatim.
     let lost = state.lose_hp(BRAIN_LEECH_RIP_DAMAGE);
     let options = crate::cards::spec_index::roll_colorless_reward_options_no_upgrade(state, 3);
-    state
-        .pending_rewards
-        .push(Reward::Card(CardReward::from_options(options)));
+    state.pending_rewards.push(Reward::Card(
+        CardReward::from_options(options).with_reroll(sts2_core::runstate::RerollSpec::Colorless),
+    ));
     EventOutcome::finished(format!("Took {lost} damage, gained a colorless card."))
 }
 

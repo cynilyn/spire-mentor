@@ -284,9 +284,39 @@ pub struct CardReward {
     /// modified (`RewardsSet.cs:101-108`) and without
     /// `CardCreationFlags.IsFromCombat` (only `GenerateRewardsFor` sets it).
     pub room_context: Option<RoomType>,
+    /// How this reward's `RerollOptions` regenerate its cards (C#
+    /// `CardReward.RerollOptions`). A reroll must reuse the reward's OWN options
+    /// (pool, odds, flags), never the combat ones.
+    pub reroll: RerollSpec,
+}
+
+/// The options a [`CardReward`] rerolls with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RerollSpec {
+    /// The engine cannot reproduce this reward's `RerollOptions`
+    /// (pre-resolved slates such as Kaleidoscope's, whose reroll options use an
+    /// empty pool list): no reroll is offered even when `can_reroll` is set.
+    #[default]
+    Unsupported,
+    /// A combat-room reward (`ForRoom(room).WithFlags(IsFromCombat)`): the
+    /// pity-updating combat roller.
+    Room,
+    /// `CardCreationSource.Other` character-pool reward at base odds (Lost
+    /// Coffer, Orrery, GlassEye and the other empty sentinels).
+    NonCombat,
+    /// BrainLeech Rip: `ForNonCombatWithDefaultOdds(ColorlessCardPool)`
+    /// (`BrainLeech.cs:54-57`), no upgrade roll.
+    Colorless,
 }
 
 impl CardReward {
+    /// Builder: set the reroll options.
+    #[must_use]
+    pub fn with_reroll(mut self, reroll: RerollSpec) -> Self {
+        self.reroll = reroll;
+        self
+    }
+
     /// Construct an empty `CardReward` (no options).
     #[must_use]
     pub fn empty() -> Self {
@@ -294,6 +324,7 @@ impl CardReward {
             options: Vec::new(),
             can_reroll: false,
             room_context: None,
+            reroll: RerollSpec::NonCombat,
         }
     }
 
@@ -304,6 +335,7 @@ impl CardReward {
             options,
             can_reroll: false,
             room_context: None,
+            reroll: RerollSpec::Unsupported,
         }
     }
 
@@ -316,6 +348,7 @@ impl CardReward {
             options: Vec::new(),
             can_reroll: false,
             room_context: Some(room_type),
+            reroll: RerollSpec::Room,
         }
     }
 }
@@ -331,6 +364,8 @@ pub struct CardRewardGenCtx {
     pub room_type: RoomType,
     /// `CardCreationFlags.IsFromCombat` (`RewardsSet.cs:188-199` only).
     pub is_from_combat: bool,
+    /// Reroll-only: roll the colorless pool (BrainLeech Rip, `RerollSpec::Colorless`).
+    pub colorless: bool,
 }
 
 /// A pending "choose 1 of N cards (or skip)" screen raised by a run-side
@@ -1116,6 +1151,9 @@ pub struct RunState {
     /// `CardReward` (`RunSimulator.cs` `_pendingCardReward = cardRewards[0]`)
     /// and drops the rest once it resolves.
     pub unoffered_card_rewards: Vec<CardReward>,
+    /// `Hook.ModifyRewards` has already run over the current
+    /// `pending_rewards` set (one dispatch per `RewardsCmd.OfferCustom` set).
+    pub reward_set_modified: bool,
 
     /// Relics the player has acquired this run. Mirrors Python
     /// `RunState.relics` (`run_state.py`). Bead `sts2-rs-zq8` (j87-b)
@@ -1978,6 +2016,7 @@ impl Default for RunState {
             card_reward_enchantments: Vec::new(),
             card_reward_gen_ctx: None,
             unoffered_card_rewards: Vec::new(),
+            reward_set_modified: false,
             relics: Vec::new(),
             last_obtained_relic: None,
             last_combat_gold_proportion: 1.0,

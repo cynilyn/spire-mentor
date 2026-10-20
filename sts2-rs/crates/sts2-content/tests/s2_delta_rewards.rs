@@ -76,6 +76,7 @@ fn extra_cards(rs: &mut RunState, room: RoomType) -> Vec<CardId> {
     rs.card_reward_gen_ctx = Some(CardRewardGenCtx {
         room_type: room,
         is_from_combat: false,
+        colorless: false,
     });
     let cards = generate_card_reward_options(rs);
     rs.card_reward_gen_ctx = None;
@@ -84,7 +85,11 @@ fn extra_cards(rs: &mut RunState, room: RoomType) -> Vec<CardId> {
     cards
 }
 
-/// `new RelicReward(player)` populate + oracle auto-collect.
+/// `new RelicReward(player)` populate followed IMMEDIATELY by its claim.
+/// Production (and C#, `RewardsSet.cs:93-116`) claims only after every reward is
+/// populated, so this helper is a valid reference only where an obtain has no side
+/// effect on the `Rewards` stream (none of the relics in these tests); the ordering
+/// itself is pinned by `rewards_are_populated_before_any_is_claimed`.
 fn extra_relic(rs: &mut RunState) {
     rs.offer_random_relic_rewards(1, &[None]);
     rs.drain_relic_rewards_directly();
@@ -648,5 +653,197 @@ fn reroll_flag_does_not_outlive_the_reward() {
     assert_eq!(
         rm.take_action(RunAction::RerollCardReward),
         ActionResult::InvalidForPhase
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Population-before-claim ordering (production defers the claim)
+// ---------------------------------------------------------------------------
+
+/// Listener under an owned marker relic: every relic obtain draws one `Rewards`
+/// float (an on-obtain side effect on the stream the populate loop uses).
+fn obtain_draws_a_float(rs: &mut RunState) -> sts2_core::EffectResult {
+    let _ = rs.rng.rewards.next_float(1.0);
+    sts2_core::EffectResult::Resolved
+}
+
+/// `RewardsSet.cs:93-116` populates EVERY reward before any is collected. With an
+/// on-obtain `Rewards` draw, `[Wongos, PrayerWheel]` must populate 3 relics, then
+/// the card, and only then claim (3 side-effect draws). Claiming each relic right
+/// after its populate yields a different card slate.
+#[test]
+fn rewards_are_populated_before_any_is_claimed() {
+    use sts2_core::run_effects::{
+        lookup_after_obtained, register_after_obtained, AfterObtainedRunFn,
+    };
+    let marker = RelicId::BagOfMarbles;
+    assert!(
+        lookup_after_obtained(marker).is_none(),
+        "marker id must be free"
+    );
+    register_after_obtained(marker, obtain_draws_a_float as AfterObtainedRunFn);
+    let mut distinct = false;
+    for seed in SEEDS {
+        let base = first_combat(seed);
+        let setup = |rs: &mut RunState| {
+            rs.relics
+                .extend([marker, RelicId::WongosMysteryTicket, RelicId::PrayerWheel]);
+            rs.relic_counters.insert(RelicId::WongosMysteryTicket, 5);
+        };
+        let live = win_in(&base, RoomType::Monster, 1, setup);
+        let plain = win_in(&base, RoomType::Monster, 1, |rs| {
+            rs.relics.push(marker);
+        });
+
+        // Deferred (C#): populate 3 relics, populate the card, then claim all.
+        let mut deferred = plain.clone();
+        for _ in 0..3 {
+            deferred.run_state.offer_random_relic_rewards(1, &[None]);
+        }
+        let cards_deferred = extra_cards(&mut deferred.run_state, RoomType::Monster);
+        deferred.run_state.drain_relic_rewards_directly();
+        // Claim-as-you-populate.
+        let mut eager = plain.clone();
+        for _ in 0..3 {
+            extra_relic(&mut eager.run_state);
+        }
+        let cards_eager = extra_cards(&mut eager.run_state, RoomType::Monster);
+
+        assert_eq!(
+            live.run_state.unoffered_card_rewards[0].options, cards_deferred,
+            "seed {seed}"
+        );
+        assert_eq!(
+            cursor(&live.run_state),
+            cursor(&deferred.run_state),
+            "seed {seed}"
+        );
+        let n = plain.run_state.relics.len();
+        assert_eq!(
+            live.run_state.relics[n + 2..],
+            deferred.run_state.relics[n..]
+        );
+        distinct |= cards_deferred != cards_eager;
+    }
+    assert!(
+        distinct,
+        "the fixture must distinguish the two orders on some seed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Event / relic reward sets (`RewardsCmd.OfferCustom`) go through ModifyRewards
+// ---------------------------------------------------------------------------
+
+/// Brain Leech Rip (`BrainLeech.cs:51-58`): `OfferCustom([CardReward(colorless,
+/// ForNonCombatWithDefaultOdds)])` runs `ModifyRewards`/Late, so Driftwood flags
+/// it; the reroll reuses the reward's OWN colorless options (base odds, no upgrade
+/// roll), once.
+#[test]
+fn driftwood_rerolls_brain_leech_rip_with_its_own_colorless_options() {
+    use sts2_content::cards::spec_index::roll_colorless_reward_options_no_upgrade;
+    use sts2_core::events::EventId;
+    install();
+    for seed in SEEDS {
+        let start = |driftwood: bool| {
+            let mut rm =
+                new_run_manager_for_character(seed, CharacterId::Ironclad).with_neow_start();
+            initialize_run_setup(&mut rm);
+            if driftwood {
+                rm.run_state.relics.push(RelicId::Driftwood);
+            }
+            rm.run_state.enter_event_room(EventId::BrainLeech);
+            let _ = rm.take_action(RunAction::EventChoice { idx: 1 });
+            rm
+        };
+        let plain = start(false);
+        assert_eq!(plain.phase(), Phase::CardReward);
+        assert!(!has_reroll(&plain), "no Driftwood, no reroll");
+        let mut live = start(true);
+        assert_eq!(live.phase(), Phase::CardReward);
+        assert_eq!(live.card_reward_options(), plain.card_reward_options());
+        assert!(has_reroll(&live), "seed {seed}");
+
+        let mut want = live.clone();
+        let rerolled = roll_colorless_reward_options_no_upgrade(&mut want.run_state, 3);
+        assert_eq!(
+            live.take_action(RunAction::RerollCardReward),
+            ActionResult::Advanced
+        );
+        assert_eq!(
+            live.card_reward_options(),
+            rerolled.as_slice(),
+            "seed {seed}"
+        );
+        assert_eq!(cursor(&live.run_state), cursor(&want.run_state));
+        assert_eq!(
+            live.run_state.card_rarity_odds, want.run_state.card_rarity_odds,
+            "no pity"
+        );
+        assert!(!has_reroll(&live), "once");
+        assert_eq!(
+            live.take_action(RunAction::RerollCardReward),
+            ActionResult::InvalidForPhase
+        );
+    }
+}
+
+/// Relic-offered sets (Lost Coffer: `OfferCustom([CardReward, PotionReward])`) are
+/// routed the same way; their reroll uses the base-odds character-pool roller.
+#[test]
+fn driftwood_rerolls_lost_coffer_card_reward_at_base_odds() {
+    use sts2_core::NeowRelic;
+    install();
+    let start = |driftwood: bool| {
+        let mut rm = new_run_manager_for_character(3, CharacterId::Ironclad).with_neow_start();
+        initialize_run_setup(&mut rm);
+        rm.run_state.direct_event_relic_grant = true;
+        let mut offers = rm.run_state.neow_offers.expect("neow offers rolled");
+        offers.positive_2 = NeowRelic::LostCoffer;
+        rm.run_state.neow_offers = Some(offers);
+        if driftwood {
+            rm.run_state.relics.push(RelicId::Driftwood);
+        }
+        let _ = rm.take_action(RunAction::EventChoice { idx: 1 });
+        rm
+    };
+    let plain = start(false);
+    assert_eq!(plain.phase(), Phase::CardReward);
+    assert!(!has_reroll(&plain));
+    let mut live = start(true);
+    assert!(has_reroll(&live));
+    let mut want = live.clone();
+    want.run_state.card_reward_gen_ctx = None;
+    let rerolled =
+        sts2_content::cards::spec_index::roll_noncombat_card_reward_options(&mut want.run_state);
+    assert_eq!(
+        live.take_action(RunAction::RerollCardReward),
+        ActionResult::Advanced
+    );
+    assert_eq!(live.card_reward_options(), rerolled.as_slice());
+    assert_eq!(cursor(&live.run_state), cursor(&want.run_state));
+    assert!(!has_reroll(&live));
+}
+
+/// NOT routed: Brain Leech Share Knowledge is a `CardSelectCmd` grid pick, not a
+/// `RewardsSet`, so Driftwood never makes it rerollable. Pre-resolved slates whose
+/// reroll options the engine cannot reproduce (Kaleidoscope) are never offered a
+/// reroll either.
+#[test]
+fn card_select_screens_and_unsupported_slates_are_not_rerollable() {
+    use sts2_core::events::EventId;
+    install();
+    let mut rm = new_run_manager_for_character(SEEDS[0], CharacterId::Ironclad).with_neow_start();
+    initialize_run_setup(&mut rm);
+    rm.run_state.relics.push(RelicId::Driftwood);
+    rm.run_state.enter_event_room(EventId::BrainLeech);
+    let _ = rm.take_action(RunAction::EventChoice { idx: 0 });
+    assert!(
+        !has_reroll(&rm),
+        "ShareKnowledge is a card select, not a reward"
+    );
+    assert_eq!(
+        CardReward::from_options(vec![CardId::Bash]).reroll,
+        sts2_core::runstate::RerollSpec::Unsupported
     );
 }
