@@ -2233,7 +2233,7 @@ impl RunState {
     /// [`Self::roll_reward_relic_rarity`] when `None`). Each pop is
     /// non-owned and drains the bag, so the same relic can't surface
     /// twice within one offer; an exhausted bag silently skips that
-    /// slot (Python returns the `"CIRCLET"` sentinel — not modelled).
+    /// slot (the C# `FallbackRelic`, Circlet — RL-C11).
     ///
     /// Mirrors Python `Player.offer_relic_rewards(count, rarities=...)`
     /// (`run_state.py:1036`) which pushes `RelicReward(rarity=...)`

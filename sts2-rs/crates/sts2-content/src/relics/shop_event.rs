@@ -1471,9 +1471,9 @@ fn listener_large_capsule(rs: &mut RunState) -> EffectResult {
     // order is unchanged (same `roll_reward_relic_rarity` + `pop_relic_from_grab_bag`).
     for _ in 0..LARGE_CAPSULE_RELICS {
         let rarity = rs.roll_reward_relic_rarity();
-        if let Some(id) = rs.pop_relic_from_grab_bag(rarity) {
-            rs.obtain_relic(id);
-        }
+        // LargeCapsule.cs:27 (Circlet on empty).
+        let id = rs.pull_next_relic_from_front(rarity, |_| true);
+        rs.obtain_relic(id);
     }
     // Restore the pickup marker the inner obtains overwrote, so the rest of
     // this after_obtained walk (and the NeowsBones grant chain, when LargeCapsule

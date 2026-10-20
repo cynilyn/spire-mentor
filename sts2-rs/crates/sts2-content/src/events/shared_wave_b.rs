@@ -162,9 +162,9 @@ fn round_tea_party_pick_fight(state: &mut RunState) -> EventOutcome {
 fn round_tea_party_continue_fight(state: &mut RunState) -> EventOutcome {
     let lost = state.lose_hp(ROUND_TEA_PARTY_FIGHT_DAMAGE);
     let rarity = state.roll_reward_relic_rarity();
-    if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
-        state.grant_event_relic(id);
-    }
+    // RoundTeaParty.cs:57 (Circlet on empty).
+    let id = state.pull_next_relic_from_front(rarity, |_| true);
+    state.grant_event_relic(id);
     EventOutcome::finished(format!("Took {lost} damage, claimed a relic."))
 }
 
@@ -1375,16 +1375,15 @@ fn this_or_that_ornate(state: &mut RunState) -> EventOutcome {
     // roll-then-front-pull shape as `unrest_site_kill`. Bead
     // `sts2-rs-thisorthat-ornate`.
     let rarity = state.roll_reward_relic_rarity();
-    let granted = state.pop_relic_from_grab_bag(rarity);
-    if let Some(id) = granted {
-        state.obtain_relic(id);
-    }
+    // ThisOrThat.cs:46 (Circlet on empty).
+    let granted = state.pull_next_relic_from_front(rarity, |_| true);
+    state.obtain_relic(granted);
     if let Some(curse) = crate::cards::spec_index::card_pod_from_id(CardId::Clumsy, false) {
         state.master_deck.push(curse);
     }
     EventOutcome::finished(format!(
         "Gained {} and a Clumsy curse.",
-        granted.map_or("no relic (bag empty)", |id| id.to_python_name())
+        granted.to_python_name()
     ))
 }
 
@@ -1981,13 +1980,12 @@ fn unrest_site_kill(state: &mut RunState) -> EventOutcome {
     // `RollRarity(PlayerRng.Rewards)` (one float: <0.5 Common,
     // <0.83 Uncommon, else Rare), then a front pull from the grab bag.
     let rarity = state.roll_reward_relic_rarity();
-    let granted = state.pop_relic_from_grab_bag(rarity);
-    if let Some(id) = granted {
-        state.obtain_relic(id);
-    }
+    // UnrestSite.cs:55 (Circlet on empty).
+    let granted = state.pull_next_relic_from_front(rarity, |_| true);
+    state.obtain_relic(granted);
     EventOutcome::finished(format!(
         "Lost {lost} Max HP, gained {}.",
-        granted.map_or("no relic (bag empty)", |id| id.to_python_name())
+        granted.to_python_name()
     ))
 }
 

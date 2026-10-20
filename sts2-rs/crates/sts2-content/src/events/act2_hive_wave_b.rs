@@ -141,10 +141,8 @@ fn relic_trader_take_stock(state: &mut RunState) -> Vec<RelicId> {
     let mut stock: Vec<RelicId> = Vec::with_capacity(RELIC_TRADER_TRADE_COUNT);
     for _ in 0..RELIC_TRADER_TRADE_COUNT {
         let rarity = state.roll_reward_relic_rarity();
-        let Some(id) = state.pop_relic_from_grab_bag(rarity) else {
-            break;
-        };
-        stock.push(id);
+        // RelicTrader.cs:68: `PullNextRelicFromFront(Owner)` (Circlet on empty).
+        stock.push(state.pull_next_relic_from_front(rarity, |_| true));
     }
     stock
 }
@@ -1203,10 +1201,11 @@ fn wongo_featured_relic(state: &RunState) -> Option<RelicId> {
 /// is committed here instead and **every** Wongo handler calls it. Exactly one
 /// handler runs per visit, so the bag ends up in the state C# leaves it in.
 fn wongo_take_featured(state: &mut RunState) -> Option<RelicId> {
-    state.pop_relic_from_grab_bag_where(
+    // WelcomeToWongos.cs:80: `PullNextRelicFromFront(owner, Rare, ..)` (Circlet on empty).
+    Some(state.pull_next_relic_from_front(
         sts2_core::runstate::RelicRarity::Rare,
         sts2_core::shop::is_relic_allowed_in_shops,
-    )
+    ))
 }
 
 fn wongo_bargain_bin(state: &mut RunState) -> EventOutcome {
@@ -1216,10 +1215,11 @@ fn wongo_bargain_bin(state: &mut RunState) -> EventOutcome {
     lose_gold_saturating(state, WONGO_BARGAIN_COST);
     // C# `BuyBargainBin`: `PullNextRelicFromFront(owner, RelicRarity.Common,
     // r => r.IsAllowedInShops)` then `RelicCmd.Obtain`.
-    let relic = state.pop_relic_from_grab_bag_where(
+    // WelcomeToWongos.cs:136 (Circlet on empty).
+    let relic = Some(state.pull_next_relic_from_front(
         sts2_core::runstate::RelicRarity::Common,
         sts2_core::shop::is_relic_allowed_in_shops,
-    );
+    ));
     match relic {
         Some(id) => {
             state.grant_event_relic(id);

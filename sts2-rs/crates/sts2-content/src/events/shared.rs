@@ -548,9 +548,9 @@ pub fn battleworn_dummy_resume(
         }
         BattlewornDummySetting::Setting3 => {
             let rarity = state.roll_reward_relic_rarity();
-            if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
-                state.grant_event_relic(id);
-            }
+            // BattlewornDummy.cs:87 (Circlet on empty).
+            let id = state.pull_next_relic_from_front(rarity, |_| true);
+            state.grant_event_relic(id);
         }
     }
 }

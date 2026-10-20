@@ -894,9 +894,7 @@ fn luminous_choir_tribute(state: &mut RunState) -> EventOutcome {
     let cost = luminous_choir_rolled_cost(state);
     state.gold = state.gold.saturating_sub(cost);
     let rarity = state.roll_reward_relic_rarity();
-    let relic = state
-        .pop_relic_from_grab_bag(rarity)
-        .unwrap_or(LUMINOUS_CHOIR_FALLBACK_RELIC);
+    let relic = state.pull_next_relic_from_front(rarity, |_| true);
     state.grant_event_relic(relic);
     EventOutcome::finished(format!("Paid {cost}g — gained a relic."))
 }
@@ -1158,9 +1156,9 @@ fn ranwid_asks_for(state: &RunState) -> (Option<usize>, Option<RelicId>) {
 /// rewards stream, take the front of that bucket, hand it over.
 fn ranwid_grant_front_relic(state: &mut RunState) {
     let rarity = state.roll_reward_relic_rarity();
-    if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
-        state.grant_event_relic(id);
-    }
+    // RanwidTheElder.cs:113,121,131: `PullNextRelicFromFront` (Circlet on empty).
+    let id = state.pull_next_relic_from_front(rarity, |_| true);
+    state.grant_event_relic(id);
 }
 
 fn ranwid_potion(state: &mut RunState) -> EventOutcome {

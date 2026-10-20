@@ -2498,10 +2498,11 @@ impl RunManager {
         }
         let count = self.run_state.pael_record_sacrifice();
         if count % 2 == 0 {
-            if let Some(relic) = self
-                .run_state
-                .pop_relic_from_grab_bag(crate::RelicRarity::Common)
+            // PaelsWing.cs:90: `PullNextRelicFromFront` (Circlet on empty).
             {
+                let relic = self
+                    .run_state
+                    .pull_next_relic_from_front(crate::RelicRarity::Common, |_| true);
                 self.run_state.relics.push(relic);
                 self.run_state.last_obtained_relic = Some(relic);
                 // Bead `sts2-rs-wt4w1`: fire the on-obtain channel
