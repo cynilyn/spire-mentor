@@ -298,7 +298,11 @@ fn mark_upgraded(version: sts2_core::GameVersion, card: &mut Card) {
     }
 }
 
-fn upgrade_cards_of_type(version: sts2_core::GameVersion, cards: &mut [Card], ct: CardType) -> bool {
+fn upgrade_cards_of_type(
+    version: sts2_core::GameVersion,
+    cards: &mut [Card],
+    ct: CardType,
+) -> bool {
     let mut any = false;
     for card in cards {
         if card.card_type == ct && !card.upgraded {
@@ -1912,19 +1916,27 @@ mod tests {
         let mut rs = RunState::new();
         rs.game_version = version;
         rs.relics.push(RelicId::ToxicEgg);
-        let mut card = crate::cards::v0111::card_pod_for(sts2_core::cards::CardId::Finesse, false, version).expect("pod");
+        let mut card =
+            crate::cards::v0111::card_pod_for(sts2_core::cards::CardId::Finesse, false, version)
+                .expect("pod");
         let _ = dispatch_modify_merchant_card_creation_results(&mut rs, &mut card, true);
         (card.upgraded, card.base_block)
     }
 
     #[test]
     fn toxic_egg_upgraded_finesse_has_upgraded_block_v0111() {
-        assert_eq!(toxic_egg_merchant_finesse_block(sts2_core::GameVersion::V0_111_0), (true, 7));
+        assert_eq!(
+            toxic_egg_merchant_finesse_block(sts2_core::GameVersion::V0_111_0),
+            (true, 7)
+        );
     }
 
     #[test]
     fn toxic_egg_finesse_flag_only_v0107_unchanged() {
-        assert_eq!(toxic_egg_merchant_finesse_block(sts2_core::GameVersion::V0_107_1), (true, 4));
+        assert_eq!(
+            toxic_egg_merchant_finesse_block(sts2_core::GameVersion::V0_107_1),
+            (true, 4)
+        );
     }
 
     // ------------------------------------------------------------------

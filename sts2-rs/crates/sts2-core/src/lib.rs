@@ -4164,7 +4164,12 @@ impl CombatState {
     /// Unblockable|Unpowered damage (plus `Move` when `isFromCard`, which BrightestFlame passes and
     /// PaperCuts does not), so every after-damage listener fires (Centennial Puzzle's draw 3, Rupture,
     /// Plated Armor ...). A full-HP Brightest Flame drew 3 extra cards in C# and none here.
-    pub fn creature_lose_max_hp_from(&mut self, owner: CreatureUid, amount: i32, from_card: bool) -> i32 {
+    pub fn creature_lose_max_hp_from(
+        &mut self,
+        owner: CreatureUid,
+        amount: i32,
+        from_card: bool,
+    ) -> i32 {
         if amount <= 0 {
             return 0;
         }
@@ -4174,16 +4179,29 @@ impl CombatState {
                 owner.get()
             )
         };
-        if self.game_version >= crate::GameVersion::V0_111_0 && self.player.creature_uid == Some(owner) {
+        if self.game_version >= crate::GameVersion::V0_111_0
+            && self.player.creature_uid == Some(owner)
+        {
             let (cur, max) = (self.creatures[idx].current_hp, self.creatures[idx].max_hp);
             let new_max = max - amount;
             if new_max < cur && cur > 0 {
-                let mut props = crate::hooks::ValueProps::UNBLOCKABLE.union(crate::hooks::ValueProps::UNPOWERED);
+                let mut props = crate::hooks::ValueProps::UNBLOCKABLE
+                    .union(crate::hooks::ValueProps::UNPOWERED);
                 if from_card {
                     props = props.union(crate::hooks::ValueProps::MOVE);
                 }
-                let _ = crate::combat_loop::apply_damage_to_player(self, crate::hooks::CreatureRef::Player, cur - new_max, props, None);
-                idx = self.creatures.iter().position(|c| c.id == owner.0).expect("player creature");
+                let _ = crate::combat_loop::apply_damage_to_player(
+                    self,
+                    crate::hooks::CreatureRef::Player,
+                    cur - new_max,
+                    props,
+                    None,
+                );
+                idx = self
+                    .creatures
+                    .iter()
+                    .position(|c| c.id == owner.0)
+                    .expect("player creature");
             }
         }
         // Capture the pre-shrink current HP so a max-hp clamp that pulls

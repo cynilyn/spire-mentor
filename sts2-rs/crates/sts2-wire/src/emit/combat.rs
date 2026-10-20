@@ -1458,7 +1458,10 @@ mod tests {
     fn live_max_energy_is_emitted_for_v0111() {
         let v = pyre_state(sts2_core::GameVersion::V0_111_0);
         assert_eq!(v["player"]["max_energy"], 3, "stored mirror unchanged");
-        assert_eq!(v["player"]["max_energy_effective"], 5, "3 + Pyre 2 (PyrePower.cs ModifyMaxEnergy)");
+        assert_eq!(
+            v["player"]["max_energy_effective"], 5,
+            "3 + Pyre 2 (PyrePower.cs ModifyMaxEnergy)"
+        );
     }
 
     #[test]
@@ -1480,7 +1483,10 @@ mod tests {
         assert_eq!(v["player"]["max_energy_effective"], 3, "turn 2: not yet");
         state.round = 3;
         let v = combat_state_to_value(&state).expect("serializes");
-        assert_eq!(v["player"]["max_energy_effective"], 4, "PaelsFlesh.cs ModifyMaxEnergy +1 from turn 3");
+        assert_eq!(
+            v["player"]["max_energy_effective"], 4,
+            "PaelsFlesh.cs ModifyMaxEnergy +1 from turn 3"
+        );
     }
 
     #[test]

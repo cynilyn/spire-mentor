@@ -4444,10 +4444,15 @@ fn listener_archaic_tooth(rs: &mut RunState) -> EffectResult {
         // enchantment cloned. The in-place rewrite below kept the deck slot (and the starter's
         // stats), which moved the card in every later combat shuffle.
         let version = rs.game_version;
-        if let Some(pos) = rs.master_deck.iter().position(|c| mapping(c.card_id).is_some()) {
+        if let Some(pos) = rs
+            .master_deck
+            .iter()
+            .position(|c| mapping(c.card_id).is_some())
+        {
             let mut old = rs.master_deck.remove(pos);
             let target = mapping(old.card_id).expect("mapped");
-            if let Some(mut new) = crate::cards::v0111::card_pod_for(target, old.upgraded, version) {
+            if let Some(mut new) = crate::cards::v0111::card_pod_for(target, old.upgraded, version)
+            {
                 new.uid = old.uid;
                 new.enchantments = std::mem::take(&mut old.enchantments);
                 rs.master_deck.push(new);
@@ -8504,21 +8509,34 @@ mod tests {
     /// R1c witness (triage seeds LSA_9/48/111): v0.111.0 removes the starter and APPENDS a fresh upgraded-as-original
     /// ancient card at the end of the deck (`CardCmd.cs:334-336` `pile2.AddInternal(replacement2)` for the Deck pile;
     /// `ArchaicTooth.cs:144-160`); v0.107.1 keeps the old in-place rewrite.
-    fn archaic_tooth_deck_order(version: sts2_core::GameVersion) -> Vec<(sts2_core::cards::CardId, bool, i32)> {
+    fn archaic_tooth_deck_order(
+        version: sts2_core::GameVersion,
+    ) -> Vec<(sts2_core::cards::CardId, bool, i32)> {
         use sts2_core::cards::CardId;
         use sts2_core::runstate::RunState;
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
         rs.game_version = version;
-        for id in [CardId::StrikeIronclad, CardId::Bash, CardId::DefendIronclad, CardId::StrikeIronclad] {
-            let mut c = crate::cards::v0111::card_pod_for(id, id == CardId::Bash, version).expect("pod");
-            c.uid = sts2_core::CardUid(std::num::NonZeroU32::new(1000 + rs.master_deck.len() as u32).unwrap());
+        for id in [
+            CardId::StrikeIronclad,
+            CardId::Bash,
+            CardId::DefendIronclad,
+            CardId::StrikeIronclad,
+        ] {
+            let mut c =
+                crate::cards::v0111::card_pod_for(id, id == CardId::Bash, version).expect("pod");
+            c.uid = sts2_core::CardUid(
+                std::num::NonZeroU32::new(1000 + rs.master_deck.len() as u32).unwrap(),
+            );
             rs.master_deck.push(c);
         }
         rs.relics.push(RelicId::ArchaicTooth);
         rs.last_obtained_relic = Some(RelicId::ArchaicTooth);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        rs.master_deck.iter().map(|c| (c.card_id, c.upgraded, c.base_damage)).collect()
+        rs.master_deck
+            .iter()
+            .map(|c| (c.card_id, c.upgraded, c.base_damage))
+            .collect()
     }
 
     #[test]
@@ -8526,9 +8544,20 @@ mod tests {
         use sts2_core::cards::CardId;
         let deck = archaic_tooth_deck_order(sts2_core::GameVersion::V0_111_0);
         let ids: Vec<_> = deck.iter().map(|d| d.0).collect();
-        assert_eq!(ids, vec![CardId::StrikeIronclad, CardId::DefendIronclad, CardId::StrikeIronclad, CardId::Break]);
+        assert_eq!(
+            ids,
+            vec![
+                CardId::StrikeIronclad,
+                CardId::DefendIronclad,
+                CardId::StrikeIronclad,
+                CardId::Break
+            ]
+        );
         assert!(deck[3].1, "upgraded because the Bash was");
-        assert_eq!(deck[3].2, 30, "Break+: 20 + 10 (Break.cs OnUpgrade), not the starter Bash stats");
+        assert_eq!(
+            deck[3].2, 30,
+            "Break+: 20 + 10 (Break.cs OnUpgrade), not the starter Bash stats"
+        );
     }
 
     #[test]
@@ -8536,7 +8565,15 @@ mod tests {
         use sts2_core::cards::CardId;
         let deck = archaic_tooth_deck_order(sts2_core::GameVersion::V0_107_1);
         let ids: Vec<_> = deck.iter().map(|d| d.0).collect();
-        assert_eq!(ids, vec![CardId::StrikeIronclad, CardId::Break, CardId::DefendIronclad, CardId::StrikeIronclad]);
+        assert_eq!(
+            ids,
+            vec![
+                CardId::StrikeIronclad,
+                CardId::Break,
+                CardId::DefendIronclad,
+                CardId::StrikeIronclad
+            ]
+        );
     }
 
     /// Bead `sts2-rs-rvwas`: ArchaicTooth listener is noop without
