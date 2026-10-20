@@ -21,10 +21,6 @@
 //!
 //! ## What this module deliberately skips (parity-grade-but-bounded)
 //!
-//! - **First-run special** (Python `unlock_state.get(NUMBER_OF_RUNS)`
-//!   path forcing `EVENT` for the first 2 unknowns + `MONSTER` for the
-//!   3rd) — `UnlockState` isn't ported. Will rejoin once
-//!   `Player.unlock_state` lands.
 //! - **Per-card `modify_unknown_map_point_room_types`** — Python walks
 //!   `player.deck` cards before relics. No card today has that hook in
 //!   the Rust port; relic-side is the only listener that matters at
@@ -40,19 +36,24 @@ use std::collections::BTreeSet;
 use crate::dotnet_rng::Rng;
 use crate::runstate::{RoomType, RunState};
 
+// The odds are `f32`, like C# `UnknownMapPointOdds` (`Dictionary<RoomType,
+// float>`): the roll is compared against an `f32` running sum, and the
+// per-skip growth is an `f32` add, so `f64` bookkeeping drifts from the game
+// at the boundary (RG-46).
+
 /// Python `BASE_MONSTER = 0.10`. Probability `?` rolls a monster fight
 /// on first visit; grows by this much per skipped roll.
-pub const BASE_MONSTER: f64 = 0.10;
+pub const BASE_MONSTER: f32 = 0.10;
 /// Python `BASE_ELITE = -1.00`. Sentinel meaning "impossible until a
 /// modifier boosts the odds positive". Today no modifier path lands an
 /// Elite via `?` — the field is reserved for parity.
-pub const BASE_ELITE: f64 = -1.00;
+pub const BASE_ELITE: f32 = -1.00;
 /// Python `BASE_TREASURE = 0.02`. Probability `?` rolls a treasure
 /// chest on first visit.
-pub const BASE_TREASURE: f64 = 0.02;
+pub const BASE_TREASURE: f32 = 0.02;
 /// Python `BASE_SHOP = 0.03`. Probability `?` rolls a merchant on
 /// first visit.
-pub const BASE_SHOP: f64 = 0.03;
+pub const BASE_SHOP: f32 = 0.03;
 
 /// C# room-type ordering used by the fallback selector when
 /// `RoomType::Event` is excluded from the candidate set. Lower number
@@ -85,10 +86,10 @@ pub fn fallback_order(rt: RoomType) -> u8 {
 // containing `RunState` keep its derived `Eq`.
 pub struct UnknownMapPointOdds {
     /// Live odds per room type — the value compared against the roll.
-    pub current: BTreeMap<RoomType, f64>,
+    pub current: BTreeMap<RoomType, f32>,
     /// Reset / growth base — what each `current[type]` snaps back to
     /// on roll and grows by on skip.
-    base: BTreeMap<RoomType, f64>,
+    base: BTreeMap<RoomType, f32>,
 }
 
 impl Default for UnknownMapPointOdds {
@@ -99,7 +100,7 @@ impl Default for UnknownMapPointOdds {
 
 impl PartialEq for UnknownMapPointOdds {
     fn eq(&self, other: &Self) -> bool {
-        fn bits_match(a: &BTreeMap<RoomType, f64>, b: &BTreeMap<RoomType, f64>) -> bool {
+        fn bits_match(a: &BTreeMap<RoomType, f32>, b: &BTreeMap<RoomType, f32>) -> bool {
             if a.len() != b.len() {
                 return false;
             }
@@ -147,10 +148,20 @@ impl UnknownMapPointOdds {
     /// `RoomType::Event` as the default fallback per Python — if no
     /// roll lands, Event is returned.
     ///
-    /// Mirrors Python `UnknownMapPointOdds.roll` minus the first-run
-    /// `unlock_state` early-out and minus the per-modifier
-    /// `modify_odds_increase_for_unrolled_room_type` chain.
+    /// Mirrors C# `UnknownMapPointOdds.Roll` from the `NextFloat` read on,
+    /// minus the per-modifier `ModifyOddsIncreaseForUnrolledRoomType` chain.
+    /// The first-run early-out (`NumberOfRuns == 0`) precedes it and lives in
+    /// [`RunState::resolve_unknown_room`], which has the run state it needs.
     pub fn roll(&mut self, rng: &mut Rng, room_types: &BTreeSet<RoomType>) -> RoomType {
+        // C# `float num2 = _rng.NextFloat()`: the f64 sample narrowed to f32
+        // (`Rng.cs:126`). Still exactly one read of the stream.
+        let roll_val = rng.next_float(1.0) as f32;
+        self.roll_with_value(roll_val, room_types)
+    }
+
+    /// [`Self::roll`] after the `NextFloat` read, so a test can pin the exact
+    /// `f32` the cumulative walk is compared against.
+    pub fn roll_with_value(&mut self, roll_val: f32, room_types: &BTreeSet<RoomType>) -> RoomType {
         // Default fallback. Python: if EVENT in room_types → result =
         // EVENT, else result = min(room_types, key=C# order).
         let mut result = if room_types.contains(&RoomType::Event) {
@@ -169,8 +180,7 @@ impl UnknownMapPointOdds {
         // RestSite < Treasure < Event), which differs from Python's
         // insertion order (Monster, Elite, Treasure, Shop). Match
         // Python exactly by iterating in insertion order.
-        let roll_val = rng.next_float(1.0);
-        let mut cumulative = 0.0;
+        let mut cumulative = 0.0_f32;
         for rt in [
             RoomType::Monster,
             RoomType::Elite,
@@ -184,6 +194,7 @@ impl UnknownMapPointOdds {
             if odds < 0.0 {
                 continue;
             }
+            // f32 running sum, as in C# (`num3 += num4`, both `float`).
             cumulative += odds;
             if roll_val <= cumulative {
                 result = rt;
@@ -215,10 +226,15 @@ impl RunState {
     /// `?`).
     ///
     /// Steps:
+    /// 0. First run (`number_of_runs == 0`): the first two `?` are Events and
+    ///    the third a Monster, with no RNG read and no odds update
+    ///    (`UnknownMapPointOdds.cs:99-112`). The count is the `?` map points
+    ///    already in `map_point_history`.
     /// 1. Build the candidate set
-    ///    `{Monster, Treasure, Shop, Event} − blacklist`. Elite is
-    ///    excluded by base-odds = -1.00 (no modifier-boost path lands
-    ///    today; see module docs).
+    ///    `{Monster, Elite, Treasure, Shop, Event} − blacklist`
+    ///    (`_nonEventOdds.Keys.Append(Event).Except(blacklist)`). Elite is in
+    ///    the set but never rolls: its odds start at -1 and stay negative
+    ///    (no modifier-boost path lands today; see module docs).
     /// 2. Walk
     ///    [`crate::run_effects::dispatch_modify_unknown_map_point_room_types`]
     ///    so JuzuBracelet (and any future listener) can drop
@@ -229,12 +245,25 @@ impl RunState {
     ///
     /// Bead `sts2-rs-khzyk` (P9.2.f bounded slice).
     pub fn resolve_unknown_room(&mut self, blacklist: BTreeSet<RoomType>) -> RoomType {
-        // Default candidate set: monster + treasure + shop + event,
-        // minus blacklist. Elite is intentionally absent — its base
-        // odds are -1 (never positive without a modifier-boost) and
-        // the modifier chain isn't ported.
+        // First-run tutorial sequence: no RNG, no odds update.
+        if self.number_of_runs == 0 {
+            let seen =
+                self.count_map_point_history_entries(None, Some(crate::map::MapPointType::Unknown));
+            if seen < 2 {
+                return RoomType::Event;
+            }
+            if seen == 2 {
+                return RoomType::Monster;
+            }
+        }
+
+        // Default candidate set: every `_nonEventOdds` key (Monster, Elite,
+        // Treasure, Shop) plus Event, minus blacklist. Elite's odds are
+        // negative so it never rolls, but it is a member of the set the
+        // `modify_unknown_map_point_room_types` listeners see.
         let mut room_types: BTreeSet<RoomType> = [
             RoomType::Monster,
+            RoomType::Elite,
             RoomType::Treasure,
             RoomType::Shop,
             RoomType::Event,
@@ -361,6 +390,121 @@ mod tests {
         assert!((odds.current[&RoomType::Monster] - BASE_MONSTER).abs() < 1e-12);
         assert!((odds.current[&RoomType::Treasure] - BASE_TREASURE).abs() < 1e-12);
         assert!((odds.current[&RoomType::Shop] - BASE_SHOP).abs() < 1e-12);
+    }
+
+    /// RG-46 (`UnknownMapPointOdds.cs:121-131`): the cumulative walk is an
+    /// `f32` running sum. A roll equal to that f32 sum must land on the type
+    /// that completes it; an f64 sum of the same operands would not match.
+    #[test]
+    fn cumulative_sum_is_f32() {
+        let candidates: BTreeSet<RoomType> = [
+            RoomType::Monster,
+            RoomType::Treasure,
+            RoomType::Shop,
+            RoomType::Event,
+        ]
+        .into_iter()
+        .collect();
+        // Monster 0.1f + Treasure 0.02f, summed in f32.
+        let sum_mt: f32 = BASE_MONSTER + BASE_TREASURE;
+        let mut odds = UnknownMapPointOdds::new();
+        assert_eq!(
+            odds.roll_with_value(sum_mt, &candidates),
+            RoomType::Treasure,
+            "roll == f32(monster+treasure) is `<=` the running sum"
+        );
+        // The f64 sum of the widened operands differs from the f32 sum, which
+        // is what an f64 implementation would have compared against.
+        let sum_f64 = f64::from(BASE_MONSTER) + f64::from(BASE_TREASURE);
+        assert_ne!(f64::from(sum_mt).to_bits(), sum_f64.to_bits());
+        // Next representable f32 above the sum falls through to Shop.
+        let mut odds = UnknownMapPointOdds::new();
+        let above = f32::from_bits(sum_mt.to_bits() + 1);
+        assert_eq!(odds.roll_with_value(above, &candidates), RoomType::Shop);
+    }
+
+    /// Growth is an f32 add: 0.02f + 0.02f + 0.02f in f32, bit for bit.
+    #[test]
+    fn growth_is_f32_add() {
+        let mut odds = UnknownMapPointOdds::new();
+        let candidates: BTreeSet<RoomType> = [RoomType::Monster, RoomType::Treasure]
+            .into_iter()
+            .collect();
+        for _ in 0..3 {
+            // roll 2.0 never lands -> fallback min order (Monster) is the
+            // result, so Monster resets and Treasure grows.
+            odds.roll_with_value(2.0, &candidates);
+        }
+        let mut expect = BASE_TREASURE;
+        for _ in 0..3 {
+            expect += BASE_TREASURE;
+        }
+        assert_eq!(
+            odds.current[&RoomType::Treasure].to_bits(),
+            expect.to_bits()
+        );
+    }
+
+    /// RG-47 (`UnknownMapPointOdds.cs:99-112`): with `number_of_runs == 0`
+    /// the first two `?` are Events, the third a Monster, none touching the
+    /// stream or the odds; the fourth rolls normally.
+    #[test]
+    fn first_run_unknown_sequence() {
+        use crate::map::MapPointType;
+        let mut rs = RunState {
+            number_of_runs: 0,
+            ..RunState::default()
+        };
+        let before_counter = rs.rng.unknown_map_point.counter();
+        let odds_before = rs.unknown_map_point_odds.clone();
+        let mut seq = Vec::new();
+        for _ in 0..3 {
+            let got = rs.resolve_unknown_room(BTreeSet::new());
+            seq.push(got);
+            // The caller records the visit after the roll.
+            rs.append_to_map_point_history(MapPointType::Unknown, got);
+        }
+        assert_eq!(seq, [RoomType::Event, RoomType::Event, RoomType::Monster]);
+        assert_eq!(rs.rng.unknown_map_point.counter(), before_counter);
+        assert_eq!(rs.unknown_map_point_odds, odds_before);
+        // Fourth `?` is a normal roll: exactly one stream read.
+        let _ = rs.resolve_unknown_room(BTreeSet::new());
+        assert_eq!(rs.rng.unknown_map_point.counter(), before_counter + 1);
+    }
+
+    /// Non-`?` history entries do not advance the first-run count, and a
+    /// returning profile (default `number_of_runs`) rolls normally from the
+    /// first `?` (one read).
+    #[test]
+    fn first_run_rule_counts_only_unknown_points_and_is_off_by_default() {
+        use crate::map::MapPointType;
+        let mut rs = RunState {
+            number_of_runs: 0,
+            ..RunState::default()
+        };
+        rs.append_to_map_point_history(MapPointType::Monster, RoomType::Monster);
+        rs.append_to_map_point_history(MapPointType::Unknown, RoomType::Event);
+        assert_eq!(rs.resolve_unknown_room(BTreeSet::new()), RoomType::Event);
+        assert_eq!(rs.rng.unknown_map_point.counter(), 0);
+
+        let mut rs = RunState::default();
+        assert_ne!(rs.number_of_runs, 0, "default is a returning profile");
+        let _ = rs.resolve_unknown_room(BTreeSet::new());
+        assert_eq!(rs.rng.unknown_map_point.counter(), 1);
+    }
+
+    /// RG-45: Elite is a member of the candidate set (`_nonEventOdds.Keys`),
+    /// so a non-rolled Elite takes the skip-growth step (`-1 + -1`) while
+    /// staying un-rollable.
+    #[test]
+    fn elite_is_in_resolver_candidate_set() {
+        let mut rs = RunState::default();
+        let got = rs.resolve_unknown_room(BTreeSet::new());
+        assert_ne!(got, RoomType::Elite);
+        assert_eq!(
+            rs.unknown_map_point_odds.current[&RoomType::Elite].to_bits(),
+            (-2.0_f32).to_bits()
+        );
     }
 
     #[test]

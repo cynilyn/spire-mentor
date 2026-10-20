@@ -58,6 +58,7 @@
 //! that; [`ActSelectionUnlocks::live_game`] models a real save.
 
 use crate::dotnet_rng::{seed_bases, Rng};
+use crate::potions::CharacterId;
 
 /// One act model, identified by its C# `ModelId.Entry` slug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -221,6 +222,44 @@ pub fn roll_acts_with(rng: &mut Rng, unlocks: &ActSelectionUnlocks) -> [ActVaria
     out
 }
 
+/// C# `ModelDb.AllCharacters` (`ModelDb.cs:113`) — the pool a "Random"
+/// character slot draws from, in declaration order. The order is part of the
+/// parity contract: `NextItem` indexes into it.
+pub const ALL_CHARACTERS: [CharacterId; 5] = [
+    CharacterId::Ironclad,
+    CharacterId::Silent,
+    CharacterId::Regent,
+    CharacterId::Necrobinder,
+    CharacterId::Defect,
+];
+
+/// RG-14: resolve `count` "Random" character slots off the **same**
+/// `act_selection` stream, **after** the three act draws
+/// (`StartRunLobby.BeginRunLocally`, `StartRunLobby.cs:437-447`):
+/// one `rng.NextItem(ModelDb.AllCharacters)` per random slot, in player order.
+///
+/// Nothing reads this stream afterwards, so the extra reads change no other
+/// stream. Not wired into any run path (the oracle and the harness pick a
+/// fixed character); call it explicitly.
+pub fn resolve_random_characters(rng: &mut Rng, count: usize) -> Vec<CharacterId> {
+    (0..count)
+        .map(|_| ALL_CHARACTERS[rng.next_int_exclusive(0, ALL_CHARACTERS.len() as i32) as usize])
+        .collect()
+}
+
+/// [`roll_acts`] followed by [`resolve_random_characters`] on the same stream,
+/// from an already-hashed seed.
+pub fn roll_acts_and_random_characters(
+    seed_hash: u64,
+    unlocks: &ActSelectionUnlocks,
+    random_slots: usize,
+) -> ([ActVariant; 3], Vec<CharacterId>) {
+    let mut rng = Rng::with_name(seed_hash, "act_selection");
+    let acts = roll_acts_with(&mut rng, unlocks);
+    let characters = resolve_random_characters(&mut rng, random_slots);
+    (acts, characters)
+}
+
 /// [`roll_acts`] from a human-typed display seed (`"C9EXV1KTPH"`), applying
 /// the game's canonicalisation + hash first.
 #[must_use]
@@ -241,6 +280,44 @@ pub fn act1_for_seed(display_seed: &str, unlocks: &ActSelectionUnlocks) -> ActVa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RG-14: the random character is drawn AFTER the three act draws, from the
+    /// same stream: it equals a manual `next_int_exclusive(0, 5)` made after
+    /// `roll_acts_with`, indexes `AllCharacters` order (Ironclad, Silent,
+    /// Regent, Necrobinder, Defect), and leaves the acts untouched.
+    #[test]
+    fn random_character_draws_after_acts_from_same_stream() {
+        let unlocks = ActSelectionUnlocks::test_mode_on(true);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..200u64 {
+            let hash = seed_bases(&format!("RC{i}")).full_hash;
+            let acts_only = roll_acts(hash, &unlocks);
+
+            let mut rng = Rng::with_name(hash, "act_selection");
+            let _ = roll_acts_with(&mut rng, &unlocks);
+            let expect_idx = {
+                let mut probe = rng.clone();
+                probe.next_int_exclusive(0, 5) as usize
+            };
+            let (acts, chars) = roll_acts_and_random_characters(hash, &unlocks, 1);
+            assert_eq!(acts, acts_only, "character draw must not change the acts");
+            assert_eq!(chars, vec![ALL_CHARACTERS[expect_idx]]);
+            seen.insert(chars[0]);
+        }
+        assert_eq!(seen.len(), 5, "all five characters reachable");
+    }
+
+    /// One `NextItem` per random slot, in order (two players -> two reads).
+    #[test]
+    fn random_character_one_read_per_slot() {
+        let mut rng = Rng::with_name(12345, "act_selection");
+        let start = rng.counter();
+        let chars = resolve_random_characters(&mut rng, 2);
+        assert_eq!(chars.len(), 2);
+        assert_eq!(rng.counter(), start + 2);
+        assert_eq!(resolve_random_characters(&mut rng, 0), vec![]);
+        assert_eq!(rng.counter(), start + 2);
+    }
 
     /// With Underdocks locked, act 1 is Overgrowth for every seed — the world
     /// `run_room_gen` currently assumes.

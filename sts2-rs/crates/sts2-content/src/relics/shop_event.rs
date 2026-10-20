@@ -1114,7 +1114,7 @@ pub fn install_pool() {
     // after_obtained latches the obtain act-index into RunState
     // (since modify_generated_map_late has no map access in this
     // dispatch signature). modify_generated_map_late picks
-    // `FUR_COAT_COMBATS = 7` random Monster/Elite rooms and marks
+    // `FUR_COAT_COMBATS = 8` random Monster/Elite rooms and marks
     // them via the map-layer registry from mxbai. Combat-side
     // 1-HP clamp ships in a follow-up bead — needs a
     // CombatState↔ActMap snapshot bridge for the current room.
@@ -4385,7 +4385,7 @@ fn listener_fur_coat_after_obtained(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `FurCoat::modify_generated_map_late` — pick `FUR_COAT_COMBATS = 7`
+/// `FurCoat::modify_generated_map_late` — pick `FUR_COAT_COMBATS = 8`
 /// Monster/Elite rooms uniformly at random from the freshly-generated
 /// act map and mark them via the run-side
 /// [`sts2_core::map::ActMap::mark_room`] registry (bead
@@ -4398,10 +4398,10 @@ fn listener_fur_coat_after_obtained(rs: &mut RunState) -> EffectResult {
 /// 2. Act-gate: the late hook no-ops unless `act_index ==
 ///    rs.fur_coat_act_index`. Python's relic only marks rooms on
 ///    the obtain act, leaving subsequent acts unmodified.
-/// 3. Idempotency-gate: if the act-map already carries 7
+/// 3. Idempotency-gate: if the act-map already carries 8
 ///    FurCoat-owned marks, the listener is a no-op (Python checks
 ///    `valid_existing` — that every prior coord still points at a
-///    MONSTER/ELITE node; the Rust port treats "we already have 7"
+///    MONSTER/ELITE node; the Rust port treats "we already have 8"
 ///    as the closest equivalent until a `modify_generated_map`
 ///    rewrite changes node types, in which case the listener
 ///    re-rolls).
@@ -4412,7 +4412,7 @@ fn listener_fur_coat_after_obtained(rs: &mut RunState) -> EffectResult {
 /// old pin hashed). The Rust port uses [`sts2_core::dotnet_rng::Rng::with_name`]
 /// with `"FUR_COAT"`; the slot term is 0 in single-player. The shuffle
 /// itself is still the Rust `shuffle`, not C# `UnstableShuffle` (unverified). Sampling: shuffle the candidate
-/// `room_points` and take the first 7 (Fisher-Yates via the dotnet
+/// `room_points` and take the first 8 (Fisher-Yates via the dotnet
 /// Rng's `shuffle` method — same shape Python uses).
 ///
 /// Combat-side 1-HP clamp is deferred to a follow-up bead — it
@@ -5120,9 +5120,10 @@ pub const RUNIC_CAPACITOR_ORB_SLOTS: i32 = 3;
 pub const ALCHEMICAL_COFFER_POTION_SLOTS: i32 = 4;
 
 /// `FurCoat::COMBATS` — number of combat rooms FurCoat marks on the
-/// obtain act's map (`shop_event.py::FurCoat.COMBATS`). Bead
+/// obtain act's map. The Python pin said 7; v0.111.0 raised the `Combats`
+/// DynamicVar to 8 (`FurCoat.cs:62`, `new DynamicVar("Combats", 8m)`). Bead
 /// `sts2-rs-eboqq`.
-pub const FUR_COAT_COMBATS: usize = 7;
+pub const FUR_COAT_COMBATS: usize = 8;
 
 /// `BlessedAntler::ENERGY` / `DAZED_COUNT` — +1 max energy with 3 Dazed
 /// shuffled into draw round 1 (`shop_event.py::BlessedAntler`).
@@ -6660,12 +6661,18 @@ mod tests {
         );
     }
 
+    /// `FurCoat.cs:62` (v0.111.0): `Combats` is 8, not the Python pin's 7.
+    #[test]
+    fn fur_coat_combats_is_eight_per_0_111_0() {
+        assert_eq!(FUR_COAT_COMBATS, 8);
+    }
+
     /// Bead `sts2-rs-eboqq`: FurCoat's late map-mark listener picks
-    /// exactly `FUR_COAT_COMBATS = 7` Monster/Elite rooms and marks
+    /// exactly `FUR_COAT_COMBATS = 8` Monster/Elite rooms and marks
     /// them via the map-layer registry from mxbai. Idempotent on
     /// re-fire.
     #[test]
-    fn listener_fur_coat_marks_seven_monster_or_elite_rooms() {
+    fn listener_fur_coat_marks_eight_monster_or_elite_rooms() {
         use sts2_core::map::{ActMap, MapCoord, MapPointType};
         use sts2_core::runstate::RunState;
         crate::relics::dispatch::ensure_installed();
@@ -6691,7 +6698,7 @@ mod tests {
         assert_eq!(
             marked.len(),
             FUR_COAT_COMBATS,
-            "FurCoat must mark exactly 7 rooms"
+            "FurCoat must mark exactly 8 rooms"
         );
         let snapshot: std::collections::BTreeSet<MapCoord> = marked.iter().copied().collect();
         let _ = sts2_core::run_effects::dispatch_modify_generated_map_late(&mut rs, &mut map, 1);

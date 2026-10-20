@@ -1377,6 +1377,125 @@ pub fn generate_treasure_relic_pools(
     (common, uncommon, rare)
 }
 
+/// A5: the tutorial's elite relic reward (`RewardsSet.TryGenerateTutorialRewards`,
+/// `RewardsSet.cs:252,265`; `GetTutorialRelicReward<T>`, `:287-293`).
+///
+/// On a first run (`number_of_runs == 0`) as Ironclad, the first elite fight
+/// offers Vajra and the second Ornamental Fan. If the wanted relic is still in
+/// the player's relic grab bag the reward names it directly and reads **no**
+/// `Rewards` stream; if it is gone, C# falls back to the ordinary
+/// `new RelicReward(player)` (rarity `NextFloat` off `Rewards`, then the
+/// front-of-bag pull) — the replacement this function performs.
+///
+/// Returns `true` when the tutorial path produced the reward (the caller must
+/// then skip its own elite relic roll), `false` when the tutorial does not
+/// apply (returning profile, other character, or not the 1st/2nd elite), in
+/// which case nothing is touched.
+///
+/// The elite number is the count of Elite map points in `map_point_history`,
+/// which already includes the current room at reward time. The tutorial's
+/// `EpochUnlockCount() == 0` clause is not modelled (the engine assumes every
+/// epoch unlocked), and the tutorial's non-relic rewards (fixed card choices,
+/// Block Potion) are not ported. Not wired into the elite reward assembly:
+/// with the default `number_of_runs` the oracle/harness never reach it.
+pub fn tutorial_elite_relic_reward(rs: &mut RunState) -> bool {
+    if rs.number_of_runs != 0 || rs.character_id != CharacterId::Ironclad {
+        return false;
+    }
+    let wanted =
+        match rs.count_map_point_history_entries(None, Some(sts2_core::map::MapPointType::Elite)) {
+            1 => RelicId::Vajra,
+            2 => RelicId::OrnamentalFan,
+            _ => return false,
+        };
+    // `RelicGrabBag.Contains` walks the per-rarity deques only (not the
+    // fallback list).
+    let in_bag = rs
+        .relic_grab_bag_by_rarity
+        .values()
+        .any(|bucket| bucket.contains(&wanted));
+    if in_bag {
+        rs.offer_relic_rewards(wanted, 1);
+    } else {
+        rs.offer_random_relic_rewards(1, &[None]);
+    }
+    true
+}
+
+#[cfg(test)]
+mod tutorial_elite_relic_tests {
+    use super::*;
+    use sts2_core::map::MapPointType;
+
+    fn first_run_state(elites: usize) -> RunState {
+        let mut rs = RunState {
+            number_of_runs: 0,
+            ..RunState::default()
+        };
+        let (by_rarity, fallback, boss) = default_relic_grab_bag();
+        rs.populate_relic_grab_bag_by_rarity(by_rarity, fallback, boss);
+        for _ in 0..elites {
+            rs.append_to_map_point_history(MapPointType::Elite, RoomType::Elite);
+        }
+        rs
+    }
+
+    #[test]
+    fn named_relic_when_in_bag_reads_no_rewards_stream() {
+        for (elites, expect) in [(1, RelicId::Vajra), (2, RelicId::OrnamentalFan)] {
+            let mut rs = first_run_state(elites);
+            assert!(
+                rs.relic_grab_bag_by_rarity
+                    .values()
+                    .any(|b| b.contains(&expect)),
+                "{expect:?} must be in the default Ironclad bag for this test"
+            );
+            let before = rs.rng.rewards.counter();
+            assert!(tutorial_elite_relic_reward(&mut rs));
+            assert_eq!(rs.rng.rewards.counter(), before, "no Rewards read");
+            assert_eq!(rs.relic_rewards.len(), 1);
+            assert_eq!(rs.relic_rewards[0].relic_id, expect);
+        }
+    }
+
+    #[test]
+    fn replaced_by_ordinary_roll_when_missing_from_bag() {
+        let mut rs = first_run_state(1);
+        for bucket in rs.relic_grab_bag_by_rarity.values_mut() {
+            bucket.retain(|r| *r != RelicId::Vajra);
+        }
+        let mut reference = rs.clone();
+        let before = rs.rng.rewards.counter();
+        assert!(tutorial_elite_relic_reward(&mut rs));
+        // Exactly what `new RelicReward(player)` does: one rarity roll + pull.
+        reference.offer_random_relic_rewards(1, &[None]);
+        assert_eq!(rs.rng.rewards.counter(), before + 1);
+        assert_eq!(rs.relic_rewards.len(), 1);
+        assert_eq!(
+            rs.relic_rewards[0].relic_id,
+            reference.relic_rewards[0].relic_id
+        );
+        assert_ne!(rs.relic_rewards[0].relic_id, RelicId::Vajra);
+    }
+
+    #[test]
+    fn not_applicable_leaves_state_untouched() {
+        // Returning profile (default `number_of_runs`).
+        let mut rs = first_run_state(1);
+        rs.number_of_runs = 3;
+        // Third elite, and a non-Ironclad first run.
+        let mut third = first_run_state(3);
+        let mut silent = first_run_state(1);
+        silent.character_id = CharacterId::Silent;
+        for st in [&mut rs, &mut third, &mut silent] {
+            let before = st.rng.rewards.counter();
+            assert!(!tutorial_elite_relic_reward(st));
+            assert_eq!(st.rng.rewards.counter(), before);
+            assert!(st.relic_rewards.is_empty());
+        }
+    }
+}
+
 /// Roll a full, stocked merchant inventory. Delegates to the C#-faithful
 /// [`crate::cards::spec_index::generate_merchant_inventory`], which walks
 /// `MerchantInventory.CreateForNormalMerchant`'s exact two-stream
@@ -1787,6 +1906,12 @@ mod tests {
         let cb = ironclad_content_callbacks();
         let resolve = cb.resolve_event_at.expect("event resolver wired");
         let mut rs = RunState::new();
+        // The event order comes from `generated_rooms` (RG-27: no static
+        // per-act fallback table any more).
+        rs.generated_rooms = vec![sts2_core::run_room_gen::GeneratedActRooms {
+            events_shuffled: vec!["AbyssalBaths", "Amalgamator"],
+            ..Default::default()
+        }];
         let before = rs.visited_event_ids.len();
         assert!(resolve(&mut rs, 0));
         assert!(rs.current_event.is_none());

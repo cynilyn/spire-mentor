@@ -717,9 +717,248 @@ pub fn generate_all_rooms(
         .collect()
 }
 
+/// C# `RunManager.ShouldApplyTutorialModifications` (`RunManager.cs:599-617`):
+/// the discovery-order rewrite applies when forced, else never under
+/// `TestMode.IsOn` (the oracle and the harness), never without a run state or
+/// outside `GameMode.Standard`.
+#[must_use]
+pub fn should_apply_tutorial_modifications(ctx: TutorialModificationContext) -> bool {
+    if ctx.force_discovery_order {
+        return true;
+    }
+    if ctx.test_mode_on || !ctx.has_state {
+        return false;
+    }
+    ctx.standard_mode
+}
+
+/// Inputs to [`should_apply_tutorial_modifications`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TutorialModificationContext {
+    /// `RunManager.ForceDiscoveryOrderModifications`.
+    pub force_discovery_order: bool,
+    /// `TestMode.IsOn` (true for the oracle and the harness).
+    pub test_mode_on: bool,
+    /// `State != null`.
+    pub has_state: bool,
+    /// `State.GameMode == GameMode.Standard`.
+    pub standard_mode: bool,
+}
+
+/// `RoomSet.SwapToOrCreateAtIndex<_, T>` (`RoomSet.cs:160-175`): if `id` is
+/// already in the list, swap it with whatever sits at `desired`; otherwise
+/// overwrite `desired` with it.
+fn swap_to_or_create_at_index(list: &mut [&'static str], id: &'static str, desired: usize) {
+    if let Some(found) = list.iter().position(|e| *e == id) {
+        list.swap(found, desired);
+    } else {
+        list[desired] = id;
+    }
+}
+
+/// C# `Act.BossDiscoveryOrder` (the per-act `ModelDb.Encounter<...Boss>()`
+/// triples).
+fn boss_discovery_order(act: ActVariant) -> [&'static str; 3] {
+    match act {
+        ActVariant::Overgrowth => ["VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS"],
+        ActVariant::Underdocks => [
+            "WATERFALL_GIANT_BOSS",
+            "SOUL_FYSH_BOSS",
+            "LAGAVULIN_MATRIARCH_BOSS",
+        ],
+        ActVariant::Hive => [
+            "THE_INSATIABLE_BOSS",
+            "KNOWLEDGE_DEMON_BOSS",
+            "KAISER_CRAB_BOSS",
+        ],
+        ActVariant::Glory => ["QUEEN_BOSS", "TEST_SUBJECT_BOSS", "AEONGLASS_BOSS"],
+    }
+}
+
+/// RG-26: `ActModel.ApplyDiscoveryOrderModifications` (`ActModel.cs:307-318`)
+/// plus each act's `ApplyActDiscoveryOrderModifications`, applied to the rooms
+/// `generate_all_rooms` produced for that act. Live-save only
+/// ([`should_apply_tutorial_modifications`] is false under `TestMode.IsOn`),
+/// and it draws nothing from any stream.
+///
+/// 1. The boss becomes the first entry of the act's boss discovery order that
+///    `encounters_seen` (`UnlockState.HasSeenEncounter`, upper-snake ids)
+///    does not contain.
+/// 2. Overgrowth only, and only when `number_of_runs == 0`: the fixed first-run
+///    encounter / event / elite order. The other acts' hooks are empty.
+///
+/// Not wired into `generate_all_rooms` (its signature is shared): a caller
+/// that wires it must apply it per act right after that act's rooms are
+/// generated and before the last act's DoubleBoss second-boss draw
+/// (`RunManager.cs:586-595`), since that draw excludes the (possibly rewritten)
+/// boss.
+pub fn apply_discovery_order_modifications(
+    rooms: &mut GeneratedActRooms,
+    act: ActVariant,
+    number_of_runs: u32,
+    encounters_seen: &[&str],
+) {
+    if let Some(first_unseen) = boss_discovery_order(act)
+        .into_iter()
+        .find(|boss| !encounters_seen.contains(boss))
+    {
+        rooms.boss_id = first_unseen;
+    }
+    if act == ActVariant::Overgrowth && number_of_runs == 0 {
+        const NORMAL: [&str; 7] = [
+            "NIBBITS_WEAK",
+            "SLIMES_WEAK",
+            "SHRINKER_BEETLE_WEAK",
+            "INKLETS_NORMAL",
+            "MAWLER_NORMAL",
+            "RUBY_RAIDERS_NORMAL",
+            "NIBBITS_NORMAL",
+        ];
+        for (i, id) in NORMAL.into_iter().enumerate() {
+            swap_to_or_create_at_index(&mut rooms.normal_encounters, id, i);
+        }
+        swap_to_or_create_at_index(&mut rooms.events_shuffled, "ByrdonisNest", 0);
+        swap_to_or_create_at_index(&mut rooms.events_shuffled, "SapphireSeed", 1);
+        swap_to_or_create_at_index(&mut rooms.elite_encounters, "BYRDONIS_ELITE", 0);
+        swap_to_or_create_at_index(&mut rooms.elite_encounters, "PHROG_PARASITE_ELITE", 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RG-26 (`ActModel.cs:307-318`, `Overgrowth.cs:110-127`).
+    #[test]
+    fn discovery_order_modifications() {
+        let base = || {
+            let mut up_front = Rng::new(4242);
+            generate_all_rooms(&mut up_front, false, ActVariant::Overgrowth)
+        };
+
+        // Gate: TestMode.IsOn (oracle/harness) never rewrites; live Standard does.
+        let live = TutorialModificationContext {
+            force_discovery_order: false,
+            test_mode_on: false,
+            has_state: true,
+            standard_mode: true,
+        };
+        assert!(should_apply_tutorial_modifications(live));
+        assert!(!should_apply_tutorial_modifications(
+            TutorialModificationContext {
+                test_mode_on: true,
+                ..live
+            }
+        ));
+        assert!(should_apply_tutorial_modifications(
+            TutorialModificationContext {
+                force_discovery_order: true,
+                test_mode_on: true,
+                has_state: false,
+                standard_mode: false,
+            }
+        ));
+        assert!(!should_apply_tutorial_modifications(
+            TutorialModificationContext {
+                has_state: false,
+                ..live
+            }
+        ));
+        assert!(!should_apply_tutorial_modifications(
+            TutorialModificationContext {
+                standard_mode: false,
+                ..live
+            }
+        ));
+
+        // Nothing seen: the boss is the first of each act's discovery order,
+        // whatever the seed rolled; a returning profile leaves rooms alone.
+        let mut rooms = base();
+        let before = rooms.clone();
+        for (i, act) in [ActVariant::Overgrowth, ActVariant::Hive, ActVariant::Glory]
+            .into_iter()
+            .enumerate()
+        {
+            apply_discovery_order_modifications(&mut rooms[i], act, 5, &[]);
+            assert_eq!(rooms[i].boss_id, boss_discovery_order(act)[0]);
+            assert_eq!(rooms[i].normal_encounters, before[i].normal_encounters);
+            assert_eq!(rooms[i].events_shuffled, before[i].events_shuffled);
+            assert_eq!(rooms[i].elite_encounters, before[i].elite_encounters);
+        }
+
+        // First boss seen -> second; first two seen -> third; all seen ->
+        // the rolled boss is kept.
+        let mut r = base()[0].clone();
+        let rolled = r.boss_id;
+        apply_discovery_order_modifications(&mut r, ActVariant::Overgrowth, 5, &["VANTOM_BOSS"]);
+        assert_eq!(r.boss_id, "CEREMONIAL_BEAST_BOSS");
+        apply_discovery_order_modifications(
+            &mut r,
+            ActVariant::Overgrowth,
+            5,
+            &["VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS"],
+        );
+        assert_eq!(r.boss_id, "THE_KIN_BOSS");
+        let mut r = base()[0].clone();
+        r.boss_id = rolled;
+        apply_discovery_order_modifications(
+            &mut r,
+            ActVariant::Overgrowth,
+            5,
+            &["VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS"],
+        );
+        assert_eq!(r.boss_id, rolled);
+
+        // First run, act 1: the fixed order, list lengths preserved; Glory
+        // (empty hook) changes only the boss.
+        let mut r = base()[0].clone();
+        let (n, e, el) = (
+            r.normal_encounters.len(),
+            r.events_shuffled.len(),
+            r.elite_encounters.len(),
+        );
+        apply_discovery_order_modifications(&mut r, ActVariant::Overgrowth, 0, &[]);
+        assert_eq!(
+            r.normal_encounters[..7],
+            [
+                "NIBBITS_WEAK",
+                "SLIMES_WEAK",
+                "SHRINKER_BEETLE_WEAK",
+                "INKLETS_NORMAL",
+                "MAWLER_NORMAL",
+                "RUBY_RAIDERS_NORMAL",
+                "NIBBITS_NORMAL",
+            ]
+        );
+        assert_eq!(r.events_shuffled[..2], ["ByrdonisNest", "SapphireSeed"]);
+        assert_eq!(
+            r.elite_encounters[..2],
+            ["BYRDONIS_ELITE", "PHROG_PARASITE_ELITE"]
+        );
+        assert_eq!(
+            (
+                r.normal_encounters.len(),
+                r.events_shuffled.len(),
+                r.elite_encounters.len()
+            ),
+            (n, e, el)
+        );
+        let mut g = base()[2].clone();
+        let g_before = g.clone();
+        apply_discovery_order_modifications(&mut g, ActVariant::Glory, 0, &["QUEEN_BOSS"]);
+        assert_eq!(g.boss_id, "TEST_SUBJECT_BOSS");
+        assert_eq!(g.normal_encounters, g_before.normal_encounters);
+    }
+
+    /// `SwapToOrCreateAtIndex` both branches.
+    #[test]
+    fn swap_to_or_create_branches() {
+        let mut l = vec!["A", "B", "C"];
+        swap_to_or_create_at_index(&mut l, "C", 0);
+        assert_eq!(l, ["C", "B", "A"]);
+        swap_to_or_create_at_index(&mut l, "Z", 1);
+        assert_eq!(l, ["C", "Z", "A"]);
+    }
 
     /// v0.111.0 added `EncounterTag.Jaxfruit` (EncounterTag.cs:20) and gave it to
     /// `SlitheringStranglerNormal` (`{Jaxfruit, Slimes}`, SlitheringStranglerNormal.cs:34-37)

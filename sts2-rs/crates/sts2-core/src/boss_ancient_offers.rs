@@ -104,6 +104,40 @@ pub fn roll_offers(ancient: AncientId, rng: &mut Rng, cond: &AncientConditions) 
     }
 }
 
+/// What an Ancient shows the player: its rolled relic offers, or the single
+/// `PROCEED` option it falls back to when a hook vetoes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AncientOptions {
+    /// `GenerateInitialOptions()` ran; these are the offered relics.
+    Offers(Vec<RelicId>),
+    /// `Hook.ShouldAllowAncient` returned false: a lone `PROCEED` option and
+    /// no `GenerateInitialOptions` call (so no event-stream reads).
+    ProceedOnly,
+}
+
+/// RG-61: `AncientEventModel.GenerateInitialOptionsWrapper`
+/// (`AncientEventModel.cs:166-181`). When any hook listener vetoes the Ancient
+/// (`Hook.ShouldAllowAncient` — WaxChoker's `blockMessage` path,
+/// `AncientEventModel.cs:128`), the event shows only
+/// `new EventOption(this, Proceed, "PROCEED", false, true)` and the real
+/// option roll is skipped entirely; otherwise it is [`roll_offers`].
+///
+/// `allowed` is the folded `ShouldAllowAncient` result. The engine has no
+/// listener that returns false yet, so no live path passes `false`.
+#[must_use]
+pub fn generate_initial_options(
+    allowed: bool,
+    ancient: AncientId,
+    rng: &mut Rng,
+    cond: &AncientConditions,
+) -> AncientOptions {
+    if allowed {
+        AncientOptions::Offers(roll_offers(ancient, rng, cond))
+    } else {
+        AncientOptions::ProceedOnly
+    }
+}
+
 // ── Act 2 ───────────────────────────────────────────────────────────────
 
 /// `Tezcatara.GenerateInitialOptions` (`Tezcatara.cs:188-198`) — 3
@@ -316,6 +350,38 @@ mod tests {
             orobas_pool3: vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth],
             pandoras_allowed: true,
             tezcatara_basic_strike: false,
+        }
+    }
+
+    /// RG-61 (`AncientEventModel.cs:166-181`): a vetoed Ancient yields only
+    /// `PROCEED` and never calls the option roll (event stream untouched); an
+    /// allowed one is exactly `roll_offers`.
+    #[test]
+    fn vetoed_ancient_is_single_proceed_with_no_rng_reads() {
+        for ancient in [
+            AncientId::Orobas,
+            AncientId::Pael,
+            AncientId::Tezcatara,
+            AncientId::Nonupeipe,
+            AncientId::Tanx,
+            AncientId::Vakuu,
+            AncientId::Darv,
+        ] {
+            let mut blocked = event_rng(777, ancient);
+            let start = blocked.counter();
+            assert_eq!(
+                generate_initial_options(false, ancient, &mut blocked, &cond()),
+                AncientOptions::ProceedOnly
+            );
+            assert_eq!(blocked.counter(), start, "no reads when vetoed");
+
+            let mut allowed = event_rng(777, ancient);
+            let mut reference = event_rng(777, ancient);
+            assert_eq!(
+                generate_initial_options(true, ancient, &mut allowed, &cond()),
+                AncientOptions::Offers(roll_offers(ancient, &mut reference, &cond()))
+            );
+            assert_eq!(allowed.counter(), reference.counter());
         }
     }
 
