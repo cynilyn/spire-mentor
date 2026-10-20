@@ -1812,17 +1812,6 @@ pub struct RunState {
     /// are meaningful here — the acts at index 1 and 2 are singletons.
     pub act1: ActVariant,
 
-    /// C# `UnlockState.NumberOfRuns`: how many runs the profile has already
-    /// played. `0` marks a first run, which switches on two live-save-only
-    /// tutorial rules: the fixed `?` sequence (`UnknownMapPointOdds.cs:99-112`,
-    /// see [`Self::resolve_unknown_room`]) and the tutorial elite relic
-    /// replacement (`RewardsSet.cs:287-293`).
-    ///
-    /// Defaults to `1` (a returning profile) so the engine behaves exactly as
-    /// it did before this field existed; the oracle and the harness both run
-    /// with `NumberOfRuns > 0`.
-    pub number_of_runs: u32,
-
     /// The character class for this run. Mirrors Python
     /// `RunState.__init__(character_id="Ironclad")` (the constructor
     /// arg threaded onto `self.player = PlayerState(character_id=...)`
@@ -1999,7 +1988,6 @@ impl Default for RunState {
             // GH #544: the act-1 variant defaults to the historical
             // single-Act-1 behaviour. `RunManager::with_act1` overrides it.
             act1: ActVariant::Overgrowth,
-            number_of_runs: 1,
             // Bead `sts2-rs-xbkhd` (P9.3.b): default to Ironclad to
             // match Python's `RunState.__init__(character_id="Ironclad")`.
             // `RunManager::with_ascension` overwrites this with the
