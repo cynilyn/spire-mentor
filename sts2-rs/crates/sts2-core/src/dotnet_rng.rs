@@ -982,7 +982,7 @@ mod tests {
         }
     }
 
-    /// Oracle vectors (`stage1_vectors.json`, oracle f79d3a9, game 0.111.0):
+    /// Oracle vectors (recorded from the C# oracle f79d3a9, game 0.111.0):
     /// the run and player bases of a plain seed and of a migrated `old` seed.
     #[test]
     fn seed_bases_match_the_oracle_vectors() {

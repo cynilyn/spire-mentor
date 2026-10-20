@@ -1,8 +1,8 @@
 """`RunManager.rng_dump` contract (v0.111.0), ported from the own-port tree (donor 3088de5 / 849e824 tests).
 
-Shape, read-only guarantee and oracle anchors. Oracle vectors: sts2_bot ``logs/engine/p0/stage1_vectors.json``
-(sha256 5267538d84c1a1468b68656b82bdd270e4a4e21b60a251366beb475786aa8976, oracle f79d3a9, game 0.111.0). The full
-20-seed x 22-stream x 10-draw comparison (W1-W4) lives in ``logs/engine/p0/tools/compare_vectors.py``.
+Shape, read-only guarantee and oracle anchors. The anchors below are values recorded from the C# reference
+(sts2-cli oracle f79d3a9, game 0.111.0). The full 20-seed x 22-stream x 10-draw comparison was run outside this
+repository against vectors recorded from that oracle.
 """
 
 from __future__ import annotations
@@ -143,9 +143,9 @@ def test_game_version_env_is_the_default_for_calls_without_the_kwarg(monkeypatch
         sts2_rs.RunManager(string_seed="P0A0", neow_start=True)
 
 
-# --- R0-s: seed-path fixes (witnesses: logs/engine/rust_resume/r0/witnesses.md) ---
+# --- seed-path fixes (expected values were written down before the fix, from the C# oracle) ---
 
-OLD_ANCHORS = [  # oracle f79d3a9 stage1_vectors.json: (seed, run_seed, player_seed)
+OLD_ANCHORS = [  # values recorded from oracle f79d3a9: (seed, run_seed, player_seed)
     ("oldP0A0", 273692109, 15676685915450073139),
     ("oldP0A1", 3002575464, 18283884523336027873),
     ("oldP0A2", 3405859991, 17731986911216078246),
@@ -203,7 +203,7 @@ def test_old_seed_act_selection_uses_the_full_string_hash():
 
 
 # --- raw_seed_hash lineage (Codex R0 recheck): expected values from the independent pure-Python XXH64
-# (logs/engine/rust_resume/r0/tools/raw_expected.py, validated against the W1-W4 vectors), recorded in witnesses.md
+# (a standalone XXH64 and the C# seeding formula, cross-checked against the recorded oracle vectors), written down
 # before the fix: (seed, run == player base, act_selection stream seed, rewards stream seed, event:NEOW stream seed)
 RAW_EXPECTED = [
     ('p0a0', 9004872484816525140, 17770519109280449700, 11379324285232481031, 10849268856306660801),
