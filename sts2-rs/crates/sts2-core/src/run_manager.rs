@@ -1991,6 +1991,11 @@ impl RunManager {
             gold *= crate::runstate::POVERTY_ASCENSION_GOLD_MULTIPLIER;
         }
         self.run_state.gain_gold(gold.trunc() as i32);
+        // v0.111.0 `TryHandleSpoilsMap` runs right after the chest gold
+        // (`OneOffSynchronizer.cs:112-114`); a no-op off the quest node.
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+            let _ = self.run_state.complete_spoils_quest();
+        }
         if let Some(id) = picked {
             self.run_state.obtain_relic(id);
         }

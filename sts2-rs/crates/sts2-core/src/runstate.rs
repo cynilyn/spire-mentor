@@ -1503,6 +1503,11 @@ pub struct RunState {
     /// `Id.Entry` into [`Self::paels_tooth_stored`].
     pub paels_stash_pending: Option<Vec<crate::cards::Card>>,
 
+    /// v0.111.0: the map point carrying the SpoilsMap quest (the act-2
+    /// treasure node of a map generated while the card was in the deck);
+    /// cleared on every map generation and when the quest completes.
+    pub spoils_quest_coord: Option<crate::map::MapCoord>,
+
     /// Cards to append to [`Self::master_deck`] AFTER the current batch of
     /// interactive [`Self::pending_deck_removals`] fully drains (i.e. when
     /// the count next hits 0). Models C# events that do
@@ -2038,6 +2043,7 @@ impl Default for RunState {
             interactive_card_removal: false,
             pending_deck_removals: 0,
             paels_stash_pending: None,
+            spoils_quest_coord: None,
             pending_post_removal_cards: Vec::new(),
             pending_post_removal_hp_loss: 0,
             pending_post_removal_max_hp_gain: 0,
@@ -4332,13 +4338,14 @@ impl RunState {
         // `Rng(seed, "spoils_map")`. Cards are hook listeners ahead of relics
         // (`RunState.IterateHookListeners`), so a GoldenCompass layout swap
         // below still wins.
-        if self.game_version >= crate::GameVersion::V0_111_0
+        let spoils_active = self.game_version >= crate::GameVersion::V0_111_0
             && act_index == 2
             && self
                 .master_deck
                 .iter()
-                .any(|c| c.card_id == crate::cards::CardId::SpoilsMap)
-        {
+                .any(|c| c.card_id == crate::cards::CardId::SpoilsMap);
+        self.spoils_quest_coord = None;
+        if spoils_active {
             let num_rooms = self
                 .acts
                 .get(usize::from(act_index).saturating_sub(1))
@@ -4355,6 +4362,41 @@ impl RunState {
         }
         let _ = crate::run_effects::dispatch_modify_generated_map(self, act_map, act_index);
         let _ = crate::run_effects::dispatch_modify_generated_map_late(self, act_map, act_index);
+        // `SpoilsMap.ModifyGeneratedMapLate` records the map's first Treasure
+        // point and `AfterMapGenerated` marks it with the quest.
+        if spoils_active {
+            self.spoils_quest_coord = act_map
+                .points
+                .iter()
+                .find(|p| p.point_type == crate::map::MapPointType::Treasure)
+                .map(|p| p.coord);
+        }
+    }
+
+    /// v0.111.0 `OneOffSynchronizer.TryHandleSpoilsMap`: opening the treasure
+    /// room on the quest-marked map point pays every SpoilsMap in the deck
+    /// (`OnQuestComplete`: `GainGold(600)` — no Poverty scaling — then
+    /// `RemoveFromDeck`). Returns the gold paid.
+    pub fn complete_spoils_quest(&mut self) -> i32 {
+        let Some(coord) = self.spoils_quest_coord else {
+            return 0;
+        };
+        if self.current_room.and_then(|r| r.map_coord) != Some(coord) {
+            return 0;
+        }
+        let cards = self
+            .master_deck
+            .iter()
+            .filter(|c| c.card_id == CardId::SpoilsMap)
+            .count();
+        if cards == 0 {
+            return 0;
+        }
+        self.master_deck.retain(|c| c.card_id != CardId::SpoilsMap);
+        self.spoils_quest_coord = None;
+        let gold = SPOILS_MAP_GOLD * i32::try_from(cards).unwrap_or(i32::MAX);
+        self.gain_gold(gold);
+        gold
     }
 
     /// Immediate-regen primitive for the current act's map. Mirrors
@@ -5525,6 +5567,9 @@ impl RunState {
 /// Guilty stays in the deck before it removes itself.
 pub const GUILTY_MAX_COMBATS: i32 = 5;
 
+/// `SpoilsMap`'s `GoldVar(600)` (`SpoilsMap.cs`): the quest payout per card.
+pub const SPOILS_MAP_GOLD: i32 = 600;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -5802,6 +5847,44 @@ mod tests {
         let mut old = ActMap::new(rooms);
         rs.modify_generated_map(&mut old, 2);
         assert!(old.points.is_empty(), "0.107.1 never swaps");
+    }
+
+    /// v0.111.0 SpoilsMap quest (`OneOffSynchronizer.TryHandleSpoilsMap`): on
+    /// the quest-marked treasure node each SpoilsMap pays 600 gold and leaves
+    /// the deck; elsewhere (or before the map is generated) nothing happens.
+    #[test]
+    fn spoils_quest_pays_gold_and_removes_the_card_at_the_marked_treasure() {
+        use crate::map::{ActMap, MapCoord, MapPointType};
+        let rooms = crate::acts::DEFAULT_ACT_NUM_ROOMS;
+        let spoils = {
+            let mut c = Card::pod_defaults();
+            c.card_id = CardId::SpoilsMap;
+            c
+        };
+        let mut rs = RunState::default();
+        rs.game_version = crate::GameVersion::V0_111_0;
+        rs.master_deck.push(spoils);
+        rs.act_index = 2;
+        let mut map = ActMap::new(rooms);
+        rs.modify_generated_map(&mut map, 2);
+        let coord = rs.spoils_quest_coord.expect("treasure node marked");
+        assert_eq!(coord.row, map.map_length - 7);
+
+        // Off the node: nothing.
+        rs.enter_room(Room::at(
+            MapCoord::new(0, 1),
+            MapPointType::Monster,
+            RoomType::Monster,
+        ));
+        assert_eq!(rs.complete_spoils_quest(), 0);
+        assert_eq!(rs.master_deck.len(), 1);
+        // On the node: +600, card gone, quest cleared.
+        let gold = rs.gold;
+        rs.enter_room(Room::at(coord, MapPointType::Treasure, RoomType::Treasure));
+        assert_eq!(rs.complete_spoils_quest(), SPOILS_MAP_GOLD);
+        assert_eq!(rs.gold, gold + SPOILS_MAP_GOLD);
+        assert!(rs.master_deck.is_empty());
+        assert!(rs.spoils_quest_coord.is_none());
     }
 
     // ── Bead sts2-rs-2mjei: enter_room auto-invocation ──────────────────
