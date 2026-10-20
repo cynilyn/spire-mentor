@@ -195,6 +195,10 @@ class Snap:
     relics: list[str]
     potions: list[str]
     enemies: tuple[int, ...]
+    # Step-0 Neow offer ids, in offer order (None everywhere except the step-0
+    # snapshot, where run_one / _replay_against_rust fill it via
+    # ``neow_offers_cs`` / ``neow_offers_rs``). p0 stage 0d task 3.
+    neow_offers: tuple[str, ...] | None = None
 
     @classmethod
     def of(cls, view: dict[str, Any], side: str) -> Snap:
@@ -214,9 +218,73 @@ class Snap:
         )
 
 
+_NEOW_FIELD = "neow_offers"
+
+
+def neow_offers_cs(view: dict[str, Any]) -> tuple[str, ...] | None:
+    """Ordered Neow offer ids from the oracle's step-0 ``event_choice`` screen.
+
+    The C# options carry ``text_key`` ``NEOW.pages.INITIAL.options.<ID>``; the
+    id is the last segment. ``None`` when the view is not the Neow screen (so a
+    non-Neow start is never reported as a mismatch)."""
+    if (view.get("decision") or view.get("type")) != "event_choice":
+        return None
+    ids: list[str] = []
+    for o in view.get("options") or []:
+        tk = str(o.get("text_key") or "")
+        if not tk.startswith("NEOW.pages.INITIAL.options."):
+            return None
+        ids.append(tk.rsplit(".", 1)[-1].upper())
+    return tuple(ids) or None
+
+
+def neow_offers_rs(view: dict[str, Any], backend: Any = None) -> tuple[str, ...] | None:
+    """Ordered Neow offer ids from the Rust side: ``RunManager.neow_offers()``
+    when the native run is reachable, else the step-0 view's option
+    ``text_key`` list (same ids, SCREAMING_SNAKE)."""
+    try:
+        rm = backend.native_run() if backend is not None else None
+        offers = rm.neow_offers() if rm is not None else None
+        if offers:
+            return tuple(str(x).upper() for x in offers)
+    except Exception:
+        pass
+    ids = [str(o.get("text_key") or o.get("option_id") or "").upper() for o in view.get("options") or []]
+    return tuple(ids) if ids and all(ids) else None
+
+
+def attach_step0_neow(
+    cs_snap: Snap, rs_snap: Snap, cs_view: dict[str, Any], rs_view: dict[str, Any], rs_backend: Any
+) -> None:
+    """Fill ``neow_offers`` on both step-0 snapshots (no-op when either side
+    does not expose a Neow list, so the field is only compared when both do)."""
+    cs_n, rs_n = neow_offers_cs(cs_view), neow_offers_rs(rs_view, rs_backend)
+    if cs_n is not None and rs_n is not None:
+        cs_snap.neow_offers, rs_snap.neow_offers = cs_n, rs_n
+
+
+def continue_past_neow() -> bool:
+    """Opt-in (``STS2_RUNPARITY_CONTINUE_PAST_NEOW=1``): a step-0 ``neow_offers``
+    mismatch is still REPORTED (row ``step0_fields``) but does not end the run, so
+    downstream fields stay observable. Default off: the mismatch is a normal
+    step-0 divergence and ``stop_on_diverge`` applies."""
+    return os.environ.get("STS2_RUNPARITY_CONTINUE_PAST_NEOW") == "1"
+
+
+def split_step0_neow(fields: list[str], step: int) -> tuple[list[str], list[str]]:
+    """``(rest, neow_fields)``; ``neow_fields`` is non-empty only at step 0 and
+    only when ``continue_past_neow()`` is on."""
+    if step != 0 or not continue_past_neow():
+        return fields, []
+    keep = [f for f in fields if not f.startswith(_NEOW_FIELD + ":")]
+    return keep, [f for f in fields if f.startswith(_NEOW_FIELD + ":")]
+
+
 def diff_snaps(cs: Snap, rs: Snap) -> list[str]:
     """Return a list of human-readable field divergences (empty == match)."""
     out: list[str] = []
+    if cs.neow_offers is not None and rs.neow_offers is not None and cs.neow_offers != rs.neow_offers:
+        out.append(f"{_NEOW_FIELD}: cs={list(cs.neow_offers)} rs={list(rs.neow_offers)}")
     if cs.phase != rs.phase:
         out.append(f"phase: cs={cs.phase!r} rs={rs.phase!r}")
     for fld in ("hp", "max_hp", "gold"):
@@ -355,6 +423,47 @@ def enumerate_choices(g: Any, cs_view: dict[str, Any]) -> list[tuple[str, dict[s
     return out
 
 
+def reconcile_select_action(view: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """One-sided card_select reconciliation: apply the SCREEN'S OWN min/max.
+
+    Mandatory (``min_select`` >= 1): pick the first ``min_select`` legal cards
+    with ``select_cards`` (never ``skip_select`` - the engine rejects a skip on a
+    mandatory screen). Optional (min 0): ``skip_select``. ``None`` when a
+    mandatory screen offers fewer legal cards than ``min_select``. p0 stage 0d
+    task 1 (replaces the unconditional ``skip_select`` that Rust rejected 4x in
+    P0-A a2: P0A11/24/25/26)."""
+    min_sel = int(view.get("min_select") or 0)
+    if min_sel < 1:
+        return ("skip_select", {})
+    idxs = [c["index"] for c in (view.get("cards") or [])][:min_sel]
+    if len(idxs) < min_sel:
+        return None
+    return ("select_cards", {"indices": ",".join(str(i) for i in idxs)})
+
+
+def drive_rs_alone_through_select(
+    r: Any, rs_view: dict[str, Any], rs_snap: Snap, max_iter: int = 8
+) -> tuple[dict[str, Any], Snap, list[tuple[str, dict[str, Any]]]]:
+    """Rust surfaces a card_select that C# resolved atomically: advance Rust
+    ALONE using :func:`reconcile_select_action`. Returns the new view/snap and
+    the ``(verb, kwargs)`` list actually sent. A Rust rejection stops the loop
+    and is left to the recorder to count as a device failure (not relabeled)."""
+    sent: list[tuple[str, dict[str, Any]]] = []
+    guard = 0
+    while rs_snap.phase == "card_select" and guard < max_iter:
+        act = reconcile_select_action(rs_view)
+        if act is None:
+            break
+        sent.append(act)
+        nxt = r.act(act[0], **act[1])
+        if isinstance(nxt, dict) and (nxt.get("error") or nxt.get("type") == "error"):
+            break
+        rs_view = nxt
+        rs_snap = Snap.of(rs_view, "rs")
+        guard += 1
+    return rs_view, rs_snap, sent
+
+
 @dataclass
 class Divergence:
     step: int
@@ -372,6 +481,9 @@ class RunResult:
     rs_won: bool | None = None
     divergence: Divergence | None = None
     trace: list[str] = field(default_factory=list)
+    # Step-0 neow_offers mismatch lines when STS2_RUNPARITY_CONTINUE_PAST_NEOW=1
+    # (reported, but the run continued). Empty otherwise.
+    step0_fields: list[str] = field(default_factory=list)
 
 
 def run_one(
@@ -402,6 +514,8 @@ def run_one(
 
             # ---- diff state ----
             cs_snap, rs_snap = Snap.of(cs_view, "cs"), Snap.of(rs_view, "rs")
+            if step == 0:
+                attach_step0_neow(cs_snap, rs_snap, cs_view, rs_view, r)
 
             # Atomic-select-skip guards (same reconciliation as the cached
             # ``_replay_against_rust`` / ``act23_state_parity`` drivers): one
@@ -415,23 +529,15 @@ def run_one(
             if cs_snap.phase == "card_select" and rs_snap.phase != "card_select":
                 cs_choices = enumerate_choices(g, cs_view)
                 if cs_choices:
-                    verb0, kw0 = cs_choices[0]
+                    # Screen's own min/max: mandatory -> first legal card(s),
+                    # optional -> skip (stage 0d task 1).
+                    verb0, kw0 = reconcile_select_action(cs_view) or cs_choices[0]
                     nxt_cs = g.act(verb0, **kw0)
                     if not (isinstance(nxt_cs, dict) and nxt_cs.get("type") == "error"):
                         cs_view = nxt_cs
                         continue
-            sel_guard = 0
-            while (
-                rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and sel_guard < 8
-            ):
-                nxt_rs = r.act("skip_select")
-                if isinstance(nxt_rs, dict) and (
-                    nxt_rs.get("error") or nxt_rs.get("type") == "error"
-                ):
-                    break
-                rs_view = nxt_rs
-                rs_snap = Snap.of(rs_view, "rs")
-                sel_guard += 1
+            if rs_snap.phase == "card_select" and cs_snap.phase != "card_select":
+                rs_view, rs_snap, _sent = drive_rs_alone_through_select(r, rs_view, rs_snap)
 
             # Event-granularity skip: C# headless auto-skips Custom-layout events
             # (FakeMerchant → empty options → MapRoom) so it is already on the map
@@ -457,6 +563,8 @@ def run_one(
                         rs_snap = Snap.of(rs_view, "rs")
 
             fields = diff_snaps(cs_snap, rs_snap)
+            fields, step0_neow = split_step0_neow(fields, step)
+            res.step0_fields += step0_neow
             if cs_snap.phase == "map":
                 fields += diff_maps(map_signature(g), map_signature(r))
             if verbose:
@@ -778,8 +886,8 @@ def map_parity(base: str, character: str, ascension: int, n: int) -> int:
             ok += 1
         else:
             ck, rk = set(cn), set(rn)
-            print(f"[{seed}] DIFF only_cs={sorted(ck - rk)[:5]} only_rs={sorted(rk - ck)[:5]}")
-            for k in sorted(ck & rk):
+            print(f"[{seed}] DIFF only_cs={sorted(ck - rk, key=str)[:5]} only_rs={sorted(rk - ck, key=str)[:5]}")
+            for k in sorted(ck & rk, key=str):
                 if cn[k] != rn[k]:
                     print(f"    {k}: cs={cn[k]} rs={rn[k]}")
     print(f"\nmap-graph parity (node-types + edges + boss): {ok}/{n} seeds")
@@ -1362,6 +1470,8 @@ def _replay_against_rust(rec: dict[str, Any], stop_on_diverge: bool = True) -> R
             cs_dec = cs_view.get("decision") or cs_view.get("type")
 
             cs_snap, rs_snap = Snap.of(cs_view, "cs"), Snap.of(rs_view, "rs")
+            if step == 0:
+                attach_step0_neow(cs_snap, rs_snap, cs_view, rs_view, r)
             # Rust now SURFACES a played card's OnPlay select so an MCTS agent
             # can pick (combat_loop `play_card` defers the tail via
             # `pending_play`), and the standard replay drives it the same way C#
@@ -1388,16 +1498,8 @@ def _replay_against_rust(rec: dict[str, Any], stop_on_diverge: bool = True) -> R
             # diff. Gated on ``cs != card_select`` (a real shared select is
             # replayed normally) and bounded against a select that never clears.
             # Oracle-artifact "run-combat-cardselect".
-            sel_guard = 0
-            while (
-                rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and sel_guard < 8
-            ):
-                nxt = r.act("skip_select")
-                if isinstance(nxt, dict) and (nxt.get("error") or nxt.get("type") == "error"):
-                    break
-                rs_view = nxt
-                rs_snap = Snap.of(rs_view, "rs")
-                sel_guard += 1
+            if rs_snap.phase == "card_select" and cs_snap.phase != "card_select":
+                rs_view, rs_snap, _sent = drive_rs_alone_through_select(r, rs_view, rs_snap)
             # Event-granularity skip: the C# HEADLESS auto-skips Custom-layout
             # events (FakeMerchant → empty options → MapRoom), so the recorded C#
             # entry is on the ``map`` while Rust surfaces the FakeMerchant
@@ -1422,6 +1524,8 @@ def _replay_against_rust(rec: dict[str, Any], stop_on_diverge: bool = True) -> R
                         rs_view = nxt
                         rs_snap = Snap.of(rs_view, "rs")
             fields = diff_snaps(cs_snap, rs_snap)
+            fields, step0_neow = split_step0_neow(fields, step)
+            res.step0_fields += step0_neow
             if cs_snap.phase == "map":
                 cs_map = _norm_map_graph(e["map"]) if e.get("map") else None
                 fields += diff_maps(cs_map, map_signature(r))
@@ -1660,6 +1764,7 @@ def _result_row(res: RunResult, character: str) -> dict[str, Any]:
         "rs_won": res.rs_won,
         "signature": run_signature(res),
         "fields": list(res.divergence.fields) if res.divergence else [],
+        "step0_fields": list(res.step0_fields),
         "kind": res.divergence.kind if res.divergence else None,
         "_cache": status,
     }
