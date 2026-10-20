@@ -190,3 +190,13 @@ def test_raw_seed_hash_option(seed, canonical_run_seed, raw_run_seed):
     assert make(seed).run_seed == canonical_run_seed  # default unchanged
     assert make(seed, raw_seed_hash=True).run_seed == raw_run_seed
     assert make(seed, raw_seed_hash=True).run_seed == sts2_rs.run_seed_hash(seed, V)
+
+
+def test_old_seed_act_selection_uses_the_full_string_hash():
+    """act1="roll" seeds `act_selection` from H(whole string) (StartRunLobby.cs:468): oracle roll vector for oldP0A0
+    puts Overgrowth's first event at WAR_HISTORIAN_REPY and first encounter at CORPSE_SLUGS_WEAK."""
+    rm = sts2_rs.RunManager(
+        string_seed="oldP0A0", character="Ironclad", ascension_level=0, neow_start=True, act1="roll", game_version=V,
+    )
+    names = set(rm.rng_dump()["streams"])
+    assert {"event:WAR_HISTORIAN_REPY", "encounter:CORPSE_SLUGS_WEAK"} <= names

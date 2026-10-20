@@ -171,6 +171,18 @@ fn seed_text_to_hash(
     }
 }
 
+/// The `act_selection` base of a migrated (`old`-prefixed) v0.111.0 seed string.
+///
+/// `StartRunLobby.cs:468` seeds `act_selection` with the XxHash64 of the WHOLE
+/// string, prefix included, whereas the run's master seed (what
+/// `RunManager::with_rolled_act1` uses) is the legacy 32-bit hash of the rest.
+/// `None` for every other seed, which keeps the two equal.
+fn migrated_act_seed(string_seed: Option<&str>, version: sts2_core::GameVersion) -> Option<u64> {
+    string_seed
+        .filter(|s| version >= sts2_core::GameVersion::V0_111_0 && s.starts_with("old"))
+        .map(|s| sts2_core::seed_bases(s).full_hash)
+}
+
 #[pymethods]
 impl PyRunManager {
     #[new]
@@ -322,7 +334,17 @@ impl PyRunManager {
         let mut inner = match act1 {
             "overgrowth" => inner.with_act1(ActVariant::Overgrowth),
             "underdocks" => inner.with_act1(ActVariant::Underdocks),
-            "roll" => inner.with_rolled_act1(),
+            "roll" => match migrated_act_seed(string_seed, game_version) {
+                Some(full_hash) => {
+                    let acts = sts2_core::act_selection::roll_acts_for(
+                        game_version,
+                        full_hash,
+                        &sts2_core::act_selection::ActSelectionUnlocks::test_mode_on(true),
+                    );
+                    inner.with_act1(acts[0])
+                }
+                None => inner.with_rolled_act1(),
+            },
             other => {
                 return Err(PyValueError::new_err(format!(
                     "unknown act1 {other:?} (expected \"overgrowth\", \"underdocks\" or \"roll\")"
@@ -1985,6 +2007,19 @@ mod seed_text_tests {
             assert_eq!(seed_text_to_hash(" Io1 ", v, false), "101");
             assert_eq!(seed_text_to_hash("OLDP0A0", v, false), "0LDP0A0");
         }
+    }
+
+    #[test]
+    fn migrated_act_seed_is_the_full_string_hash_of_old_seeds_only() {
+        use super::migrated_act_seed;
+        assert_eq!(
+            migrated_act_seed(Some("oldP0A0"), V0_111_0),
+            Some(15_676_685_915_450_073_139)
+        );
+        assert_eq!(migrated_act_seed(Some("oldP0A0"), V0_107_1), None);
+        assert_eq!(migrated_act_seed(Some("OLDP0A0"), V0_111_0), None);
+        assert_eq!(migrated_act_seed(Some("P0A0"), V0_111_0), None);
+        assert_eq!(migrated_act_seed(None, V0_111_0), None);
     }
 
     /// R0-s(a): the lowercase `old` test runs before normalisation, v0.111.0 only.
