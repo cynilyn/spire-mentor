@@ -6179,21 +6179,17 @@ mod tests {
         assert_eq!(picked, Some(RelicId::BlackBlood));
     }
 
-    /// Bead `sts2-rs-l9vkh`: owned relics are skipped while walking
-    /// the rolled bucket — the pop returns the first non-owned entry.
+    /// Bead `sts2-rs-l9vkh`, reworked for RL-C9..C11: an obtained relic leaves
+    /// the player bag (`RelicCmd.cs:29`), so the next pop returns the next entry.
+    /// The pull itself has no ownership exclusion (`RelicGrabBag.cs:103-121`).
     #[test]
-    fn pop_relic_skips_owned_within_bucket() {
+    fn obtained_relic_leaves_the_bucket_so_pop_returns_the_next_entry() {
         let mut rs = RunState::default();
         rs.populate_relic_grab_bag_by_rarity(make_grab_bag_buckets(), vec![], vec![]);
-        rs.relics = vec![RelicId::Anchor];
+        rs.obtain_relic(RelicId::Anchor);
         let picked = rs.pop_relic_from_grab_bag(RelicRarity::Common);
         assert_eq!(picked, Some(RelicId::Pendulum));
-        // Anchor remained in the bucket since pop skips owned, not
-        // drains owned.
-        assert_eq!(
-            rs.relic_grab_bag_by_rarity[&RelicRarity::Common],
-            vec![RelicId::Anchor],
-        );
+        assert!(!rs.relic_grab_bag_by_rarity[&RelicRarity::Common].contains(&RelicId::Anchor));
     }
 
     /// Bead `sts2-rs-l9vkh`: when every bucket in the fallback chain
