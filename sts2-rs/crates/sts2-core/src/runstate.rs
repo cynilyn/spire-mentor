@@ -5562,10 +5562,8 @@ mod tests {
     #[test]
     fn rl_c10_refill_is_followed_by_second_removal_pass() {
         let mut rs = RunState::default();
-        rs.shared_relic_grab_bag_original = bag(&[(
-            RelicRarity::Common,
-            &[RelicId::MealTicket, RelicId::Anchor],
-        )]);
+        rs.shared_relic_grab_bag_original =
+            bag(&[(RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor])]);
         rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
         rs.total_floor = 41;
         assert_eq!(

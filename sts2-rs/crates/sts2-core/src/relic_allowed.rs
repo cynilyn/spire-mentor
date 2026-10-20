@@ -173,7 +173,10 @@ mod tests {
     fn silver_crucible_and_winged_boots_are_solo_only() {
         for id in [RelicId::SilverCrucible, RelicId::WingedBoots] {
             assert!(relic_is_allowed(id, &ctx(0, 1, false)), "{id:?}");
-            assert!(relic_is_allowed(id, &ctx(99, 1, false)), "{id:?} late floor");
+            assert!(
+                relic_is_allowed(id, &ctx(99, 1, false)),
+                "{id:?} late floor"
+            );
             assert!(!relic_is_allowed(id, &ctx(0, 2, false)), "{id:?} mp");
         }
     }
