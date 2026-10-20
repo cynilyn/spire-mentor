@@ -23,8 +23,8 @@
 
 use serde_json::{Map, Value};
 use sts2_core::dotnet_rng::Rng;
-use sts2_core::GameVersion;
 use sts2_core::run_manager::RunManager;
+use sts2_core::GameVersion;
 
 use super::map_ext::{obj, set};
 

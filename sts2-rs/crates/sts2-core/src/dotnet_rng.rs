@@ -997,6 +997,9 @@ mod tests {
             up.run_seed,
             crate::GameVersion::V0_111_0.seed_hash("0LDP0A0")
         );
-        assert_eq!(seed_bases("old").run_seed, u64::from(deterministic_hash_code("") as u32));
+        assert_eq!(
+            seed_bases("old").run_seed,
+            u64::from(deterministic_hash_code("") as u32)
+        );
     }
 }

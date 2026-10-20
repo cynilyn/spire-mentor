@@ -289,7 +289,8 @@ pub use map::{
 // and will compose this primitive into named streams.
 pub mod dotnet_rng;
 pub use dotnet_rng::{
-    canonicalize_seed, deterministic_hash_code, seed_bases, DotNetRandom, Rng as DotNetRng, SeedBases,
+    canonicalize_seed, deterministic_hash_code, seed_bases, DotNetRandom, Rng as DotNetRng,
+    SeedBases,
 };
 
 // Bead sts2-rs-ewm6b (P9.1.g): multi-stream RNG bundle composed on top
