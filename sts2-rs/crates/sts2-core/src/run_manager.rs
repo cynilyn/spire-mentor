@@ -910,6 +910,28 @@ impl RunManager {
         self.with_act1(acts[0])
     }
 
+    /// RG-14: resolve a "Random" character slot for a run whose `act_selection`
+    /// stream base is `act_seed` (`StartRunLobby.cs:437-447`: one
+    /// `NextItem(AllCharacters)` after the three act draws). Pure: call it
+    /// BEFORE [`Self::new`], since the character fixes the starting deck, HP and
+    /// relics at construction.
+    #[must_use]
+    pub fn resolve_random_character(act_seed: u64) -> CharacterId {
+        crate::act_selection::roll_acts_and_random_characters(
+            act_seed,
+            &crate::act_selection::ActSelectionUnlocks::test_mode_on(true),
+            1,
+        )
+        .1[0]
+    }
+
+    /// [`Self::resolve_random_character`] from a display seed string
+    /// (`full_hash` base, as `StartRunLobby` feeds `act_selection`).
+    #[must_use]
+    pub fn resolve_random_character_for_seed(display_seed: &str) -> CharacterId {
+        Self::resolve_random_character(crate::seed_bases(display_seed).full_hash)
+    }
+
     /// Inject content-layer callbacks. Builder-style — chain after
     /// [`Self::new`] / [`Self::with_ascension`]. Bead `sts2-rs-7kl4f`.
     #[must_use]
@@ -2306,7 +2328,11 @@ impl RunManager {
         // populate order (gold → potion → card 3× → relic rarity). Bead
         // `sts2-rs-jenwp` (M4 live reward stream — Elite follow-up).
         if reward_room_type == crate::runstate::RoomType::Elite {
-            self.run_state.offer_random_relic_rewards(1, &[None]);
+            // A5: first-run tutorial relic (Vajra / Ornamental Fan) replaces
+            // the ordinary roll; false (returning profile) falls through.
+            if !self.run_state.tutorial_elite_relic_reward() {
+                self.run_state.offer_random_relic_rewards(1, &[None]);
+            }
             // The C# headless oracle auto-collects the Elite `RelicReward`
             // (along with gold + potion) the moment rewards are generated —
             // only `CardReward` is surfaced to the agent. See
@@ -8305,6 +8331,73 @@ mod tests {
         assert!(
             rm.run_state.current_room.is_none(),
             "boss room cleared; next-act start node landed by map driver"
+        );
+    }
+
+    /// RG-14: a "Random" slot resolves off `act_selection` after the 3 act
+    /// draws. Pins are the values of `ALL_CHARACTERS[next_int(0,5)]` on that
+    /// stream (cross-checked against the manual stream read in
+    /// `act_selection::tests::random_character_draws_after_acts_from_same_stream`).
+    #[test]
+    fn resolve_random_character_pins() {
+        assert_eq!(
+            RunManager::resolve_random_character_for_seed("PIN1"),
+            CharacterId::Necrobinder
+        );
+        assert_eq!(
+            RunManager::resolve_random_character_for_seed("PIN2"),
+            CharacterId::Regent
+        );
+        assert_eq!(
+            RunManager::resolve_random_character_for_seed("PIN3"),
+            CharacterId::Silent
+        );
+        assert_eq!(
+            RunManager::resolve_random_character(1),
+            CharacterId::Ironclad
+        );
+        assert_eq!(RunManager::resolve_random_character(2), CharacterId::Silent);
+        assert_eq!(RunManager::resolve_random_character(3), CharacterId::Defect);
+    }
+
+    /// A5 wiring: the elite-win seam gives a first-run Ironclad Vajra instead of
+    /// the ordinary rarity roll; a returning profile gets the ordinary roll.
+    #[test]
+    fn elite_win_wires_tutorial_relic_only_on_first_run() {
+        fn elite_win(number_of_runs: i32) -> RunManager {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad);
+            rm.run_state.number_of_runs = number_of_runs;
+            rm.run_state.relic_grab_bag_by_rarity.insert(
+                crate::RelicRarity::Common,
+                vec![RelicId::Anchor, RelicId::Vajra],
+            );
+            rm.run_state.append_to_map_point_history(
+                crate::map::MapPointType::Elite,
+                crate::runstate::RoomType::Elite,
+            );
+            rm.run_state.current_room =
+                Some(crate::runstate::Room::new(crate::runstate::RoomType::Elite));
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let _ = rm.exit_combat_and_transition();
+            rm
+        }
+        let first = elite_win(0);
+        assert!(first.run_state.relics.contains(&RelicId::Vajra));
+        assert_eq!(
+            first.run_state.rng.rewards.counter(),
+            0,
+            "named relic: no read"
+        );
+        let returning = elite_win(5);
+        assert!(!returning.run_state.relics.contains(&RelicId::Vajra));
+        assert!(
+            returning.run_state.rng.rewards.counter() >= 1,
+            "ordinary roll reads"
         );
     }
 

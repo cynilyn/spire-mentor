@@ -1610,6 +1610,16 @@ pub struct RunState {
     /// truth surfaced on the map widget. See bead `sts2-rs-jenwp`.
     pub generated_rooms: Vec<crate::run_room_gen::GeneratedActRooms>,
 
+    /// RG-26 gate: apply `ActModel.ApplyDiscoveryOrderModifications` to
+    /// `generated_rooms` in `initialize_run_setup`. Default `false`, which is
+    /// the oracle's `TestMode.IsOn` behaviour (`RunManager.cs:599-617`).
+    pub apply_discovery_order: bool,
+
+    /// `UnlockState.HasSeenEncounter` source for RG-26: upper-snake encounter
+    /// ids the profile has already fought. Only read when
+    /// [`Self::apply_discovery_order`] is set.
+    pub encounters_seen: Vec<String>,
+
     /// Per-run set of [`crate::events::EventId`]s already visited.
     /// Drives Python's "no-repeat events" guarantee in the event-room
     /// roller. Mirrors Python `RunState.visited_event_ids: set[str]`
@@ -1933,6 +1943,8 @@ impl Default for RunState {
             current_act_map: None,
             pinned_act_boss: None,
             generated_rooms: Vec::new(),
+            apply_discovery_order: false,
+            encounters_seen: Vec::new(),
             // Bead `sts2-rs-7kptz`: snapshot the 3-act registry into a
             // per-run mutable Vec so the future events-visited counter
             // can increment per act.
@@ -2201,6 +2213,47 @@ impl RunState {
     /// but on the `treasure_room` stream).
     pub fn roll_reward_relic_rarity(&mut self) -> RelicRarity {
         roll_relic_rarity(&mut self.rng.rewards)
+    }
+
+    /// A5: the tutorial's elite relic reward (`RewardsSet.cs:252,265`;
+    /// `GetTutorialRelicReward<T>`, `:287-293`).
+    ///
+    /// On a first run (`number_of_runs == 0`) as Ironclad, the first elite
+    /// fight offers Vajra and the second Ornamental Fan. If the wanted relic is
+    /// still in the player's relic grab bag the reward names it directly and
+    /// reads **no** `Rewards` stream; if it is gone, C# falls back to the
+    /// ordinary `new RelicReward(player)` (rarity `NextFloat` off `Rewards`,
+    /// then the front-of-bag pull).
+    ///
+    /// Returns `true` when the tutorial path produced the reward (the caller
+    /// skips its own elite relic roll), `false` when it does not apply
+    /// (returning profile, other character, not the 1st/2nd elite), leaving
+    /// the state untouched. The elite number counts Elite map points in
+    /// `map_point_history`, which already includes the current room. The
+    /// tutorial's `EpochUnlockCount() == 0` clause and its non-relic rewards
+    /// are not modelled.
+    pub fn tutorial_elite_relic_reward(&mut self) -> bool {
+        if self.number_of_runs != 0 || self.character_id != crate::potions::CharacterId::Ironclad {
+            return false;
+        }
+        let wanted = match self
+            .count_map_point_history_entries(None, Some(crate::map::MapPointType::Elite))
+        {
+            1 => RelicId::Vajra,
+            2 => RelicId::OrnamentalFan,
+            _ => return false,
+        };
+        // `RelicGrabBag.Contains` walks the per-rarity deques only.
+        let in_bag = self
+            .relic_grab_bag_by_rarity
+            .values()
+            .any(|bucket| bucket.contains(&wanted));
+        if in_bag {
+            self.offer_relic_rewards(wanted, 1);
+        } else {
+            self.offer_random_relic_rewards(1, &[None]);
+        }
+        true
     }
 
     /// Drop the first `relic_id` from the player's inventory — C#
@@ -4041,7 +4094,26 @@ impl RunState {
         }
         let cond = self.compute_ancient_conditions(next_act as i32);
         let mut rng = crate::boss_ancient_offers::event_rng(self.rng.seed, ancient);
-        crate::boss_ancient_offers::roll_offers(ancient, &mut rng, &cond)
+        match crate::boss_ancient_offers::generate_initial_options(
+            self.should_allow_ancient(ancient),
+            ancient,
+            &mut rng,
+            &cond,
+        ) {
+            crate::boss_ancient_offers::AncientOptions::Offers(offers) => offers,
+            // A vetoed Ancient shows a lone PROCEED, no relic offers
+            // (`AncientEventModel.cs:166-181`).
+            crate::boss_ancient_offers::AncientOptions::ProceedOnly => Vec::new(),
+        }
+    }
+
+    /// `Hook.ShouldAllowAncient` (`Hook.cs:1692-1702`): every hook listener
+    /// must allow the Ancient. No listener vetoes it in v0.111.0 (the base
+    /// `AbstractModel.ShouldAllowAncient` returns true and nothing overrides
+    /// it), so this is always `true` until one exists.
+    #[must_use]
+    pub fn should_allow_ancient(&self, _ancient: crate::run_room_gen::AncientId) -> bool {
+        true
     }
 
     /// Deck/run predicates the Ancient `GenerateInitialOptions` methods read.

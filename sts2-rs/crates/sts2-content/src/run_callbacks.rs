@@ -426,6 +426,30 @@ pub fn initialize_run_setup(rm: &mut sts2_core::run_manager::RunManager) {
         act1,
     );
 
+    // RG-26: live-save discovery-order rewrite. Off by default (the oracle runs
+    // with TestMode.IsOn, where C# `ShouldApplyTutorialModifications` is false).
+    // Known limit: C# applies it per act BEFORE the A10 second-boss draw inside
+    // `generate_all_rooms`; here it runs after, so with A10 the second boss
+    // can disagree. P0 scope is A0.
+    if rm.run_state.apply_discovery_order {
+        let seen: Vec<String> = rm.run_state.encounters_seen.clone();
+        let seen: Vec<&str> = seen.iter().map(String::as_str).collect();
+        let acts = [
+            act1,
+            sts2_core::act_selection::ActVariant::Hive,
+            sts2_core::act_selection::ActVariant::Glory,
+        ];
+        let number_of_runs = u32::try_from(rm.run_state.number_of_runs).unwrap_or(u32::MAX);
+        for (rooms, act) in rm.run_state.generated_rooms.iter_mut().zip(acts) {
+            sts2_core::run_room_gen::apply_discovery_order_modifications(
+                rooms,
+                act,
+                number_of_runs,
+                &seen,
+            );
+        }
+    }
+
     // (5) Act 1's boss was pinned at construction (before rooms existed);
     // re-derive its identity from the freshly generated boss so the boss FOUGHT
     // matches the map LABEL. Consumes no RNG.
@@ -1377,49 +1401,57 @@ pub fn generate_treasure_relic_pools(
     (common, uncommon, rare)
 }
 
-/// A5: the tutorial's elite relic reward (`RewardsSet.TryGenerateTutorialRewards`,
-/// `RewardsSet.cs:252,265`; `GetTutorialRelicReward<T>`, `:287-293`).
-///
-/// On a first run (`number_of_runs == 0`) as Ironclad, the first elite fight
-/// offers Vajra and the second Ornamental Fan. If the wanted relic is still in
-/// the player's relic grab bag the reward names it directly and reads **no**
-/// `Rewards` stream; if it is gone, C# falls back to the ordinary
-/// `new RelicReward(player)` (rarity `NextFloat` off `Rewards`, then the
-/// front-of-bag pull) — the replacement this function performs.
-///
-/// Returns `true` when the tutorial path produced the reward (the caller must
-/// then skip its own elite relic roll), `false` when the tutorial does not
-/// apply (returning profile, other character, or not the 1st/2nd elite), in
-/// which case nothing is touched.
-///
-/// The elite number is the count of Elite map points in `map_point_history`,
-/// which already includes the current room at reward time. The tutorial's
-/// `EpochUnlockCount() == 0` clause is not modelled (the engine assumes every
-/// epoch unlocked), and the tutorial's non-relic rewards (fixed card choices,
-/// Block Potion) are not ported. Not wired into the elite reward assembly:
-/// with the default `number_of_runs` the oracle/harness never reach it.
-pub fn tutorial_elite_relic_reward(rs: &mut RunState) -> bool {
-    if rs.number_of_runs != 0 || rs.character_id != CharacterId::Ironclad {
-        return false;
+// A5 `tutorial_elite_relic_reward` lives on `RunState` (core), where the elite
+// reward assembly in `RunManager` can call it; its tests stay here because they
+// need the content relic grab bag.
+#[cfg(test)]
+mod discovery_order_wiring_tests {
+    use super::*;
+
+    fn setup(apply: bool, number_of_runs: i32) -> RunManager {
+        let mut rm = new_run_manager_for_character(7, CharacterId::Ironclad).with_neow_start();
+        rm.run_state.apply_discovery_order = apply;
+        rm.run_state.number_of_runs = number_of_runs;
+        initialize_run_setup(&mut rm);
+        rm
     }
-    let wanted =
-        match rs.count_map_point_history_entries(None, Some(sts2_core::map::MapPointType::Elite)) {
-            1 => RelicId::Vajra,
-            2 => RelicId::OrnamentalFan,
-            _ => return false,
-        };
-    // `RelicGrabBag.Contains` walks the per-rarity deques only (not the
-    // fallback list).
-    let in_bag = rs
-        .relic_grab_bag_by_rarity
-        .values()
-        .any(|bucket| bucket.contains(&wanted));
-    if in_bag {
-        rs.offer_relic_rewards(wanted, 1);
-    } else {
-        rs.offer_random_relic_rewards(1, &[None]);
+
+    /// RG-26 wiring: gate off (the oracle's TestMode-on) leaves the rolled rooms
+    /// alone; gate on rewrites them in `initialize_run_setup`.
+    #[test]
+    fn discovery_order_is_gated_in_initialize_run_setup() {
+        let off = setup(false, 0);
+        let on = setup(true, 0);
+        let first_run_normals = [
+            "NIBBITS_WEAK",
+            "SLIMES_WEAK",
+            "SHRINKER_BEETLE_WEAK",
+            "INKLETS_NORMAL",
+            "MAWLER_NORMAL",
+            "RUBY_RAIDERS_NORMAL",
+            "NIBBITS_NORMAL",
+        ];
+        assert_ne!(
+            off.run_state.generated_rooms[0].normal_encounters[..7],
+            first_run_normals,
+            "gate off leaves the rolled order"
+        );
+        let g = &on.run_state.generated_rooms;
+        assert_eq!(g[0].normal_encounters[..7], first_run_normals);
+        assert_eq!(g[0].boss_id, "VANTOM_BOSS", "nothing seen: first boss");
+        assert_eq!(g[1].boss_id, "THE_INSATIABLE_BOSS");
+        assert_eq!(g[2].boss_id, "QUEEN_BOSS");
+        // Returning profile: bosses still follow discovery order, normals do not.
+        let returning = setup(true, 9);
+        assert_ne!(
+            returning.run_state.generated_rooms[0].normal_encounters[..7],
+            first_run_normals
+        );
+        assert_eq!(
+            returning.run_state.generated_rooms[0].boss_id,
+            "VANTOM_BOSS"
+        );
     }
-    true
 }
 
 #[cfg(test)]
@@ -1451,7 +1483,7 @@ mod tutorial_elite_relic_tests {
                 "{expect:?} must be in the default Ironclad bag for this test"
             );
             let before = rs.rng.rewards.counter();
-            assert!(tutorial_elite_relic_reward(&mut rs));
+            assert!(rs.tutorial_elite_relic_reward());
             assert_eq!(rs.rng.rewards.counter(), before, "no Rewards read");
             assert_eq!(rs.relic_rewards.len(), 1);
             assert_eq!(rs.relic_rewards[0].relic_id, expect);
@@ -1466,7 +1498,7 @@ mod tutorial_elite_relic_tests {
         }
         let mut reference = rs.clone();
         let before = rs.rng.rewards.counter();
-        assert!(tutorial_elite_relic_reward(&mut rs));
+        assert!(rs.tutorial_elite_relic_reward());
         // Exactly what `new RelicReward(player)` does: one rarity roll + pull.
         reference.offer_random_relic_rewards(1, &[None]);
         assert_eq!(rs.rng.rewards.counter(), before + 1);
@@ -1489,7 +1521,7 @@ mod tutorial_elite_relic_tests {
         silent.character_id = CharacterId::Silent;
         for st in [&mut rs, &mut third, &mut silent] {
             let before = st.rng.rewards.counter();
-            assert!(!tutorial_elite_relic_reward(st));
+            assert!(!st.tutorial_elite_relic_reward());
             assert_eq!(st.rng.rewards.counter(), before);
             assert!(st.relic_rewards.is_empty());
         }

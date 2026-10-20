@@ -173,7 +173,18 @@ impl PyRunManager {
         interactive_potion_swap: bool,
         act1: &str,
     ) -> PyResult<Self> {
-        let cid = character_from_str(character)?;
+        // RG-14: "random" resolves like the lobby's RandomCharacter slot
+        // (one `NextItem(AllCharacters)` off `act_selection`, after the three
+        // act draws) BEFORE construction, since the character fixes the
+        // starting deck, HP and relics. Explicit names are unchanged.
+        let cid = if character.eq_ignore_ascii_case("random") {
+            match string_seed {
+                Some(s) => sts2_core::run_manager::RunManager::resolve_random_character_for_seed(s),
+                None => sts2_core::run_manager::RunManager::resolve_random_character(seed),
+            }
+        } else {
+            character_from_str(character)?
+        };
         // Bead `sts2-rs-livck`: Ironclad / Silent / Necrobinder / Regent
         // / Defect now route through the character-parameterised
         // factories in `sts2-content::run_callbacks`. Defect's
