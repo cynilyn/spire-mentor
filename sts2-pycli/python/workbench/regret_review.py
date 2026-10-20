@@ -45,6 +45,10 @@ TIE_PTS = 3.0
 HP_MIN_SAMPLES = 10
 #: Minimum MCTS visits on the played move before it can be graded at all.
 PLAYED_MIN_VISITS = 50
+#: Per-action severity (win-chance points or HP) below which an action does not
+#: count toward its turn's grade: summing sub-point jitter over five plays
+#: would otherwise invent a slip out of noise.
+TURN_ACTION_FLOOR = 1.0
 
 
 def _round_half_up(x: float) -> int:
@@ -290,6 +294,64 @@ def assess_decision(
         severity=severity,
         verdict=verdict,
         best_line=[str(x) for x in (step.get("best_line") or [])],
+    )
+
+
+@dataclass
+class TurnGrade:
+    """One combat turn graded as a whole (:func:`grade_turn`)."""
+
+    verdict: str  # best | tie | slip | blunder
+    hp_drop: float | None  # None unless some counted action had an HP gap
+    severity: float  # max(win-prob points, HP) summed over the counted actions
+    win_before: float | None  # best / played win prob at the turn's first graded action
+    win_after: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def grade_turn(regrets: list[DecisionRegret | None]) -> TurnGrade | None:
+    """Grade a combat turn from its actions' regrets, or ``None`` (stay silent).
+
+    ``regrets`` are the turn's non-forced actions in order (a forced move, one
+    legal action, has nothing to compare and is left out by the caller);
+    ``None`` is an action that could not be graded.
+
+    .. code-block:: text
+
+        any None or verdict == "uncertain"  -> None (silent)
+        counted  = actions with severity >= TURN_ACTION_FLOOR
+        severity = max(sum drop_pct, sum hp_drop) over counted
+        verdict  = best (none counted) | tie (< TIE_PTS)
+                   | blunder (>= DEFAULT_BLUNDER_DROP_PCT) | slip
+
+    Twin of ``advisors::grade_turn`` in ``sts2-workbench``; both are pinned by
+    ``tests/fixtures/coach/grade_turn_cases.json``.
+    """
+    if any(r is None or r.verdict == "uncertain" for r in regrets):
+        return None
+    graded = [r for r in regrets if r is not None]
+    counted = [r for r in graded if r.severity >= TURN_ACTION_FLOOR]
+    turn_hp = sum(r.hp_drop or 0.0 for r in counted)
+    turn_pts = float(sum(r.drop_pct for r in counted))
+    severity = max(turn_pts, turn_hp)
+    if not counted:
+        verdict = "best"
+    elif severity < TIE_PTS:
+        verdict = "tie"
+    elif severity >= DEFAULT_BLUNDER_DROP_PCT:
+        verdict = "blunder"
+    else:
+        verdict = "slip"
+    first = graded[0] if graded else None
+    hp_known = any(r.hp_drop is not None for r in counted)
+    return TurnGrade(
+        verdict=verdict,
+        hp_drop=round(turn_hp, 2) if hp_known else None,
+        severity=round(severity, 2),
+        win_before=round(first.best_win_prob, 4) if first else None,
+        win_after=round(first.played_win_prob, 4) if first else None,
     )
 
 

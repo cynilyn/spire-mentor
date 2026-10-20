@@ -10,7 +10,9 @@ the shared ``FakeGame`` stub with ``reasoning.score`` monkeypatched.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from workbench import regret_review
 from workbench.server import create_app
@@ -668,3 +670,50 @@ def test_quit_persists_the_agent_search_for_replay(tmp_path, monkeypatch):
     # 79 - 41, straight off the agent's own p_win — not wins/visits.
     assert blunder["drop_pct"] == 38
     assert blunder["best_label"] == "end turn"
+
+
+# ── per-turn grading rule (shared fixture with advisors::grade_turn) ─────────
+_GRADE_TURN_CASES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "coach" / "grade_turn_cases.json"
+)
+
+
+def _fixture_regret(d):
+    if d is None:
+        return None
+    return regret_review.DecisionRegret(
+        idx=0,
+        node_id=None,
+        turn=1,
+        floor=1,
+        act=1,
+        played_label="played",
+        played_win_prob=d["played_win_prob"],
+        best_label="best",
+        best_win_prob=d["best_win_prob"],
+        regret=max(0.0, d["best_win_prob"] - d["played_win_prob"]),
+        drop_pct=d["drop_pct"],
+        player_rank=0,
+        n_actions=2,
+        visits=100,
+        matched_best=d["verdict"] == "best",
+        is_blunder=d["verdict"] == "blunder",
+        message="",
+        hp_drop=d["hp_drop"],
+        severity=d["severity"],
+        verdict=d["verdict"],
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(_GRADE_TURN_CASES.read_text(encoding="utf-8"))["cases"],
+    ids=lambda c: c["name"],
+)
+def test_grade_turn_shared_cases(case):
+    grade = regret_review.grade_turn([_fixture_regret(r) for r in case["regrets"]])
+    if case["expect"] is None:
+        assert grade is None
+    else:
+        assert grade is not None
+        assert grade.to_dict() == case["expect"]

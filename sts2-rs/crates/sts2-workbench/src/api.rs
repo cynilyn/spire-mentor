@@ -546,8 +546,10 @@ impl Workbench {
             }
             ("POST", "/api/bench") => self.bench(body),
             // ── advisors (M2) ────────────────────────────────────────
-            ("POST", "/api/live/hint") => advisors::hint(self.live()?, &config_of(body))?
-                .ok_or_else(|| ApiError::new(409, "hint only available during combat")),
+            ("POST", "/api/live/hint") => {
+                advisors::hint_remembered(self.live()?, &config_of(body))?
+                    .ok_or_else(|| ApiError::new(409, "hint only available during combat"))
+            }
             ("POST", "/api/live/search_tree") => {
                 advisors::live_search_tree(self.live()?, &config_of(body))?
                     .ok_or_else(|| ApiError::new(409, "search tree only available during combat"))
@@ -564,6 +566,10 @@ impl Workbench {
                 .live()?
                 .recommended_action()
                 .ok_or_else(|| ApiError::new(409, "no recommendation here")),
+            ("POST", "/api/live/last-turn-grade") => {
+                advisors::last_turn_grade(self.live()?, &config_of(body))?
+                    .ok_or_else(|| ApiError::new(409, "no gradable turn just ended"))
+            }
             ("POST", "/api/live/last-move-regret") => {
                 advisors::last_move_regret(self.live()?, &config_of(body))?
                     .ok_or_else(|| ApiError::new(409, "no prior combat move to assess"))
@@ -685,6 +691,10 @@ impl Workbench {
                 Loc::embedded_for(self.store_version()),
             )),
             ("GET", "/api/map") => Ok(replay::map(self.store()?, &self.store_ctx())),
+            ("GET", "/api/coach") => Ok(self
+                .store
+                .as_ref()
+                .map_or_else(runlog::empty_coach, ReplayStore::coach)),
             ("GET", p) if p.starts_with("/api/step/") => {
                 let rest = &p["/api/step/".len()..];
                 let (idx_s, sub) = rest.split_once('/').unwrap_or((rest, ""));

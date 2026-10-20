@@ -398,6 +398,94 @@ export interface ResumeCapability {
   kind: "combat" | "run" | null;
   reason: string | null;
 }
+/** The live coach's records, as the real-game advisor writes them into a run
+ *  log (`type: "coach"` lines). Field names follow PROTOCOL.md, "`coach`"
+ *  (v5.1); `GET /api/coach` serves them. */
+export interface CoachTurnContext {
+  hand: string[];
+  energy: number;
+  max_energy: number;
+  hp: number;
+  max_hp: number;
+  block: number;
+  enemies: { name: string; hp: number; intent: string }[];
+}
+export interface CoachTurnRecord {
+  kind: "turn";
+  id: string;
+  node_id: string | number | null;
+  turn: number | null;
+  floor: number | null;
+  /** `ungraded` appears only in logs: the mod is never sent one. */
+  verdict: "best" | "tie" | "slip" | "blunder" | "ungraded";
+  you: string[];
+  ai: string[];
+  hp_drop: number | null;
+  win_before: number | null;
+  win_after: number | null;
+  peeked: boolean;
+  ungraded_actions: number;
+  log_name?: string | null;
+  log_idx?: number | null;
+  severity?: number;
+  context?: CoachTurnContext | null;
+}
+export interface CoachChoiceRecord {
+  kind: "choice";
+  id: string;
+  node_id: string | number | null;
+  decision: string;
+  label_kind: string;
+  verdict: "agree" | "tossup" | "flag" | "ungraded";
+  strength?: string;
+  played: { label: string; prob: number; rank: number };
+  top: { label: string; prob: number };
+  alternatives: { label: string; prob: number }[];
+  peeked: boolean;
+  path?: { you: unknown[]; ai: unknown[] };
+  log_name?: string | null;
+  log_idx?: number | null;
+}
+export interface CoachRecapRecord {
+  kind: "recap";
+  id: string;
+  node_id: string | number | null;
+  log_name: string | null;
+  log_idx: number | null;
+  floor: number | null;
+  room_type: string | null;
+  hp_start: number;
+  hp_end: number;
+  hp_lost: number;
+  /** Reserved, always null today (GH #856). */
+  ai_hp_lost: number | null;
+  turns: number;
+  turns_graded: number;
+  turns_ungraded: number;
+  unfinished_turns: number;
+  costliest: CoachTurnRecord[];
+}
+export interface CoachAutopsyRecord {
+  kind: "autopsy";
+  id: string;
+  log_name: string | null;
+  floor: number | null;
+  act: number | null;
+  items: (
+    | { kind: "turn"; record: CoachTurnRecord }
+    | { kind: "choice"; record: CoachChoiceRecord }
+  )[];
+  turns_ungraded: number;
+  decisions_graded: number;
+}
+export type CoachRecord = CoachTurnRecord | CoachChoiceRecord | CoachRecapRecord;
+/** `GET /api/coach`: the loaded run's records, withdrawals applied.
+ *  `by_step` maps a replay step index to the ids of the graded records on it. */
+export interface CoachLog {
+  records: CoachRecord[];
+  by_step: Record<string, string[]>;
+  autopsy: CoachAutopsyRecord | null;
+}
 export interface TimelineEntry {
   idx: number;
   decision: string;
@@ -1376,6 +1464,7 @@ export const api = {
     }).then(json<RewardPreview>),
   timeline: () => apiFetch("/api/timeline").then(json<{ steps: TimelineEntry[] }>),
   map: () => apiFetch("/api/map").then(json<{ rows: MapRow[]; graphs: MapGraph[] }>),
+  coach: () => apiFetch("/api/coach").then(json<CoachLog>),
   recommend: (idx: number, config: Record<string, unknown>) =>
     apiFetch("/api/recommend", {
       method: "POST",
@@ -1695,6 +1784,14 @@ export const api = {
       if (result == null) throw new Error("choice check stream ended without a result");
       return result;
     },
+    // Per-turn coach: grade the combat turn the End turn just closed, as the
+    // live advisor's `turn` record (409 = nothing to grade or a silent turn).
+    lastTurnGrade: (config: Record<string, unknown>) =>
+      apiFetch("/api/live/last-turn-grade", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config }),
+      }).then(json<CoachTurnRecord & { searches?: number }>),
     lastMoveRegret: (config: Record<string, unknown>) =>
       apiFetch("/api/live/last-move-regret", {
         method: "POST",

@@ -244,6 +244,7 @@ export default function Board({
   onUsePotion,
   onDiscardPotion,
   onHint,
+  onPeek,
   attack,
   scores,
   onPlayRecommended,
@@ -266,6 +267,8 @@ export default function Board({
   onUsePotion?: (slot: number, targetIndex?: number) => void;
   onDiscardPotion?: (slot: number) => void;
   onHint?: () => void;
+  /** P: peek at the AI's next action (Coach style; press-first). */
+  onPeek?: () => void;
   /** The player just struck this enemy: cues the attack lunge on the player rig
    *  and the hurt clip on the target. NOT an arrow — the game draws none once a
    *  card resolves, and drawing one here put a second arrow on the board. */
@@ -1162,6 +1165,7 @@ export default function Board({
       if (e.key === "a" || e.key === "A") { e.preventDefault(); onAutoplay?.(); return; }
       if (e.key === "f" || e.key === "F") { e.preventDefault(); onAutoplayToEnd?.(); return; }
       if (e.key === "s" || e.key === "S") { e.preventDefault(); onSearch?.(); return; }
+      if (e.key === "p" || e.key === "P") { e.preventDefault(); onPeek?.(); return; }
       const n = Number(e.key);
       if (!Number.isInteger(n) || n < 1 || n > 9) return;
       e.preventDefault();
@@ -1175,7 +1179,7 @@ export default function Board({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onPlayCard, onEndTurn, onHint, onPlayRecommended, onAutoplay, onAutoplayToEnd, onSearch, pendingCard, enemies, s.hand, clickCard, clickEnemy]);
+  }, [onPlayCard, onEndTurn, onHint, onPeek, onPlayRecommended, onAutoplay, onAutoplayToEnd, onSearch, pendingCard, enemies, s.hand, clickCard, clickEnemy]);
 
   // Per-card / per-potion / end-turn win-prob overlays are UNPROMPTED advice —
   // they appear next to every option without you doing anything — so in LIVE
@@ -2035,8 +2039,9 @@ export default function Board({
             </button>
           )}
           {onToggleHints && (
-            <button onClick={onToggleHints} style={{ color: autoHints ? "var(--accent-strong)" : "var(--muted)" }}>
-              hints: {autoHints ? "on" : "off"}
+            <button onClick={onToggleHints} style={{ color: autoHints ? "var(--accent-strong)" : "var(--muted)" }}
+              title="advice style: 💡 Hints shows the AI's scores unprompted; 🎓 Coach shows nothing until you ask (H, P) and grades your turn after">
+              {autoHints ? "💡 hints" : "🎓 coach"}
             </button>
           )}
           {hintBusy && <span style={{ color: "var(--muted)" }}>thinking…</span>}

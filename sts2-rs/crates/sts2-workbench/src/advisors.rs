@@ -62,6 +62,10 @@ pub const TIE_PTS: f64 = 3.0;
 pub const HP_MIN_SAMPLES: i64 = 10;
 /// Minimum MCTS visits on the played move before it can be graded at all.
 pub const PLAYED_MIN_VISITS: i64 = 50;
+/// Per-action severity (win-chance points or HP) below which an action does
+/// not count toward its turn's grade (sub-point jitter over five plays would
+/// otherwise add up to a slip). Mirrors `regret_review.TURN_ACTION_FLOOR`.
+pub const TURN_ACTION_FLOOR: f64 = 1.0;
 
 /// A progress sink: receives each wire frame (`{"type": "start", …}`,
 /// `{"type": "tick", …}`) as the rollout advisors go.
@@ -872,6 +876,63 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
     }))
 }
 
+/// Python `round(x, n)`: exact-value rounding, ties to even.
+fn py_round(x: f64, n: usize) -> f64 {
+    format!("{x:.n$}").parse().unwrap_or(x)
+}
+
+/// `regret_review.grade_turn`: one combat turn graded from its non-forced
+/// actions' regrets (`assess_decision` values; `None` = could not be graded).
+/// `None` (stay silent) when any action is ungraded or `uncertain`; else
+/// `{verdict, hp_drop, severity, win_before, win_after}`.
+///
+/// ```text
+/// counted  = actions with severity >= TURN_ACTION_FLOOR
+/// severity = max(sum drop_pct, sum hp_drop) over counted
+/// verdict  = best (none counted) | tie (< TIE_PTS)
+///            | blunder (>= DEFAULT_BLUNDER_DROP_PCT) | slip
+/// ```
+///
+/// Twin of the Python rule; both are pinned by
+/// `sts2-pycli/tests/fixtures/coach/grade_turn_cases.json`.
+#[must_use]
+pub fn grade_turn(regrets: &[Option<Value>]) -> Option<Value> {
+    let mut graded = Vec::with_capacity(regrets.len());
+    for r in regrets {
+        let r = r.as_ref()?;
+        if r["verdict"].as_str() == Some("uncertain") {
+            return None;
+        }
+        graded.push(r);
+    }
+    let counted: Vec<&Value> = graded
+        .iter()
+        .copied()
+        .filter(|r| f64_of(&r["severity"]) >= TURN_ACTION_FLOOR)
+        .collect();
+    let turn_hp: f64 = counted.iter().map(|r| f64_of(&r["hp_drop"])).sum();
+    let turn_pts: f64 = counted.iter().map(|r| f64_of(&r["drop_pct"])).sum();
+    let severity = turn_pts.max(turn_hp);
+    let verdict = if counted.is_empty() {
+        "best"
+    } else if severity < TIE_PTS {
+        "tie"
+    } else if severity >= DEFAULT_BLUNDER_DROP_PCT {
+        "blunder"
+    } else {
+        "slip"
+    };
+    let hp_known = counted.iter().any(|r| !r["hp_drop"].is_null());
+    let first = graded.first();
+    Some(json!({
+        "verdict": verdict,
+        "hp_drop": hp_known.then(|| py_round(turn_hp, 2)),
+        "severity": py_round(severity, 2),
+        "win_before": first.map(|r| py_round(f64_of(&r["best_win_prob"]), 4)),
+        "win_after": first.map(|r| py_round(f64_of(&r["played_win_prob"]), 4)),
+    }))
+}
+
 /// `summarize`: `{decisions, blunders (top_n costliest), summary}`.
 #[must_use]
 pub fn summarize(decisions: Vec<Value>, top_n: usize) -> Value {
@@ -931,6 +992,26 @@ pub fn hint(sess: &Session, config: &Value) -> Result<Option<Value>, SessionErro
         .and_then(|g| g.combat_state())
         .ok_or_else(|| SessionError::new(400, "no native combat state"))?;
     Ok(Some(score(cs, &named, config)))
+}
+
+/// [`hint`], remembering the rows and PV on the session
+/// (`Session::hint_scores`) for the per-turn coach to reuse.
+pub fn hint_remembered(sess: &mut Session, config: &Value) -> Result<Option<Value>, SessionError> {
+    let node = sess.active_node()?;
+    if !combat_play(node) {
+        return Ok(None);
+    }
+    let id = node.id;
+    let named = resolve_state_names(Some(&node.state), sess.loc());
+    let cs = sess
+        .game()
+        .and_then(|g| g.combat_state())
+        .ok_or_else(|| SessionError::new(400, "no native combat state"))?;
+    let (out, pv) = score_with_pv(cs, &named, config);
+    if let Some(rows) = out["scores"].as_array().filter(|r| !r.is_empty()) {
+        sess.hint_scores.insert(id, (rows.clone(), pv));
+    }
+    Ok(Some(out))
 }
 
 /// `search_tree`: the full tree for the active combat state, `None` off combat.
@@ -1059,6 +1140,223 @@ pub fn last_move_regret(sess: &Session, config: &Value) -> Result<Option<Value>,
     step.best_line = label_line(cs, &pv, sess.loc());
     step.node_id = None; // the live coach's step carries no node id
     Ok(assess_decision(&step, &scores, blunder_pct))
+}
+
+/// `realgame_coach.intent_text`: one enemy's telegraphed move as display
+/// text — `"attack 6"`, `"attack 6×2"`, another intent as its lower-cased
+/// type, joined by `" + "` (`"attack 6×2 + debuff"`); `"unknown"` when
+/// nothing is telegraphed. Reads the workbench view's `type` and the mod
+/// wire's `intent_type`. Pinned with the Python one by
+/// `sts2-pycli/tests/fixtures/coach/intent_text_cases.json`.
+#[must_use]
+pub fn intent_text(intents: &[Value]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for intent in intents.iter().filter(|i| i.is_object()) {
+        let text = if let Some(damage) = intent["damage"].as_i64() {
+            let hits = intent["hits"].as_i64().unwrap_or(1);
+            if hits > 1 {
+                format!("attack {damage}×{hits}")
+            } else {
+                format!("attack {damage}")
+            }
+        } else {
+            let kind = intent["intent_type"]
+                .as_str()
+                .or_else(|| intent["type"].as_str())
+                .unwrap_or("")
+                .trim();
+            if kind.is_empty() {
+                continue;
+            }
+            kind.to_lowercase()
+        };
+        if !parts.contains(&text) {
+            parts.push(text);
+        }
+    }
+    if parts.is_empty() {
+        "unknown".to_string()
+    } else {
+        parts.join(" + ")
+    }
+}
+
+/// `realgame_coach.turn_context` for a workbench combat view: the position
+/// a turn started from — `{hand, energy, max_energy, hp, max_hp, block,
+/// enemies: [{name, hp, intent}]}` (the view lists live enemies only).
+#[must_use]
+pub fn turn_context(named: &Value) -> Value {
+    let empty = Vec::new();
+    let hand: Vec<Value> = named["hand"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .map(|c| {
+            json!(c["name"]
+                .as_str()
+                .or_else(|| c["id"].as_str())
+                .unwrap_or("?"))
+        })
+        .collect();
+    let enemies: Vec<Value> = named["enemies"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .map(|e| {
+            json!({
+                "name": e["name"].as_str().unwrap_or("?"),
+                "hp": e["hp"].as_i64(),
+                "intent": intent_text(e["intents"].as_array().unwrap_or(&empty)),
+            })
+        })
+        .collect();
+    let player = &named["player"];
+    json!({
+        "hand": hand,
+        "energy": named["energy"].as_i64(),
+        "max_energy": named["max_energy"].as_i64(),
+        "hp": player["hp"].as_i64(),
+        "max_hp": player["max_hp"].as_i64(),
+        "block": player["block"].as_i64(),
+        "enemies": enemies,
+    })
+}
+
+/// Default cap on fresh searches one turn grade may run: the worker is
+/// single-threaded, so a long turn with no remembered hint scores stays
+/// ungraded rather than stall the player's next action.
+pub const TURN_GRADE_MAX_SEARCHES: usize = 6;
+
+/// `last_turn_grade`: the combat turn that the active node's End turn just
+/// closed, graded whole (`grade_turn`) — the PROTOCOL.md `coach` `turn`
+/// record, so the live chip and follow mode share one renderer.
+///
+/// Walks back from the End turn through the turn's moves (same fight, same
+/// round). Each move is scored from its remembered hint search
+/// (`Session::hint_scores`) or a fresh search — at most `max_searches`
+/// (default [`TURN_GRADE_MAX_SEARCHES`]) of them; past the cap the move is
+/// ungraded and the turn silent — then topped up and diffed like
+/// [`last_move_regret`]. A forced move (one legal action) is labelled, not
+/// graded; an in-combat card select counts in `ungraded_actions`.
+///
+/// `None` when the active node is not the result of an End turn, or when
+/// the turn is silent (a move ungraded or still `uncertain`);
+/// `{error, turn: null}` when nothing can be scored.
+pub fn last_turn_grade(sess: &Session, config: &Value) -> Result<Option<Value>, SessionError> {
+    let node = sess.active_node()?;
+    let Some(end) = node.parent_id.and_then(|p| sess.node(p)) else {
+        return Ok(None);
+    };
+    if !combat_play(end)
+        || native_action(node.action.as_deref(), &node.args)["action"] != "end_turn"
+    {
+        return Ok(None);
+    }
+    let Some(round) = end.combat.as_ref().map(|c| c.round) else {
+        return Ok(None);
+    };
+    let mut steps: Vec<(&Node, &Node)> = vec![(end, node)];
+    let mut cur = end;
+    while let Some(prev) = cur.parent_id.and_then(|p| sess.node(p)) {
+        if prev.combat.as_ref().map(|c| c.round) != Some(round) {
+            break;
+        }
+        steps.push((prev, cur));
+        cur = prev;
+    }
+    steps.reverse();
+
+    let mut cfg = config_obj(config);
+    let blunder_pct = pop_f64(&mut cfg, "blunder_pct", DEFAULT_BLUNDER_DROP_PCT);
+    let max_searches = pop_usize(&mut cfg, "max_searches", TURN_GRADE_MAX_SEARCHES);
+    let peeked = cfg
+        .as_object_mut()
+        .and_then(|m| m.remove("peeked"))
+        .is_some_and(|v| v.as_bool() == Some(true));
+    let Ok(params) = params_for(&cfg, "mcts_recommend") else {
+        return Ok(Some(
+            json!({"error": "no MCTS scores available", "turn": Value::Null}),
+        ));
+    };
+
+    let mut you: Vec<String> = Vec::new();
+    let mut regrets: Vec<Option<Value>> = Vec::new();
+    let mut ungraded_actions = 0usize;
+    let mut searches = 0usize;
+    // The turn's first graded position and its search's PV: the AI's line.
+    let mut first: Option<(&CombatState, Vec<Value>, Vec<Value>)> = None;
+    for (parent, child) in &steps {
+        if !combat_play(parent) {
+            ungraded_actions += 1;
+            continue;
+        }
+        let step = step_of(parent, child, sess.loc(), &Value::Null, &Value::Null);
+        let Some(cs) = parent.combat.as_ref() else {
+            regrets.push(None);
+            continue;
+        };
+        if sts2_core::legal_actions(cs).len() < 2 {
+            let (idx, _) = action_stable_key(&step.chosen);
+            you.push(idx.map_or_else(|| "?".to_string(), |i| action_label(i, &step.state)));
+            continue;
+        }
+        let (mut scores, pv) = if let Some((rows, pv)) = sess.hint_scores.get(&parent.id) {
+            (rows.clone(), pv.clone())
+        } else if searches < max_searches {
+            searches += 1;
+            let (result, pv) = score_with_pv(cs, &step.state, &cfg);
+            (result["scores"].as_array().cloned().unwrap_or_default(), pv)
+        } else {
+            // Past the cap: silent, whatever the rest of the turn holds.
+            return Ok(None);
+        };
+        top_up_played(cs, &mut scores, &step.chosen, &params);
+        if first.is_none() && !scores.is_empty() {
+            first = Some((cs, pv, scores.clone()));
+        }
+        let regret = assess_decision(&step, &scores, blunder_pct);
+        you.push(regret.as_ref().map_or_else(
+            || {
+                let (idx, _) = action_stable_key(&step.chosen);
+                idx.map_or_else(|| "?".to_string(), |i| action_label(i, &step.state))
+            },
+            |r| r["played_label"].as_str().unwrap_or("?").to_string(),
+        ));
+        regrets.push(regret);
+    }
+    let Some(grade) = grade_turn(&regrets) else {
+        return Ok(None);
+    };
+    let ai = first.as_ref().map_or_else(Vec::new, |(cs, pv, scores)| {
+        let line = label_line(cs, pv, sess.loc());
+        if line.is_empty() {
+            let best = best_row(scores);
+            vec![best["action"].as_str().unwrap_or("?").to_string()]
+        } else {
+            line
+        }
+    });
+    let (head, _) = steps[0];
+    let named = resolve_state_names(Some(&head.state), sess.loc());
+    let mut record = json!({
+        "kind": "turn",
+        "id": format!("turn:{}", head.id),
+        "node_id": head.id,
+        "turn": named.get("round").cloned().unwrap_or(Value::Null),
+        "floor": Value::Null,
+        "you": you,
+        "ai": ai,
+        "peeked": peeked,
+        "ungraded_actions": ungraded_actions,
+        "context": turn_context(&named),
+        "searches": searches,
+    });
+    if let (Some(r), Some(g)) = (record.as_object_mut(), grade.as_object()) {
+        for (k, v) in g {
+            r.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(Some(record))
 }
 
 /// The root distribution of the search that actually chose `node`.
@@ -1719,6 +2017,56 @@ pub fn wpa_review_unavailable() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intent_text_shared_cases() {
+        let cases: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../sts2-pycli/tests/fixtures/coach/intent_text_cases.json"
+        )))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            for key in ["type", "intent_type"] {
+                let intents: Vec<Value> = case["intents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| {
+                        let mut i = i.clone();
+                        let kind = i["kind"].take();
+                        i.as_object_mut().unwrap().remove("kind");
+                        i[key] = kind;
+                        i
+                    })
+                    .collect();
+                assert_eq!(
+                    json!(intent_text(&intents)),
+                    case["expect"],
+                    "case {} ({key})",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grade_turn_shared_cases() {
+        let cases: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../sts2-pycli/tests/fixtures/coach/grade_turn_cases.json"
+        )))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let regrets: Vec<Option<Value>> = case["regrets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| (!r.is_null()).then(|| r.clone()))
+                .collect();
+            let got = grade_turn(&regrets).unwrap_or(Value::Null);
+            assert_eq!(got, case["expect"], "case {}", case["name"]);
+        }
+    }
 
     #[test]
     fn labels_resolve_hand_potions_and_sentinels() {

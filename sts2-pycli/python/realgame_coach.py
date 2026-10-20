@@ -16,14 +16,9 @@ trust. A turn is graded when it ends, from its actions:
 
     graded = per-action DecisionRegret, after top-up
     if any action verdict == "uncertain" or ungraded -> turn ungraded, silent
-    count only actions with severity >= TURN_ACTION_FLOOR (= 1.0)  # drops sub-point jitter
-    turn_hp   = sum(hp_drop or 0)           over counted actions
-    turn_pts  = sum(drop_pct)               over counted actions
-    severity  = max(turn_pts, turn_hp)
-    verdict   = "best" if no counted action else
-                "tie" if severity < TIE_PTS else
-                "blunder" if severity >= DEFAULT_BLUNDER_DROP_PCT else "slip"
-    win_before / win_after = best / played win_prob at the turn's first graded decision
+    otherwise regret_review.grade_turn: count only actions with
+    severity >= TURN_ACTION_FLOOR, severity = max(summed points, summed HP),
+    verdict best | tie | slip | blunder (the browser workbench uses its twin)
 
 Silence beats a wrong number: a turn with any action that stays uncertain, or
 that cannot be graded, emits nothing to the mod (the log records it as
@@ -56,12 +51,11 @@ from typing import Any
 from choice_grade import grade_choice
 from workbench.reasoning import rows_from_mcts
 from workbench.regret_review import (
-    DEFAULT_BLUNDER_DROP_PCT,
     PLAYED_MIN_VISITS,
-    TIE_PTS,
     DecisionRegret,
     action_stable_key,
     assess_decision,
+    grade_turn,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,10 +63,6 @@ logger = logging.getLogger(__name__)
 #: How many advice requests the cache remembers. A combat turn is a handful of
 #: requests and the grader only ever looks back one turn, so this is generous.
 ADVICE_CACHE_SIZE = 64
-#: Per-action severity (win-chance points or HP) below which an action does not
-#: count toward its turn's grade: summing sub-point jitter over five plays
-#: would otherwise invent a slip out of noise.
-TURN_ACTION_FLOOR = 1.0
 #: Forced-root sims for a played-move top-up (same floor the browser coach uses).
 TOP_UP_SIMS = max(PLAYED_MIN_VISITS * 4, 400)
 #: Budget of each step of the background AI-line search.
@@ -1215,19 +1205,11 @@ class CoachGrader:
         if any(a.regret is not None and a.regret.verdict == "uncertain" for a in turn.acts):
             self._drop(turn, "a move stayed uncertain after top-up")
             return []
-        graded = [a.regret for a in turn.acts if a.regret is not None]
-        counted = [d for d in graded if d.severity >= TURN_ACTION_FLOOR]
-        turn_hp = sum(d.hp_drop or 0.0 for d in counted)
-        turn_pts = float(sum(d.drop_pct for d in counted))
-        severity = max(turn_pts, turn_hp)
-        if not counted:
-            verdict = "best"
-        elif severity < TIE_PTS:
-            verdict = "tie"
-        elif severity >= DEFAULT_BLUNDER_DROP_PCT:
-            verdict = "blunder"
-        else:
-            verdict = "slip"
+        grade = grade_turn([a.regret for a in turn.acts if not a.forced])
+        if grade is None:
+            self._drop(turn, "a move could not be graded")
+            return []
+        verdict = grade.verdict
         if verdict in ("slip", "blunder") and turn.ai is None:
             if not turn.ai_pending:
                 turn.ai_pending = True
@@ -1235,18 +1217,16 @@ class CoachGrader:
             # With an inline executor the line is already built: fall through.
             if turn.ai is None or turn.done:
                 return []
-        first = graded[0] if graded else None
-        hp_known = any(d.hp_drop is not None for d in counted)
         record = self._turn_head(turn) | {
             "verdict": verdict,
             "you": [a.label for a in turn.acts],
             "ai": list(turn.ai or []),
-            "hp_drop": round(turn_hp, 2) if hp_known else None,
-            "win_before": round(first.best_win_prob, 4) if first else None,
-            "win_after": round(first.played_win_prob, 4) if first else None,
+            "hp_drop": grade.hp_drop,
+            "win_before": grade.win_before,
+            "win_after": grade.win_after,
             "peeked": any(a.peeked for a in turn.acts),
             "ungraded_actions": turn.ungraded_actions,
-            "severity": round(severity, 2),
+            "severity": grade.severity,
             "context": turn_context(
                 turn.start_msg
                 or (self._round_start.get(turn.turn) if turn.fight is self._fight else None)

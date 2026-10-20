@@ -7,8 +7,10 @@ searches the grader asked for.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -940,3 +942,34 @@ def test_human_label_uses_card_names_not_raw_detail() -> None:
     up["card"]["upgraded"] = True
     assert g._label_human(up) == "Strike+ (Toadpole)"
     assert g._label_human({"potion": {"id": "FIRE_POTION"}}) == "drink Fire Potion"
+
+
+_INTENT_CASES = Path(__file__).resolve().parent / "fixtures" / "coach" / "intent_text_cases.json"
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(_INTENT_CASES.read_text(encoding="utf-8"))["cases"],
+    ids=lambda c: c["name"],
+)
+def test_intent_text_shared_cases(case: dict[str, Any]) -> None:
+    """Twin of advisors::intent_text (the browser workbench's turn context)."""
+    intents = [
+        {**{k: v for k, v in i.items() if k != "kind"}, "intent_type": i["kind"]}
+        for i in case["intents"]
+    ]
+    assert rc.intent_text(intents) == case["expect"]
+
+
+_RANK_CASES = Path(__file__).resolve().parent / "fixtures" / "coach" / "rank_autopsy_cases.json"
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads(_RANK_CASES.read_text(encoding="utf-8"))["cases"],
+    ids=lambda c: c["name"],
+)
+def test_rank_autopsy_shared_cases(case: dict[str, Any]) -> None:
+    """Twin of web/src/coach/coachRank.ts (the browser's live-play autopsy)."""
+    items = rc.rank_autopsy(case["turns"], case["choices"], case["k"])
+    assert [[i["kind"], i["record"]["id"]] for i in items] == case["expect"]
