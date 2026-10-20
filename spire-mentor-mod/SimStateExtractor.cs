@@ -148,17 +148,8 @@ public static class SimStateExtractor
         msg["state_id"] = SimProtocolHelpers.NextStateId();
     }
 
-    /// <summary>
-    /// A stream's read count. v0.111.0 dropped the public <c>Rng.Counter</c>;
-    /// the count now lives only in the stream's serializable state
-    /// (decomp v0.111.0 <c>Core.Random/Rng.cs</c>
-    /// <c>ToSerializable()</c>, <c>SerializableRng.counter</c>).
-    /// </summary>
-#if GAME_V0111
-    private static int Cursor(Rng r) => r.ToSerializable().counter;
-#else
-    private static int Cursor(Rng r) => r.Counter;
-#endif
+    /// <summary>A stream's read count (SimGameApi: the member moved in v0.111.0).</summary>
+    private static int Cursor(Rng r) => SimGameApi.Counter(r);
 
     /// <summary>
     /// `{"run_seed": uint (v0.107.1) | ulong (v0.111.0), "counters": {stream: readCount}}` — the run's RNG
@@ -180,7 +171,7 @@ public static class SimStateExtractor
             // counters rebuilds every stream at count 0. Seed-without-counters
             // therefore does not degrade to the pre-field behaviour, it
             // actively destroys RNG lineage that was previously intact.
-            var seed = rng.Seed;
+            object seed = SimGameApi.RunSeed(rng);
             var c = new Dictionary<string, object?>
             {
                 ["up_front"] = Cursor(rng.UpFront),

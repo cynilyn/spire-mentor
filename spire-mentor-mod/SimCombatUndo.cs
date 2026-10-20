@@ -215,7 +215,7 @@ internal static class SimCombatUndo
             {
                 var choiceQueue = new Queue<CombatReplayEvent>(prefix.Where(e =>
                     e.eventType == CombatReplayEventType.PlayerChoice));
-                selectorScope = CardSelectCmd.PushSelector(new TapeCardSelector(choiceQueue, fresh));
+                selectorScope = SimGameApi.PushSelector(new TapeCardSelector(choiceQueue, fresh));
                 SimSpeed.Apply(SimSpeed.Max, showVfx: false);
                 await InjectPrefix(prefix);
                 await RunManager.Instance.ActionExecutor.FinishedExecutingActions();
