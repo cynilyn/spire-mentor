@@ -129,10 +129,19 @@ pub(crate) fn emit_err(e: sts2_wire::emit::EmitError) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
-/// Parse a Python `game_version=` kwarg (GH #787). `None` ⇒ the default
-/// build ([`sts2_core::GameVersion::V0_107_1`]); an unknown string raises
+/// The environment variable the Python tooling (`sts2_client.GAME_VERSION_ENV`)
+/// uses to select the game build; read here as the default for a call that
+/// passes no `game_version=` kwarg, so the parity harness (which constructs
+/// `RunManager` / calls `roll_acts` directly) follows the selected build.
+pub(crate) const GAME_VERSION_ENV: &str = "STS2_GAME_VERSION";
+
+/// Parse a Python `game_version=` kwarg (GH #787). `None` ⇒ the build named by
+/// `STS2_GAME_VERSION` when that is set and non-empty, else the default build
+/// ([`sts2_core::GameVersion::V0_107_1`]); an unknown string raises
 /// `ValueError`. Accepts `"v0.111.0"` / `"0.111.0"` and the 0.107.1 forms.
 pub(crate) fn parse_game_version(raw: Option<&str>) -> PyResult<sts2_core::GameVersion> {
+    let from_env = std::env::var(GAME_VERSION_ENV).ok();
+    let raw = raw.or_else(|| from_env.as_deref().map(str::trim).filter(|s| !s.is_empty()));
     match raw {
         None => Ok(sts2_core::GameVersion::default()),
         Some(s) => s
