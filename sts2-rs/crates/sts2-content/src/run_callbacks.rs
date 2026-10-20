@@ -534,16 +534,24 @@ fn apply_combat_gold_and_potion(rs: &mut RunState, room_type: RoomType) {
     // need their own presentation wiring — tracked separately; ignoring them
     // here is the current (unmodeled) behavior, so no regression. Bead
     // `sts2-rs-RP16`.
-    let bonus_gold: i32 = rs
-        .offer_rewards(room_type, Vec::new())
-        .iter()
-        .filter_map(|r| match r {
-            sts2_core::runstate::Reward::Gold { amount } => Some(*amount),
-            _ => None,
-        })
-        .sum();
-    if bonus_gold > 0 {
-        rs.gain_gold(bonus_gold);
+    //
+    // v0.111.0 (R1): the run manager walks the whole `ModifyRewards` hook once the
+    // base set is populated (`RunManager::apply_modify_rewards`), claiming this gold
+    // there in list order and also rolling the card / relic additions. Walking it
+    // here as well would run the latching listeners (LavaRock, Wongo) a second time
+    // and double the gold, so only the pre-R1 builds keep this gold-only walk.
+    if rs.game_version < sts2_core::GameVersion::V0_111_0 {
+        let bonus_gold: i32 = rs
+            .offer_rewards(room_type, Vec::new())
+            .iter()
+            .filter_map(|r| match r {
+                sts2_core::runstate::Reward::Gold { amount } => Some(*amount),
+                _ => None,
+            })
+            .sum();
+        if bonus_gold > 0 {
+            rs.gain_gold(bonus_gold);
+        }
     }
 }
 
@@ -1235,16 +1243,20 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // rolled "regular" odds, so elite kills under-weighted rares and
     // boss kills offered mostly-common cards instead of the expected 3
     // rares (GH #25).
-    let context = match rs.current_room.map(|r| r.room_type) {
+    // A card reward a relic appended to the set (PrayerWheel `ForRoom(Monster)`,
+    // WhiteStar `ForRoom(Boss)`) names its own context and, unlike the room's own
+    // reward, carries no `IsFromCombat` flag (`PrayerWheel.cs:20`, `WhiteStar.cs:27`).
+    let override_context = rs.card_reward_context_override.take();
+    let context = override_context.unwrap_or_else(|| match rs.current_room.map(|r| r.room_type) {
         Some(RoomType::Elite) => "elite",
         Some(RoomType::Boss) => "boss",
         _ => "regular",
-    };
+    });
     // The combat room's own card reward: `CardCreationOptions.ForRoom(...)
     // .WithFlags(CardCreationFlags.IsFromCombat)` (v0.111.0 RewardsSet.cs:233).
     let opts = CardRewardGenerationOptions {
         context,
-        is_from_combat: true,
+        is_from_combat: override_context.is_none(),
         ..CardRewardGenerationOptions::default()
     };
     let cards = crate::cards::spec_index::roll_card_reward_cards(rs, opts, character);

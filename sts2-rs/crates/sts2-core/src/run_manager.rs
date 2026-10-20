@@ -2338,6 +2338,7 @@ impl RunManager {
                     apply(&mut self.run_state, reward_room_type);
                 }
                 let card_options = self.enter_card_reward_phase();
+                self.apply_modify_rewards(reward_room_type);
                 self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
                 return ActionResult::Advanced;
             }
@@ -2386,6 +2387,7 @@ impl RunManager {
             // calls `advance_boss_act`.
             self.pending_boss_act_advance = true;
             let card_options = self.enter_card_reward_phase();
+            self.apply_modify_rewards(reward_room_type);
             self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
             return ActionResult::Advanced;
         }
@@ -2469,23 +2471,92 @@ impl RunManager {
             // list — and the rewards-stream cursor — in lockstep with the
             // oracle. Without this the relic surfaced one step late, so the
             // card-reward-screen relic-list diff diverged (RP109/RP72).
+            // v0.111.0: every relic's `TryModifyRewards` (`Hook.cs:1584-1600`) runs on
+            // the populated base set and its additions populate after it
+            // (`RewardsSet.cs:139-146`) — BlackStar's second Elite relic, PrayerWheel's
+            // and WhiteStar's extra card rewards, AmethystAubergine's gold, LavaRock's
+            // and Wongo's relics. It runs BEFORE the auto-collect obtains the Elite
+            // relic (`GenerateWithoutOffering` precedes `Offer`), so a WhiteStar /
+            // BlackStar that IS this room's relic does not modify this room's set
+            // (RTGG_H_101 i=213). v0.107.1 has the same code; its arm still drops
+            // them so that build stays bit-identical (tracked for #806).
+            self.apply_modify_rewards(reward_room_type);
             self.run_state.drain_relic_rewards_directly();
-            // v0.111.0: BlackStar's `TryModifyRewards` appends one more
-            // `RelicReward(player)` to an Elite's set (decomp
-            // `Models.Relics/BlackStar.cs:13`), populated after the base
-            // rewards (`Rewards/RewardsSet.cs:139-146`): a second rarity roll
-            // on `Rewards` and grab-bag pull, auto-collected by the oracle like
-            // the first. v0.107.1 has the same code; its arm still drops the
-            // bonus relic so that build stays bit-identical (tracked for #806).
-            if self.run_state.game_version >= crate::GameVersion::V0_111_0
-                && self.run_state.owns_active_relic(crate::RelicId::BlackStar)
-            {
-                self.run_state.offer_random_relic_rewards(1, &[None]);
-                self.run_state.drain_relic_rewards_directly();
-            }
+        } else {
+            self.apply_modify_rewards(reward_room_type);
         }
         self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
         ActionResult::Advanced
+    }
+
+    /// `Hook.ModifyRewards` over a combat room's reward set, v0.111.0 only
+    /// (`RewardsSet.GenerateWithoutOffering`, `RewardsSet.cs:131-149`).
+    ///
+    /// The base rewards (gold, potion, card, Elite relic) are already populated
+    /// when this runs; the relic listeners then append their rewards and each
+    /// addition is populated IN LIST ORDER, which is what fixes the `Rewards`
+    /// stream position every later roll starts from:
+    ///   * a relic sentinel (BlackStar / LavaRock / Wongo's own id) is a
+    ///     `RelicReward(player)`: one rarity `NextFloat` and a grab-bag pull,
+    ///     collected on the spot under `direct_event_relic_grant` like the
+    ///     Elite relic;
+    ///   * an empty `CardReward` carrying a `room_context` (PrayerWheel,
+    ///     WhiteStar) rolls its three cards NOW with `ForRoom(context)` odds and
+    ///     no `IsFromCombat` flag, and is queued pre-resolved on
+    ///     `pending_rewards`, so it surfaces as its own card screen once the
+    ///     room's card reward resolves — the same stream order as C#, where
+    ///     all rewards are populated before the first screen opens;
+    ///   * a gold reward (AmethystAubergine) is claimed at once.
+    fn apply_modify_rewards(&mut self, room_type: crate::runstate::RoomType) {
+        use crate::runstate::Reward;
+        if self.run_state.game_version < crate::GameVersion::V0_111_0 {
+            return;
+        }
+        let mut extras: Vec<Reward> = Vec::new();
+        let _ = crate::run_effects::dispatch_modify_rewards(
+            &mut self.run_state,
+            &mut extras,
+            room_type,
+        );
+        for reward in extras {
+            match reward {
+                Reward::Gold { amount } => self.run_state.gain_gold(amount),
+                Reward::Relic(rr)
+                    if matches!(
+                        rr.relic_id,
+                        crate::RelicId::BlackStar
+                            | crate::RelicId::LavaRock
+                            | crate::RelicId::WongosMysteryTicket
+                    ) =>
+                {
+                    self.run_state.offer_random_relic_rewards(1, &[None]);
+                    if self.run_state.direct_event_relic_grant {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
+                }
+                Reward::Relic(rr) => {
+                    self.run_state.offer_relic_rewards(rr.relic_id, 1);
+                    if self.run_state.direct_event_relic_grant {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
+                }
+                Reward::Card(cr) if cr.options.is_empty() && cr.room_context.is_some() => {
+                    self.run_state.card_reward_context_override = cr.room_context;
+                    let options = self
+                        .callbacks
+                        .generate_card_reward_options
+                        .map(|f| f(&mut self.run_state))
+                        .unwrap_or_default();
+                    self.run_state.card_reward_context_override = None;
+                    let mut rolled = crate::runstate::CardReward::from_options(options);
+                    rolled.upgraded =
+                        std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+                    self.run_state.card_reward_enchantments.clear();
+                    self.run_state.pending_rewards.push(Reward::Card(rolled));
+                }
+                other => self.run_state.pending_rewards.push(other),
+            }
+        }
     }
 
     /// Collect a combat room's `ExtraRewards` the way the C# headless does,

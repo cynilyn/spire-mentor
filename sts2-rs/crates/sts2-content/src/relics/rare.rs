@@ -505,7 +505,9 @@ fn listener_prayer_wheel(
     if room_type != RoomType::Monster {
         return EffectResult::NotImplemented;
     }
-    rewards.push(Reward::Card(CardReward::empty()));
+    // `new CardReward(CardCreationOptions.ForRoom(player, Monster), 3, player)`
+    // (`PrayerWheel.cs:20`): regular-encounter odds, no `IsFromCombat`.
+    rewards.push(Reward::Card(CardReward::for_room("regular")));
     EffectResult::Resolved
 }
 
@@ -527,7 +529,9 @@ fn listener_white_star(
     if room_type != RoomType::Elite {
         return EffectResult::NotImplemented;
     }
-    rewards.push(Reward::Card(CardReward::empty()));
+    // `new CardReward(CardCreationOptions.ForRoom(Owner, RoomType.Boss), 3, player)`
+    // (`WhiteStar.cs:27`): boss-encounter odds (all Rare), no `IsFromCombat`.
+    rewards.push(Reward::Card(CardReward::for_room("boss")));
     EffectResult::Resolved
 }
 

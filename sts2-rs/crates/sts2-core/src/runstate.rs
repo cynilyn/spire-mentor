@@ -277,6 +277,12 @@ pub struct CardReward {
     /// [`Self::from_cards`] (a v0.111.0 caller whose slate went through the
     /// `modify_card_reward_options_late` listeners, e.g. SilverCrucible).
     pub upgraded: Vec<bool>,
+    /// For a reward a relic's `TryModifyRewards` appends to a combat room's
+    /// set (PrayerWheel, WhiteStar): the `CardCreationOptions.ForRoom` context
+    /// (`"regular"` | `"elite"` | `"boss"`) it rolls its options with. `None`
+    /// for every other reward. Unlike the room's own card reward these carry no
+    /// `IsFromCombat` flag (`PrayerWheel.cs:20`, `WhiteStar.cs:27`).
+    pub room_context: Option<&'static str>,
 }
 
 impl CardReward {
@@ -286,6 +292,17 @@ impl CardReward {
         Self {
             options: Vec::new(),
             upgraded: Vec::new(),
+            room_context: None,
+        }
+    }
+
+    /// An empty `CardReward` that rolls with `ForRoom(<context>)` odds when the
+    /// reward set is populated (see [`Self::room_context`]).
+    #[must_use]
+    pub fn for_room(context: &'static str) -> Self {
+        Self {
+            room_context: Some(context),
+            ..Self::empty()
         }
     }
 
@@ -295,6 +312,7 @@ impl CardReward {
         Self {
             options,
             upgraded: Vec::new(),
+            room_context: None,
         }
     }
 
@@ -305,6 +323,7 @@ impl CardReward {
         Self {
             options: cards.iter().map(|c| c.card_id).collect(),
             upgraded: cards.iter().map(|c| c.upgraded).collect(),
+            room_context: None,
         }
     }
 }
@@ -1066,6 +1085,12 @@ pub struct RunState {
     /// `RunManager::enter_card_reward_phase` / `surface_pending_rewards`
     /// into its offer-aligned `card_reward_upgraded` list.
     pub card_reward_upgraded_flags: Vec<bool>,
+    /// One-shot override of the card-reward roll's room context
+    /// (`"regular"` | `"elite"` | `"boss"`), set around a single roll of a
+    /// relic-appended card reward (PrayerWheel / WhiteStar): it replaces the
+    /// current-room context AND clears the `IsFromCombat` flag the room's own
+    /// reward carries. Consumed (taken) by the card-reward callback.
+    pub card_reward_context_override: Option<&'static str>,
 
     /// Per-option enchantments for the most recent card-reward offering,
     /// parallel to [`Self::card_reward_upgraded_flags`] and set/taken at the
@@ -1952,6 +1977,7 @@ impl Default for RunState {
             pending_card_grants: Vec::new(),
             pending_bundles: Vec::new(),
             card_reward_upgraded_flags: Vec::new(),
+            card_reward_context_override: None,
             card_reward_enchantments: Vec::new(),
             card_slate_not_card_reward: false,
             relics: Vec::new(),
