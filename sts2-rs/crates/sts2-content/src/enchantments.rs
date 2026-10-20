@@ -347,6 +347,26 @@ pub fn mark_glam_used(card: &mut Card) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// B13 `glam_can_enchant_offered_card`: base `EnchantmentModel.CanEnchant`
+    /// rules for an offered (non-deck) card (`:262-266,:289`).
+    #[test]
+    fn glam_can_enchant_offered_card_follows_base_rules() {
+        use sts2_core::cards::CardType;
+        let plain = Card::pod_defaults();
+        assert!(glam_can_enchant_offered_card(&plain));
+        for t in [CardType::Status, CardType::Curse] {
+            let mut c = Card::pod_defaults();
+            c.card_type = t;
+            assert!(!glam_can_enchant_offered_card(&c), "{t:?} rejected");
+        }
+        // Any existing enchantment blocks (IsStackable is false), incl. Glam.
+        for e in [EnchantmentId::Nimble, EnchantmentId::Glam] {
+            let mut c = Card::pod_defaults();
+            c.set_enchantment(e, 1);
+            assert!(!glam_can_enchant_offered_card(&c), "{e:?} blocks");
+        }
+    }
+
 
     use std::num::NonZeroU32;
     use sts2_core::cards::{CardId, TargetType};

@@ -9381,6 +9381,38 @@ mod tests {
             .all(|c| c.enchantment(EnchantmentId::Glam) == 1));
     }
 
+    /// `glam.CanEnchant` (`Glitter.cs:28`, `EnchantmentModel.cs:262-266,289`):
+    /// an offer that already carries an enchantment (incl. Glam) or is a
+    /// Status card is skipped; plain offers get Glam(1).
+    #[test]
+    fn listener_glitter_skips_already_enchanted_and_status_offers() {
+        use sts2_core::cards::{Card, CardId, CardType, EnchantmentId};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::Glitter);
+        let mk = |id: CardId| {
+            let mut c = Card::pod_defaults();
+            c.card_id = id;
+            c
+        };
+        let mut nimble = mk(CardId::DefendIronclad);
+        nimble.set_enchantment(EnchantmentId::Nimble, 2);
+        let mut glam = mk(CardId::StrikeIronclad);
+        glam.set_enchantment(EnchantmentId::Glam, 1);
+        let mut status = mk(CardId::StrikeIronclad);
+        status.card_type = CardType::Status;
+        let plain = mk(CardId::Bash);
+        let mut cards = vec![nimble, glam, status, plain];
+        let _ =
+            sts2_core::run_effects::dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
+        assert_eq!(cards[0].enchantment(EnchantmentId::Glam), 0, "Nimble offer untouched");
+        assert_eq!(cards[0].enchantment(EnchantmentId::Nimble), 2);
+        assert_eq!(cards[1].enchantment(EnchantmentId::Glam), 1, "no reapplication");
+        assert_eq!(cards[2].enchantment(EnchantmentId::Glam), 0, "Status rejected");
+        assert_eq!(cards[3].enchantment(EnchantmentId::Glam), 1, "plain card enchanted");
+    }
+
     /// Bead `sts2-rs-5xg1w`: Glitter listener is noop without
     /// ownership.
     #[test]

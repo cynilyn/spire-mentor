@@ -97,6 +97,44 @@ fn sword_boomerang_without_glam_is_one_play() {
     assert_eq!(state.creatures[0].current_hp, 10, "3 hits x 3 = 9");
 }
 
+/// P0A5 step 35 shape (0.111.0 baseline): a Glam(1) Anger (6 damage) against a
+/// Vulnerable enemy deals 6 x 1.5 = 9 per hit; the first use replays once, so
+/// the enemy goes 48 -> 30 (two hits), not 48 -> 39 (one hit).
+#[test]
+fn glam_anger_vs_vulnerable_enemy_is_two_hits_of_nine() {
+    use sts2_core::{Power, PowerKind, PowerUid};
+    let mut state = fresh(48);
+    let pid = PowerUid::new(1).expect("non-zero power uid");
+    state.powers.push(Power {
+        id: pid.0,
+        kind: PowerKind::Vulnerable,
+        amount: 2,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.creatures[0].powers.push(pid);
+    let raw = u32::try_from(state.cards.len() + 1).expect("u32");
+    let uid = sts2_core::CardUid::new(raw).expect("nz");
+    let mut anger = Card {
+        uid,
+        card_id: CardId::Anger,
+        cost: 0,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        upgraded: false,
+        base_damage: 6,
+        base_block: 0,
+        ..Card::pod_defaults()
+    };
+    anger.set_enchantment(EnchantmentId::Glam, 1);
+    state.cards.push(anger);
+    state.player.hand.push(uid);
+    let idx = u8::try_from(state.player.hand.len() - 1).expect("u8");
+    let _ = sts2_core::combat_loop::play_card(&mut state, idx, Some(0));
+    assert_eq!(state.creatures[0].current_hp, 48 - 18, "2 plays x 6 x 1.5 = 18");
+}
+
 // ── Same-UID regressions across auto-play and manual play ────────────────
 // C# runs one `OnPlayWrapper` for both (`CardModel.cs:1895,1959`), and
 // `Glam.AfterCardPlayed` (`Glam.cs:42-51`) latches after the first play of the
