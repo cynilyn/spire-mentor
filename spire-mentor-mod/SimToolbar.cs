@@ -47,6 +47,8 @@ internal sealed class SimToolbar
     private PanelContainer? _strip;
     private HBoxContainer? _buttons;
     private Button? _coach;
+    private Button? _style;
+    private Button? _peek;
     private Button? _aiOnce;
     private Button? _aiAuto;
     private Label? _speedLabel;
@@ -212,10 +214,22 @@ internal sealed class SimToolbar
             };
             buttons.AddThemeConstantOverride("separation", 4);
 
-            _coach = SimUiKit.MakeButton("Coach: OFF",
-                "AI coach on / off -- rates your options while you play (F8)",
+            _coach = SimUiKit.MakeButton("AI off",
+                "Turn the AI coach on / off (F8)",
                 SimActions.ToggleAdvisor, SetHint);
             buttons.AddChild(_coach);
+
+            _style = SimUiKit.MakeButton("Coach",
+                "Switch style: Hints (the AI's opinion while you decide) <-> Coach (nothing " +
+                "until you act; F5 peeks, a note afterwards says where you differed)",
+                SimActions.SwitchStyle, SetHint);
+            buttons.AddChild(_style);
+
+            // Only shown in the Coach style (Hints already shows the pick).
+            _peek = SimUiKit.MakeButton("Peek",
+                "Show the AI's pick for just this decision; it hides again once you act (F5)",
+                SimActions.Peek, SetHint);
+            buttons.AddChild(_peek);
 
             _aiOnce = SimUiKit.MakeButton("AI once",
                 "Let the AI take just this one decision (F6) -- needs the coach on",
@@ -264,7 +278,7 @@ internal sealed class SimToolbar
                 "Open the workbench in your browser · Copy state (Ctrl+Shift+C) to paste a position into it",
                 new SimUiKit.MenuEntry[]
                 {
-                    new("Open workbench", "Open the workbench in your browser: logs, search tree, run tree", SimWorkbenchLink.Open),
+                    new("Open workbench", "Open the workbench in your browser: logs, search tree, run tree", () => SimWorkbenchLink.Open()),
                     new("Copy state  (Ctrl+Shift+C)", "Copy this position to the clipboard -- paste it into the workbench to replay it, branch it, or sweep it in SimLab", SimActions.CopyState),
                 }, SetHint));
 
@@ -390,12 +404,17 @@ internal sealed class SimToolbar
 
         if (_coach != null && GodotObject.IsInstanceValid(_coach))
         {
-            _coach.Text = mode switch
-            {
-                SimMode.Advisor => "Coach: ON",
-                SimMode.Autopilot => "Take over",
-                _ => "Coach: OFF",
-            };
+            _coach.Text = CoachStyle.PowerLabel((SimModeLite)(int)mode);
+        }
+
+        if (_style != null && GodotObject.IsInstanceValid(_style))
+        {
+            _style.Text = CoachStyle.StyleLabel(SimRuntime.Style);
+        }
+
+        if (_peek != null && GodotObject.IsInstanceValid(_peek))
+        {
+            _peek.Visible = SimRuntime.CoachStyleActive;
         }
 
         bool takeoverEnabled = mode == SimMode.Advisor;
@@ -423,8 +442,8 @@ internal sealed class SimToolbar
             : _expanded
                 ? "▾ Spire Mentor"
                 : mode == SimMode.Off
-                    ? "▸ Spire Mentor — AI coach off (click)"
-                    : $"▸ Spire Mentor · {mode}";
+                    ? "▸ Spire Mentor — AI off (click)"
+                    : $"▸ Spire Mentor · {CoachStyle.ModeName((SimModeLite)(int)mode, SimRuntime.Style)}";
 
     /// <summary>Wall-clock since the engine build started, as "m:ss".</summary>
     private string BuildElapsed()

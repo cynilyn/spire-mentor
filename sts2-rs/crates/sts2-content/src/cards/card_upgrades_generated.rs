@@ -891,6 +891,57 @@ pub fn upgrade_delta(card_id: CardId) -> Option<CardUpgradeDelta> {
         CardId::Salvo => crate::cards::colorless::salvo::upgrade(),
         CardId::Scrawl => crate::cards::colorless::scrawl::upgrade(),
         CardId::TheGambit => crate::cards::colorless::the_gambit::upgrade(),
+        // ── v0.111.0-only cards (GH #793). The ids exist in no v0.107.1
+        // state, so these rows cannot move a v0.107.1 upgrade.
+        // `Abundance.cs` / `Tutor.cs`: `EnergyCost.UpgradeBy(-1)` 1 → 0.
+        CardId::Abundance | CardId::Tutor => Some(CardUpgradeDelta {
+            cost: Some(0),
+            base_damage: None,
+            base_block: None,
+            keywords: None,
+        }),
+        // `BladeSymphony.cs`: `EnergyCost.UpgradeBy(-1)` 2 → 1.
+        CardId::BladeSymphony => Some(CardUpgradeDelta {
+            cost: Some(1),
+            base_damage: None,
+            base_block: None,
+            keywords: None,
+        }),
+        // `Constellation.cs`: `Block.UpgradeValueBy(3)` 9 → 12.
+        CardId::Constellation => Some(CardUpgradeDelta {
+            cost: None,
+            base_damage: None,
+            base_block: Some(12),
+            keywords: None,
+        }),
+        // `Midnight.cs`: `Damage.UpgradeValueBy(12)` 60 → 72.
+        CardId::Midnight => Some(CardUpgradeDelta {
+            cost: None,
+            base_damage: Some(72),
+            base_block: None,
+            keywords: None,
+        }),
+        // `Outrage.cs`: `Damage.UpgradeValueBy(4)` 9 → 13.
+        CardId::Outrage => Some(CardUpgradeDelta {
+            cost: None,
+            base_damage: Some(13),
+            base_block: None,
+            keywords: None,
+        }),
+        // `Soulbound.cs`: `AddKeyword(Innate)`; spec NONE → INNATE.
+        CardId::SoulboundCard => Some(CardUpgradeDelta {
+            cost: None,
+            base_damage: None,
+            base_block: None,
+            keywords: Some(CardKeywords::INNATE),
+        }),
+        // `Underworld.cs`: `RemoveKeyword(Exhaust)`; spec EXHAUST → NONE.
+        CardId::UnderworldCard => Some(CardUpgradeDelta {
+            cost: None,
+            base_damage: None,
+            base_block: None,
+            keywords: Some(CardKeywords::NONE),
+        }),
         _ => None,
     }
 }

@@ -85,7 +85,7 @@ public class SimCombatHandler : IRoomHandler, IHandler
             if (!agentEndedTurn && IsPlayerInPlayPhase(player) && CombatManager.Instance.IsInProgress)
             {
                 Logger.Log($"[SimCombat] Turn {turn}: {ActionCapPerTurn}-action cap reached, forcing end turn");
-                PlayerCmd.EndTurn(player, canBackOut: false);
+                SimAdvisor.EndTurnAsAi(player);
                 await WaitForTurnEndAsync(player, ct);
             }
         }
@@ -182,7 +182,7 @@ public class SimCombatHandler : IRoomHandler, IHandler
             if (action.Equals("end_turn", StringComparison.OrdinalIgnoreCase))
             {
                 Logger.Log("[SimCombat] Agent ended the turn");
-                PlayerCmd.EndTurn(player, canBackOut: false);
+                SimAdvisor.EndTurnAsAi(player);
                 await WaitForTurnEndAsync(player, ct);
                 return true;
             }

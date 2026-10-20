@@ -126,11 +126,7 @@ impl PpoEval {
 /// `PpoPolicy::prepare`: materialize a pending event so the observation
 /// can be built (idempotent, RNG-free — see `RunPolicy::prepare`).
 fn prepare(rm: &mut RunManager) {
-    if rm.phase() == Phase::Event && rm.run_state.current_event.is_none() {
-        if let Some(id) = sts2_content::events::dispatch::pick_event(&mut rm.run_state, None) {
-            rm.run_state.enter_event_room(id);
-        }
-    }
+    rm.bind_pending_event();
 }
 
 /// `ppo_policy.evaluate`: PPO's distribution over the current decision, or

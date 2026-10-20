@@ -41,6 +41,21 @@ def test_pinned_build_overrides_older_manifests(tmp_path: Path):
     assert json.loads(out.read_text(encoding="utf-8"))["BASH"]["description"] == "pinned"
 
 
+def test_builds_newer_than_the_pinned_one_are_ignored(tmp_path: Path):
+    """A newer build's cards are not in the engine yet, so the catalog must not
+    gain them (the sibling wiki now carries the v0.111.0 beta data, GH #786)."""
+    _write(tmp_path / _ENGINE_WIKI_VERSION / "cards.json", [{"loc_key": "BASH", "title": "Bash"}])
+    _write(
+        tmp_path / "v0.999.0" / "cards.json",
+        [{"loc_key": "SIDESTEP", "title": "Sidestep", "description_plain": "next"}],
+    )
+
+    out = tmp_path / "card_text.json"
+    gen_card_text.generate(tmp_path, out)
+
+    assert "SIDESTEP" not in json.loads(out.read_text(encoding="utf-8"))
+
+
 def test_cards_the_pinned_build_dropped_survive(tmp_path: Path):
     """An older build is still the only source for a retired card, so the
     catalog can name FOLLOW_THROUGH without mis-describing a live card."""

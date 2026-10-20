@@ -108,7 +108,7 @@ fn state_hash_walk<E: HashEncoding, H: Hasher>(state: &CombatState, h: &mut H) {
     // scalars is a complete, faithful key and avoids the per-call
     // `format!("{:?}", …)` allocation that the Debug-string approach paid.
     0x02u8.hash(h);
-    state.rng.seed().hash(h);
+    hash_rng_seed(state.rng.seed(), h);
     state.rng.counter().hash(h);
 
     // ── RunRngSet streams (bead `sts2-rs-cfe5g`, 943w7 Stage 5) ──────────
@@ -225,6 +225,12 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         player_won.hash(h);
     }
     state.round.hash(h);
+    // v0.111.0 extra turns move the player's turn number off the round
+    // (`CombatState::turn_number`). Hashed only when non-zero, which no
+    // v0.107.1 state ever is, so v0.107.1 hashes are unchanged.
+    if state.combat_log.extra_turns_taken_this_combat != 0 {
+        state.combat_log.extra_turns_taken_this_combat.hash(h);
+    }
     discriminant_side(state.side).hash(h);
     state.is_over.hash(h);
     state.player_won.hash(h);
@@ -243,6 +249,12 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
     0x0Du8.hash(h);
     state.combat_log.doom_applied_by_player_this_turn.hash(h);
     state.combat_log.osty_attacks_this_turn.hash(h);
+    // Game build (GH #787). Folded in only when non-default so every
+    // v0.107.1 digest — and every golden keyed by one — is byte-identical.
+    if !state.game_version.is_default() {
+        0x0Eu8.hash(h);
+        state.game_version.hash(h);
+    }
 }
 
 /// Player / ally / enemy / card-arena / potion / relic / pending sections.
@@ -404,12 +416,28 @@ fn hash_entries_by_key<K: Copy + Ord + Hash, H: Hasher>(entries: &[(K, i32)], h:
     }
 }
 
+/// Hash one stream's seed. `Rng::seed` was a `u32` before GH #788 widened it
+/// to `u64`; a seed that fits 32 bits (every v0.107.1 stream, and every
+/// search-side reseed, which reports a truncated seed) is hashed as that same
+/// `u32`, so every v0.107.1 digest keeps its historical bytes.
+fn hash_rng_seed<H: Hasher>(seed: u64, h: &mut H) {
+    match u32::try_from(seed) {
+        Ok(s32) => s32.hash(h),
+        Err(_) => seed.hash(h),
+    }
+}
+
 /// Hash every stream's `seed()` + `counter()` (the cursor) of a
 /// [`RunRngSet`] so state-equality tracks RNG position. Shared by
 /// [`state_hash`] (combat-side `state.run_rng`) and [`run_hash`]
 /// (run-side `RunState.rng`).
 fn hash_run_rng_set<H: Hasher>(rr: &RunRngSet, h: &mut H) {
-    rr.seed.hash(h);
+    // Master seed: an `i32` before GH #788 widened it, so a 32-bit seed
+    // (every v0.107.1 one) is hashed as that same `i32` to keep the bytes.
+    match u32::try_from(rr.seed) {
+        Ok(s32) => (s32 as i32).hash(h),
+        Err(_) => rr.seed.hash(h),
+    }
     for stream in [
         &rr.up_front,
         &rr.shuffle,
@@ -428,13 +456,13 @@ fn hash_run_rng_set<H: Hasher>(rr: &RunRngSet, h: &mut H) {
         &rr.shops,
         &rr.transformations,
     ] {
-        stream.seed().hash(h);
+        hash_rng_seed(stream.seed(), h);
         stream.counter().hash(h);
     }
     // `map_rngs` is a `BTreeMap` — deterministic key iteration order.
     for (act_index, rng) in &rr.map_rngs {
         act_index.hash(h);
-        rng.seed().hash(h);
+        hash_rng_seed(rng.seed(), h);
         rng.counter().hash(h);
     }
 }
@@ -963,6 +991,11 @@ mod legacy_run {
         rm.seed.hash(&mut h);
         format!("{:?}", rm.character_id).hash(&mut h);
         rm.ascension_level.hash(&mut h);
+        // Game build (GH #787): only when non-default, so v0.107.1 run
+        // digests keep their historical bytes.
+        if !rm.game_version.is_default() {
+            rm.game_version.hash(&mut h);
+        }
 
         // ── Run scalars ─────────────────────────────────────────────────
         (tag_base + 1).hash(&mut h);

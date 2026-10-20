@@ -37,11 +37,14 @@ pub fn install_default_registry() {
     // Bead `sts2-rs-63mew`: C#-discriminant rarity ranks for core-side
     // sorts (Stratagem's `after_shuffle` draw-pile grid-select orders
     // its options `orderby c.Rarity, c.Id`).
-    sts2_core::register_card_rarity_rank(super::spec_index::card_rarity_rank_csharp);
+    sts2_core::register_card_rarity_rank(super::spec_index::card_rarity_rank_csharp_in);
     // Bead `sts2-rs-RP22`: C# `IsRemovable => !Eternal` filter for the generic
     // deck-removal offer (`CardSelectCmd.FromDeckForRemoval`), so Eternal
     // curses (Greed/AscendersBane) don't occupy a removal-offer index.
     sts2_core::register_card_removable(super::spec_index::card_is_removable_instance);
+    // GH #793: the game-build-aware card factory behind `Card::upgrade_for`
+    // and `Card::normalize_for_version` (v0.107.1 never reaches it).
+    sts2_core::register_card_factory_for_version(super::v0111::card_pod_for);
     super::ironclad::install_pool();
     super::silent::install_pool();
     super::defect::install_pool();
@@ -232,6 +235,9 @@ fn install_exhaust_keywords() {
         REGENT_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        // v0.111.0-only ids (GH #793): absent from every v0.107.1 pool, so
+        // registering their keywords cannot touch a v0.107.1 card.
+        super::spec_index::V0111_ONLY_SPECS,
     ];
     for slice in slices {
         for &factory in *slice {
@@ -265,6 +271,9 @@ fn install_unplayable_keywords() {
         REGENT_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        // v0.111.0-only ids (GH #793): absent from every v0.107.1 pool, so
+        // registering their keywords cannot touch a v0.107.1 card.
+        super::spec_index::V0111_ONLY_SPECS,
     ];
     for slice in slices {
         for &factory in *slice {
@@ -285,6 +294,9 @@ fn install_ethereal_keywords() {
         REGENT_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        // v0.111.0-only ids (GH #793): absent from every v0.107.1 pool, so
+        // registering their keywords cannot touch a v0.107.1 card.
+        super::spec_index::V0111_ONLY_SPECS,
     ];
     for slice in slices {
         for &factory in *slice {
@@ -310,6 +322,9 @@ fn install_innate_keywords() {
         REGENT_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        // v0.111.0-only ids (GH #793): absent from every v0.107.1 pool, so
+        // registering their keywords cannot touch a v0.107.1 card.
+        super::spec_index::V0111_ONLY_SPECS,
     ];
     for slice in slices {
         for &factory in *slice {
@@ -339,6 +354,9 @@ fn install_retain_keywords() {
         REGENT_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        // v0.111.0-only ids (GH #793): absent from every v0.107.1 pool, so
+        // registering their keywords cannot touch a v0.107.1 card.
+        super::spec_index::V0111_ONLY_SPECS,
     ];
     for slice in slices {
         for &factory in *slice {
@@ -363,6 +381,9 @@ fn install_sly_keywords() {
         REGENT_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        // v0.111.0-only ids (GH #793): absent from every v0.107.1 pool, so
+        // registering their keywords cannot touch a v0.107.1 card.
+        super::spec_index::V0111_ONLY_SPECS,
     ];
     for slice in slices {
         for &factory in *slice {

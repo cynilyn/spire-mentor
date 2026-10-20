@@ -42,7 +42,15 @@ pub(crate) fn preview_sacrifice(
                 .iter()
                 .find(|c| c.id == pet_uid.0 && c.current_hp > 0)
         })
-        .map_or(0, |pet| pet.max_hp.saturating_mul(2))
+        // v0.111.0: Block = Osty MaxHp x3, was x2 (decomp Sacrifice.cs:25).
+        .map_or(0, |pet| {
+            pet.max_hp
+                .saturating_mul(if crate::cards::v0111::is_v0111(state.game_version) {
+                    3
+                } else {
+                    2
+                })
+        })
 }
 
 pub(crate) fn play_sacrifice(

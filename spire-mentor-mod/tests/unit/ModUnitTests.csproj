@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Unit tests for the mod's game-free helpers: links the source files
+    directly (no sts2.dll, no Godot, no test framework), runs as a console app,
+    exits non-zero on the first failed check. `run_unit_tests.sh` builds and
+    runs it.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../GameVersionFormat.cs" Link="GameVersionFormat.cs" />
+    <Compile Include="../../ChoiceInference.cs" Link="ChoiceInference.cs" />
+    <Compile Include="../../CoachStyle.cs" Link="CoachStyle.cs" />
+    <Compile Include="../../CoachChipText.cs" Link="CoachChipText.cs" />
+    <Compile Include="../../SimCoachReports.cs" Link="SimCoachReports.cs" />
+    <Compile Include="../../WorkbenchUrl.cs" Link="WorkbenchUrl.cs" />
+    <Compile Include="../../CoachPanelText.cs" Link="CoachPanelText.cs" />
+  </ItemGroup>
+</Project>

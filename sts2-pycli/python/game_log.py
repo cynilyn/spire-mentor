@@ -209,6 +209,25 @@ class GameLogger:
         self._file.write(_dumps(entry) + "\n")
         self._file.flush()
 
+    def log_coach(self, data: dict):
+        """Log one live-coach record (``realgame_coach``): a graded turn or
+        choice, or a ``withdraw`` tombstone for records an undo abandoned.
+
+        Shares the current step number like :meth:`log_mcts`, but the record
+        is self-contained (it names its ``node_id``); readers that predate the
+        type ignore it.
+        """
+        if not self.enabled or not self._file:
+            return
+        entry = {
+            "step": self._step,
+            "ts": datetime.now().isoformat(),
+            "type": "coach",
+            "data": data,
+        }
+        self._file.write(_dumps(entry) + "\n")
+        self._file.flush()
+
     def log_wpa(self, data: dict):
         """Log the per-decision WPA value record for the most-recent state.
 
@@ -232,6 +251,19 @@ class GameLogger:
         if self._file:
             self._file.close()
             self._file = None
+
+    def reopen(self) -> bool:
+        """Re-open a closed log for appending; ``True`` when it is open again.
+
+        The live coach's death autopsy is built after the run end closed the
+        file (it waits for the dying turn's grade), and it still belongs in
+        that run's log. Records keep the last step number, so readers attach
+        nothing new to any step.
+        """
+        if not self.enabled or self._file or not self.path:
+            return False
+        self._file = open(self.path, "a", encoding="utf-8")
+        return True
 
     @property
     def path(self):

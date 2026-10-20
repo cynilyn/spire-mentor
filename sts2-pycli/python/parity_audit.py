@@ -50,6 +50,7 @@ import sys
 from collections import Counter
 from typing import Any
 
+import sts2_client
 import sts2_rs  # type: ignore[import-not-found]
 from parity_fuzz import (
     _apply_csharp,
@@ -1156,14 +1157,40 @@ def _hash_file_into(h: hashlib._Hash, path: str) -> bool:
         return False
 
 
-def cs_version_namespace(root: str | None = None) -> str:
+def _game_version(game_version: str | None) -> str:
+    """The game build to namespace / gate: ``game_version`` or the selected one."""
+    if game_version:
+        return sts2_client.normalize_game_version(game_version)
+    return sts2_client.GAME_VERSION
+
+
+def _oracle_lib_dir(base: str, version: str) -> str:
+    """``<base>/lib/<version>/``, or the legacy flat ``<base>/lib/`` (v0.107.1 only)."""
+    versioned = os.path.join(base, "lib", version)
+    flat = os.path.join(base, "lib")
+    if (
+        version == sts2_client.DEFAULT_GAME_VERSION
+        and not os.path.isfile(os.path.join(versioned, "sts2.dll"))
+        and os.path.isfile(os.path.join(flat, "sts2.dll"))
+    ):
+        return flat
+    return versioned
+
+
+def cs_version_namespace(root: str | None = None, game_version: str | None = None) -> str:
     """Content hash identifying the C# oracle version (path-independent).
 
-    Hashes what determines the oracle's behavior:
-      * ``lib/*.dll`` — the vendored, IL-patched game DLLs (game version + the
-        headless patch, since ``sts2.dll`` is shipped already patched);
-      * ``src/**/*.cs`` — the C# harness source (the decision/serialization
-        logic that produces the trace), EXCLUDING ``bin/``/``obj/`` build output.
+    Returns ``<game version>-<16 hex>``, e.g. ``v0.107.1-6d8df59872fd67e9``.
+    ``game_version`` defaults to the selected build
+    (``sts2_client.GAME_VERSION`` ← ``STS2_GAME_VERSION``). The hash covers
+    what determines the oracle's behavior:
+      * the game version itself, so two builds can never share a namespace;
+      * ``lib/<version>/*.dll`` — that build's vendored, IL-patched game DLLs
+        (game version + the headless patch, since ``sts2.dll`` is shipped
+        already patched);
+      * ``src/**/*.cs`` / ``*.csproj`` — the C# harness source (the
+        decision/serialization logic that produces the trace), EXCLUDING
+        ``bin/``/``obj/`` build output.
 
     Deliberately content-addressed and build-INdependent: the namespace is
     identical across every checkout (worktree / fresh clone / cloud session) at
@@ -1175,8 +1202,9 @@ def cs_version_namespace(root: str | None = None) -> str:
     disables the cache rather than collapsing every version into one bucket).
     """
     base = root or _PYCLI_ROOT
+    version = _game_version(game_version)
     files: list[str] = []
-    libdir = os.path.join(base, "lib")
+    libdir = _oracle_lib_dir(base, version)
     if os.path.isdir(libdir):
         files += [os.path.join(libdir, n) for n in os.listdir(libdir) if n.endswith(".dll")]
     srcdir = os.path.join(base, "src")
@@ -1190,6 +1218,8 @@ def cs_version_namespace(root: str | None = None) -> str:
         files += [os.path.join(dirpath, fn) for fn in filenames if fn.endswith((".cs", ".csproj"))]
 
     h = hashlib.sha256()
+    h.update(f"game_version={version}".encode())
+    h.update(b"\0")
     hashed = 0
     # Sort by path-relative-to-base so the order is identical across checkouts.
     for p in sorted(files, key=lambda q: os.path.relpath(q, base)):
@@ -1199,11 +1229,15 @@ def cs_version_namespace(root: str | None = None) -> str:
         if _hash_file_into(h, p):
             hashed += 1
         h.update(b"\0")
-    return h.hexdigest()[:16] if hashed else ""
+    return f"{version}-{h.hexdigest()[:16]}" if hashed else ""
 
 
-def assert_oracle_fresh(root: str | None = None) -> None:
-    """Abort if the built ``Sts2Headless.dll`` is older than its C# source.
+def assert_oracle_fresh(root: str | None = None, game_version: str | None = None) -> None:
+    """Abort if the selected build's ``Sts2Headless.dll`` is older than its C# source.
+
+    Checks ``src/**/bin/<game version>/**/Sts2Headless.dll`` — the oracle for
+    ``game_version`` (default: the selected build, ``STS2_GAME_VERSION``), so a
+    fresh v0.107.1 build cannot vouch for a stale v0.111.0 one or vice versa.
 
     item#8 (stale-oracle gate). ``cs_version_namespace`` hashes the ``.cs``
     SOURCE — by design, so a recorded trace bundle replays across checkouts at
@@ -1226,15 +1260,18 @@ def assert_oracle_fresh(root: str | None = None) -> None:
     if os.environ.get("STS2_SKIP_ORACLE_CHECK"):
         return
     base = root or _PYCLI_ROOT
+    version = _game_version(game_version)
     srcdir = os.path.join(base, "src")
     if not os.path.isdir(srcdir):
         return  # source not locatable → cannot verify, skip silently
 
-    # Newest built Sts2Headless.dll across any build configuration (Debug/Release).
+    # Newest built Sts2Headless.dll for this game version, across any build
+    # configuration (bin/<version>/Debug, bin/<version>/Release).
+    build_marker = os.sep + "bin" + os.sep + version + os.sep
     dll_mtime = 0.0
     dll_seen = False
     for cfg_root, _, filenames in os.walk(srcdir):
-        if os.sep + "bin" + os.sep not in cfg_root + os.sep:
+        if build_marker not in cfg_root + os.sep:
             continue
         for fn in filenames:
             if fn == "Sts2Headless.dll":
@@ -1254,8 +1291,8 @@ def assert_oracle_fresh(root: str | None = None) -> None:
 
     if not dll_seen:
         sys.exit(
-            "C# oracle NOT BUILT — no Sts2Headless.dll under src/**/bin/.\n"
-            "Build first:  just build-cs\n"
+            f"C# oracle NOT BUILT for {version} — no Sts2Headless.dll under src/**/bin/{version}/.\n"
+            f"Build first:  just build-cs {version}\n"
             "Bypass:       STS2_SKIP_ORACLE_CHECK=1"
         )
     if src_mtime > dll_mtime:
@@ -1264,7 +1301,7 @@ def assert_oracle_fresh(root: str | None = None) -> None:
             "the running oracle predates the source the trace cache is namespaced "
             "by (it would silently compare against an OLD oracle under the NEW "
             f"namespace).\n  newest source = {os.path.relpath(newest_src, base)}\n"
-            "Rebuild first:  just build-cs\n"
+            f"Rebuild first:  just build-cs {version}\n"
             "Bypass:         STS2_SKIP_ORACLE_CHECK=1"
         )
 
@@ -2301,7 +2338,9 @@ def main(argv: list[str] | None = None) -> int:
             "subdir."
         ),
     )
+    sts2_client.add_game_version_arg(p)
     args = p.parse_args(argv)
+    sts2_client.apply_game_version_arg(args)
 
     # C# reference-trace cache (issue #3). Compute the oracle-version namespace
     # ONCE in the parent, then install `_CACHE` here (serial path) and in every
@@ -2314,7 +2353,7 @@ def main(argv: list[str] | None = None) -> int:
         if namespace:
             cache_dir = args.cache_dir
             print(
-                f"[cache] enabled — C# v{namespace} @ {os.path.join(args.cache_dir, namespace)}",
+                f"[cache] enabled — C# {namespace} @ {os.path.join(args.cache_dir, namespace)}",
                 file=sys.stderr,
             )
         else:
@@ -2476,7 +2515,7 @@ def main(argv: list[str] | None = None) -> int:
         hits, misses = cache_tally["hit"], cache_tally["miss"]
         total = hits + misses
         print(
-            f"[cache] served {hits}/{total} from cache (C# v{namespace}); recorded {misses}",
+            f"[cache] served {hits}/{total} from cache (C# {namespace}); recorded {misses}",
             file=sys.stderr,
         )
 

@@ -5,7 +5,7 @@ pub(crate) fn on_modify_hand_draw_big_mushroom(state: &CombatState, current_draw
     if !player_owns_relic(state, crate::RelicKind::BigMushroom) {
         return current_draw;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return current_draw;
     }
     (current_draw - BIG_MUSHROOM_DRAW_PENALTY).max(0)

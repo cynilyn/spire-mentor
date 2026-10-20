@@ -16,16 +16,21 @@ source the extractors and the mechanics work read plus real art
 | Tier | Needs | Produces | Unlocks |
 |---|---|---|---|
 | `engine` | nothing | — | the engine, the AI, the workbench (placeholder art, no sound); every oracle-dependent test skips |
-| `oracle` | the game, .NET 9 SDK, `uv`, `just` | `sts2-pycli/lib/` (IL-patched game DLLs); refreshes `localization_eng/` | the C# oracle (`just build-cs`), the parity harness, the full pytest suite |
+| `oracle` | the game, .NET 9 SDK, `uv`, `just` | `sts2-pycli/lib/<version>/` (IL-patched game DLLs); refreshes `localization_eng/` | the C# oracle (`just build-cs`), the parity harness, the full pytest suite |
 | `workbench` | + `ilspycmd` | `sts2-wiki/decompiled/`, `sts2-wiki/site/public/images/`; refreshes `sts2-wiki/data/<ver>/`, `sfx_map.json`, card text/db, the workbench bundle | real art in the workbench; the decompiled source for mechanics work |
 | `sound` | + `ffmpeg`; FMOD — on Windows the game's own DLLs, elsewhere the FMOD Studio API | `sts2-wiki/site/public/audio/` | sound effects in the workbench |
 
 ## Prerequisites
 
-- **Slay the Spire 2** installed through Steam. The engine is pinned to build
-  **v0.107.1**; `import-game` refuses a different build unless you pass
-  `--allow-version-mismatch` (the oracle and the extracted data would then
-  describe a different game).
+- **Slay the Spire 2** installed through Steam. The engine supports builds
+  **v0.107.1** (stable, the default) and **v0.111.0** (beta); `import-game`
+  refuses any other build unless you pass `--allow-version-mismatch` (the
+  oracle and the extracted data would then describe a different game). A
+  v0.111.0 install gets only its version-keyed outputs — its oracle
+  (`sts2-pycli/lib/v0.111.0/`, `just build-cs v0.111.0`) and
+  `sts2-wiki/{extracted,decompiled,data}/v0.111.0/`; the shared trees
+  (`localization_eng/`, the art, the card db, the workbench bundle) keep
+  describing v0.107.1. Select the oracle build with `STS2_GAME_VERSION`.
 - [`just`](https://just.systems), [`uv`](https://docs.astral.sh/uv/), Python 3.13.
 - Rust 1.96 (pinned by `sts2-rs/rust-toolchain.toml`; rustup installs it on
   first use) and `cargo-nextest`. `sccache` is optional
@@ -89,7 +94,7 @@ data folder; a copy only when neither works (the pck is ~1.9 GB, and the log
 says so) or with `--copy` — and then runs, in order, calling each tool
 directly (no bash, so the same on every platform):
 
-1. `sts2-pycli/scripts/setup_oracle.py` — copies the DLLs to `lib/`,
+1. `sts2-pycli/scripts/setup_oracle.py` — copies the DLLs to `lib/<version>/`,
    IL-patches `sts2.dll` for headless use (`tools/IlPatcher`), builds the
    C# harness. (`setup.sh` runs the same script.)
 2. `sts2-wiki/scripts/extract_pck` and `sts2-pycli/scripts/vendor_localization.py`

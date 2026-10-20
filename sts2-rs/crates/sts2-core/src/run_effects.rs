@@ -1698,6 +1698,76 @@ pub fn dispatch_should_force_potion_reward(run_state: &mut RunState, room_type: 
     false
 }
 
+// `before_combat_reward_offered` (run-side) — **v0.111.0 only** (GH #792,
+// reshaped by GH #795). C# `CombatRoom.OfferRoomEndRewards` (decomp
+// `CombatRoom.cs:264-277`) builds every player's `RewardsSet` first and only
+// then fires the hook on each, right before `Offer()`:
+//
+// [decompiled C# omitted — see the cited path]
+//
+// `RewardsCmd.GenerateForRoomEnd` (`RewardsCmd.cs:55-60`) runs
+// `GenerateWithoutOffering`, so by the time the hook sees the set every reward
+// is populated (the card options rolled, `TryModifyCardRewardOptions` already
+// applied) and `ModifyRewards` has run. The hook therefore fires once the
+// whole combat reward set exists and carries it: `RunManager` dispatches it at
+// the end of the combat-reward paths of `exit_combat_and_transition`, after
+// the card options and the Elite relic are rolled.
+//
+// The only v0.111.0 listener is `LastingCandy.BeforeCombatRewardOffered`
+// (`LastingCandy.cs:153-170`), which counts the sets holding a `CardReward`.
+run_hook_channel!(
+    BeforeCombatRewardOfferedRunFn,
+    HOOK_BEFORE_COMBAT_REWARD_OFFERED_RUN,
+    registry_before_combat_reward_offered,
+    register_before_combat_reward_offered,
+    register_many_before_combat_reward_offered,
+    lookup_before_combat_reward_offered,
+    listeners_before_combat_reward_offered,
+    is_empty_before_combat_reward_offered,
+    fn(&mut RunState, rewards: &CombatRewardsSet) -> EffectResult
+);
+
+/// A combat room's end-of-combat reward set, as `before_combat_reward_offered`
+/// sees it (C# `RewardsSet`, `Rewards/RewardsSet.cs`).
+///
+/// `rewards` lists the populated rewards Rust models as offerable items: the
+/// `CardReward` with its rolled options and, for an Elite, the `RelicReward`.
+/// The gold and potion rewards are not listed: the content callback
+/// `apply_combat_gold_and_potion` claims both as it rolls them (the headless
+/// auto-collects them on `Offer`), before the set is assembled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CombatRewardsSet {
+    /// The combat room's type (C# `CombatRoom.RoomType`).
+    pub room_type: RoomType,
+    /// The populated rewards (see the type docs for what is listed).
+    pub rewards: Vec<crate::runstate::Reward>,
+}
+
+impl CombatRewardsSet {
+    /// `rewards.Rewards.Any((Reward r) => r is CardReward)` — the test
+    /// LastingCandy applies (`LastingCandy.cs:159`).
+    #[must_use]
+    pub fn has_card_reward(&self) -> bool {
+        self.rewards
+            .iter()
+            .any(|r| matches!(r, crate::runstate::Reward::Card(_)))
+    }
+}
+
+/// Dispatch `before_combat_reward_offered` listeners for a combat room's
+/// reward set. A no-op outside v0.111.0 (the hook does not exist in
+/// v0.107.1) and on an empty bus. GH #792 / #795.
+pub fn dispatch_before_combat_reward_offered(run_state: &mut RunState, rewards: &CombatRewardsSet) {
+    if run_state.game_version < crate::GameVersion::V0_111_0
+        || is_empty_before_combat_reward_offered()
+    {
+        return;
+    }
+    for (_id, f) in listeners_before_combat_reward_offered() {
+        let _ = f(run_state, rewards);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

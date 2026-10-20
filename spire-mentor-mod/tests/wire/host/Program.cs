@@ -190,11 +190,15 @@ static class Scenarios
             ("boss_relic", "\"relics\":[]"),
             ("reward_screen", "\"rewards\":[{\"type\":\"gold\",\"amount\":15}]"),
             ("game_over", "\"victory\":false"),
+            ("combat_ended", "\"victory\":true,\"round\":4,\"hp\":61,\"max_hp\":80,\"room_type\":\"Monster\""),
             ("run_complete", "\"victory\":true"),
             ("run_config", "\"characters\":[{\"id\":\"IRONCLAD\",\"name\":\"The Ironclad\"}],\"max_ascension\":10"),
             ("error", "\"error\":\"invalid_index\",\"detail\":\"index 9 out of range\""),
             ("advice_request", "\"advice_for\":\"combat_action\",\"turn\":2"),
             ("human_action", "\"action\":{\"action\":\"play\",\"card_index\":0}"),
+            ("human_action", "\"decision_type\":\"combat_action\",\"action\":\"end_turn\",\"detail\":\"end turn\",\"advice_request_id\":\"a7\",\"position_id\":41,\"peeked\":false,\"card\":null,\"potion\":null,\"target_index\":null"),
+            ("human_action", "\"decision_type\":\"card_reward\",\"action\":\"choose\",\"detail\":\"Inflame\",\"advice_request_id\":null,\"position_id\":41,\"peeked\":true,\"choice\":{\"index\":1,\"label\":\"Inflame\"}"),
+            ("human_action", "\"decision_type\":\"card_reward\",\"action\":\"skip\",\"detail\":\"Skip\",\"advice_request_id\":\"a8\",\"position_id\":41,\"peeked\":false,\"choice\":{\"index\":null,\"label\":\"Skip\"}"),
             ("snapshot_saved", "\"snapshot_id\":\"s1\",\"seq\":1,\"post_combat\":false,\"run_start_time\":1,\"ts\":\"t\""),
             ("snapshots", "\"run_start_time\":1,\"snapshots\":[]"),
             ("snapshot_restored", "\"snapshot_id\":\"s1\""),
@@ -847,6 +851,42 @@ static class Scenarios
                 L.Send("{\"action\":\"ping\"}\n");
                 L.Expect(1);
                 L.Close();
+                WaitConn(false);
+            }
+            Hooks.Drain();
+            B.Stop();
+        }
+        int port7 = Program.FreePort();
+        B.PortNames[port7] = "<PORT7>"; LogSink.Normalizers.Add((port7.ToString(), "<PORT7>"));
+        T.Scenario("20_coach_lane", "inbound coach messages raise CoachReceived and never touch the pending autopilot slot");
+        {
+            B.Start(port7);
+            var M = new Client("M");
+            if (M.Connect(port7))
+            {
+                WaitConn(true);
+                string turnRec = "{\"kind\":\"turn\",\"id\":\"turn:n4\",\"node_id\":\"n4\",\"turn\":1,\"floor\":2,\"verdict\":\"blunder\",\"you\":[\"end turn\"],\"ai\":[\"Bash → Cultist\",\"end turn\"],\"hp_drop\":9.0,\"win_before\":0.97,\"win_after\":0.9,\"peeked\":false,\"ungraded_actions\":0}";
+                // an uncorrelated autopilot wait accepts ANY line: coach must not reach it
+                var pw = B.WaitForAction("p20w", Long);
+                M.Send($"{{\"action\":\"coach\",\"request_id\":null,\"state_id\":null,\"coach\":{turnRec}}}\n", "coach while an uncorrelated wait is pending");
+                Barrier(M);
+                pw.Check("after_coach");
+                M.Send("{\"action\":\"end_turn\"}\n", "the wait's own reply");
+                pw.Await("after_reply");
+                // correlated autopilot request: coach is not its reply either
+                var p = B.SendStateAndWait("p20", "{\"type\":\"combat_action\"}", Long);
+                string r = Rid(M.Expect(1).FirstOrDefault())!;
+                string recapRec = "{\"kind\":\"recap\",\"id\":\"recap:n2\",\"node_id\":\"n2\",\"log_name\":\"run.jsonl\",\"log_idx\":3,\"floor\":2,\"room_type\":\"Monster\",\"hp_start\":80,\"hp_end\":61,\"hp_lost\":19,\"ai_hp_lost\":8.5,\"turns\":4,\"turns_graded\":3,\"turns_ungraded\":1,\"unfinished_turns\":1,\"costliest\":[" + turnRec + "]}";
+                M.Send($"{{\"action\":\"coach\",\"request_id\":null,\"state_id\":null,\"coach\":{recapRec}}}\n", "recap record");
+                M.Send("{\"action\":\"coach\",\"request_id\":null,\"state_id\":null,\"coach\":{\"kind\":\"autopsy\",\"id\":\"autopsy:ABC\",\"log_name\":\"run.jsonl\",\"floor\":9,\"act\":1,\"items\":[{\"kind\":\"turn\",\"record\":" + turnRec + "}],\"turns_ungraded\":2,\"decisions_graded\":14}}\n", "autopsy record");
+                M.Send("{\"action\":\"COACH\",\"request_id\":null,\"state_id\":null,\"coach\":{\"kind\":\"withdraw\",\"ids\":[\"turn:n4\"]}}\n", "withdraw, verb case-insensitive");
+                M.Send("{\"action\":\"coach\",\"request_id\":null,\"coach\":\"not an object\"}\n", "coach field not an object: dropped");
+                M.Send("{\"action\":\"coach\"}\n", "no coach field: dropped");
+                Barrier(M);
+                p.Check("after_coach_lines");
+                M.Send(Choose(r));
+                p.Await("after_reply");
+                M.Close();
                 WaitConn(false);
             }
             Hooks.Drain();

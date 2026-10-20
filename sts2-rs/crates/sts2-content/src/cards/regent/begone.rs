@@ -37,7 +37,7 @@ pub(crate) fn play_begone(state: &mut CombatState, _t: Option<CreatureUid>) -> E
         &[uid] => {
             let mut minion = card_from_spec(&crate::cards::status_specs_generated::minion_strike());
             if upgraded {
-                let _ = minion.upgrade();
+                let _ = minion.upgrade_for(state.game_version);
             }
             let _ = state.transform_card(uid, minion);
         }

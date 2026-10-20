@@ -401,10 +401,17 @@ fn list_registry_names_round_trips_canonical_examples() {
             names.iter().any(|n| n == expected),
             "{kind} missing `{expected}`"
         );
-        // Sorted + non-empty.
         assert!(!names.is_empty());
-        let mut s = names.clone();
-        s.sort();
-        assert_eq!(names, s, "{kind} not sorted");
+        // A PPO kind is in its append-only pin order, not sorted: GH #799
+        // appended the v0.111.0 cards/potions after the v0.107.1 rows, so the
+        // list stopped being sorted on purpose (sorting would renumber learned
+        // embedding rows, GH #544). Every other kind is sorted.
+        if let Some(pinned) = sts2_vocab::registry_names(kind) {
+            assert_eq!(names, pinned, "{kind} is not in pin order");
+        } else {
+            let mut s = names.clone();
+            s.sort();
+            assert_eq!(names, s, "{kind} not sorted");
+        }
     }
 }

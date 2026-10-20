@@ -42,9 +42,13 @@ pub(crate) fn play_expose(state: &mut CombatState, target: Option<CreatureUid>) 
             had
         });
     if broke_block {
+        // `LoseBlock(choiceContext, cardPlay.Target, cardPlay.Target.Block,
+        // base.Owner.Creature)` (v0.111.0 Expose.cs:39): the player is the
+        // remover, reported to `AfterBlockBroken` as the breaker.
+        let breaker = state.player.creature_uid;
         sts2_core::hooks::dispatch_after_block_broken(
             state,
-            &sts2_core::hooks::AfterBlockBrokenCtx { broken: t },
+            &sts2_core::hooks::AfterBlockBrokenCtx { broken: t, breaker },
         );
     }
     // C# `Expose.OnPlay` removes the target's whole Artifact power BEFORE

@@ -38,7 +38,16 @@ pub(crate) fn play_the_scythe(
     // IncreasedDamage`. We hold the running total directly in `base_damage`,
     // so the buff is a straight `base_damage += Increase`. `IntVar("Increase",
     // 4m)` (v0.107.1; was 3m); `OnUpgrade UpgradeValueBy(1m)` → +5 upgraded.
-    let increase = if current_card_upgraded(state) { 5 } else { 4 };
+    // v0.111.0: Increase 4 -> 5, upgrade +1 -> +2 (decomp TheScythe.cs:57,78).
+    let increase = match (
+        crate::cards::v0111::is_v0111(state.game_version),
+        current_card_upgraded(state),
+    ) {
+        (false, false) => 4,
+        (false, true) => 5,
+        (true, false) => 5,
+        (true, true) => 7,
+    };
     if let Some(idx) = current_card_idx(state) {
         if let Some(card) = state.cards.get_mut(idx) {
             card.base_damage = card.base_damage.saturating_add(increase);

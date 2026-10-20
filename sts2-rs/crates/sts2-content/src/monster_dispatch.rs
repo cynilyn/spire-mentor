@@ -202,6 +202,30 @@ pub fn build_ai_with_ascension(
     position: SpawnPosition,
     ascension: u8,
 ) -> MonsterAi {
+    build_ai_for_version(
+        kind,
+        args,
+        position,
+        ascension,
+        sts2_core::GameVersion::V0_107_1,
+    )
+}
+
+/// [`build_ai_with_ascension`] for game build `version` (GH #796). v0.107.1
+/// is the historical build verbatim. v0.111.0 swaps in the reworked move
+/// machines (TorchHeadAmalgam's STRONG_TACKLE opener, MechaKnight's attacking
+/// FLAMETHROWER) and then re-values the moves in
+/// [`crate::ascension_scaling::V0111_ATTACK_VALUES`]. Every path that builds
+/// an AI for a live combat passes the combat's `game_version`.
+#[must_use]
+pub fn build_ai_for_version(
+    kind: MonsterKind,
+    args: MonsterSpawnArgs,
+    position: SpawnPosition,
+    ascension: u8,
+    version: sts2_core::GameVersion,
+) -> MonsterAi {
+    let v0111 = version >= sts2_core::GameVersion::V0_111_0;
     let mut ai = match kind {
         MonsterKind::Nibbit => {
             let (is_alone, is_front) = match args {
@@ -419,6 +443,9 @@ pub fn build_ai_with_ascension(
         MonsterKind::LivingShield => create_living_shield_ai(),
         MonsterKind::MagiKnight => create_magi_knight_ai(),
         MonsterKind::SpectralKnight => create_spectral_knight_ai(),
+        MonsterKind::MechaKnight if v0111 => {
+            crate::monsters::act3_glory::create_mecha_knight_v0111_ai()
+        }
         MonsterKind::MechaKnight => create_mecha_knight_ai(),
         MonsterKind::Osty => create_osty_ai(),
         MonsterKind::SoulNexus => create_soul_nexus_ai(),
@@ -430,6 +457,9 @@ pub fn build_ai_with_ascension(
         MonsterKind::Byrdpip => create_byrdpip_ai(),
         MonsterKind::PaelsLegion => create_paels_legion_ai(),
         MonsterKind::FakeMerchantMonster => create_fake_merchant_monster_ai(),
+        MonsterKind::TorchHeadAmalgam if v0111 => {
+            crate::monsters::shared::create_torch_head_amalgam_v0111_ai()
+        }
         MonsterKind::TorchHeadAmalgam => create_torch_head_amalgam_ai(),
         MonsterKind::TheAdversaryMkOne => create_the_adversary_mk_one_ai(),
         MonsterKind::TheAdversaryMkTwo => create_the_adversary_mk_two_ai(),
@@ -528,6 +558,8 @@ pub fn build_ai_with_ascension(
     // Post-build: bump scaled attack damages to their DeadlyEnemies
     // values at ascension >= 9 (data table in `ascension_scaling`).
     crate::ascension_scaling::apply_ascension_attack_scaling(&mut ai, kind, ascension);
+    // v0.111.0 re-valued moves (no-op for v0.107.1), GH #796.
+    crate::ascension_scaling::apply_v0111_attack_values(&mut ai, kind, ascension, version);
     ai
 }
 

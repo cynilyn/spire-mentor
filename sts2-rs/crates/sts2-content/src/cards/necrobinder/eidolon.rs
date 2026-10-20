@@ -14,7 +14,15 @@ use super::prelude::*;
 /// card routes to DISCARD, not Exhaust (Necrobinder sweep `PILE_COUNT|EIDOLON`:
 /// C# discard `[…, EIDOLON]` vs an earlier Rust port that self-exhausted it).
 // C# source: ../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Cards/Eidolon.cs
+///
+/// v0.111.0 (`Eidolon.cs:25-32`, GH #793) reworked the card; it is now
+/// Exhaust and `CanBeGeneratedInCombat => false`:
+///
+/// [decompiled C# omitted — see the cited path]
 pub(crate) fn play_eidolon(state: &mut CombatState, _target: Option<CreatureUid>) -> EffectResult {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return play_eidolon_v0111(state);
+    }
     // Snapshot the hand, then exhaust each card. The Eidolon card itself is on
     // the Play pile (not in hand), so the snapshot is the exact set the C#
     // iterates. `exhaust_card_uid` fires `after_card_exhausted` on the power +
@@ -57,4 +65,31 @@ pub(crate) fn upgrade() -> Option<CardUpgradeDelta> {
         base_block: None,
         keywords: None,
     })
+}
+
+/// v0.111.0 body: auto-play every Ethereal, playable card in the exhaust pile
+/// (decomp Eidolon.cs:27-31). The list is snapshotted first; each card is then
+/// played by reference wherever it sits (C# `CardCmd.AutoPlay` with a `null`
+/// target rolls a random target for an enemy-targeted card).
+fn play_eidolon_v0111(state: &mut CombatState) -> EffectResult {
+    let picks: Vec<sts2_core::CardUid> = state
+        .player
+        .exhaust
+        .iter()
+        .copied()
+        .filter(|&u| {
+            let card = &state.cards[u.0.get() as usize - 1];
+            sts2_core::combat_loop::card_is_ethereal_at_play(state, card)
+                && !sts2_core::card_effects::card_unplayable_inst(card)
+        })
+        .collect();
+    for uid in picks {
+        // C# `CardCmd.AutoPlay` returns at once when combat is over or ending
+        // (decomp CardCmd.cs:54).
+        if sts2_core::combat_loop::combat_is_ending(state) || state.player.current_hp <= 0 {
+            break;
+        }
+        let _ = sts2_core::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
+    }
+    EffectResult::Resolved
 }

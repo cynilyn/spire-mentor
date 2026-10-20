@@ -312,7 +312,10 @@ impl DotNetRandom {
 /// the sequence (used by `_map_point_type_counts` in the generator).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rng {
-    seed: u32,
+    /// The seed `MegaRandom` was initialised from (C# `Rng.Seed`). Always
+    /// ≤ `u32::MAX` for a v0.107.1 stream (`uint` seeds); a v0.111.0 stream
+    /// uses all 64 bits (`ulong` seeds, GH #788).
+    seed: u64,
     base: MegaRandom,
     counter: u32,
 }
@@ -324,10 +327,17 @@ impl Rng {
     /// [`MegaRandom`] (`new MegaRandom((uint)seed)` in C#).
     #[must_use]
     pub fn new(seed: i32) -> Self {
-        let seed_u32 = seed as u32;
+        Self::from_seed(u64::from(seed as u32))
+    }
+
+    /// C# `new Rng(ulong seed)` (v0.111.0 `Rng.cs:28`) — the seed goes to
+    /// [`MegaRandom`] unchanged. For a v0.107.1 `uint` seed pass it
+    /// zero-extended; [`Self::new`] does exactly that for an `i32`.
+    #[must_use]
+    pub fn from_seed(seed: u64) -> Self {
         Self {
-            seed: seed_u32,
-            base: MegaRandom::new(u64::from(seed_u32)),
+            seed,
+            base: MegaRandom::new(seed),
             counter: 0,
         }
     }
@@ -355,8 +365,10 @@ impl Rng {
     #[must_use]
     pub fn from_search_seed(seed: u64) -> Self {
         Self {
-            #[allow(clippy::cast_possible_truncation)]
-            seed: seed as u32,
+            // The REPORTED seed stays truncated to 32 bits, as it was when
+            // `Rng::seed` was a `u32`: it only keys the state digest, and the
+            // search-side digests must stay byte-identical (GH #788).
+            seed: u64::from(seed as u32),
             // v0.107.1: MegaRandom is itself splitmix64-seeded, so a full-u64
             // seed feeds it directly (no separate non-parity warmup needed).
             base: MegaRandom::new(seed),
@@ -366,20 +378,38 @@ impl Rng {
 
     /// Construct a named-stream RNG; `name` is hashed into the seed so
     /// independent streams under the same base seed don't collide.
+    ///
+    /// This is the v0.107.1 form (`uint` seed + `(uint)hash(name)`); a
+    /// caller that knows the game build uses [`Self::with_name_for`].
     #[must_use]
     pub fn with_name(base_seed: i32, name: &str) -> Self {
-        let combined = (base_seed as u32).wrapping_add(deterministic_hash_code(name) as u32);
+        Self::with_name_for(
+            crate::GameVersion::V0_107_1,
+            u64::from(base_seed as u32),
+            name,
+        )
+    }
+
+    /// C# `new Rng(seed, name)` for game build `version`:
+    /// `seed + GetDeterministicHashCode(name)` in that build's width
+    /// ([`crate::GameVersion::seed_add`] / [`crate::GameVersion::seed_hash`]).
+    ///
+    /// v0.111.0 `Rng.cs:55-56`:
+    ///
+    /// [decompiled C# omitted — see the cited path]
+    ///
+    /// v0.107.1 is `(uint seed) + (uint)hash(name)`, which is what
+    /// [`Self::with_name`] has always computed.
+    #[must_use]
+    pub fn with_name_for(version: crate::GameVersion, base_seed: u64, name: &str) -> Self {
+        let combined = version.seed_add(base_seed, version.seed_hash(name));
         if rng_trace_enabled() {
             // `seed` matches C#'s `Rng.Seed` (base + DeterministicHashCode),
             // so the symmetric C#/Rust `RNGTRACE` logs align by seed. The
             // map line lets the diff tool label each seed with its stream.
             eprintln!("RNGMAP seed={combined} name={name}");
         }
-        Self {
-            seed: combined,
-            base: MegaRandom::new(u64::from(combined)),
-            counter: 0,
-        }
+        Self::from_seed(combined)
     }
 
     /// Construct an RNG and skip ahead `counter` samples.
@@ -392,9 +422,10 @@ impl Rng {
         rng
     }
 
-    /// Resulting seed (after name mixing if any).
+    /// Resulting seed (after name mixing if any). ≤ `u32::MAX` for every
+    /// v0.107.1 stream.
     #[must_use]
-    pub const fn seed(&self) -> u32 {
+    pub const fn seed(&self) -> u64 {
         self.seed
     }
 
@@ -836,7 +867,7 @@ mod tests {
         ];
         for (name, seed, first) in cases {
             let mut r = Rng::with_name(0, name);
-            assert_eq!(r.seed(), seed, "{name} seed");
+            assert_eq!(r.seed(), u64::from(seed), "{name} seed");
             assert_eq!(r.next_int(0, 999), first, "{name} first draw");
         }
     }

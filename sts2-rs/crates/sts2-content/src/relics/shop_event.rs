@@ -46,17 +46,18 @@ use sts2_core::hooks::CardPlayCountCtx;
 use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
-    register_after_block_gained, register_after_card_played, register_after_side_turn_start,
-    register_before_combat_start, register_before_side_turn_start, register_before_turn_end,
-    register_modify_block_multiplicative, register_modify_damage_additive,
-    register_owned_after_card_exhausted, register_owned_after_potion_used,
-    register_owned_after_shuffle_bus, register_owned_before_hand_draw,
-    register_owned_modify_hand_draw, register_owned_modify_x_value,
-    register_owned_relic_modify_card_play_count, AfterBlockGainedFn, AfterCardExhaustedFn,
-    AfterCardPlayedFn, AfterPotionUsedFn, AfterShuffleFn, AfterSideTurnStartFn,
-    BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx,
-    ModifyBlockMultiplicativeFn, ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyHandDrawFn,
-    ModifyXValueFn, RelicModifyCardPlayCountFn, ShuffleCtx,
+    register_after_block_gained, register_after_card_played, register_after_player_turn_start,
+    register_after_side_turn_start, register_before_combat_start, register_before_side_turn_start,
+    register_before_turn_end, register_modify_block_multiplicative,
+    register_modify_damage_additive, register_owned_after_card_exhausted,
+    register_owned_after_potion_used, register_owned_after_shuffle_bus,
+    register_owned_before_hand_draw, register_owned_modify_hand_draw,
+    register_owned_modify_x_value, register_owned_relic_modify_card_play_count, AfterBlockGainedFn,
+    AfterCardExhaustedFn, AfterCardPlayedFn, AfterPlayerTurnStartFn, AfterPotionUsedFn,
+    AfterShuffleFn, AfterSideTurnStartFn, BeforeCombatStartFn, BeforeHandDrawFn,
+    BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx, ModifyBlockMultiplicativeFn,
+    ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyHandDrawFn, ModifyXValueFn,
+    RelicModifyCardPlayCountFn, ShuffleCtx,
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
@@ -490,6 +491,13 @@ pub fn install_pool() {
         RelicId::DiamondDiadem,
         listener_diamond_diadem_before_turn_end as BeforeTurnEndFn,
     );
+    // v0.111.0 rework: 20 Block + Blur 1 at the start of turn 1 (decomp
+    // DiamondDiadem.cs:24). Inert in v0.107.1, as the turn-end arm above is
+    // in v0.111.0 (which removed DiamondDiademPower).
+    register_after_side_turn_start(
+        RelicId::DiamondDiadem,
+        listener_diamond_diadem_v0111 as AfterSideTurnStartFn,
+    );
     // Bead `sts2-rs-70anj.3.10`: DollysMirror — on obtain, duplicate
     // one random card from master_deck via RunState::duplicate_card_from_deck.
     register_after_obtained(
@@ -603,6 +611,13 @@ pub fn install_pool() {
         RelicId::ToastyMittens,
         RelicKind::ToastyMittens,
         listener_toasty_mittens as BeforeHandDrawFn,
+    );
+    // v0.111.0: ToastyMittens is an `AfterPlayerTurnStart` choose-1-from-
+    // hand exhaust (decomp ToastyMittens.cs:31). Inert in v0.107.1, as the
+    // `before_hand_draw` arm above is in v0.111.0.
+    register_after_player_turn_start(
+        RelicId::ToastyMittens,
+        listener_toasty_mittens_v0111 as AfterPlayerTurnStartFn,
     );
     // Bead `sts2-rs-70anj.1` (hook corrected 2026-07-17): `before_hand_draw`
     // listener for `JeweledMask` (C# `JeweledMask.BeforeHandDraw`). Turn-1
@@ -1649,7 +1664,7 @@ fn listener_very_hot_cocoa(state: &mut CombatState, side: Side) -> EffectResult 
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::VeryHotCocoa) {
@@ -1672,7 +1687,7 @@ fn listener_paels_flesh(state: &mut CombatState, side: Side) -> EffectResult {
     if !state.relics.owns(RelicKind::PaelsFlesh) {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() < PAELS_FLESH_ROUND_MIN {
+    if state.turn_number() < PAELS_FLESH_ROUND_MIN {
         return EffectResult::NotImplemented;
     }
     state.gain_energy(PAELS_FLESH_ENERGY);
@@ -1719,6 +1734,9 @@ fn listener_toasty_mittens(state: &mut CombatState) -> EffectResult {
     if !state.relics.owns(RelicKind::ToastyMittens) {
         return EffectResult::NotImplemented;
     }
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
     // C# `ToastyMittens.BeforeHandDraw` (`ToastyMittens.cs`): every player
     // turn, BEFORE the hand is drawn — `ShuffleIfNecessary`, then exhaust the
     // first NON-Innate draw card on round 1 (else the top card), then gain +1
@@ -1744,6 +1762,67 @@ fn listener_toasty_mittens(state: &mut CombatState) -> EffectResult {
     EffectResult::Resolved
 }
 
+/// v0.111.0 `ToastyMittens.AfterPlayerTurnStart` (decomp
+/// ToastyMittens.cs:31-43), every player turn, after the hand is drawn:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// A forced pick of exactly 1 hand card (`FromHand` auto-takes a 1-card
+/// hand), then +1 Strength. The Strength rides the choice as its
+/// `PostChoiceEffect`, so it lands after the exhaust, like Brand's; with an
+/// empty hand there is nothing to pick and it applies at once. The open
+/// screen suspends the `AfterPlayerTurnStart` walk like GamblingChip's.
+fn listener_toasty_mittens_v0111(state: &mut CombatState) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    if !state.relics.owns(RelicKind::ToastyMittens) {
+        return EffectResult::NotImplemented;
+    }
+    // Never clobber a screen an earlier surface left open (GamblingChip's
+    // guard); C# would queue this select behind it.
+    if state.pending_choice.is_some() {
+        return EffectResult::NotImplemented;
+    }
+    if state.player.hand.is_empty() {
+        if let Some(player_uid) = state.player.creature_uid {
+            apply_power_to_creature(
+                state,
+                player_uid,
+                PowerKind::Strength,
+                TOASTY_MITTENS_STRENGTH,
+            );
+        }
+        return EffectResult::Resolved;
+    }
+    let options: Vec<sts2_core::ChoiceOption> = state
+        .player
+        .hand
+        .iter()
+        .filter_map(|&uid| {
+            let card = sts2_core::card_by_uid(&state.cards, uid)?;
+            Some(sts2_core::ChoiceOption {
+                card_id: card.card_id,
+                upgraded: card.upgraded,
+                card_uid: Some(uid),
+                source_pile: Some(sts2_core::cards::PileKind::Hand),
+            })
+        })
+        .collect();
+    state.open_hand_choice(sts2_core::PendingChoice {
+        kind: sts2_core::ChoiceKind::ExhaustFromHand,
+        options,
+        min_select: 1,
+        max_select: 1,
+        can_skip: false,
+        post_effect: Some(sts2_core::PostChoiceEffect::GainStrength(
+            TOASTY_MITTENS_STRENGTH,
+        )),
+        picked: smallvec::SmallVec::new(),
+    });
+    EffectResult::Resolved
+}
+
 /// `JeweledMask::before_hand_draw` — C# v0.107.1 `JeweledMask.cs`
 /// `BeforeHandDraw`: `if (TurnNumber <= 1) { list = Draw.Cards.Where(c =>
 /// c.Type == Power); if non-empty: card = Rng.CombatCardSelection
@@ -1765,7 +1844,7 @@ fn listener_toasty_mittens(state: &mut CombatState) -> EffectResult {
 /// stream (`Rng.cs:256/264`); the old port read the generic
 /// `state.rng`, desyncing the `combat_card_selection` counter.
 fn listener_jeweled_mask(state: &mut CombatState) -> EffectResult {
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::JeweledMask) {
@@ -1791,6 +1870,28 @@ fn listener_jeweled_mask(state: &mut CombatState) -> EffectResult {
         // pool must not consume a CombatCardSelection tick.
         return EffectResult::NotImplemented;
     }
+    // v0.111.0: prefer the non-Innate Powers, falling back to all of them
+    // when every Power is Innate (decomp JeweledMask.cs:27-31).
+    let pool = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        let non_innate: smallvec::SmallVec<[sts2_core::CardUid; 8]> = pool
+            .iter()
+            .copied()
+            .filter(|uid| {
+                let idx = uid.0.get() as usize - 1;
+                state
+                    .cards
+                    .get(idx)
+                    .is_some_and(|c| !sts2_core::card_effects::card_innate_inst(c))
+            })
+            .collect();
+        if non_innate.is_empty() {
+            pool
+        } else {
+            non_innate
+        }
+    } else {
+        pool
+    };
     let idx = state
         .run_rng
         .combat_card_selection
@@ -2114,7 +2215,7 @@ fn listener_brilliant_scarf_turn_reset(state: &mut CombatState, side: Side) -> E
 /// register channel exists at this pin. Beads `sts2-rs-70anj.1`,
 /// `sts2-rs-lfdaa`.
 fn listener_blessed_antler(state: &mut CombatState) -> EffectResult {
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::BlessedAntler) {
@@ -2278,6 +2379,16 @@ fn listener_crossbow(state: &mut CombatState, side: Side) -> EffectResult {
 const SEAL_OF_GOLD_COST: i32 = 5;
 const SEAL_OF_GOLD_ENERGY: i32 = 1;
 
+/// `SealOfGold`'s `GoldVar` for the build: 5 in v0.107.1.
+///
+/// v0.111.0: `GoldVar(5)` -> `GoldVar(3)` (decomp SealOfGold.cs:20).
+const fn seal_of_gold_cost(version: sts2_core::GameVersion) -> i32 {
+    match version {
+        sts2_core::GameVersion::V0_107_1 => SEAL_OF_GOLD_COST,
+        sts2_core::GameVersion::V0_111_0 => 3,
+    }
+}
+
 /// `SealOfGold::after_side_turn_start` — `if side == PLAYER and
 /// owner.gold >= GOLD_COST = 5: owner.lose_gold(5);
 /// combat.gain_energy(owner, ENERGY = 1)` (Python
@@ -2303,10 +2414,11 @@ fn listener_seal_of_gold(state: &mut CombatState, side: Side) -> EffectResult {
     // `try_spend_player_gold` global-accessor path was never installed by any
     // driver, so this relic silently no-opped (IC:1002 @377). Bead
     // `sts2-rs-RP17`.
-    if state.gold < SEAL_OF_GOLD_COST {
+    let cost = seal_of_gold_cost(state.game_version);
+    if state.gold < cost {
         return EffectResult::NotImplemented;
     }
-    state.gold -= SEAL_OF_GOLD_COST;
+    state.gold -= cost;
     state.gain_energy(SEAL_OF_GOLD_ENERGY);
     EffectResult::Resolved
 }
@@ -2325,7 +2437,7 @@ fn listener_bread(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::Bread) {
@@ -2383,7 +2495,12 @@ fn listener_signet_ring(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::SignetRing) {
         return EffectResult::NotImplemented;
     }
-    rs.gain_gold(SIGNET_RING_GOLD);
+    // v0.111.0: `GoldVar(999)` -> `GoldVar(888)` (decomp SignetRing.cs:13).
+    let gold = match rs.game_version {
+        sts2_core::GameVersion::V0_107_1 => SIGNET_RING_GOLD,
+        sts2_core::GameVersion::V0_111_0 => 888,
+    };
+    rs.gain_gold(gold);
     EffectResult::Resolved
 }
 
@@ -2485,8 +2602,9 @@ fn listener_dingy_rug(rs: &mut RunState, opts: &mut CardRewardGenerationOptions)
     let mut combined: Vec<sts2_core::cards::CardId> = Vec::new();
     let mut character_rarities: HashSet<crate::cards::CardRarity> = HashSet::new();
 
-    for &factory in specs_for_character(rs.character_id) {
-        let spec = factory();
+    // The run's game build decides each card's rarity (GH #793).
+    let version = rs.game_version;
+    for spec in crate::cards::spec_index::specs_in(specs_for_character(rs.character_id), version) {
         if seen.insert(spec.id) {
             combined.push(spec.id);
             character_rarities.insert(spec.rarity);
@@ -2494,8 +2612,7 @@ fn listener_dingy_rug(rs: &mut RunState, opts: &mut CardRewardGenerationOptions)
     }
 
     let rarity_gated = !opts.allow_rarity_modifications;
-    for &factory in COLORLESS_SPECS {
-        let spec = factory();
+    for spec in crate::cards::spec_index::specs_in(COLORLESS_SPECS, version) {
         if rarity_gated && !character_rarities.contains(&spec.rarity) {
             continue;
         }
@@ -2568,12 +2685,24 @@ fn listener_small_capsule(rs: &mut RunState) -> EffectResult {
 /// `shop_event.py::CallingBell.after_obtained`: `owner.offer_relic_rewards(
 /// 3, rarities=(COMMON, UNCOMMON, RARE))`). The RelicId acts as the
 /// sentinel placeholder; umbrella sts2-rs-01o resolves rarity tiers
-/// at flush time. The CurseOfTheBell card-add clause is deferred —
-/// same gating as NeowsTorment / PaelsHorn pending run-side deck
-/// mutation surface. Bead `sts2-rs-u4wv`.
+/// at flush time. The CurseOfTheBell card-add clause runs under v0.111.0
+/// only; the v0.107.1 arm still defers it (bit-identical). Bead
+/// `sts2-rs-u4wv`.
 fn listener_calling_bell(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::CallingBell) {
         return EffectResult::NotImplemented;
+    }
+    // v0.111.0: the curse goes into the deck before the relics are offered
+    // (`CardPileCmd.AddCurseToDeck<CurseOfTheBell>`, decomp
+    // `Models.Relics/CallingBell.cs:29`). v0.107.1 has the same line; its arm
+    // keeps the old (curse-less) behaviour so that build stays bit-identical.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        if let Some(curse) = crate::cards::spec_index::card_pod_from_id(
+            sts2_core::cards::CardId::CurseOfTheBell,
+            false,
+        ) {
+            rs.add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::RelicGain);
+        }
     }
     // Python pin: `offer_relic_rewards(3, rarities=(COMMON, UNCOMMON, RARE))`.
     rs.offer_random_relic_rewards(
@@ -2672,6 +2801,16 @@ fn listener_leafy_poultice(rs: &mut RunState) -> EffectResult {
 fn listener_distinguished_cape(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::DistinguishedCape) {
         return EffectResult::NotImplemented;
+    }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: the Max-HP loss moved to SereTalon; the Cape adds 2
+        // random generatable curses instead, then the Apparitions (decomp
+        // DistinguishedCape.cs:32-53).
+        add_random_generatable_curses(rs, DISTINGUISHED_CAPE_CURSES_V0111);
+        for _ in 0..DISTINGUISHED_CAPE_CARDS {
+            push_deck_card(rs, sts2_core::cards::CardId::Apparition);
+        }
+        return EffectResult::Resolved;
     }
     rs.lose_max_hp(DISTINGUISHED_CAPE_HP_LOSS);
     for _ in 0..DISTINGUISHED_CAPE_CARDS {
@@ -3111,6 +3250,10 @@ fn listener_beautiful_bracelet(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::BeautifulBracelet) {
         return EffectResult::NotImplemented;
     }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        beautiful_bracelet_v0111(rs);
+        return EffectResult::Resolved;
+    }
     // C# `BeautifulBracelet.AfterObtained` awaits an interactive
     // `CardSelectCmd.FromDeckForEnchantment` — surface the deck
     // card-select when the run is interactive.
@@ -3142,6 +3285,37 @@ fn listener_beautiful_bracelet(rs: &mut RunState) -> EffectResult {
         BEAUTIFUL_BRACELET_CARDS,
     );
     EffectResult::Resolved
+}
+
+/// v0.111.0 `BeautifulBracelet.AfterObtained` (decomp
+/// BeautifulBracelet.cs:31-44): no player choice any more. Four random
+/// enchantable deck cards get Swift 2:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// `TakeRandom` is `ToList().UnstableShuffle(rng).Take(count)`
+/// (IEnumerableExtensions.cs:17), i.e. a Fisher-Yates over the WHOLE
+/// eligible list on `Rng.Niche`, then the first four.
+fn beautiful_bracelet_v0111(rs: &mut RunState) {
+    let pool = crate::names::deck_card_spec_pool();
+    let ench = sts2_core::cards::EnchantmentId::Swift;
+    let mut eligible: Vec<usize> = rs
+        .master_deck
+        .iter()
+        .enumerate()
+        .filter_map(|(i, card)| {
+            let spec = pool.iter().find(|s| s.id == card.card_id)?;
+            crate::enchantments::can_enchant_card(spec, card, ench).then_some(i)
+        })
+        .collect();
+    rs.rng.niche.shuffle(&mut eligible);
+    for &i in eligible.iter().take(BEAUTIFUL_BRACELET_CARDS_V0111) {
+        let _ = crate::enchantments::apply_static_enchantment(
+            &mut rs.master_deck[i],
+            ench,
+            BEAUTIFUL_BRACELET_SWIFT_V0111,
+        );
+    }
 }
 
 /// `RoyalStamp::after_obtained` — enchant 1 eligible deck card
@@ -3217,7 +3391,7 @@ fn listener_radiant_pearl(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::RadiantPearl) {
@@ -3252,7 +3426,7 @@ fn listener_toy_box(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::ToyBox) {
         return EffectResult::NotImplemented;
     }
-    rs.offer_random_relic_rewards_wax(TOY_BOX_RELICS, &[], true);
+    rs.offer_random_relic_rewards_wax(toy_box_relics(rs.game_version), &[], true);
     EffectResult::Resolved
 }
 
@@ -3316,6 +3490,9 @@ fn listener_diamond_diadem_before_turn_end(state: &mut CombatState, side: Side) 
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
     if !state.relics.owns(RelicKind::DiamondDiadem) {
         return EffectResult::NotImplemented;
     }
@@ -3334,6 +3511,32 @@ fn listener_diamond_diadem_before_turn_end(state: &mut CombatState, side: Side) 
     );
     EffectResult::Resolved
 }
+
+/// v0.111.0 `DiamondDiadem.AfterSideTurnStart` (decomp
+/// DiamondDiadem.cs:24-31):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// `BlockVar(20m, ValueProp.Unpowered)` (:20): Dexterity / Frail skip it.
+fn listener_diamond_diadem_v0111(state: &mut CombatState, side: Side) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    if side != Side::Player || state.turn_number() > 1 {
+        return EffectResult::NotImplemented;
+    }
+    if !state.relics.owns(RelicKind::DiamondDiadem) {
+        return EffectResult::NotImplemented;
+    }
+    let _ = sts2_core::card_effects::gain_block_player_unpowered(state, DIAMOND_DIADEM_BLOCK_V0111);
+    if let Some(player_uid) = state.player.creature_uid {
+        apply_power_to_creature(state, player_uid, PowerKind::Blur, 1);
+    }
+    EffectResult::Resolved
+}
+
+/// v0.111.0 `DiamondDiadem` `BlockVar(20m)` (decomp DiamondDiadem.cs:20).
+const DIAMOND_DIADEM_BLOCK_V0111: i32 = 20;
 
 /// `VelvetChoker::before_side_turn_start` — reset `relic.counter` on
 /// PLAYER side (Python `shop_event.py::VelvetChoker.before_side_turn_start`:
@@ -3569,7 +3772,7 @@ fn listener_astrolabe(rs: &mut RunState) -> EffectResult {
         };
         let mut fresh = sts2_core::Card::pod_defaults();
         fresh.card_id = new_id;
-        fresh.upgrade();
+        fresh.upgrade_for(rs.game_version);
         rs.master_deck[deck_idx] = fresh;
     }
     EffectResult::Resolved
@@ -3589,7 +3792,7 @@ fn listener_toolbox_before_hand_draw(state: &mut CombatState) -> EffectResult {
     use sts2_core::cards::CardId;
     use sts2_core::{ChoiceKind, ChoiceOption};
 
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     // Locate the Toolbox relic + check the once-per-combat latch.
@@ -3669,7 +3872,7 @@ fn listener_choices_paradox(state: &mut CombatState, side: Side) -> EffectResult
     use sts2_core::cards::CardId;
     use sts2_core::{ChoiceKind, ChoiceOption};
 
-    if side != Side::Player || state.round != 1 {
+    if side != Side::Player || state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     let Some(relic_idx) = state
@@ -3758,6 +3961,17 @@ fn listener_dusty_tome(rs: &mut RunState) -> EffectResult {
         };
         id
     };
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: `CreateCard` + `Upgrade`, then `CardPileCmd.Add(card,
+        // PileType.Deck)` (decomp `Models.Relics/DustyTome.cs:58-63`), whose
+        // `AfterCardChangedPiles` pays LuckyFysh and friends. v0.107.1 has the
+        // same code; its arm keeps the bare push so that build stays
+        // bit-identical (tracked for #806).
+        if let Some(card) = crate::cards::v0111::card_pod_for(card_id, true, rs.game_version) {
+            rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
+            return EffectResult::Resolved;
+        }
+    }
     let mut card = sts2_core::Card::pod_defaults();
     card.card_id = card_id;
     card.upgraded = true;
@@ -3767,6 +3981,33 @@ fn listener_dusty_tome(rs: &mut RunState) -> EffectResult {
 
 const SERE_TALON_CURSES: usize = 2;
 
+/// `SereTalon` `DynamicVar("Wishes", 3m)` (decomp SereTalon.cs:26).
+const SERE_TALON_WISHES: usize = 3;
+
+/// v0.111.0 `SereTalon` `HpLossVar(9m)` (decomp SereTalon.cs:25).
+const SERE_TALON_HP_LOSS_V0111: i32 = 9;
+
+/// Add `count` curses to the deck the way v0.111.0 DistinguishedCape (and
+/// v0.107.1 SereTalon) pick them: the `CurseCardPool` cards with
+/// `CanBeGeneratedByModifiers`, `orderby c.Id`, drawn without replacement by
+/// `Rng.Niche.NextItem` (decomp DistinguishedCape.cs:32-43). The pool is the
+/// one NeowsBones samples (`NEOWS_BONES_CURSE_POOL`, already in id order).
+fn add_random_generatable_curses(rs: &mut RunState, count: usize) {
+    let mut available: Vec<sts2_core::cards::CardId> =
+        crate::relics::neow_relics::NEOWS_BONES_CURSE_POOL.to_vec();
+    for _ in 0..count {
+        if available.is_empty() {
+            return;
+        }
+        let len = i32::try_from(available.len()).unwrap_or(i32::MAX);
+        let idx = rs.rng.niche.next_int_exclusive(0, len) as usize;
+        let card_id = available.remove(idx);
+        if let Some(card) = crate::cards::spec_index::card_pod_from_id(card_id, false) {
+            rs.master_deck.push(card);
+        }
+    }
+}
+
 /// `SereTalon::after_obtained` — add 2 random Curse cards to the deck
 /// (Python `shop_event.py::SereTalon` at line 2544: "Add 2 random
 /// curses and 3 Wish cards"). The 3 Wish cards leg is deferred —
@@ -3774,6 +4015,19 @@ const SERE_TALON_CURSES: usize = 2;
 fn listener_sere_talon(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::SereTalon) {
         return EffectResult::NotImplemented;
+    }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: SereTalon took DistinguishedCape's downside: lose 9 Max
+        // HP, then add the 3 Wishes (decomp SereTalon.cs:31-43).
+        rs.lose_max_hp(SERE_TALON_HP_LOSS_V0111);
+        for _ in 0..SERE_TALON_WISHES {
+            if let Some(card) =
+                crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Wish, false)
+            {
+                rs.master_deck.push(card);
+            }
+        }
+        return EffectResult::Resolved;
     }
     for _ in 0..SERE_TALON_CURSES {
         let Some(card_id) = crate::cards::spec_index::random_curse_card(rs) else {
@@ -3880,7 +4134,7 @@ fn listener_ninja_scroll(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::NinjaScroll) {
@@ -4429,8 +4683,9 @@ fn listener_fur_coat_modify_generated_map_late(
         return EffectResult::NotImplemented;
     }
     // Idempotency: already marked the full quota on this map?
+    let combats = fur_coat_combats(rs.game_version);
     let existing_marks = act_map.marked_coords_for(RelicId::FurCoat).len();
-    if existing_marks >= FUR_COAT_COMBATS {
+    if existing_marks >= combats {
         return EffectResult::Resolved;
     }
     let mut candidates: Vec<MapCoord> = act_map
@@ -4442,9 +4697,9 @@ fn listener_fur_coat_modify_generated_map_late(
     if candidates.is_empty() {
         return EffectResult::NotImplemented;
     }
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, "FurCoat");
+    let mut rng = rs.rng.named("FurCoat");
     rng.shuffle(&mut candidates);
-    let needed = FUR_COAT_COMBATS.saturating_sub(existing_marks);
+    let needed = combats.saturating_sub(existing_marks);
     let to_mark: Vec<MapCoord> = candidates.into_iter().take(needed).collect();
     act_map.mark_rooms(to_mark, RelicId::FurCoat);
     EffectResult::Resolved
@@ -4503,6 +4758,9 @@ fn listener_pandoras_box(rs: &mut RunState) -> EffectResult {
     if indices.is_empty() {
         return EffectResult::Resolved;
     }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return pandoras_box_transform_v0111(rs, &indices);
+    }
     let mut replacements: Vec<sts2_core::Card> = Vec::with_capacity(indices.len());
     for _ in 0..indices.len() {
         let Some(new_id) = crate::cards::spec_index::random_card_from_rarity(
@@ -4523,6 +4781,39 @@ fn listener_pandoras_box(rs: &mut RunState) -> EffectResult {
         replacements.push(card);
     }
     let _ = rs.transform_specific_cards(&indices, replacements);
+    EffectResult::Resolved
+}
+
+/// v0.111.0 PandorasBox: each basic Strike / Defend becomes a random card of
+/// its own pool, rolled off the shared `Niche` stream in deck order:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// (decomp `Models.Relics/PandorasBox.cs:22`; `CardCmd.Transform` materializes
+/// the transformations once, in order, `CardCmd.cs:377`). The pool is the
+/// default transform pool (Common/Uncommon/Rare, not MultiplayerOnly, not the
+/// original, `CardFactory.cs:171-213`), the one NewLeaf already rolls through
+/// [`crate::cards::spec_index::roll_transform_replacement_basic_niche`]. v0.107.1
+/// has the same code, but its arm keeps the old Common-only sampler so that
+/// build stays bit-identical (tracked for #806).
+fn pandoras_box_transform_v0111(rs: &mut RunState, indices: &[usize]) -> EffectResult {
+    let character_id = rs.character_id;
+    let mut replacements: Vec<sts2_core::Card> = Vec::with_capacity(indices.len());
+    for &i in indices {
+        let original = rs.master_deck[i].card_id;
+        let Some(new_id) = crate::cards::spec_index::roll_transform_replacement_basic_niche(
+            rs,
+            character_id,
+            original,
+        ) else {
+            return EffectResult::NotImplemented;
+        };
+        let Some(card) = crate::cards::v0111::card_pod_for(new_id, false, rs.game_version) else {
+            return EffectResult::NotImplemented;
+        };
+        replacements.push(card);
+    }
+    let _ = rs.transform_specific_cards(indices, replacements);
     EffectResult::Resolved
 }
 
@@ -4632,6 +4923,12 @@ fn listener_silver_crucible_modify_card_reward_options_late(
     if !rs.owns_active_relic(RelicId::SilverCrucible) {
         return EffectResult::NotImplemented;
     }
+    // v0.111.0: only a slate with `IsCardReward` (decomp
+    // `Models.Relics/SilverCrucible.cs:104`); the flag is only ever set by
+    // a v0.111.0 caller, see `RunState::offer_card_slate`.
+    if rs.card_slate_not_card_reward {
+        return EffectResult::NotImplemented;
+    }
     let packed = rs
         .relic_counters
         .get(&RelicId::SilverCrucible)
@@ -4642,7 +4939,7 @@ fn listener_silver_crucible_modify_card_reward_options_late(
         return EffectResult::NotImplemented;
     }
     for card in cards.iter_mut() {
-        let _ = card.upgrade();
+        let _ = card.upgrade_for(rs.game_version);
     }
     let new_packed = silver_crucible_pack(
         times_used + 1,
@@ -4926,6 +5223,13 @@ pub const BEAUTIFUL_BRACELET_CARDS: usize = 3;
 /// `sts2-rs-4nyt7`.
 pub const BEAUTIFUL_BRACELET_SWIFT: i32 = 3;
 
+/// v0.111.0 `BeautifulBracelet` `CardsVar(4)` (decomp BeautifulBracelet.cs:25).
+pub const BEAUTIFUL_BRACELET_CARDS_V0111: usize = 4;
+
+/// v0.111.0 `BeautifulBracelet` `DynamicVar("Swift", 2m)` (decomp
+/// BeautifulBracelet.cs:26).
+pub const BEAUTIFUL_BRACELET_SWIFT_V0111: i32 = 2;
+
 /// `TriBoomerang::CARDS` — count of deck cards enchanted with
 /// Instinct on obtain (`shop_event.py::TriBoomerang.CARDS`).
 /// Instinct amount is hard-coded to 1 in the Python call (no separate
@@ -4939,6 +5243,18 @@ pub const BIIIG_HUG_CARDS: usize = 4;
 /// `ToyBox::RELICS` — count of wax-relic RelicReward sentinels pushed
 /// on obtain (`shop_event.py::ToyBox.RELICS`). Bead `sts2-rs-70anj.4`.
 pub const TOY_BOX_RELICS: usize = 4;
+
+/// `ToyBox::DynamicVars["Relics"]` for the build: [`TOY_BOX_RELICS`] in
+/// v0.107.1.
+///
+/// v0.111.0: `DynamicVar("Relics", 4m)` -> `5m` (decomp ToyBox.cs:83).
+#[must_use]
+pub const fn toy_box_relics(version: sts2_core::GameVersion) -> usize {
+    match version {
+        sts2_core::GameVersion::V0_107_1 => TOY_BOX_RELICS,
+        sts2_core::GameVersion::V0_111_0 => 5,
+    }
+}
 
 /// `ToyBox::DynamicVars["Combats"]` — combats between melts
 /// (`MegaCrit.Sts2.Core.Models.Relics/ToyBox.cs:84`, `new DynamicVar("Combats", 3m)`).
@@ -4994,6 +5310,10 @@ pub const DISTINGUISHED_CAPE_HP_LOSS: i32 = 9;
 /// deck-add clause is deferred pending the run-side
 /// `add_card_to_deck` primitive (umbrella `sts2-rs-01o`).
 pub const DISTINGUISHED_CAPE_CARDS: usize = 3;
+
+/// v0.111.0 `DistinguishedCape` `DynamicVar("Curses", 2m)` (decomp
+/// DistinguishedCape.cs:26).
+pub const DISTINGUISHED_CAPE_CURSES_V0111: usize = 2;
 
 /// `SandCastle::CARDS` — count of random deck cards upgraded on
 /// obtain (`shop_event.py::SandCastle.CARDS`). Bead `sts2-rs-r2y4x`.
@@ -5120,6 +5440,21 @@ pub const ALCHEMICAL_COFFER_POTION_SLOTS: i32 = 4;
 /// `sts2-rs-eboqq`.
 pub const FUR_COAT_COMBATS: usize = 7;
 
+/// `FurCoat::DynamicVars["Combats"]` for the build: [`FUR_COAT_COMBATS`] in
+/// v0.107.1.
+///
+/// v0.111.0: `DynamicVar("Combats", 7m)` -> `8m` (decomp FurCoat.cs:64). The
+/// marking RNG is `new Rng(Owner, Id, 0uL)` (FurCoat.cs:93), which is
+/// `RunRngSet::named` in the run's build; the new `IsAffectedByFurCoat`
+/// history flag (FurCoat.cs:140) is run-history bookkeeping only.
+#[must_use]
+pub const fn fur_coat_combats(version: sts2_core::GameVersion) -> usize {
+    match version {
+        sts2_core::GameVersion::V0_107_1 => FUR_COAT_COMBATS,
+        sts2_core::GameVersion::V0_111_0 => 8,
+    }
+}
+
 /// `BlessedAntler::ENERGY` / `DAZED_COUNT` — +1 max energy with 3 Dazed
 /// shuffled into draw round 1 (`shop_event.py::BlessedAntler`).
 pub const BLESSED_ANTLER_ENERGY: i32 = 1;
@@ -5177,7 +5512,7 @@ fn listener_runic_capacitor(state: &mut CombatState, side: Side) -> EffectResult
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::RunicCapacitor) {
@@ -6698,6 +7033,28 @@ mod tests {
         assert_eq!(snapshot, after, "re-dispatch must be idempotent");
     }
 
+    /// v0.111.0: FurCoat marks 8 rooms (decomp FurCoat.cs:64).
+    #[test]
+    fn listener_fur_coat_marks_seven_monster_or_elite_rooms_v0111() {
+        use sts2_core::map::{ActMap, MapPointType};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.act_index = 1;
+        rs.fur_coat_act_index = Some(1);
+        rs.relics.push(RelicId::FurCoat);
+        let mut map = ActMap::new(15);
+        for row in 1..=4 {
+            for col in 0..3 {
+                let idx = map.get_or_create(col, row);
+                map.point_mut(idx).point_type = MapPointType::Monster;
+            }
+        }
+        let _ = sts2_core::run_effects::dispatch_modify_generated_map_late(&mut rs, &mut map, 1);
+        assert_eq!(map.marked_coords_for(RelicId::FurCoat).len(), 8);
+    }
+
     /// Bead `sts2-rs-eboqq`: FurCoat's late map-mark listener
     /// no-ops in any act other than the obtain act, matching
     /// Python's `current_act_index != _fur_coat_act_index` guard.
@@ -6844,6 +7201,20 @@ mod tests {
         rs.last_obtained_relic = Some(RelicId::SignetRing);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
         assert_eq!(rs.gold, before_gold + SIGNET_RING_GOLD);
+    }
+
+    /// v0.111.0: SignetRing grants 888 gold (decomp SignetRing.cs:13).
+    #[test]
+    fn listener_signet_ring_gains_nine_hundred_ninety_nine_gold_on_obtain_v0111() {
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let before_gold = rs.gold;
+        rs.relics.push(RelicId::SignetRing);
+        rs.last_obtained_relic = Some(RelicId::SignetRing);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.gold, before_gold + 888);
     }
 
     /// Bead `sts2-rs-2ciy`: SignetRing listener is noop without ownership.
@@ -7172,6 +7543,35 @@ mod tests {
         rs.last_obtained_relic = Some(RelicId::CallingBell);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
         assert_eq!(rs.relic_rewards.len(), before_len + CALLING_BELL_RELICS);
+        assert!(
+            !rs.master_deck
+                .iter()
+                .any(|c| c.card_id == sts2_core::cards::CardId::CurseOfTheBell),
+            "v0.107.1 arm adds no curse"
+        );
+    }
+
+    /// v0.111.0 `CallingBell.AfterObtained` (`CallingBell.cs:29`): one
+    /// CurseOfTheBell goes into the deck, then the three relics are offered.
+    #[test]
+    fn listener_calling_bell_adds_curse_of_the_bell_v0111() {
+        use sts2_core::runstate::RunState;
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let (by_rarity, fallback, boss) = crate::run_callbacks::default_relic_grab_bag();
+        rs.populate_relic_grab_bag_by_rarity(by_rarity, fallback, boss);
+        let deck_before = rs.master_deck.len();
+        rs.relics.push(RelicId::CallingBell);
+        rs.last_obtained_relic = Some(RelicId::CallingBell);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.relic_rewards.len(), CALLING_BELL_RELICS);
+        assert_eq!(rs.master_deck.len(), deck_before + 1);
+        assert_eq!(
+            rs.master_deck.last().map(|c| c.card_id),
+            Some(sts2_core::cards::CardId::CurseOfTheBell)
+        );
     }
 
     /// Bead `sts2-rs-u4wv`: CallingBell listener is noop without ownership.
@@ -7224,6 +7624,35 @@ mod tests {
         );
         let added = &rs.master_deck[before_deck_len..];
         assert!(added.iter().all(|c| c.card_id == CardId::Apparition));
+    }
+
+    /// v0.111.0: DistinguishedCape keeps Max HP and adds 2 distinct
+    /// generatable curses (two `Rng.Niche` draws) before the 3 Apparitions
+    /// (decomp DistinguishedCape.cs:32-53).
+    #[test]
+    fn listener_distinguished_cape_loses_nine_max_hp_and_adds_three_apparitions_on_obtain_v0111() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let before_max = rs.max_hp;
+        let before_deck_len = rs.master_deck.len();
+        let niche_before = rs.rng.niche.counter();
+        rs.relics.push(RelicId::DistinguishedCape);
+        rs.last_obtained_relic = Some(RelicId::DistinguishedCape);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.max_hp, before_max, "no Max HP loss in v0.111.0");
+        assert_eq!(rs.rng.niche.counter(), niche_before + 2);
+        let added = &rs.master_deck[before_deck_len..];
+        assert_eq!(added.len(), 2 + DISTINGUISHED_CAPE_CARDS);
+        let pool = crate::relics::neow_relics::NEOWS_BONES_CURSE_POOL;
+        assert!(pool.contains(&added[0].card_id) && pool.contains(&added[1].card_id));
+        assert_ne!(
+            added[0].card_id, added[1].card_id,
+            "drawn without replacement"
+        );
+        assert!(added[2..].iter().all(|c| c.card_id == CardId::Apparition));
     }
 
     /// Bead `sts2-rs-r2y4x`: DistinguishedCape listener is noop without
@@ -8694,6 +9123,35 @@ mod tests {
         assert_eq!(enchanted, BEAUTIFUL_BRACELET_CARDS);
     }
 
+    /// v0.111.0: BeautifulBracelet enchants 4 RANDOM enchantable cards with
+    /// Swift 2 and never opens a deck select, even in an interactive run: one
+    /// `Rng.Niche` Fisher-Yates over the eligible list (5 draws for 6 cards),
+    /// then the first four (decomp BeautifulBracelet.cs:31-44).
+    #[test]
+    fn listener_beautiful_bracelet_enchants_up_to_three_with_swift_three_v0111() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.interactive_card_transform = true;
+        for _ in 0..6 {
+            push_deck_card(&mut rs, CardId::StrikeIronclad);
+        }
+        let niche_before = rs.rng.niche.counter();
+        rs.relics.push(RelicId::BeautifulBracelet);
+        rs.last_obtained_relic = Some(RelicId::BeautifulBracelet);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert!(rs.pending_deck_enchants.is_empty(), "no deck select");
+        let enchanted = rs
+            .master_deck
+            .iter()
+            .filter(|c| c.enchantment(EnchantmentId::Swift) == 2)
+            .count();
+        assert_eq!(enchanted, 4);
+        assert_eq!(rs.rng.niche.counter(), niche_before + 5);
+    }
+
     /// Bead `sts2-rs-70anj.4`: RoyalStamp enchants exactly 1 card
     /// (Attack or Skill, per `can_enchant_card`) with
     /// `RoyallyApproved(1)`.
@@ -9045,6 +9503,23 @@ mod tests {
 
     /// Bead `sts2-rs-70anj.4`: ToyBox pushes `TOY_BOX_RELICS = 4`
     /// RelicReward sentinels onto `rs.pending_rewards`.
+    /// v0.111.0: ToyBox offers 5 wax relics (decomp ToyBox.cs:83).
+    #[test]
+    fn listener_toy_box_pushes_four_relic_reward_sentinels_on_obtain_v0111() {
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let (by_rarity, fallback, boss) = crate::run_callbacks::default_relic_grab_bag();
+        rs.populate_relic_grab_bag_by_rarity(by_rarity, fallback, boss);
+        rs.relics.push(RelicId::ToyBox);
+        rs.last_obtained_relic = Some(RelicId::ToyBox);
+        let before = rs.relic_rewards.len();
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.relic_rewards.len() - before, 5);
+        assert!(rs.relic_rewards[before..].iter().all(|r| r.is_wax));
+    }
+
     #[test]
     fn listener_toy_box_pushes_four_relic_reward_sentinels_on_obtain() {
         use sts2_core::runstate::RunState;
@@ -9543,6 +10018,24 @@ mod tests {
         );
     }
 
+    /// v0.111.0: SealOfGold spends 3 (`GoldVar(3)`, decomp SealOfGold.cs:20),
+    /// and 3 gold is now enough.
+    #[test]
+    fn listener_seal_of_gold_spends_gold_for_energy_v0111() {
+        use sts2_core::relic_effects::dispatch_after_side_turn_start;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        equip_relic(&mut state, RelicKind::SealOfGold);
+        state.gold = 3;
+        let before = state.player.energy;
+        let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+        assert_eq!(state.gold, 0, "spends 3 combat gold");
+        assert_eq!(state.player.energy, before + 1, "gains 1 energy");
+    }
+
     /// SealOfGold #2 — no spend / no energy when gold < 5 (C# `Gold >= 5` gate).
     #[test]
     fn listener_seal_of_gold_noop_when_below_cost() {
@@ -9798,6 +10291,103 @@ mod tests {
         assert_eq!(strength, TOASTY_MITTENS_STRENGTH);
     }
 
+    fn player_strength(state: &CombatState) -> i32 {
+        use sts2_core::powers::PowerKind;
+        let player_uid = state.player.creature_uid.expect("player uid");
+        let creature = state
+            .creatures
+            .iter()
+            .find(|c| c.id == player_uid.0)
+            .expect("player creature");
+        creature
+            .powers
+            .iter()
+            .filter_map(|p_uid| state.powers.get_by_id(p_uid.0))
+            .find(|p| p.kind == PowerKind::Strength)
+            .map_or(0, |p| p.amount)
+    }
+
+    fn push_hand_strike(state: &mut CombatState) -> sts2_core::CardUid {
+        use sts2_core::cards::{Card, CardId, CardType};
+        let uid = state.add_card_to_draw_pile(Card {
+            card_id: CardId::StrikeIronclad,
+            card_type: CardType::Attack,
+            ..Card::pod_defaults()
+        });
+        state.move_card_to_hand(uid);
+        uid
+    }
+
+    /// v0.111.0: ToastyMittens no longer touches the draw pile before the
+    /// draw; after turn start it opens a forced pick-1 exhaust over the
+    /// hand, and the +1 Strength lands after the exhaust
+    /// (decomp ToastyMittens.cs:31-43).
+    #[test]
+    fn listener_toasty_mittens_exhausts_and_grants_strength_v0111() {
+        use sts2_core::cards::{Card, CardId, CardType};
+        use sts2_core::relic_effects::{
+            dispatch_after_player_turn_start, dispatch_before_hand_draw,
+        };
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        equip_relic(&mut state, RelicKind::ToastyMittens);
+        let in_draw = state.add_card_to_draw_pile(Card {
+            card_id: CardId::DefendIronclad,
+            card_type: CardType::Skill,
+            ..Card::pod_defaults()
+        });
+        let _ = dispatch_before_hand_draw(&mut state);
+        assert!(state.player.draw.contains(&in_draw), "draw pile untouched");
+        assert_eq!(player_strength(&state), 0);
+
+        let a = push_hand_strike(&mut state);
+        let b = push_hand_strike(&mut state);
+        let _ = dispatch_after_player_turn_start(&mut state);
+        let pc = state
+            .pending_choice
+            .as_ref()
+            .expect("exhaust select opened");
+        assert_eq!(pc.kind, sts2_core::ChoiceKind::ExhaustFromHand);
+        assert_eq!((pc.min_select, pc.max_select), (1, 1));
+        assert_eq!(player_strength(&state), 0, "Strength waits for the pick");
+        let pick = u8::try_from(
+            pc.options
+                .iter()
+                .position(|o| o.card_uid == Some(b))
+                .expect("b"),
+        )
+        .expect("u8");
+        let _ = sts2_core::resolve_choice_atomic_apply(&mut state, &[pick]);
+        assert!(state.player.exhaust.contains(&b));
+        assert!(state.player.hand.contains(&a));
+        assert_eq!(player_strength(&state), TOASTY_MITTENS_STRENGTH);
+    }
+
+    /// v0.111.0: a one-card hand is auto-taken (`FromHand` fast path) and an
+    /// empty hand still grants the Strength.
+    #[test]
+    fn listener_toasty_mittens_auto_takes_small_hands_v0111() {
+        use sts2_core::relic_effects::dispatch_after_player_turn_start;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        equip_relic(&mut state, RelicKind::ToastyMittens);
+        let _ = dispatch_after_player_turn_start(&mut state);
+        assert!(state.pending_choice.is_none());
+        assert_eq!(player_strength(&state), TOASTY_MITTENS_STRENGTH);
+
+        let only = push_hand_strike(&mut state);
+        let _ = dispatch_after_player_turn_start(&mut state);
+        assert!(state.pending_choice.is_none(), "single card auto-taken");
+        assert!(state.player.exhaust.contains(&only));
+        assert_eq!(player_strength(&state), 2 * TOASTY_MITTENS_STRENGTH);
+    }
+
     #[test]
     fn listener_toasty_mittens_skips_innate_on_round_one() {
         // C# `ToastyMittens.BeforeHandDraw`: on round 1 it exhausts the first
@@ -9881,6 +10471,45 @@ mod tests {
             ccs_before + 1,
             "selection must consume exactly one combat_card_selection read"
         );
+    }
+
+    /// v0.111.0: JeweledMask skips Innate Powers while a non-Innate one is
+    /// in the draw pile (decomp JeweledMask.cs:27-31).
+    #[test]
+    fn listener_jeweled_mask_moves_random_power_to_hand_free_v0111() {
+        use sts2_core::cards::{Card, CardId, CardType, KeywordOverride};
+        use sts2_core::relic_effects::dispatch_before_hand_draw;
+        crate::relics::dispatch::ensure_installed();
+        for _ in 0..8 {
+            let mut state = CombatState {
+                game_version: sts2_core::GameVersion::V0_111_0,
+                ..CombatState::default()
+            };
+            equip_relic(&mut state, RelicKind::JeweledMask);
+            state.round = 1;
+            let innate = Card {
+                card_id: CardId::Inflame,
+                card_type: CardType::Power,
+                keyword_override: Some(KeywordOverride::INNATE),
+                ..Card::pod_defaults()
+            };
+            let innate_uid = state.add_card_to_draw_pile(innate);
+            let plain = Card {
+                card_id: CardId::Inflame,
+                card_type: CardType::Power,
+                ..Card::pod_defaults()
+            };
+            let plain_uid = state.add_card_to_draw_pile(plain);
+            let _ = dispatch_before_hand_draw(&mut state);
+            assert!(
+                state.player.hand.contains(&plain_uid),
+                "non-Innate Power chosen"
+            );
+            assert!(
+                state.player.draw.contains(&innate_uid),
+                "Innate Power stays"
+            );
+        }
     }
 
     #[test]
@@ -10646,6 +11275,35 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    /// v0.111.0 DiamondDiadem: turn-1 side turn start grants 20 unpowered
+    /// Block and Blur 1; the v0.107.1 turn-end power arm is inert
+    /// (decomp DiamondDiadem.cs:20-31).
+    #[test]
+    fn listener_diamond_diadem_v0111_grants_block_and_blur_on_turn_one() {
+        use sts2_core::relic_effects::{dispatch_after_side_turn_start, dispatch_before_turn_end};
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        equip_relic(&mut state, RelicKind::DiamondDiadem);
+        state.round = 1;
+        let _ = dispatch_after_side_turn_start(&mut state, Side::Enemy);
+        assert_eq!(state.player.block, 0, "enemy side inert");
+        let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+        assert_eq!(state.player.block, 20);
+        assert_eq!(state.player_power_amount(sts2_core::PowerKind::Blur), 1);
+        state.round = 2;
+        let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+        assert_eq!(state.player.block, 20, "turn 2 inert");
+        let _ = dispatch_before_turn_end(&mut state, Side::Player);
+        assert_eq!(
+            state.player_power_amount(sts2_core::PowerKind::DiamondDiadem),
+            0,
+            "no DiamondDiademPower in v0.111.0"
+        );
+    }
+
     // DiamondDiadem listener tests — bead `sts2-rs-70anj.3.21`.
     // Player turn-end: if <=2 cards played, apply +1 DiamondDiadem power
     // to the player. The power-side dispatch arms (damage 0.5x + auto-
@@ -10902,6 +11560,29 @@ mod tests {
         assert!(added.upgraded, "DustyTome must add an upgraded card");
     }
 
+    /// v0.111.0 `DustyTome.AfterObtained` (`DustyTome.cs:58-63`) adds the card
+    /// through `CardPileCmd.Add`, so LuckyFysh's `AfterCardChangedPiles` pays
+    /// 15 gold; the v0.107.1 arm's bare push does not.
+    #[test]
+    fn listener_dusty_tome_pays_lucky_fysh_v0111() {
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        for (version, gain) in [
+            (sts2_core::GameVersion::V0_107_1, 0),
+            (sts2_core::GameVersion::V0_111_0, 15),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::LuckyFysh);
+            rs.relics.push(RelicId::DustyTome);
+            let gold = rs.gold;
+            rs.last_obtained_relic = Some(RelicId::DustyTome);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(rs.gold - gold, gain, "{version}");
+            assert!(rs.master_deck.last().expect("card added").upgraded);
+        }
+    }
+
     #[test]
     fn listener_sere_talon_adds_two_curse_cards_to_deck() {
         crate::relics::dispatch::ensure_installed();
@@ -10911,6 +11592,25 @@ mod tests {
         rs.last_obtained_relic = Some(RelicId::SereTalon);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
         assert_eq!(rs.master_deck.len(), before_len + 2);
+    }
+
+    /// v0.111.0: SereTalon loses 9 Max HP and adds 3 Wishes, no curses
+    /// (decomp SereTalon.cs:31-43).
+    #[test]
+    fn listener_sere_talon_adds_two_curse_cards_to_deck_v0111() {
+        use sts2_core::cards::CardId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.relics.push(RelicId::SereTalon);
+        let before_len = rs.master_deck.len();
+        let before_max = rs.max_hp;
+        rs.last_obtained_relic = Some(RelicId::SereTalon);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.max_hp, before_max - 9);
+        let added = &rs.master_deck[before_len..];
+        assert_eq!(added.len(), 3);
+        assert!(added.iter().all(|c| c.card_id == CardId::Wish));
     }
 
     /// Bead `sts2-rs-70anj.3.5`: Driftwood — `allow_card_reward_reroll`
@@ -11868,6 +12568,48 @@ mod tests {
             InnerCardId::Anger,
             "non-basic anchor shifts to the head after all basics are removed",
         );
+    }
+
+    /// v0.111.0 `PandorasBox.AfterObtained` (`PandorasBox.cs:22`): one
+    /// default-transform roll per basic, in deck order, off the `Niche`
+    /// stream (not the Common-only `rewards` sampler).
+    #[test]
+    fn listener_pandoras_box_rolls_niche_transform_pool_v0111() {
+        use sts2_core::cards::CardId as InnerCardId;
+        use sts2_core::potions::CharacterId;
+        use sts2_core::run_effects::dispatch_after_obtained;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.character_id = CharacterId::Ironclad;
+        rs.relics.push(RelicId::PandorasBox);
+        let deck_len = pandoras_box_seed_ironclad_deck(&mut rs);
+
+        // Expected: the same rolls NewLeaf makes, one per basic in deck order.
+        let mut expect_rs = rs.clone();
+        let originals: Vec<InnerCardId> = rs.master_deck[..9].iter().map(|c| c.card_id).collect();
+        let expected: Vec<InnerCardId> = originals
+            .iter()
+            .map(|&o| {
+                crate::cards::spec_index::roll_transform_replacement_basic_niche(
+                    &mut expect_rs,
+                    CharacterId::Ironclad,
+                    o,
+                )
+                .expect("non-empty pool")
+            })
+            .collect();
+
+        rs.last_obtained_relic = Some(RelicId::PandorasBox);
+        let _ = dispatch_after_obtained(&mut rs);
+
+        assert_eq!(rs.master_deck.len(), deck_len);
+        assert_eq!(rs.master_deck[0].card_id, InnerCardId::Anger);
+        let got: Vec<InnerCardId> = rs.master_deck[1..].iter().map(|c| c.card_id).collect();
+        assert_eq!(got, expected);
+        assert_eq!(rs.rng.niche.counter(), expect_rs.rng.niche.counter());
     }
 
     /// No-op when PandorasBox is not in `rs.relics`.

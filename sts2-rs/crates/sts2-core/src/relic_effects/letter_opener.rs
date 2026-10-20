@@ -16,7 +16,7 @@ pub(crate) fn on_after_side_turn_start_letter_opener(
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() <= 1 {
+    if state.turn_number() <= 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::LetterOpener) {

@@ -18,6 +18,14 @@ pub(crate) fn play_guiding_star(
     // C# `GuidingStar.cs` `OnUpgrade` bumps BOTH DamageVar +1 (handled
     // via current_damage) AND CardsVar +1 (2→3). Bead `sts2-rs-f6naf`.
     let cards = if current_card_upgraded(state) { 3 } else { 2 };
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: the draw is deferred to next turn —
+        // `PowerCmd.Apply<DrawCardsNextTurnPower>(…, Cards.BaseValue, …)`
+        // (decomp GuidingStar.cs:50). Star cost 2 -> 1 lives in
+        // `sts2_core::card_base_star_cost_v0111`.
+        apply_power_to_player(state, PowerKind::DrawCardsNextTurn, cards);
+        return EffectResult::Resolved;
+    }
     let _ = sts2_core::cards::draw_via_state(state, cards);
     EffectResult::Resolved
 }

@@ -13,6 +13,7 @@ the smoke sweep in CI (`run_parity.py --sweep`), not here.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 import run_parity as rp
@@ -309,6 +310,56 @@ def test_replay_cs_reject_but_rust_accepts_is_divergence(monkeypatch) -> None:
     assert res.divergence is not None
     assert res.divergence.kind == "act_reject"
     assert "cs_err=Not enough gold" in res.divergence.fields[0]
+
+
+# --------------------------------------------------------------------------- #
+# record watchdog — a wedged C# step is abandoned, on every platform
+# --------------------------------------------------------------------------- #
+class _WedgingCsBackend(_FakeBackend):
+    """C# stub whose act() blocks once its script runs out, the way the headless
+    wedges, until close() — which is what the watchdog calls — ends it with the
+    real pipe's EOF error."""
+
+    def __init__(self, views: list[dict]):
+        super().__init__(views)
+        self._closed = threading.Event()
+
+    def act(self, _verb, **_kw) -> dict:
+        if self._i < len(self._views):
+            return self._next()
+        assert self._closed.wait(timeout=30), "watchdog never closed the backend"
+        raise RuntimeError("EOF from game process")
+
+    def close(self) -> None:
+        self._closed.set()
+
+
+def _event_with_option(hp: int) -> dict:
+    return {**_event_view(hp), "options": [{"index": 0}]}
+
+
+def test_record_timeout_abandons_a_wedged_step(monkeypatch) -> None:
+    # Was SIGALRM, which Windows lacks: every record died at step 0 there.
+    monkeypatch.setenv("STS2_RUNPARITY_RECORD_TIMEOUT", "1")
+    backend = _WedgingCsBackend([_event_with_option(80), _event_with_option(80)])
+    monkeypatch.setattr(rp, "make_backend", lambda which, **kwargs: lambda: backend)
+    rec = rp._record_cs_trajectory("S", "Ironclad", 0, 30)
+    assert rec["terminal"] == "record_timeout"
+    assert len(rec["entries"]) == 1  # the step before the wedge is kept
+
+
+def test_record_error_without_timeout_still_raises(monkeypatch) -> None:
+    # Only a watchdog trip is booked as record_timeout; a real C# crash is not.
+    monkeypatch.setenv("STS2_RUNPARITY_RECORD_TIMEOUT", "30")
+
+    class _Crashing(_FakeBackend):
+        def act(self, _verb, **_kw) -> dict:
+            raise RuntimeError("EOF from game process")
+
+    backend = _Crashing([_event_with_option(80)])
+    monkeypatch.setattr(rp, "make_backend", lambda which, **kwargs: lambda: backend)
+    with pytest.raises(RuntimeError, match="EOF"):
+        rp._record_cs_trajectory("S", "Ironclad", 0, 30)
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import threading
 import time
 from typing import Any
 
@@ -106,6 +107,10 @@ class RealGameBridgeClient:
         self._last_request_id: str | None = None
         self._last_state_id: int | None = None
         self._last_error: dict[str, Any] | None = None
+        #: One writer at a time: the advisor loop, the control plane's HTTP
+        #: threads and the coach's grader thread all send on this socket, and
+        #: interleaved `sendall`s would splice two JSON lines together.
+        self._send_lock = threading.Lock()
 
     # ----------------------------------------------------------------
     # Connection management
@@ -261,7 +266,8 @@ class RealGameBridgeClient:
 
         try:
             data = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
-            self._sock.sendall(data)
+            with self._send_lock:
+                self._sock.sendall(data)
             logger.debug("Sent action: %s", payload)
         except OSError as e:
             self._connected = False

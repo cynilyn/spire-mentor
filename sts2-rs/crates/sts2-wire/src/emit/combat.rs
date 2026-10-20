@@ -1055,13 +1055,17 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // read count. Emitting them makes a Rust-produced wire carry the same RNG
     // lineage the C# producers carry, so the native-engine oracle exercises
     // the identical restore path the DLL mirror uses.
-    set(
-        &mut rng,
-        "run_seed",
-        u32::from_ne_bytes(state.run_rng.seed.to_ne_bytes()),
-    );
+    set(&mut rng, "run_seed", state.run_rng.wire_seed());
     rng.insert("counters".to_owned(), run_rng_counters(state));
     d.insert("rng".to_owned(), Value::Object(rng));
+    // Game build (GH #787): emitted only when non-default, so every
+    // v0.107.1 wire — and every golden built from one — is unchanged.
+    if !state.game_version.is_default() {
+        d.insert(
+            "game_version".to_owned(),
+            Value::String(state.game_version.to_string()),
+        );
+    }
 
     Ok(Value::Object(d))
 }

@@ -1108,6 +1108,67 @@ fn reptile_trinket_fires_at_drink_time_without_a_surfaced_select() {
     );
 }
 
+/// DistilledChaos auto-plays an Armaments whose upgrade select surfaces
+/// (two upgradable Strikes in hand); returns whether ReptileTrinket fired
+/// once the select resolved and the auto-play batch finished.
+fn reptile_trinket_after_distilled_chaos_select(version: sts2_core::GameVersion) -> bool {
+    use sts2_core::{Action, StepResult};
+    crate::cards::dispatch::ensure_installed();
+    let mut state = reptile_trinket_drink_fixture();
+    state.game_version = version;
+    for _ in 0..2 {
+        let strike = crate::cards::spec_index::card_pod_from_id(
+            sts2_core::cards::CardId::StrikeIronclad,
+            false,
+        )
+        .expect("strike pod");
+        let raw = u32::try_from(state.cards.len() + 1).expect("u32");
+        let uid = sts2_core::CardUid::new(raw).expect("nz");
+        let mut strike = strike;
+        strike.uid = uid;
+        state.cards.push(strike);
+        state.player.hand.push(uid);
+    }
+    let armaments =
+        crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Armaments, false)
+            .expect("armaments pod");
+    let _ = state.add_card_to_draw_pile(armaments);
+    state.player.potions.push(PotionKind::DistilledChaos);
+    let result = sts2_core::apply(
+        &mut state,
+        Action::DrinkPotion {
+            potion_slot: 0,
+            target: None,
+        },
+    );
+    assert_eq!(
+        result,
+        StepResult::PendingChoice,
+        "Armaments' select surfaced"
+    );
+    assert!(state.pending_autoplay_resume.is_some(), "auto-play parked");
+    resolve_choice_pick(&mut state, 0);
+    player_strength_and_trinket(&state).1
+}
+
+/// v0.107.1 Rust: the auto-play resume returns before the parked
+/// AfterPotionUsed dispatch, so ReptileTrinket never fires.
+#[test]
+fn reptile_trinket_after_distilled_chaos_select_v0107() {
+    assert!(!reptile_trinket_after_distilled_chaos_select(
+        sts2_core::GameVersion::V0_107_1
+    ));
+}
+
+/// v0.111.0: `Hook.AfterPotionUsed` runs once `await OnUse` (the whole
+/// auto-play batch) returns (PotionModel.cs:338).
+#[test]
+fn reptile_trinket_after_distilled_chaos_select_v0111() {
+    assert!(reptile_trinket_after_distilled_chaos_select(
+        sts2_core::GameVersion::V0_111_0
+    ));
+}
+
 /// `REPTILE_TRINKET_STRENGTH` (sts2-content `relics::uncommon`) — kept as a
 /// local literal so this module doesn't reach into the relic module's
 /// private constant. Pinned to C# `ReptileTrinket.CanonicalVars`
@@ -1359,7 +1420,17 @@ fn install_is_idempotent() {
     ensure_installed();
     let b = potion_effects::registered_count();
     assert_eq!(a, b);
-    assert_eq!(a, 63, "expected all 63 potions registered");
+    // The 63 v0.107.1 potions plus the v0.111.0-only Ambergris (GH #792).
+    assert_eq!(
+        a,
+        PotionKind::ALL.len() + PotionKind::V0111_ONLY.len(),
+        "expected every potion of every build registered"
+    );
+    assert_eq!(
+        PotionKind::ALL.len(),
+        63,
+        "the v0.107.1 universe is unchanged"
+    );
 }
 
 // ── e-rare-and-event potion body tests — bead `sts2-rs-6ynt.9.5` ──

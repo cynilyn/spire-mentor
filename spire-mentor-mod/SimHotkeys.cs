@@ -12,9 +12,10 @@
 //   F1  help panel -- mode, every key, where the files are
 //   F4  toggle HUD visibility
 //   F3  toggle the action-log panel
+//   F5  Coach style: peek at the AI's pick for the next decision only
 //   F6  AI takes this decision (advisor mode, combat)
 //   F7  AI plays until I stop (toggle)
-//   F8  Advisor mode on/off (from Autopilot: stop the AI and take over)
+//   F8  AI on / off in the current style (from Autopilot: stop the AI and take over)
 //   F9  game speed down 0.1x
 //   F10 game speed up 0.1x
 //
@@ -45,6 +46,7 @@ public static class SimHotkeys
     private const string ActionHelp = "spirementor_help";
     private const string ActionToggleHud = "spirementor_toggle_hud";
     private const string ActionToggleLog = "spirementor_toggle_log";
+    private const string ActionPeek = "spirementor_peek";
     private const string ActionAiOnce = "spirementor_ai_once";
     private const string ActionAiAuto = "spirementor_ai_auto";
     private const string ActionToggleAdvisor = "spirementor_toggle_advisor";
@@ -84,6 +86,7 @@ public static class SimHotkeys
             RegisterAction(ActionHelp, Key.F1);
             RegisterAction(ActionToggleHud, Key.F4);
             RegisterAction(ActionToggleLog, Key.F3);
+            RegisterAction(ActionPeek, Key.F5);
             RegisterAction(ActionAiOnce, Key.F6);
             RegisterAction(ActionAiAuto, Key.F7);
             RegisterAction(ActionToggleAdvisor, Key.F8);
@@ -101,6 +104,7 @@ public static class SimHotkeys
             manager.PushHotkeyPressedBinding(ActionHelp, SimActions.ToggleHelp);
             manager.PushHotkeyPressedBinding(ActionToggleHud, SimActions.ToggleHud);
             manager.PushHotkeyPressedBinding(ActionToggleLog, SimActions.ToggleLog);
+            manager.PushHotkeyPressedBinding(ActionPeek, SimActions.Peek);
             manager.PushHotkeyPressedBinding(ActionAiOnce, () => SimActions.AiOnce("F6 (AI takes this decision)"));
             manager.PushHotkeyPressedBinding(ActionAiAuto, () => SimActions.ToggleAutoplay("F7 (AI plays until you stop)"));
             manager.PushHotkeyPressedBinding(ActionToggleAdvisor, SimActions.ToggleAdvisor);
@@ -111,7 +115,7 @@ public static class SimHotkeys
             manager.PushHotkeyPressedBinding(ActionCopyState, SimActions.CopyState);
 
             _installed = true;
-            GD.Print("[SpireMentor] Hotkeys installed: F1=help, F4=HUD, F3=log, F6=AI once, F7=AI auto, F8=advisor mode, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state");
+            GD.Print("[SpireMentor] Hotkeys installed: F1=help, F4=HUD, F3=log, F5=peek (Coach), F6=AI once, F7=AI auto, F8=AI on/off, F9/F10=speed -/+, Ctrl+Z=undo turn, Ctrl+Shift+Z=restart room, Ctrl+Shift+C=copy state");
         }
         catch (Exception ex)
         {

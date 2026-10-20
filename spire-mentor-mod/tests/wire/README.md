@@ -60,6 +60,7 @@ exactly what the rest of the mod calls (`MainFile`, `SimShutdown`,
 | `Task<string?> WaitForActionAsync(TimeSpan, CancellationToken)` | (public, "used rarely") |
 | `string? SendAdviceRequest(string, Action<JsonElement>)` | SimAdvisor |
 | `void CancelAdviceRequest(string)` | SimAdvisor |
+| `event Action<JsonElement> CoachReceived` (optional: absent on pre-v5 builds) | SimAdvisor |
 
 Methods are looked up by name + parameter count; any awaitable `Task`
 whose `Result` property is read works. Nothing private of `BridgeServer` is
@@ -129,7 +130,7 @@ differs in keys: …`).
 |---|---|
 | 00 pre_start | every API before `Start()`: `SendStateAndWait` → null immediately, `SendAdviceRequest` → null, `WaitForActionAsync` blocks until timeout |
 | 01 start_connect | Start, connect, **no greeting/handshake** from server, `Start()` idempotent (same and different port: 2nd port not opened) |
-| 02 outbound_types | `SendState` with every outbound type in PROTOCOL.md (combat_action … combat_undone, snapshots, pong) → one verbatim line each |
+| 02 outbound_types | `SendState` with every outbound type in PROTOCOL.md (combat_action … combat_undone, snapshots, pong, incl. the v5 `human_action` kinds: end turn, choice, skip) → one verbatim line each |
 | 03 sendstate_framing | SendState writes payload verbatim + `\n`: pretty JSON → multiple wire lines, `""` → empty line, non-JSON, trailing `\n`/`\r\n`, unicode/HTML chars unescaped |
 | 04 request_id_injection | `request_id` injection by re-serialization: appended at end / replaced in place (string or numeric existing id), whitespace compacted, number literals preserved, non-ASCII & `<>&'"` escaped to `\uXXXX`, duplicate keys collapse (last wins), `{}`/`null` → `{"request_id":"N"}`, non-object/invalid JSON sent unchanged *without* id (can only time out) |
 | 05 correlation | wrong / missing / numeric / malformed reply dropped while pending; ping with pending id → pong, not consumed; advice verb with autopilot id not consumed; list_snapshots while pending; padded+CRLF reply trimmed; duplicate reply; supersede (2nd request cancels 1st → null; late reply to 1st dropped); every client verb (play, end_turn, potion, choose index/indices/indexes, skip, cancel, start_run, annotations, case) passed through verbatim; CancellationToken cancel; timeout; zero timeout & pre-cancelled token (request still sent, returns null); infinite timeout |
@@ -147,6 +148,7 @@ differs in keys: …`).
 | 17 restart_after_stop | Start() on a new port after Stop() works end-to-end |
 | 18 start_busy_port | Start() on a bound port throws `SocketException(AddressAlreadyInUse)`; a following Start() on a free port then serves normally |
 | 19 hostile_clients | a browser-style HTTP POST (body = a rewind verb) is dropped before any line is routed; a 9 MiB line without a newline drops that client; a fresh client is served afterwards |
+| 20 coach_lane | v5 `coach` messages raise `CoachReceived` with a copy of the record (`coach_received` hook), verb case-insensitive, non-object / missing `coach` dropped; neither an uncorrelated `WaitForActionAsync` nor a correlated request consumes them |
 
 ## Not covered (and why)
 

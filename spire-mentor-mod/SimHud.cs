@@ -347,7 +347,22 @@ internal sealed class SimHud
     {
         // Status chip tracks mode/HUD-toggle changes from any surface
         // (settings page, hotkey, console).
-        SimRuntime.Changed += () => RunOnMainThread(() => RefreshStatusAndVisibility());
+        SimRuntime.Changed += () => RunOnMainThread(() =>
+        {
+            RefreshStatusAndVisibility();
+            // Switched into the Coach style (or the coach turned on in it):
+            // whatever Hints drew for this position must not stay up.
+            if (SimRuntime.CoachStyleActive && !_peekShowing)
+            {
+                ClearPreActionSurfaces();
+            }
+            else if (!SimRuntime.CoachStyleActive && _peekShowing)
+            {
+                // Left the Coach style with a peek up: it was Coach-only.
+                _peekShowing = false;
+                ClearPreActionSurfaces();
+            }
+        });
     }
 
     private CanvasLayer? _layer;
@@ -362,6 +377,15 @@ internal sealed class SimHud
     // and re-renders from the advice the panel last showed.
     private bool _rankedExpanded;
     private SimAdvice? _panelAdvice;
+
+    /// <summary>The latest advice the advisor delivered, rendered or not
+    /// (the Coach style keeps it for the F5 peek), and the player it was
+    /// rendered for. Cleared by <see cref="ClearAdvice"/>.</summary>
+    private SimAdvice? _latestAdvice;
+    private Player? _latestPlayer;
+
+    /// <summary>The F5 peek (or its "thinking…" line) is on screen.</summary>
+    private bool _peekShowing;
 
 
     // ------------------------------------------------------------------
@@ -405,6 +429,9 @@ internal sealed class SimHud
     {
         RunOnMainThread(() =>
         {
+            _latestAdvice = null;
+            _latestPlayer = null;
+            _peekShowing = false;
             ClearCardLabels();
             ClearMapMarkers();
             ClearAdvicePanel();
@@ -452,15 +479,167 @@ internal sealed class SimHud
 
     private void RenderAdvice(SimAdvice advice, Player? player)
     {
+        _latestAdvice = advice;
+        _latestPlayer = player;
         if (!EnsureLayer())
         {
             return;
         }
         EnsureCombatEndedSubscription();
+        // THE Coach-style gate: nothing the advisor said reaches the screen
+        // before the player acts -- no ranked panel, eval bar, "line:" row,
+        // low-confidence note, card score, map marker / route, or toolbar
+        // note. The advice is kept (F5 peek); SimAdvisor still holds the
+        // standing recommendation for F6/F7 and the unattended drivers.
+        if (SimRuntime.CoachStyleActive)
+        {
+            RefreshStatusAndVisibility();
+            if (!_peekShowing)
+            {
+                ClearPreActionSurfaces();
+            }
+            return;
+        }
         RefreshStatusAndVisibility(advice.Note);
         RenderAdvicePanel(advice);
         RenderCardLabels(advice, player);
         RenderMapMarkers(advice);
+    }
+
+    // ------------------------------------------------------------------
+    // F5 peek (Coach style): the AI's pick for the next decision only
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Draw the best option of the latest advice with the Hints renderers,
+    /// and nothing else: in combat its card's ★ label plus a one-row panel
+    /// naming card and target, on the map a single marker (no route, no other
+    /// scores), elsewhere the one-row panel. Main thread only. False when
+    /// there is no advice to show (the caller then shows "thinking…").
+    /// </summary>
+    public bool ShowPeekNow()
+    {
+        if (!NGame.IsMainThread() || !EnsureLayer())
+        {
+            return false;
+        }
+        SimAdvice? advice = _latestAdvice;
+        if (advice == null)
+        {
+            return false;
+        }
+        SimAdviceOption? best = advice.Options.Find(o => o.IsBest) ?? (advice.Options.Count > 0 ? advice.Options[0] : null);
+        string label = best?.Label is { Length: > 0 } l ? l : advice.Best?.Label ?? "";
+        if (label.Length == 0)
+        {
+            return false;
+        }
+        ClearPreActionSurfaces();
+        _peekShowing = true;
+        try
+        {
+            if (best?.Col != null && best.Row != null && PeekMapMarker(best))
+            {
+                return true;
+            }
+            if (best?.CardIndex != null)
+            {
+                PeekCardLabel(best);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimHud] Peek anchor failed: {ex.Message}");
+        }
+        ShowPeekLine("AI would: " + label, new Color(1f, 0.85f, 0.3f));
+        return true;
+    }
+
+    /// <summary>F5 before the advice arrived: say so; the pick replaces it.</summary>
+    public void ShowPeekThinking()
+    {
+        RunOnMainThread(() =>
+        {
+            if (!EnsureLayer())
+            {
+                return;
+            }
+            ClearPreActionSurfaces();
+            _peekShowing = true;
+            ShowPeekLine("AI is thinking…", new Color(0.7f, 0.7f, 0.75f));
+        });
+    }
+
+    /// <summary>The decision the peek was for is made (or the board moved):
+    /// hide it. No-op unless a peek is showing, so Hints is never touched.</summary>
+    public void ClearPeek()
+    {
+        RunOnMainThread(() =>
+        {
+            if (!_peekShowing)
+            {
+                return;
+            }
+            _peekShowing = false;
+            ClearPreActionSurfaces();
+        });
+    }
+
+    private void ShowPeekLine(string text, Color color)
+    {
+        if (_adviceRows == null || !GodotObject.IsInstanceValid(_adviceRows) ||
+            _advicePanel == null || !GodotObject.IsInstanceValid(_advicePanel))
+        {
+            return;
+        }
+        Label row = SmallLabel(text + "   (F5 peek)", color);
+        row.CustomMinimumSize = new Vector2(320, 0);
+        row.ClipText = true;
+        _adviceRows.AddChildSafely(row);
+        _advicePanel.Visible = true;
+    }
+
+    private void PeekCardLabel(SimAdviceOption best)
+    {
+        Player? player = _latestPlayer;
+        NPlayerHand? handUi = NPlayerHand.Instance;
+        if (player == null || !CombatManager.Instance.IsInProgress ||
+            handUi == null || !GodotObject.IsInstanceValid(handUi))
+        {
+            return;
+        }
+        RenderOneCardLabel(best, PileType.Hand.GetPile(player), handUi);
+    }
+
+    private bool PeekMapMarker(SimAdviceOption best)
+    {
+        NMapScreen? map = NMapScreen.Instance;
+        if (map == null || !GodotObject.IsInstanceValid(map) || !map.IsOpen || !map.IsVisibleInTree())
+        {
+            return false;
+        }
+        foreach (NMapPoint mp in UiHelper.FindAll<NMapPoint>(map))
+        {
+            if (GodotObject.IsInstanceValid(mp) &&
+                mp.Point.coord.col == best.Col!.Value && mp.Point.coord.row == best.Row!.Value)
+            {
+                AddMapMarker(mp, "★ AI", new Color(1f, 0.85f, 0.3f), 6, dy: -52f);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Remove every pre-action advice surface (Coach style).</summary>
+    private void ClearPreActionSurfaces()
+    {
+        ClearCardLabels();
+        ClearMapMarkers();
+        ClearAdvicePanel();
+        if (_advicePanel != null && GodotObject.IsInstanceValid(_advicePanel))
+        {
+            _advicePanel.Visible = false;
+        }
     }
 
     private bool HudVisible => SpireMentorModConfig.ShowHud && SimRuntime.Mode != SimMode.Off;
@@ -475,7 +654,7 @@ internal sealed class SimHud
         _layer!.Visible = HudVisible;
         // The status text itself lives on the toolbar now; the advice note
         // rides along (and clears on note-less refreshes, as the chip did).
-        SimToolbar.Instance.SetNote(HudVisible ? note : null);
+        SimToolbar.Instance.SetNote(HudVisible && !SimRuntime.CoachStyleActive ? note : null);
     }
 
     private void RenderAdvicePanel(SimAdvice advice)
@@ -1380,6 +1559,35 @@ internal sealed class SimHud
     /// Keep the chip and the advice panel clear of the game's own top bar
     /// (measured every tick -- see SimTopBarLayout.SafeTopY for the why).
     /// </summary>
+    /// <summary>
+    /// Where the coach chip (SimCoachChip) goes: just below the advice panel
+    /// when it is showing, else in the panel's own slot under the toolbar.
+    /// Viewport pixels. Main thread.
+    /// </summary>
+    public Vector2 ChipSlot()
+    {
+        try
+        {
+            if (_advicePanel != null && GodotObject.IsInstanceValid(_advicePanel))
+            {
+                float top = _advicePanel.Position.Y;
+                if (_advicePanel.IsVisibleInTree())
+                {
+                    top += _advicePanel.Size.Y + 8f;
+                }
+                return new Vector2(PanelLeft, top);
+            }
+            float? toolbarBottom = SimToolbar.Instance.BottomY();
+            return new Vector2(PanelLeft, toolbarBottom.HasValue
+                ? toolbarBottom.Value + 8f
+                : ChipFallbackTop + ChipToPanelGap);
+        }
+        catch (Exception)
+        {
+            return new Vector2(PanelLeft, ChipFallbackTop + ChipToPanelGap);
+        }
+    }
+
     private void RepositionPanels()
     {
         try

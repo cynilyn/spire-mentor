@@ -11,6 +11,7 @@ pub(crate) fn on_after_card_played_razor_tooth(
     let Some(uid) = ctx.card_uid else {
         return EffectResult::NotImplemented;
     };
+    let version = state.game_version;
     let Some(card) = crate::card_by_uid_mut(&mut state.cards, uid) else {
         return EffectResult::NotImplemented;
     };
@@ -20,7 +21,7 @@ pub(crate) fn on_after_card_played_razor_tooth(
     ) {
         return EffectResult::NotImplemented;
     }
-    card.upgrade();
+    card.upgrade_for(version);
     EffectResult::Resolved
 }
 

@@ -34,10 +34,13 @@ internal static class SimWorkbenchLink
     /// Open the workbench in the default browser. Probes the server first
     /// (off the main thread) so a dead workbench produces a helpful note
     /// instead of a browser error page. Never throws, never blocks.
+    /// <paramref name="run"/> / <paramref name="step"/> (a coach record's
+    /// <c>log_name</c> / <c>log_idx</c>) open the replay at that decision
+    /// instead of the newest step.
     /// </summary>
-    public static void Open() => TaskHelper.RunSafely(OpenAsync());
+    public static void Open(string? run = null, int? step = null) => TaskHelper.RunSafely(OpenAsync(run, step));
 
-    private static async Task OpenAsync()
+    private static async Task OpenAsync(string? run, int? step)
     {
         // A configured URL is the only candidate (SpireMentorModConfig.WorkbenchUrl).
         string configured = SpireMentorModConfig.WorkbenchUrl.Trim();
@@ -60,6 +63,7 @@ internal static class SimWorkbenchLink
             Logger.Log($"[SimWorkbenchLink] Health probe failed for {string.Join(", ", candidates)}; not opening a browser.");
             return;
         }
+        url = WorkbenchUrl.WithFollowParams(url, run, step);
         // NOT OS.ShellOpen: that spawns the browser as a CHILD OF THE GAME,
         // and Steam waits for the game's whole descendant tree on quit -- a
         // browser opened this way left Steam stuck on "closing" until the

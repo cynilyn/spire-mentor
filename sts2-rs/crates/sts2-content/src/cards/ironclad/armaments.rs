@@ -55,10 +55,12 @@ pub(crate) fn play_armaments(state: &mut CombatState, _t: Option<CreatureUid>) -
 
     if upgraded_branch {
         // Upgraded Armaments: upgrade EVERY un-upgraded hand card (C# `foreach`).
+        let version = state.game_version;
         for uid in &upgradable {
             let idx = uid.0.get() as usize - 1;
             if let Some(c) = state.cards.get_mut(idx) {
-                let _ = c.upgrade();
+                // GH #793: the upgrade delta of the combat's game build.
+                let _ = c.upgrade_for(version);
             }
         }
         return EffectResult::Resolved;
@@ -98,8 +100,10 @@ pub(crate) fn play_armaments(state: &mut CombatState, _t: Option<CreatureUid>) -
     } else if let Some(uid) = upgradable.first() {
         // Exactly one upgradable card — auto-upgrade (decomp FirstOrDefault).
         let idx = uid.0.get() as usize - 1;
+        let version = state.game_version;
         if let Some(c) = state.cards.get_mut(idx) {
-            let _ = c.upgrade();
+            // GH #793: the upgrade delta of the combat's game build.
+            let _ = c.upgrade_for(version);
         }
     }
     EffectResult::Resolved

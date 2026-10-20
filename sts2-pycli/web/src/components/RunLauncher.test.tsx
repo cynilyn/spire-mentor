@@ -96,6 +96,34 @@ describe("RunLauncher", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("start failed: 500");
   });
 
+  it("hides the game-version select when the server runs one build", () => {
+    renderLauncher();
+    expect(screen.queryByLabelText("version")).toBeNull();
+    renderLauncher({ gameVersions: ["v0.107.1"], gameVersion: "v0.107.1", onGameVersion: vi.fn() });
+    expect(screen.queryByLabelText("version")).toBeNull();
+  });
+
+  it("offers the game builds when there are two, and reports the pick", () => {
+    const onGameVersion = vi.fn();
+    renderLauncher({ gameVersions: ["v0.107.1", "v0.111.0"], gameVersion: "v0.107.1", onGameVersion });
+    const sel = screen.getByLabelText("version");
+    expect(sel).toHaveValue("v0.107.1");
+    expect(screen.getByRole("option", { name: "game v0.107.1 (stable)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "v0.111.0 (beta)" })).toBeInTheDocument();
+    fireEvent.change(sel, { target: { value: "v0.111.0" } });
+    expect(onGameVersion).toHaveBeenCalledWith("v0.111.0");
+  });
+
+  it("pins the version to the default under the C# engine, which plays only that build", () => {
+    renderLauncher({
+      backend: "csharp", backends: ["rust", "csharp"],
+      gameVersions: ["v0.107.1", "v0.111.0"], gameVersion: "v0.111.0", onGameVersion: vi.fn(),
+    });
+    const sel = screen.getByLabelText("version");
+    expect(sel).toBeDisabled();
+    expect(sel).toHaveValue("v0.107.1");
+  });
+
   it("keeps the engine and act-1 selects reachable by label", () => {
     const { props } = renderLauncher();
     fireEvent.change(screen.getByLabelText("engine"), { target: { value: "csharp" } });

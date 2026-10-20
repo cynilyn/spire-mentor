@@ -395,7 +395,14 @@ public class SimAutoSlayer
 
         // Handlers receive this Rng per the IHandler contract; the Sim
         // handlers do not draw from it.
+        // Seeded the way the game's own AutoSlayer seeds its Rng: v0.107.1
+        // truncates the int hash to uint (AutoSlayer.cs:167); v0.111.0's hash
+        // is already a ulong and goes in whole (AutoSlayer.cs:184).
+#if GAME_V0111
+        _rng = new Rng(StringHelper.GetDeterministicHashCode(provisionalSeed));
+#else
         _rng = new Rng((uint)StringHelper.GetDeterministicHashCode(provisionalSeed));
+#endif
 
         _selectorOverride = CardSelectCmd.UseSelector(new SimCardSelector());
 
@@ -1448,7 +1455,9 @@ public class SimGameOverScreenHandler : IScreenHandler, IHandler
         await WaitHelper.Until(() => IsGone(screen), ct, CloseWait, "Game over screen did not close");
     }
 
-    private static bool ReadVictory()
+    /// <summary>Whether the run ended in victory (it ended in the victory
+    /// room). Shared with the Advisor-mode game_over report.</summary>
+    internal static bool ReadVictory()
     {
         try
         {
@@ -1465,14 +1474,13 @@ public class SimGameOverScreenHandler : IScreenHandler, IHandler
     private static void NotifyGameOver(bool victory)
     {
         RunState? runState = RunManager.Instance.DebugOnlyGetState();
-        var message = new Dictionary<string, object>
+        // One game_over per run, shared with the Advisor-mode report (a run
+        // that cannot be identified still sends, as it always did).
+        if (runState != null && !SimCoachReports.TryClaimGameOver(runState))
         {
-            [NonCombatBridgeProtocol.TypeField] = NonCombatBridgeProtocol.GameOverState,
-            [NonCombatBridgeProtocol.ResultField] = victory
-                ? NonCombatBridgeProtocol.VictoryResult
-                : NonCombatBridgeProtocol.DefeatResult,
-            [NonCombatBridgeProtocol.MessageField] = NonCombatBridgeProtocol.GameOverMessage,
-        };
+            return;
+        }
+        var message = SimCoachReports.GameOver(victory);
         SimStateExtractor.ApplyEnvelope(message, runState, LocalContext.GetMe(runState));
         BridgeServer.Instance.SendState(JsonSerializer.Serialize(message));
     }

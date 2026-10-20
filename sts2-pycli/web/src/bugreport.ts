@@ -22,11 +22,13 @@
  * would work.
  */
 import type { BugReportDump } from "./api";
+import { DEFAULT_GAME_VERSION, declaredGameVersion, runLogGameVersion } from "./gameVersion";
 import { apiFetch } from "./transport";
 
-/** The decompiled engine build the workbench display targets (mirrors
- *  `workbench/bugreport.py`'s constant). */
-export const ENGINE_BUILD = "v0.107.1";
+/** The engine build a report is stamped with when its session names none
+ *  (mirrors `workbench/bugreport.py`'s constant). Since GH #801 the stamp is
+ *  the session's own `game_version`; this is what a missing key means. */
+export const ENGINE_BUILD = DEFAULT_GAME_VERSION;
 export const BUGREPORT_ENDPOINT = "/api/bugreport";
 
 export interface CaptureRequest {
@@ -92,6 +94,7 @@ export async function buildBrowserDump(req: CaptureRequest, deps: BugReportDeps 
   let meta: Record<string, unknown>;
   let repro: Record<string, unknown>;
   let state: Record<string, unknown>;
+  let engineBuild: string;
   if (req.mode === "live") {
     let step: { state?: unknown };
     try {
@@ -110,6 +113,7 @@ export async function buildBrowserDump(req: CaptureRequest, deps: BugReportDeps 
     };
     repro = { persist };
     state = { game_state: step.state ?? step, map };
+    engineBuild = declaredGameVersion(persist) ?? declaredGameVersion(step) ?? DEFAULT_GAME_VERSION;
   } else if (req.mode === "replay") {
     const idx = req.step;
     if (idx == null || idx < 0) throw new Error("nothing to capture");
@@ -136,10 +140,13 @@ export async function buildBrowserDump(req: CaptureRequest, deps: BugReportDeps 
     };
     repro = { run_file: req.run_path ?? null, line: idx, run_log: log?.text ?? null };
     state = { game_state: gs, map: null };
+    // The step's state names a non-default build; the run log's head meta is
+    // the fallback when it does not. Absent from both means v0.107.1.
+    engineBuild = declaredGameVersion(step) ?? runLogGameVersion(log?.text) ?? DEFAULT_GAME_VERSION;
   } else {
     throw new Error(`unknown mode: ${req.mode}`);
   }
-  meta.engine_build = ENGINE_BUILD;
+  meta.engine_build = engineBuild;
   meta.workbench_commit = d.buildId;
   meta.host = d.origin;
   meta.user_agent = d.userAgent;

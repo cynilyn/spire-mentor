@@ -30,7 +30,15 @@
 //!   manifest mode against it.
 //! * `creature_scales.json` — per-creature authored scene scale + Bounds box.
 //!
-//! Everything is parsed once, lazily, into [`Data`] (see [`data`]).
+//! One bundle per game build (GH #801): the layout above is the DEFAULT
+//! build's (v0.107.1); every other [`GameVersion`] has a full sibling set
+//! under `data/game/<ver>/` (`data/game/v0.111.0/`), built by
+//! `bundle_workbench_data.py` from that build's vendored loc
+//! (`localization_eng_<ver>/`) and wiki aggregates. The art tree is shared,
+//! so a card new in a later build resolves to the placeholder art.
+//!
+//! Everything is parsed once per build, lazily, into [`Data`] (see
+//! [`data_for`]; [`data`] is the default build's).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -38,11 +46,23 @@ use std::sync::OnceLock;
 
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use sts2_core::GameVersion;
 
-/// The game build the engine simulates and every bundled file describes.
-/// Mirrors `workbench.localization._ENGINE_WIKI_VERSION`; flip in lockstep
-/// when the engine pin moves.
+/// The DEFAULT game build's wiki version — what [`data`] describes.
+/// Mirrors `workbench.localization._ENGINE_WIKI_VERSION`; every build's is
+/// [`engine_wiki_version`].
 pub const ENGINE_WIKI_VERSION: &str = "v0.107.1";
+
+/// The wiki `data/<ver>/` version (and vendored `BUILD.txt` line) that
+/// build `version`'s bundle describes. Mirrors
+/// `workbench.localization.engine_wiki_version`.
+#[must_use]
+pub const fn engine_wiki_version(version: GameVersion) -> &'static str {
+    match version {
+        GameVersion::V0_107_1 => ENGINE_WIKI_VERSION,
+        GameVersion::V0_111_0 => "v0.111.0",
+    }
+}
 
 /// A flat `{"KEY.field": "string"}` localization dump.
 pub type LocMap = BTreeMap<String, String>;
@@ -219,12 +239,26 @@ pub struct Data {
     pub deck_card_tags: BTreeMap<String, serde_json::Value>,
 }
 
-/// A game-derived bundle file, staged by `build.rs` into `$OUT_DIR/game/`
-/// (a copy of `data/game/<name>` when present, an empty stub otherwise).
+/// A game-derived bundle file of build `$version`, staged by `build.rs`
+/// into `$OUT_DIR/game/[<ver>/]` (a copy of `data/game/[<ver>/]<name>` when
+/// present, a stub otherwise). A non-default build's file staged EMPTY is
+/// byte-identical to the default build's (`build.rs` dedups it so a shared
+/// table is embedded once), so it reads as the default build's text.
 macro_rules! bundled {
-    ($name:literal) => {
-        include_str!(concat!(env!("OUT_DIR"), "/game/", $name))
-    };
+    ($version:expr, $name:literal) => {{
+        let base: &'static str = include_str!(concat!(env!("OUT_DIR"), "/game/", $name));
+        let own: &'static str = match $version {
+            GameVersion::V0_107_1 => base,
+            GameVersion::V0_111_0 => {
+                include_str!(concat!(env!("OUT_DIR"), "/game/v0.111.0/", $name))
+            }
+        };
+        if own.is_empty() {
+            base
+        } else {
+            own
+        }
+    }};
 }
 
 /// A curated (non-game) file committed under `data/`.
@@ -240,11 +274,19 @@ fn parse<T: for<'de> Deserialize<'de>>(name: &str, text: &str) -> T {
 }
 
 impl Data {
-    /// Parse the committed bundle. Prefer [`data`], which does this once.
+    /// Parse the default build's committed bundle. Prefer [`data`], which
+    /// does this once.
     #[must_use]
     pub fn load_bundled() -> Self {
+        Self::load_bundled_for(GameVersion::default())
+    }
+
+    /// Parse build `version`'s committed bundle. Prefer [`data_for`], which
+    /// does this once per build.
+    #[must_use]
+    pub fn load_bundled_for(version: GameVersion) -> Self {
         Self {
-            loc_build: bundled!("localization_eng/BUILD.txt")
+            loc_build: bundled!(version, "localization_eng/BUILD.txt")
                 .lines()
                 .next()
                 .unwrap_or_default()
@@ -252,54 +294,63 @@ impl Data {
                 .to_string(),
             loc_cards: parse(
                 "localization_eng/cards.json",
-                bundled!("localization_eng/cards.json"),
+                bundled!(version, "localization_eng/cards.json"),
             ),
             loc_card_keywords: parse(
                 "localization_eng/card_keywords.json",
-                bundled!("localization_eng/card_keywords.json"),
+                bundled!(version, "localization_eng/card_keywords.json"),
             ),
             loc_afflictions: parse(
                 "localization_eng/afflictions.json",
-                bundled!("localization_eng/afflictions.json"),
+                bundled!(version, "localization_eng/afflictions.json"),
             ),
             loc_rest_site_ui: parse(
                 "localization_eng/rest_site_ui.json",
-                bundled!("localization_eng/rest_site_ui.json"),
+                bundled!(version, "localization_eng/rest_site_ui.json"),
             ),
             loc_relics: parse(
                 "localization_eng/relics.json",
-                bundled!("localization_eng/relics.json"),
+                bundled!(version, "localization_eng/relics.json"),
             ),
             loc_potions: parse(
                 "localization_eng/potions.json",
-                bundled!("localization_eng/potions.json"),
+                bundled!(version, "localization_eng/potions.json"),
             ),
             loc_characters: parse(
                 "localization_eng/characters.json",
-                bundled!("localization_eng/characters.json"),
+                bundled!(version, "localization_eng/characters.json"),
             ),
             loc_events: parse(
                 "localization_eng/events.json",
-                bundled!("localization_eng/events.json"),
+                bundled!(version, "localization_eng/events.json"),
             ),
             loc_monsters: parse(
                 "localization_eng/monsters.json",
-                bundled!("localization_eng/monsters.json"),
+                bundled!(version, "localization_eng/monsters.json"),
             ),
             loc_orbs: parse(
                 "localization_eng/orbs.json",
-                bundled!("localization_eng/orbs.json"),
+                bundled!(version, "localization_eng/orbs.json"),
             ),
             loc_powers: parse(
                 "localization_eng/powers.json",
-                bundled!("localization_eng/powers.json"),
+                bundled!(version, "localization_eng/powers.json"),
             ),
-            wiki_cards: parse("wiki_cards.json", bundled!("wiki_cards.json")),
-            wiki_monsters: parse("wiki_monsters.json", bundled!("wiki_monsters.json")),
-            wiki_owned: parse("wiki_owned.json", bundled!("wiki_owned.json")),
-            asset_manifest: parse("asset_manifest.json", bundled!("asset_manifest.json")),
-            creature_scales: parse("creature_scales.json", bundled!("creature_scales.json")),
-            deck_card_db: parse("card_db.json", bundled!("card_db.json")),
+            wiki_cards: parse("wiki_cards.json", bundled!(version, "wiki_cards.json")),
+            wiki_monsters: parse(
+                "wiki_monsters.json",
+                bundled!(version, "wiki_monsters.json"),
+            ),
+            wiki_owned: parse("wiki_owned.json", bundled!(version, "wiki_owned.json")),
+            asset_manifest: parse(
+                "asset_manifest.json",
+                bundled!(version, "asset_manifest.json"),
+            ),
+            creature_scales: parse(
+                "creature_scales.json",
+                bundled!(version, "creature_scales.json"),
+            ),
+            deck_card_db: parse("card_db.json", bundled!(version, "card_db.json")),
             deck_card_tags: {
                 let mut tags: BTreeMap<String, serde_json::Value> =
                     parse("card_tags.json", curated!("card_tags.json"));
@@ -310,15 +361,74 @@ impl Data {
     }
 }
 
-/// The parsed bundle, built on first use and shared thereafter.
+/// The default build's parsed bundle, built on first use and shared
+/// thereafter. Same as `data_for(GameVersion::default())`.
 pub fn data() -> &'static Data {
-    static DATA: OnceLock<Data> = OnceLock::new();
-    DATA.get_or_init(Data::load_bundled)
+    data_for(GameVersion::default())
+}
+
+/// Build `version`'s parsed bundle, built on first use and shared
+/// thereafter.
+pub fn data_for(version: GameVersion) -> &'static Data {
+    static CELLS: PerVersion<Data> = PerVersion::new();
+    CELLS.get_or_init(version, || Data::load_bundled_for(version))
+}
+
+/// One lazily built value per [`GameVersion`] — the cache behind every
+/// `*_for(version)` accessor, so a new build needs no new statics.
+pub(crate) struct PerVersion<T>([OnceLock<T>; GameVersion::ALL.len()]);
+
+impl<T> PerVersion<T> {
+    pub(crate) const fn new() -> Self {
+        Self([const { OnceLock::new() }; GameVersion::ALL.len()])
+    }
+
+    pub(crate) fn get_or_init(&self, version: GameVersion, init: impl FnOnce() -> T) -> &T {
+        let i = GameVersion::ALL
+            .iter()
+            .position(|v| *v == version)
+            .expect("every GameVersion is in GameVersion::ALL");
+        self.0[i].get_or_init(init)
+    }
+}
+
+/// The game builds this binary can display: the default build plus every
+/// other build whose bundle was complete at compile time (`build.rs`). A build
+/// left out would render loc keys, so the version picker must not offer it.
+pub fn embedded_versions() -> Vec<GameVersion> {
+    let complete: Vec<&str> = env!("WORKBENCH_EMBEDDED_VERSIONS").split(',').collect();
+    GameVersion::ALL
+        .into_iter()
+        .filter(|v| v.is_default() || complete.contains(&v.as_str()))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `build.rs`'s `VERSIONED` is every non-default `GameVersion`: a build
+    /// missing there is never staged, one extra is staged for nothing.
+    #[test]
+    fn build_script_versions_match_game_version_all() {
+        let staged: Vec<&str> = env!("WORKBENCH_VERSIONED").split(',').collect();
+        let expected: Vec<&str> = GameVersion::ALL
+            .into_iter()
+            .filter(|v| !v.is_default())
+            .map(GameVersion::as_str)
+            .collect();
+        assert_eq!(staged, expected);
+    }
+
+    #[test]
+    fn embedded_versions_always_offer_the_default() {
+        let v = embedded_versions();
+        assert!(v.contains(&GameVersion::default()), "{v:?}");
+        #[cfg(workbench_game_data_v0_111_0)]
+        assert!(v.contains(&GameVersion::V0_111_0), "{v:?}");
+        #[cfg(not(workbench_game_data_v0_111_0))]
+        assert!(!v.contains(&GameVersion::V0_111_0), "{v:?}");
+    }
 
     #[cfg(workbench_game_data)]
     #[test]
@@ -335,6 +445,59 @@ mod tests {
         // The art manifest is what the resolver's existence checks run
         // against; it is sorted so lookups by prefix are deterministic.
         assert!(d.asset_manifest.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn data_is_the_default_builds_bundle() {
+        assert!(std::ptr::eq(data(), data_for(GameVersion::V0_107_1)));
+        assert!(!std::ptr::eq(data(), data_for(GameVersion::V0_111_0)));
+        assert_eq!(
+            engine_wiki_version(GameVersion::V0_107_1),
+            ENGINE_WIKI_VERSION
+        );
+        assert_eq!(engine_wiki_version(GameVersion::V0_111_0), "v0.111.0");
+        for v in GameVersion::ALL {
+            assert_eq!(engine_wiki_version(v), v.as_str());
+        }
+    }
+
+    #[cfg(workbench_game_data_v0_111_0)]
+    #[test]
+    fn v0_111_bundle_parses_and_knows_its_new_content() {
+        let d = data_for(GameVersion::V0_111_0);
+        assert_eq!(d.loc_build, engine_wiki_version(GameVersion::V0_111_0));
+        // Cards, a relic and a potion new in v0.111.0.
+        assert_eq!(d.loc_cards["CACOPHONY.title"], "Cacophony");
+        assert!(d.wiki_cards.iter().any(|c| c.loc_key == "CACOPHONY"));
+        assert!(d.wiki_cards.iter().any(|c| c.loc_key == "BLADE_SYMPHONY"));
+        assert!(d.loc_relics.contains_key("DOWSING_ROD.title"));
+        assert!(d.wiki_owned.iter().any(|o| o.class_name == "DowsingRod"));
+        assert!(d.loc_potions.contains_key("AMBERGRIS.title"));
+        // The default build knows none of it.
+        let base = data();
+        assert!(!base.loc_cards.contains_key("CACOPHONY.title"));
+        assert!(!base.wiki_cards.iter().any(|c| c.loc_key == "CACOPHONY"));
+        assert!(!base.wiki_owned.iter().any(|o| o.class_name == "DowsingRod"));
+        // Content the engine still implements keeps its name (the vendor
+        // merge retains keys only the older build had).
+        assert_eq!(d.loc_cards["GRAPPLE.title"], "Grapple");
+        // The art manifest is the shared tree plus this build's overlay
+        // (`v0.111.0/…`); the default build's lists no overlay at all.
+        let shared: Vec<&String> = d
+            .asset_manifest
+            .iter()
+            .filter(|r| !r.starts_with("v0.111.0/"))
+            .collect();
+        assert_eq!(shared, base.asset_manifest.iter().collect::<Vec<_>>());
+        assert!(d
+            .asset_manifest
+            .iter()
+            .any(|r| r == "v0.111.0/card_atlas/silent/blade_symphony.png"));
+        assert!(!base.asset_manifest.iter().any(|r| r.starts_with("v0.")));
+        // Shared tables (deduped at build time) still read in full.
+        assert_eq!(d.deck_card_db, base.deck_card_db);
+        assert!(!d.creature_scales.is_empty());
+        assert!(!d.loc_afflictions.is_empty());
     }
 
     #[test]

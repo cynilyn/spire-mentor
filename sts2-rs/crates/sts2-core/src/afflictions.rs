@@ -241,7 +241,11 @@ pub fn classify(kind: PowerKind) -> AfflictionClass {
         | PowerKind::ManglePower
         | PowerKind::MonarchsGazeStrengthDown
         | PowerKind::PiercingWail
-        | PowerKind::ShacklingPotion => AfflictionClass::debuff_perm(),
+        | PowerKind::ShacklingPotion
+        // v0.111.0 `HyperbeamFocusDownPower : TemporaryFocusPower` with
+        // `IsPositive => false`, so `Type => Debuff` (decomp
+        // HyperbeamFocusDownPower.cs:7, TemporaryFocusPower.cs:20-30).
+        | PowerKind::HyperbeamFocusDown => AfflictionClass::debuff_perm(),
 
         // ---------- Core pipeline buffs (permanent / stat) ----------
         PowerKind::Strength

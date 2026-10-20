@@ -27,23 +27,9 @@ class Program
             e.SetObserved();
         };
 
-        // Set up assembly resolution to find game DLLs.
-        // Walk up from BaseDirectory looking for a sibling lib/ (handles bin/Debug/net*/ layouts).
-        string libDir = Path.Combine(AppContext.BaseDirectory, "lib");
-        if (!Directory.Exists(libDir))
-        {
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
-            while (dir != null)
-            {
-                var candidate = Path.Combine(dir.FullName, "lib");
-                if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "sts2.dll")))
-                {
-                    libDir = candidate;
-                    break;
-                }
-                dir = dir.Parent;
-            }
-        }
+        // Set up assembly resolution to find game DLLs: lib/<GameVersion>/, the
+        // build this binary was compiled against (see HeadlessPaths).
+        string libDir = HeadlessPaths.LibDir;
 
         AssemblyLoadContext.Default.Resolving += (ctx, name) =>
         {
@@ -64,7 +50,14 @@ class Program
         };
 
         var sim = new RunSimulator();
-        WriteLine(new Dictionary<string, object?> { ["type"] = "ready", ["version"] = "0.2.0" });
+        WriteLine(new Dictionary<string, object?>
+        {
+            ["type"] = "ready",
+            ["version"] = "0.2.0",
+            // The game build this oracle links against (GH #789); the Python
+            // client checks it against the version it asked for.
+            ["game_version"] = HeadlessPaths.GameVersion,
+        });
 
         string? line;
         while ((line = Console.ReadLine()) != null)
@@ -121,6 +114,19 @@ class Program
                     cmd.TryGetProperty("seed", out var rs) ? rs.GetString() : null,
                     cmd.TryGetProperty("played_save", out var rps) && rps.GetBoolean()
                 );
+
+            case "rng_probe":
+            {
+                var names = new List<string>();
+                if (cmd.TryGetProperty("names", out var nm) && nm.ValueKind == JsonValueKind.Array)
+                    foreach (var n in nm.EnumerateArray())
+                        names.Add(n.GetString() ?? "");
+                return sim.RngProbe(
+                    cmd.TryGetProperty("seed", out var ps2) ? ps2.GetString() : null,
+                    names,
+                    cmd.TryGetProperty("draws", out var dr) ? dr.GetInt32() : 4
+                );
+            }
 
             case "action":
             {
@@ -268,5 +274,94 @@ class Program
     {
         Console.Out.WriteLine(JsonSerializer.Serialize(data, JsonOpts));
         Console.Out.Flush();
+    }
+}
+
+/// <summary>
+/// Where this oracle build finds its game DLLs and its localization (GH #789).
+///
+/// The game build is baked in at compile time (<c>-p:GameVersion=…</c> becomes
+/// <c>[AssemblyMetadata("GameVersion", …)]</c>), so a binary only ever loads the
+/// DLLs it was compiled against: <c>bin/v0.111.0/…</c> resolves
+/// <c>lib/v0.111.0/</c>. Neither lookup assumes a fixed depth below the
+/// sts2-pycli root — both walk up from the binary, so <c>bin/&lt;ver&gt;/Debug/net9.0/</c>,
+/// a flat <c>-o</c> directory and the old <c>bin/Debug/net9.0/</c> all work.
+/// </summary>
+internal static class HeadlessPaths
+{
+    public const string DefaultGameVersion = "v0.107.1";
+
+    public static string GameVersion { get; } =
+        typeof(HeadlessPaths).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "GameVersion")?.Value
+        ?? DefaultGameVersion;
+
+    private static string? _libDir;
+
+    /// <summary>
+    /// The game-DLL directory. In order: <c>&lt;binary dir&gt;/lib</c> (a
+    /// self-contained <c>-o</c> layout that carries its DLLs along), the nearest
+    /// ancestor's <c>lib/&lt;GameVersion&gt;/</c>, then — v0.107.1 only — a legacy
+    /// flat <c>lib/</c> (pre-#789 checkouts; warns on stderr). Otherwise
+    /// <c>&lt;binary dir&gt;/lib</c>, leaving the <c>STS2_GAME_DIR</c> fallback to
+    /// the assembly resolver.
+    /// </summary>
+    public static string LibDir => _libDir ??= ResolveLibDir();
+
+    private static string ResolveLibDir()
+    {
+        string local = Path.Combine(AppContext.BaseDirectory, "lib");
+        if (File.Exists(Path.Combine(local, "sts2.dll")))
+            return local;
+
+        string? legacy = null;
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
+        {
+            var versioned = Path.Combine(dir.FullName, "lib", GameVersion);
+            if (File.Exists(Path.Combine(versioned, "sts2.dll")))
+                return versioned;
+            var flat = Path.Combine(dir.FullName, "lib");
+            if (legacy == null && GameVersion == DefaultGameVersion && File.Exists(Path.Combine(flat, "sts2.dll")))
+                legacy = flat;
+        }
+        if (legacy != null)
+        {
+            Console.Error.WriteLine(
+                $"[WARN] using the legacy flat game-DLL layout {legacy}; move the DLLs to lib/{GameVersion}/ (GH #789)");
+            return legacy;
+        }
+        return local;
+    }
+
+    private static string? _locDir;
+
+    /// <summary>
+    /// The English localization directory the game's <c>LocManager</c> and the
+    /// display-name lookup read. In order: <c>STS2_LOCALIZATION_DIR</c>, a
+    /// per-version <c>&lt;LibDir&gt;/localization_eng/</c> (staged by
+    /// <c>setup_oracle.py</c> for a build whose text differs from the vendored
+    /// tree), then the nearest ancestor's <c>localization_eng/</c> — the vendored
+    /// sts2-pycli tree every v0.107.1 build has always read.
+    /// </summary>
+    public static string LocalizationDir => _locDir ??= ResolveLocalizationDir();
+
+    private static string ResolveLocalizationDir()
+    {
+        var env = Environment.GetEnvironmentVariable("STS2_LOCALIZATION_DIR");
+        if (!string.IsNullOrEmpty(env) && Directory.Exists(env))
+            return env;
+        var perVersion = Path.Combine(LibDir, "localization_eng");
+        if (Directory.Exists(perVersion))
+            return perVersion;
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "localization_eng");
+            if (Directory.Exists(candidate))
+                return candidate;
+        }
+        // Not found: the historical location (five levels above bin/Debug/net9.0),
+        // which the callers then report as missing.
+        return Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "localization_eng");
     }
 }

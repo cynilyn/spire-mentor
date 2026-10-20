@@ -2775,6 +2775,22 @@ fn divine_destiny_grants_six_stars_round_1() {
     );
 }
 
+/// v0.111.0: `StarsVar(7)` (decomp DivineDestiny.cs:16).
+#[test]
+#[serial_test::serial(global_registry)]
+fn divine_destiny_grants_seven_stars_round_1_v0111() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    state.game_version = crate::GameVersion::V0_111_0;
+    give_player_relic(&mut state, RelicKind::DivineDestiny);
+    state.player.stars = 0;
+    state.player.stars_gained_this_turn = 0;
+
+    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    assert_eq!(state.player.stars, 7, "DivineDestiny STARS=7 on round 1");
+    assert_eq!(state.player.stars_gained_this_turn, 7);
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn divine_destiny_skips_round_2() {
@@ -6086,6 +6102,19 @@ fn lasting_candy_after_combat_end_increments_counter() {
     assert_eq!(lasting_candy_counter(&state), 3, "monotonic per combat");
 }
 
+/// v0.111.0: no `AfterCombatEnd` bump; the count moved to the run-side
+/// `BeforeCombatRewardOffered` hook (decomp LastingCandy.cs:153).
+#[test]
+#[serial_test::serial(global_registry)]
+fn lasting_candy_after_combat_end_increments_counter_v0111() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    state.game_version = crate::GameVersion::V0_111_0;
+    give_player_relic(&mut state, RelicKind::LastingCandy);
+    let _ = dispatch_after_combat_end(&mut state);
+    assert_eq!(lasting_candy_counter(&state), 0);
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn lasting_candy_unowned_is_inert() {
@@ -6914,6 +6943,64 @@ fn unsettling_lamp_doubles_first_card_debuffs_then_finishes() {
         unsettling_lamp_state(&state),
         Some(UNSETTLING_LAMP_ARMED),
         "after_combat_end re-arms the relic"
+    );
+}
+
+/// v0.111.0 `UnsettlingLamp.BeforePowerAmountChanged` skips a target with
+/// Artifact (decomp UnsettlingLamp.cs:102). The Rust apply pipeline already
+/// consumes Artifact before the observer channel fires, so an Artifact-eaten
+/// debuff never reaches the lamp in either build: the next debuff is the one
+/// captured and doubled. Pinned under v0.111.0, where it is the C# rule.
+#[test]
+#[serial_test::serial(global_registry)]
+fn unsettling_lamp_doubles_first_card_debuffs_then_finishes_v0111() {
+    use std::num::NonZeroU32;
+    ensure_installed();
+    let mut state = CombatState {
+        game_version: crate::GameVersion::V0_111_0,
+        ..CombatState::default()
+    };
+    let player_uid = CreatureUid::new(1).unwrap();
+    let enemy = CreatureUid::new(2).unwrap();
+    for (uid, hp) in [(player_uid, 80_i32), (enemy, 50)] {
+        state.creatures.push(crate::Creature {
+            id: uid.0,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: None,
+            intent: None,
+            intent_history: crate::IntentHistory::default(),
+            monster_id: crate::MonsterId(""),
+            ai: None,
+        });
+    }
+    state.player.creature_uid = Some(player_uid);
+    state.relics.push(crate::Relic {
+        id: NonZeroU32::new(1).unwrap(),
+        kind: crate::RelicKind::UnsettlingLamp,
+        counter: UNSETTLING_LAMP_ARMED,
+        is_wax: false,
+        is_melted: false,
+    });
+    crate::card_effects::apply_power_to_creature(&mut state, enemy, crate::PowerKind::Artifact, 1);
+    let _resolving = push_resolving_card(&mut state);
+    crate::card_effects::apply_power_to_enemy(&mut state, enemy, crate::PowerKind::Vulnerable, 2);
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Vulnerable),
+        0
+    );
+    assert_eq!(
+        unsettling_lamp_state(&state),
+        Some(UNSETTLING_LAMP_ARMED),
+        "the Artifact-eaten debuff is not captured"
+    );
+    crate::card_effects::apply_power_to_enemy(&mut state, enemy, crate::PowerKind::Weak, 1);
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Weak),
+        2,
+        "the next debuff is captured and doubled"
     );
 }
 
@@ -8066,6 +8153,61 @@ fn emotion_chip_triggers_passive_on_prior_hp_loss() {
         .find(|r| r.kind == RelicKind::EmotionChip)
         .map_or(-1, |r| r.counter);
     assert_eq!(counter, 0, "counter must reset after firing");
+}
+
+/// EmotionChip armed (HP lost last turn) with Gold-Plated Cables and the given
+/// orbs, fired once at player turn start under `version`.
+fn emotion_chip_with_cables_fired(
+    version: crate::GameVersion,
+    orbs: &[crate::orbs::Orb],
+) -> CombatState {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    state.game_version = version;
+    give_player_relic(&mut state, RelicKind::EmotionChip);
+    give_player_relic(&mut state, RelicKind::GoldPlatedCables);
+    state.player.orbs = crate::orbs::OrbSlots::with_default_capacity();
+    for &orb in orbs {
+        crate::orbs::channel_orb(&mut state, orb);
+    }
+    for r in &mut state.relics {
+        if r.kind == RelicKind::EmotionChip {
+            r.counter = 5;
+        }
+    }
+    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    state
+}
+
+/// v0.107.1: EmotionChip calls `orb.Passive` directly — Gold-Plated Cables
+/// does not double the front orb. Two Frost orbs: 2 + 2 block.
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_ignores_gold_plated_cables_v0107() {
+    let frost = crate::orbs::Orb::frost();
+    let state = emotion_chip_with_cables_fired(crate::GameVersion::V0_107_1, &[frost, frost]);
+    assert_eq!(state.player.block, 4);
+}
+
+/// v0.111.0: `countAffectedByHooks: true` (EmotionChip.cs:54) routes through
+/// `OrbModel.TriggerPassive`, so Cables' `+1` on `Orbs[0]` applies: the front
+/// Frost fires twice, the second once — 2 + 2 + 2 block.
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_counts_gold_plated_cables_v0111() {
+    let frost = crate::orbs::Orb::frost();
+    let state = emotion_chip_with_cables_fired(crate::GameVersion::V0_111_0, &[frost, frost]);
+    assert_eq!(state.player.block, 6);
+}
+
+/// v0.111.0: Plasma's passive is `GainEnergy(1)` (PlasmaOrb.cs), so a front
+/// Plasma under Cables grants 2 energy from the EmotionChip trigger.
+#[test]
+#[serial_test::serial(global_registry)]
+fn emotion_chip_fires_front_plasma_twice_v0111() {
+    let state =
+        emotion_chip_with_cables_fired(crate::GameVersion::V0_111_0, &[crate::orbs::Orb::Plasma]);
+    assert_eq!(state.player.energy, 2);
 }
 
 #[test]

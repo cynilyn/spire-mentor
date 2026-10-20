@@ -25,7 +25,7 @@ pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
     side: Side,
 ) -> EffectResult {
     const VEXING_PUZZLEBOX_CARDS: usize = 1;
-    if side != Side::Player || state.round_no() != 1 {
+    if side != Side::Player || state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::VexingPuzzlebox) {

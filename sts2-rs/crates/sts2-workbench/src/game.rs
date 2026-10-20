@@ -16,7 +16,7 @@
 use serde_json::{json, Map, Value};
 use sts2_core::potions::CharacterId;
 use sts2_core::run_manager::{RunAction, RunManager};
-use sts2_core::CombatState;
+use sts2_core::{CombatState, GameVersion};
 
 use crate::combat_view::{
     self, action_label, deck_card, offer_card, owned_entry, treasure_reveal, RoomSnapshot,
@@ -153,6 +153,9 @@ pub struct Game {
     /// The Act-1 model this run was built with (`"overgrowth"` /
     /// `"underdocks"` / `"roll"`), remembered for saves and seek.
     pub act1: String,
+    /// The game build every `start*` constructs its run in (GH #801). Set
+    /// before `start`; defaults to v0.107.1.
+    pub game_version: GameVersion,
     record_card_plays: bool,
     record_combat_log: bool,
     /// Engine actions backing the option indices of the CURRENT state, for
@@ -182,6 +185,7 @@ impl Game {
             rm: None,
             character: String::new(),
             act1: "overgrowth".to_string(),
+            game_version: GameVersion::default(),
             record_card_plays: false,
             record_combat_log: false,
             option_actions: Vec::new(),
@@ -240,7 +244,13 @@ impl Game {
         let cid = rmx::character_from_str(character).map_err(GameError)?;
         self.character = character.to_string();
         self.act1 = act1.to_string();
-        self.rm = Some(build_run_manager(cid, seed, ascension, act1)?);
+        self.rm = Some(build_run_manager(
+            self.game_version,
+            cid,
+            seed,
+            ascension,
+            act1,
+        )?);
         self.option_actions.clear();
         self.shop_removal_pick = false;
         self.pre_action = None;
@@ -269,7 +279,12 @@ impl Game {
         let cid = rmx::character_from_str(character).map_err(GameError)?;
         self.character = character.to_string();
         self.act1 = "overgrowth".to_string();
-        self.rm = Some(build_faithful_run_manager(cid, seed, ascension));
+        self.rm = Some(build_faithful_run_manager(
+            self.game_version,
+            cid,
+            seed,
+            ascension,
+        ));
         self.option_actions.clear();
         self.shop_removal_pick = false;
         self.pre_action = None;
@@ -314,7 +329,8 @@ impl Game {
 
         let cid = rmx::character_from_str(&snapshot.character).map_err(GameError)?;
         self.character.clone_from(&snapshot.character);
-        let mut rm = build_import_run_manager(cid, &snapshot.seed, snapshot.ascension);
+        let mut rm =
+            build_import_run_manager(self.game_version, cid, &snapshot.seed, snapshot.ascension);
         self.act1 = rmx::act1_str(&rm).to_string();
         let mut notes: Vec<String> = Vec::new();
 
@@ -374,7 +390,18 @@ impl Game {
         // its own RNG lineage, so nothing here re-rolls; a board the engine
         // refuses is an error (the caller keeps the run it had).
         if let Some(combat) = &snapshot.combat {
-            let cs = sts2_wire::state_from_json(&combat.wire)
+            // The fight is rebuilt in the RUN's build: the bridge's combat
+            // wire never names one, and the wire parser would otherwise fall
+            // back to v0.107.1 (refusing a 64-bit v0.111.0 `rng.run_seed`, or
+            // dropping a 0.107 board into a 0.111 run). Stamped at use time so
+            // the stored snapshot bytes — and the default build — are as-is.
+            let mut wire = combat.wire.clone();
+            if !self.game_version.is_default() {
+                if let Some(obj) = wire.as_object_mut() {
+                    obj.insert("game_version".into(), json!(self.game_version.as_str()));
+                }
+            }
+            let cs = sts2_wire::state_from_json(&wire)
                 .map_err(|e| GameError(format!("the engine refused the fight: {e}")))?;
             rm.debug_enter_combat(cs, combat.room_kind());
         }
@@ -864,6 +891,12 @@ impl Game {
             },
         );
         m.insert("bg_seed".into(), json!(rmx::run_seed(rm)));
+        // GH #801: only a non-default build is named, so every v0.107.1
+        // state (and golden) keeps its bytes. Readers treat absence as
+        // v0.107.1.
+        if !rm.game_version.is_default() {
+            m.insert("game_version".into(), json!(rm.game_version.as_str()));
+        }
         if let Some((col, row)) = rmx::map_coord(rm) {
             m.insert("bg_col".into(), json!(col));
             m.insert("bg_row".into(), json!(row));
@@ -1662,24 +1695,15 @@ pub fn ensure_content_installed() {
 /// `neow_start=True`, every interactive deck-mutation flag,
 /// `direct_event_relic_grant=True`, `act1`).
 pub fn build_run_manager(
+    version: GameVersion,
     cid: CharacterId,
     seed: &str,
     ascension: u8,
     act1: &str,
 ) -> Result<RunManager, GameError> {
-    use sts2_content::run_callbacks::{
-        initialize_run_setup, new_run_manager_for_character_from_string_seed,
-        new_run_manager_for_character_with_ascension,
-    };
+    use sts2_content::run_callbacks::initialize_run_setup;
     use sts2_core::act_selection::ActVariant;
-    ensure_content_installed();
-    let canonical = sts2_core::canonicalize_seed(seed);
-    let effective_seed = sts2_core::deterministic_hash_code(&canonical);
-    let rm = if ascension > 0 {
-        new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
-    } else {
-        new_run_manager_for_character_from_string_seed(seed, cid)
-    };
+    let rm = new_string_seed_run(version, cid, seed, ascension);
     let mut rm = rm.with_neow_start();
     // Present on-obtain card removals / upgrades / transforms as player
     // card_selects, matching C#; grant the chosen Neow relic directly.
@@ -1715,21 +1739,15 @@ pub fn build_run_manager(
 /// with NO Neow start — the blessing was taken floors ago and the pasted deck
 /// already reflects it — and the rolled Act-1 model (GH #544), so the act maps
 /// match the live run. Mirrors `RustGame.start_imported`'s `RunManager(...)`.
-fn build_import_run_manager(cid: CharacterId, seed: &str, ascension: u8) -> RunManager {
-    use sts2_content::run_callbacks::{
-        initialize_run_setup, new_run_manager_for_character_from_string_seed,
-        new_run_manager_for_character_with_ascension,
-    };
-    ensure_content_installed();
-    let canonical = sts2_core::canonicalize_seed(seed);
-    let effective_seed = sts2_core::deterministic_hash_code(&canonical);
-    let rm = if ascension > 0 {
-        new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
-    } else {
-        new_run_manager_for_character_from_string_seed(seed, cid)
-    };
+fn build_import_run_manager(
+    version: GameVersion,
+    cid: CharacterId,
+    seed: &str,
+    ascension: u8,
+) -> RunManager {
+    use sts2_content::run_callbacks::initialize_run_setup;
     // No `with_neow_start`: not a fresh run.
-    let mut rm = rm;
+    let mut rm = new_string_seed_run(version, cid, seed, ascension);
     rm.run_state.interactive_card_removal = true;
     rm.run_state.interactive_card_upgrade = true;
     rm.run_state.interactive_card_transform = true;
@@ -1740,6 +1758,36 @@ fn build_import_run_manager(cid: CharacterId, seed: &str, ascension: u8) -> RunM
     let mut rm = rm.with_rolled_act1();
     initialize_run_setup(&mut rm);
     rm
+}
+
+/// The text-seed run every interactive constructor starts from, in game
+/// build `version` — `PyRunManager::new` with `string_seed`
+/// (`sts2-py/src/run_manager.rs`): hash the canonical seed with the build's
+/// `RunRngSet` rule (XxHash64 in v0.111.0), build through the character /
+/// ascension factory, then re-target the build and its full 64-bit master
+/// seed BEFORE anything (Neow, act 1, run setup) rolls. Both re-targets are
+/// no-ops at v0.107.1, so the default build's run is unchanged.
+fn new_string_seed_run(
+    version: GameVersion,
+    cid: CharacterId,
+    seed: &str,
+    ascension: u8,
+) -> RunManager {
+    use sts2_content::run_callbacks::{
+        new_run_manager_for_character_from_string_seed,
+        new_run_manager_for_character_with_ascension,
+    };
+    ensure_content_installed();
+    let canonical = sts2_core::canonicalize_seed(seed);
+    let master = version.run_seed_hash(&canonical);
+    #[allow(clippy::cast_possible_truncation)]
+    let effective_seed = master as i32;
+    let rm = if ascension > 0 {
+        new_run_manager_for_character_with_ascension(effective_seed, cid, ascension)
+    } else {
+        new_run_manager_for_character_from_string_seed(seed, cid)
+    };
+    rm.with_game_version(version).with_run_seed(master)
 }
 
 /// Grant a relic to the run by id, mirroring `PyRunManager::force_add_relic`:
@@ -1813,9 +1861,10 @@ fn graft_set_potions(rm: &mut RunManager, potions: &[String]) {
 /// engine does not carry (run-level only — combat streams live on a
 /// `CombatState` and are the combat import's business).
 fn graft_rng(rm: &mut RunManager, rng: &crate::state_import::RngBlock) -> Vec<String> {
-    // The wire's `run_seed` is the u32 reinterpretation of the i32 run seed
-    // (same contract as the Python restore).
-    let ours = i64::from(u32::from_ne_bytes(rm.run_state.rng.seed.to_ne_bytes()));
+    // The wire's `run_seed` is the hashed master seed (`RunRngSet.Seed`): the
+    // u32 reinterpretation of the i32 run seed in v0.107.1 (same contract as
+    // the Python restore), the full 64-bit XxHash64 in v0.111.0 (GH #788).
+    let ours = rm.run_state.rng.seed;
     if rng.run_seed != ours {
         return vec![format!(
             "RNG cursors not restored — run_seed {} is not this run's seed ({ours}); \
@@ -1933,7 +1982,12 @@ fn map_disagreements(rm: &RunManager, snapshot: &crate::state_import::RunSnapsho
     )]
 }
 
-pub fn build_faithful_run_manager(cid: CharacterId, seed: i32, ascension: u8) -> RunManager {
+pub fn build_faithful_run_manager(
+    version: GameVersion,
+    cid: CharacterId,
+    seed: i32,
+    ascension: u8,
+) -> RunManager {
     use sts2_content::run_callbacks::{
         initialize_run_setup, new_run_manager_for_character,
         new_run_manager_for_character_with_ascension,
@@ -1945,6 +1999,11 @@ pub fn build_faithful_run_manager(cid: CharacterId, seed: i32, ascension: u8) ->
     } else {
         new_run_manager_for_character(seed, cid)
     };
+    // An integer seed is a `uint` master in both builds (`PyRunManager::new`
+    // without `string_seed`); the build is re-targeted before Neow.
+    let rm = rm
+        .with_game_version(version)
+        .with_run_seed(u64::from(seed as u32));
     let mut rm = rm.with_neow_start();
     rm.run_state.interactive_card_removal = true;
     rm.run_state.interactive_card_upgrade = true;
@@ -2026,7 +2085,12 @@ mod tests {
 
     #[test]
     fn start_imported_grafts_the_deck_relics_potions_hp_and_parks_on_the_map() {
-        let source = build_import_run_manager(CharacterId::Ironclad, "TESTSEED42", 0);
+        let source = build_import_run_manager(
+            GameVersion::default(),
+            CharacterId::Ironclad,
+            "TESTSEED42",
+            0,
+        );
         let (map, col, row) = map_block_from(&source, false);
         let wire = import_wire(Value::Null, map);
         let imported = parse_pasted_state(&wire.to_string()).expect("parse");
@@ -2064,9 +2128,14 @@ mod tests {
 
     #[test]
     fn start_imported_restores_the_rng_cursors() {
-        let source = build_import_run_manager(CharacterId::Ironclad, "TESTSEED42", 0);
+        let source = build_import_run_manager(
+            GameVersion::default(),
+            CharacterId::Ironclad,
+            "TESTSEED42",
+            0,
+        );
         let (map, _c, _r) = map_block_from(&source, false);
-        let seed_wire = i64::from(u32::from_ne_bytes(source.run_state.rng.seed.to_ne_bytes()));
+        let seed_wire = i64::try_from(source.run_state.rng.seed).expect("v0.107.1 seed fits");
         let rng = json!({"run_seed": seed_wire, "counters": {"shops": 2, "rewards": 1}});
         let wire = import_wire(rng, map);
         let imported = parse_pasted_state(&wire.to_string()).expect("parse");
@@ -2082,9 +2151,44 @@ mod tests {
             .any(|n| n.contains("not restored")));
     }
 
+    /// GH #801: a v0.111.0 master seed is a full `ulong` — the cursors of a
+    /// run whose seed is above `i64::MAX` still restore, and the map the
+    /// graft is checked against is the v0.111.0 one.
+    #[test]
+    fn start_imported_restores_v0111_cursors_with_a_64_bit_seed() {
+        let v = GameVersion::V0_111_0;
+        // Find a seed whose v0.111.0 master does not fit an i64.
+        let seed = (0..10_000)
+            .map(|i| format!("BIGSEED{i}"))
+            .find(|s| i64::try_from(v.run_seed_hash(&sts2_core::canonicalize_seed(s))).is_err())
+            .expect("half of all seeds qualify");
+        let source = build_import_run_manager(v, CharacterId::Ironclad, &seed, 0);
+        assert_eq!(source.game_version, v);
+        assert!(source.run_state.rng.seed > i64::MAX as u64);
+        let (map, _c, _r) = map_block_from(&source, false);
+        let rng = json!({"run_seed": source.run_state.rng.seed, "counters": {"shops": 2}});
+        let mut wire = import_wire(rng, map);
+        wire["seed"] = json!(seed);
+        let imported = parse_pasted_state(&wire.to_string()).expect("parse");
+
+        let mut game = Game::new();
+        game.game_version = v;
+        game.start_imported(&imported.run).expect("graft");
+        assert!(game.import_notes().is_empty(), "{:?}", game.import_notes());
+        let rm = game.native_run_mut().expect("run");
+        assert_eq!(rm.game_version, v);
+        assert_eq!(rm.run_state.rng.seed, source.run_state.rng.seed);
+        assert_eq!(rm.run_state.rng.stream_mut("shops").unwrap().counter(), 2);
+    }
+
     #[test]
     fn start_imported_refuses_a_foreign_seeds_cursors() {
-        let source = build_import_run_manager(CharacterId::Ironclad, "TESTSEED42", 0);
+        let source = build_import_run_manager(
+            GameVersion::default(),
+            CharacterId::Ironclad,
+            "TESTSEED42",
+            0,
+        );
         let (map, _c, _r) = map_block_from(&source, false);
         let rng = json!({"run_seed": 999_999, "counters": {"shops": 2}});
         let wire = import_wire(rng, map);
@@ -2099,7 +2203,12 @@ mod tests {
 
     #[test]
     fn start_imported_refuses_a_coord_off_this_seeds_map() {
-        let source = build_import_run_manager(CharacterId::Ironclad, "TESTSEED42", 0);
+        let source = build_import_run_manager(
+            GameVersion::default(),
+            CharacterId::Ironclad,
+            "TESTSEED42",
+            0,
+        );
         let (mut map, _c, _r) = map_block_from(&source, false);
         map["current"] = json!({"col": 99, "row": 99});
         let wire = import_wire(Value::Null, map);

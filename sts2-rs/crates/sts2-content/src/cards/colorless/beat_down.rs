@@ -105,7 +105,27 @@ fn beat_down_run(state: &mut CombatState, cards: &[CardUid], force_exhaust: bool
         // buses fire), then routed to its natural pile (back to discard,
         // or exhaust if it self-exhausts). The `AnyEnemy` target roll
         // happens inside `resolve_auto_played_card`.
-        sts2_core::combat_loop::auto_play_specific_card_from_discard(state, uid, force_exhaust);
+        // v0.111.0: BeatDown rolls an `AnyEnemy` card's target itself, BEFORE
+        // `CardCmd.AutoPlay` (decomp Cards/BeatDown.cs:32-35), so the
+        // `CombatTargets` read happens even when a `ShouldPlay` veto
+        // (ChainsOfBinding's Bound) then skips the play. Parity fuzz Regent
+        // seed 272 (GH #798). v0.107.1 keeps the resolver-side roll.
+        let target = if state.game_version >= sts2_core::GameVersion::V0_111_0
+            && sts2_core::cards::effective_target_type(
+                state,
+                &state.cards[uid.0.get() as usize - 1],
+            ) == TargetType::Enemy
+        {
+            state.get_random_enemy()
+        } else {
+            None
+        };
+        sts2_core::combat_loop::auto_play_specific_card_from_discard_at_target(
+            state,
+            uid,
+            target,
+            force_exhaust,
+        );
         // Surfaced nested select (Headbutt FromSimpleGrid, …): suspend and
         // hand the rest of the captured list to the resolver, which plays
         // them after the pick resolves. Bead `sts2-rs-cata-suspend`.

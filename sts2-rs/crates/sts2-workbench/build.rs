@@ -1,4 +1,4 @@
-//! Stage the game-derived data bundle for `include_str!`.
+//! Stage the game-derived data bundles for `include_str!`.
 //!
 //! `data/game/` holds files extracted from a Slay the Spire 2 install
 //! (localization dumps, trimmed wiki manifests, the art manifest — see
@@ -6,8 +6,19 @@
 //! `just import-game` / `just workbench-data` everywhere else, so the crate
 //! must compile when it is absent: every expected file is copied into
 //! `$OUT_DIR/game/`, or replaced by an empty stub (`{}` / `[]` / blank) when
-//! missing. `cfg(workbench_game_data)` is set only when the whole bundle is
-//! present, so tests that assert on real game text can opt out cleanly.
+//! missing. `cfg(workbench_game_data)` is set only when the whole default
+//! bundle is present, so tests that assert on real game text can opt out
+//! cleanly.
+//!
+//! One bundle per game build (GH #801): the default build (v0.107.1) lives
+//! in `data/game/` itself, every other build in a full sibling set
+//! `data/game/<ver>/` (staged to `$OUT_DIR/game/<ver>/`), and
+//! `cfg(workbench_game_data_<ver>)` (dots as underscores) marks a complete
+//! one. A versioned file byte-identical to the default build's is staged as
+//! a ZERO-byte file — `data.rs` reads that as "same as the default" — so a
+//! table both builds share (the art manifest, `card_db.json`, unchanged loc
+//! dumps) is embedded once, not once per build. A missing file's stub is
+//! never empty (it carries a trailing newline), so the two cannot collide.
 
 use std::env;
 use std::fs;
@@ -35,8 +46,16 @@ const GAME_FILES: &[(&str, &str)] = &[
     ("card_db.json", "{}"),
 ];
 
+/// The non-default game builds with a sibling bundle under `data/game/<ver>/`.
+/// Keep in step with `sts2_core::GameVersion::ALL` (a `data.rs` test
+/// checks) and `bundle_workbench_data.py`'s `_VERSIONS`.
+const VERSIONED: &[&str] = &["v0.111.0"];
+
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(workbench_game_data)");
+    for ver in VERSIONED {
+        println!("cargo::rustc-check-cfg=cfg({})", version_cfg(ver));
+    }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -47,6 +66,45 @@ fn main() {
     // flips the cfg without a `cargo clean`.
     println!("cargo:rerun-if-changed={}", src_root.display());
 
+    if stage(&src_root, &dst_root, None) {
+        println!("cargo:rustc-cfg=workbench_game_data");
+    } else {
+        println!(
+            "cargo:warning=sts2-workbench: data/game/ is incomplete — the workbench renders \
+             loc keys instead of game text. Run `just import-game` (see docs/bring-your-own-game.md)."
+        );
+    }
+    // `data::embedded_versions` reads which non-default bundles are complete
+    // (the `/api/capabilities` version picker offers only those), and a test
+    // pins `VERSIONED` against `GameVersion::ALL`.
+    let mut complete: Vec<&str> = Vec::new();
+    for ver in VERSIONED {
+        let src = src_root.join(ver);
+        println!("cargo:rerun-if-changed={}", src.display());
+        if stage(&src, &dst_root.join(ver), Some(&src_root)) {
+            println!("cargo:rustc-cfg={}", version_cfg(ver));
+            complete.push(ver);
+        }
+    }
+    println!(
+        "cargo:rustc-env=WORKBENCH_VERSIONED={}",
+        VERSIONED.join(",")
+    );
+    println!(
+        "cargo:rustc-env=WORKBENCH_EMBEDDED_VERSIONS={}",
+        complete.join(",")
+    );
+}
+
+/// `v0.111.0` -> `workbench_game_data_v0_111_0`.
+fn version_cfg(ver: &str) -> String {
+    format!("workbench_game_data_{}", ver.replace('.', "_"))
+}
+
+/// Stage one bundle from `src_root` into `dst_root`; true when every file
+/// was present. With `dedup_against`, a file byte-identical to that bundle's
+/// copy is staged empty (see the module doc).
+fn stage(src_root: &Path, dst_root: &Path, dedup_against: Option<&Path>) -> bool {
     let mut all_present = true;
     for (rel, stub) in GAME_FILES {
         let src = src_root.join(rel);
@@ -56,21 +114,18 @@ fn main() {
             fs::create_dir_all(parent).expect("create OUT_DIR/game");
         }
         if src.is_file() {
-            fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {}: {e}", src.display()));
+            let bytes = fs::read(&src).unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+            let same_as_default = dedup_against.is_some_and(|base| {
+                fs::read(base.join(rel)).ok().as_deref() == Some(bytes.as_slice())
+            });
+            let staged: &[u8] = if same_as_default { &[] } else { &bytes };
+            fs::write(&dst, staged).unwrap_or_else(|e| panic!("write {}: {e}", dst.display()));
         } else {
             all_present = false;
             write_stub(&dst, stub);
         }
     }
-
-    if all_present {
-        println!("cargo:rustc-cfg=workbench_game_data");
-    } else {
-        println!(
-            "cargo:warning=sts2-workbench: data/game/ is incomplete — the workbench renders \
-             loc keys instead of game text. Run `just import-game` (see docs/bring-your-own-game.md)."
-        );
-    }
+    all_present
 }
 
 fn write_stub(dst: &Path, stub: &str) {

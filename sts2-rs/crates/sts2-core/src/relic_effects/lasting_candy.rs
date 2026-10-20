@@ -12,6 +12,12 @@ use super::prelude::*;
 /// Mirrors Python `sts2-rl-agent@01c094d:sts2_env/relics/rare.py
 /// ::LastingCandy.after_combat_end`. Bead `sts2-rs-1fr2`.
 pub(crate) fn on_after_combat_end_lasting_candy(state: &mut CombatState) -> EffectResult {
+    // v0.111.0: `AfterCombatEnd` is gone; the count is `CombatRewardsSeen`,
+    // bumped run-side by `BeforeCombatRewardOffered` (decomp
+    // LastingCandy.cs:153).
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
     let mut bumped = false;
     for relic in &mut state.relics {
         if relic.is_melted {

@@ -349,6 +349,26 @@ fn crescent_spear_counts_itself_with_no_other_star_cards() {
     );
 }
 
+/// v0.111.0: Constellation (`CanonicalStarCost => 2`, decomp
+/// Models.Cards/Constellation.cs:16) is a star card, so CrescentSpear counts
+/// it: base 6 + extra 2 x 2. Parity fuzz Regent mid seed 2016 (GH #798).
+#[test]
+fn crescent_spear_counts_constellation_v0111() {
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let c = push_play_card(&mut state, CardId::Constellation, 0, 0);
+    state.player.play.retain(|u| *u != c);
+    state.player.draw.push(c);
+    let _ = push_play_card(&mut state, CardId::CrescentSpear, 6, 0);
+    let hp0 = state.creatures[0].current_hp;
+    let _ = dispatch(&mut state, CardId::CrescentSpear, Some(enemy));
+    assert_eq!(
+        hp0 - state.creatures[0].current_hp,
+        6 + CRESCENT_SPEAR_EXTRA_DAMAGE * 2
+    );
+}
+
 /// Falling Star: damage + 1 Weak + 1 Vulnerable on the target.
 #[test]
 fn falling_star_damages_and_applies_weak_and_vulnerable() {

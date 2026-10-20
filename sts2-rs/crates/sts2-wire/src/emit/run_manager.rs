@@ -152,8 +152,7 @@ pub fn act_map_for(rm: &mut RunManager, act: u8) -> Value {
     let ascension_level = i32::from(rm.run_state.ascension_level);
     // LOCAL per-act RNG (does not poison `map_rngs`); same salt name as
     // `RunRngSet::map_rng(act-1)` → `act_{act}_map`.
-    let mut rng =
-        sts2_core::dotnet_rng::Rng::with_name(rm.run_state.rng.seed, &format!("act_{act}_map"));
+    let mut rng = rm.run_state.rng.named(&format!("act_{act}_map"));
     let mut act_map = sts2_core::map_generator::generate_act_map(
         num_rooms,
         &mut rng,
@@ -372,12 +371,13 @@ pub const fn act1(rm: &RunManager) -> &'static str {
     }
 }
 
-/// `RunManager.run_seed` — the run's own hashed master seed, as `u32`: the
-/// value every RNG stream salts from, and the one the wire spells
-/// `$.rng.run_seed` (C# `RunRngSet.Seed` is a uint).
+/// `RunManager.run_seed` — the run's own hashed master seed: the value every
+/// RNG stream salts from, and the one the wire spells `$.rng.run_seed`.
+/// C# `RunRngSet.Seed` is a `uint` in v0.107.1 (so the value always fits 32
+/// bits there) and a `ulong` in v0.111.0 (GH #788).
 #[must_use]
-pub fn run_seed(rm: &RunManager) -> u32 {
-    u32::from_ne_bytes(rm.run_state.rng.seed.to_ne_bytes())
+pub fn run_seed(rm: &RunManager) -> u64 {
+    rm.run_state.rng.wire_seed()
 }
 
 /// `RunManager.gold` — while a fight is ACTIVE, the combat-time gold mirror
@@ -1286,10 +1286,7 @@ mod tests {
         assert!(potions(&rm).is_empty());
         assert_eq!(act1(&rm), "overgrowth");
         assert_eq!(gold(&rm), rm.run_state.gold);
-        assert_eq!(
-            run_seed(&rm),
-            u32::from_ne_bytes(rm.run_state.rng.seed.to_ne_bytes())
-        );
+        assert_eq!(run_seed(&rm), rm.run_state.rng.seed);
         assert_eq!(
             keys(&rng_counters(&rm)),
             [

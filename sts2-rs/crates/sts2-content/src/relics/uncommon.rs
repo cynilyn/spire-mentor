@@ -31,13 +31,15 @@ use sts2_core::hooks::{self, BlockCtx, BlockGainedCtx, CreatureRef, ValueProps};
 use sts2_core::powers::PowerKind;
 use sts2_core::relic_effects::{
     register_after_card_played, register_after_player_turn_start, register_after_side_turn_start,
-    register_before_combat_start, register_before_turn_end, register_modify_damage_additive,
-    register_modify_damage_multiplicative, register_owned_after_card_entered_combat,
+    register_before_combat_start, register_before_side_turn_start, register_before_turn_end,
+    register_modify_damage_additive, register_modify_damage_multiplicative,
+    register_owned_after_card_entered_combat, register_owned_after_combat_end,
     register_owned_after_potion_used, register_owned_before_hand_draw,
     register_owned_modify_vulnerable_multiplier, AfterCardEnteredCombatFn, AfterCardPlayedFn,
-    AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn, BeforeCombatStartFn,
-    BeforeHandDrawFn, BeforeTurnEndFn, CardEventCtx, ModifyDamageAdditiveFn, ModifyDamageCtx,
-    ModifyDamageMultiplicativeFn, ModifyVulnerableMultiplierFn,
+    AfterCombatEndFn, AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn,
+    BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx,
+    ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyDamageMultiplicativeFn,
+    ModifyVulnerableMultiplierFn,
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
@@ -273,6 +275,18 @@ pub fn install_pool() {
         RelicKind::Regalite,
         listener_regalite as AfterCardEnteredCombatFn,
     );
+    // v0.111.0: Regalite's once-per-turn latch resets at the owner's side
+    // turn start and at combat end (decomp Regalite.cs:47,57). Both
+    // listeners are inert in v0.107.1, which has no latch.
+    register_before_side_turn_start(
+        RelicId::Regalite,
+        listener_regalite_turn_reset as BeforeSideTurnStartFn,
+    );
+    register_owned_after_combat_end(
+        RelicId::Regalite,
+        RelicKind::Regalite,
+        listener_regalite_combat_end_reset as AfterCombatEndFn,
+    );
     // EternalFeather — rest-site heal `HEAL_PER * (deck // CARDS_PER)`
     // (Python `uncommon.py::EternalFeather`). Combat-side
     // `on_trigger_eternal_feather` stays a `resolved_marker`.
@@ -412,7 +426,7 @@ fn listener_symbiotic_virus(state: &mut CombatState, side: Side) -> EffectResult
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::SymbioticVirus) {
@@ -508,7 +522,7 @@ fn listener_mercury_hourglass(state: &mut CombatState) -> EffectResult {
 /// — exactly what `spawn_card_into_draw_pile_random_position` does
 /// (`next_int(0, len)` == `NextInt(len + 1)`). Bead `sts2-rs-n4sa4`.
 fn listener_funerary_mask(state: &mut CombatState) -> EffectResult {
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::FuneraryMask) {
@@ -531,7 +545,7 @@ fn listener_funerary_mask(state: &mut CombatState) -> EffectResult {
 /// so it fires before FencingManual's forge — see the registration note.
 /// Bead `sts2-rs-uo8t`.
 fn listener_bellows(state: &mut CombatState) -> EffectResult {
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::Bellows) {
@@ -679,6 +693,22 @@ fn listener_pantograph(rs: &mut RunState, room_type: RoomType) -> EffectResult {
 fn listener_planisphere(rs: &mut RunState, room_type: RoomType) -> EffectResult {
     if !rs.owns_active_relic(RelicId::Planisphere) {
         return EffectResult::NotImplemented;
+    }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: heal only on the FIRST room of a `?` map point:
+        // `CurrentMapPoint.PointType == Unknown && CurrentRoomCount <= 1`
+        // (decomp Planisphere.cs:28). The point type is the map node's, not
+        // the resolved room's, so it is read off `current_room` (set by
+        // `enter_room` before this dispatch). Rust enters exactly one room
+        // per map point (an event's combat does not re-enter), so every
+        // dispatch at a `?` point is its first room.
+        let at_unknown_point = rs.current_room.and_then(|r| r.map_point_type)
+            == Some(sts2_core::map::MapPointType::Unknown);
+        if !at_unknown_point || rs.current_hp <= 0 {
+            return EffectResult::NotImplemented;
+        }
+        rs.heal(PLANISPHERE_HEAL);
+        return EffectResult::Resolved;
     }
     if !matches!(room_type, RoomType::Unknown) {
         return EffectResult::NotImplemented;
@@ -903,6 +933,10 @@ pub const RED_MASK_WEAK: i32 = 1;
 /// `Regalite.BLOCK` — block on colorless card enter
 /// (`uncommon.py::Regalite`).
 pub const REGALITE_BLOCK: i32 = 2;
+
+/// v0.111.0 `Regalite` block: `BlockVar(4m, ValueProp.Unpowered)`, once per
+/// turn (decomp Regalite.cs:22).
+pub const REGALITE_BLOCK_V0111: i32 = 4;
 /// `ReptileTrinket.STRENGTH` — temp strength on potion use
 /// (`uncommon.py::ReptileTrinket`).
 pub const REPTILE_TRINKET_STRENGTH: i32 = 3;
@@ -1155,8 +1189,59 @@ fn listener_regalite(
     if !state.cards.iter().any(|c| c.uid == card_uid) {
         return EffectResult::NotImplemented;
     }
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: only the first created card each turn grants Block, and
+        // the grant is 4 (`BlockVar(4m)`, `!UsedThisTurn` latch; decomp
+        // Regalite.cs:22,39). The latch rides on `Relic.counter` (1 = used).
+        let Some(relic) = state
+            .relics
+            .iter_mut()
+            .find(|r| !r.is_melted && r.kind == RelicKind::Regalite)
+        else {
+            return EffectResult::NotImplemented;
+        };
+        if relic.counter != 0 {
+            return EffectResult::NotImplemented;
+        }
+        relic.counter = 1;
+        gain_block_player_unpowered(state, REGALITE_BLOCK_V0111);
+        return EffectResult::Resolved;
+    }
     gain_block_player_unpowered(state, REGALITE_BLOCK);
     EffectResult::Resolved
+}
+
+/// Clear Regalite's v0.111.0 once-per-turn latch. Shared body of the two
+/// reset listeners below.
+fn clear_regalite_latch(state: &mut CombatState) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    let Some(relic) = state
+        .relics
+        .iter_mut()
+        .find(|r| !r.is_melted && r.kind == RelicKind::Regalite)
+    else {
+        return EffectResult::NotImplemented;
+    };
+    relic.counter = 0;
+    EffectResult::Resolved
+}
+
+/// v0.111.0 `Regalite.BeforeSideTurnStart` — `UsedThisTurn = false` when
+/// the owner's side starts its turn (decomp Regalite.cs:47-54).
+fn listener_regalite_turn_reset(state: &mut CombatState, side: Side) -> EffectResult {
+    if side != Side::Player {
+        return EffectResult::NotImplemented;
+    }
+    clear_regalite_latch(state)
+}
+
+/// v0.111.0 `Regalite.AfterCombatEnd` — `UsedThisTurn = false` (decomp
+/// Regalite.cs:57-61), so the latch cannot leak into the next combat
+/// through the run-side `relic_counters` flush.
+fn listener_regalite_combat_end_reset(state: &mut CombatState) -> EffectResult {
+    clear_regalite_latch(state)
 }
 
 /// Bead `sts2-rs-w5dca`: file-local block grant that bypasses
@@ -2126,6 +2211,37 @@ mod tests {
             sts2_core::runstate::RoomType::Unknown,
         );
         assert_eq!(rs.current_hp, before_hp + PLANISPHERE_HEAL);
+    }
+
+    /// v0.111.0: Planisphere heals when the room's MAP POINT is `?`, whatever
+    /// the point resolved to, and not at a concrete-type point
+    /// (decomp Planisphere.cs:28).
+    #[test]
+    fn listener_planisphere_heals_five_on_unknown_room_entry_v0111() {
+        use sts2_core::map::{MapCoord, MapPointType};
+        use sts2_core::runstate::{Room, RoomType};
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = sts2_core::runstate::RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.current_hp = rs.max_hp - 20;
+        rs.relics.push(RelicId::Planisphere);
+        let before_hp = rs.current_hp;
+        rs.enter_room(Room::at(
+            MapCoord::new(0, 1),
+            MapPointType::Unknown,
+            RoomType::Event,
+        ));
+        assert_eq!(rs.current_hp, before_hp + PLANISPHERE_HEAL, "? point heals");
+        rs.enter_room(Room::at(
+            MapCoord::new(0, 2),
+            MapPointType::Monster,
+            RoomType::Monster,
+        ));
+        assert_eq!(
+            rs.current_hp,
+            before_hp + PLANISPHERE_HEAL,
+            "a Monster point does not heal"
+        );
     }
 
     /// No-op on non-Unknown room types.
@@ -3214,6 +3330,49 @@ mod tests {
             REGALITE_BLOCK,
             "colorless spawn grants {REGALITE_BLOCK} block"
         );
+    }
+
+    /// v0.111.0: Regalite grants 4 Block for the FIRST created card each turn
+    /// only; the latch clears at the player's turn start and at combat end
+    /// (decomp Regalite.cs:22,39,47,57).
+    #[test]
+    fn listener_regalite_colorless_grants_block_v0111() {
+        use sts2_core::cards::CardId;
+        use sts2_core::relic_effects::{
+            dispatch_after_card_entered_combat, dispatch_after_combat_end,
+            dispatch_before_side_turn_start,
+        };
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        regalite_setup(&mut state, true);
+        let a = push_card_with_id(&mut state, CardId::DarkShackles);
+        let b = push_card_with_id(&mut state, CardId::DarkShackles);
+        let before = state.player.block;
+        let _ = dispatch_after_card_entered_combat(&mut state, a, true);
+        let _ = dispatch_after_card_entered_combat(&mut state, b, true);
+        assert_eq!(
+            state.player.block - before,
+            REGALITE_BLOCK_V0111,
+            "only the first created card this turn grants block"
+        );
+        // Enemy turn start does not reset; the player's does.
+        let _ = dispatch_before_side_turn_start(&mut state, Side::Enemy);
+        let _ = dispatch_after_card_entered_combat(&mut state, b, true);
+        assert_eq!(state.player.block - before, REGALITE_BLOCK_V0111);
+        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
+        let _ = dispatch_after_card_entered_combat(&mut state, b, true);
+        assert_eq!(state.player.block - before, 2 * REGALITE_BLOCK_V0111);
+        // Combat end clears the latch too (it must not ride `relic_counters`).
+        let _ = dispatch_after_combat_end(&mut state);
+        let relic = state
+            .relics
+            .iter()
+            .find(|r| r.kind == RelicKind::Regalite)
+            .expect("regalite equipped");
+        assert_eq!(relic.counter, 0, "latch cleared at combat end");
     }
 
     /// **Regalite #2** — ANY owned card entering combat grants block,

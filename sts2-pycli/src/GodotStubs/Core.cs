@@ -250,6 +250,19 @@ public static class StringExtensions
             char.ToUpperInvariant(w[0]) + w.Substring(1).ToLowerInvariant()));
     }
 
+    /// <summary>
+    /// Godot's <c>String.path_join</c>: append <paramref name="file"/> as a
+    /// sub-path, inserting <c>/</c> only when neither side has one. v0.111.0's
+    /// save-path helpers (UserDataPathProvider.cs:36) use it; without it
+    /// <c>SaveManager.InitProfileId</c> throws MissingMethodException.
+    /// </summary>
+    public static string PathJoin(this string instance, string file)
+    {
+        if (instance.Length == 0) return file;
+        if (instance[^1] == '/' || (file.Length > 0 && file[0] == '/')) return instance + file;
+        return instance + "/" + file;
+    }
+
     public static string GetBaseDir(this string path)
     {
         var idx = path.Replace('\\', '/').LastIndexOf('/');

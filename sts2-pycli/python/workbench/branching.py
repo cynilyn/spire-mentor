@@ -30,7 +30,7 @@ from typing import Any
 
 from game_log import GameLogger
 from run_policy import to_workbench_verb
-from sts2_client import Game
+from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS, Game
 from sts2_hint import display_maps
 
 from workbench import (
@@ -244,10 +244,35 @@ class BranchingLiveSession:
     """A single in-progress live game with a rewindable branch tree."""
 
     def __init__(
-        self, logs_dir: str, backend: str = "csharp", loc: dict[str, str] | None = None
+        self,
+        logs_dir: str,
+        backend: str = "csharp",
+        loc: dict[str, str] | None = None,
+        game_version: str | None = None,
     ) -> None:
         self.logs_dir = logs_dir
         self.backend = backend
+        # The game build this session's run simulates (GH #801). Fixed for the
+        # session's lifetime: ``seek`` rebuilds the run from scratch, and a
+        # rebuild under another build would replay the line against different
+        # rules (and, since v0.111.0 hashes seeds differently, a different
+        # run). ``None`` is the default build, NOT the process-wide
+        # ``STS2_GAME_VERSION`` — a workbench run's build is part of its
+        # identity, recorded in its save and log.
+        version = game_version or DEFAULT_GAME_VERSION
+        if version not in SUPPORTED_GAME_VERSIONS:
+            raise ValueError(
+                f"unsupported game_version {version!r} "
+                f"(supported: {', '.join(SUPPORTED_GAME_VERSIONS)})"
+            )
+        if version != DEFAULT_GAME_VERSION and backend != "rust":
+            # The C# oracle binary is selected per PROCESS (``STS2_GAME_VERSION``
+            # at import); a per-session build switch only exists on the Rust
+            # engine.
+            raise ValueError(
+                f"game_version {version!r} requires the rust backend (got {backend!r})"
+            )
+        self.game_version = version
         # Loc map for display-time name resolution of the log labels/diffs. The
         # Rust backend stores loc keys (``STRIKE_IRONCLAD.title``) in state; the
         # C# backend already ships display names, so this is a no-op there.
@@ -255,7 +280,9 @@ class BranchingLiveSession:
         # The default C# backend resolves through the module-level ``Game``
         # symbol (kept patchable so tests can inject a FakeGame); other
         # backends go through the factory. ``make_backend`` validates the name.
-        self._backend_cls = Game if backend == "csharp" else make_backend(backend)
+        self._backend_cls = (
+            Game if backend == "csharp" else make_backend(backend, game_version=version)
+        )
         # The driver for the current run. Always a ``GameBackend`` — whatever
         # ``_backend_cls`` produces is adapted in :meth:`_spawn_game`, so the
         # code below never has to probe the engine for what it can do.
@@ -344,6 +371,7 @@ class BranchingLiveSession:
         fixture_path: str,
         prefix_actions: list[dict[str, Any]],
         character: str,
+        game_version: str | None = None,
     ) -> BranchingLiveSession:
         """A combat-only session that takes over a *recorded* fight from an
         exact decision ("play from here").
@@ -358,7 +386,7 @@ class BranchingLiveSession:
 
         from workbench.backends.combat_replay import CombatReplayBackend
 
-        sess = cls(logs_dir=logs_dir, backend="rust", loc=loc)
+        sess = cls(logs_dir=logs_dir, backend="rust", loc=loc, game_version=game_version)
         sess._backend_cls = partial(CombatReplayBackend, fixture_path, prefix_actions, character)  # type: ignore[assignment]
         return sess
 
@@ -369,6 +397,7 @@ class BranchingLiveSession:
         loc: dict[str, str] | None,
         wire: dict[str, Any],
         character: str,
+        game_version: str | None = None,
     ) -> BranchingLiveSession:
         """A combat-only session over a board copied out of the LIVE game.
 
@@ -387,7 +416,13 @@ class BranchingLiveSession:
 
         from workbench.backends.imported_combat import ImportedCombatBackend
 
-        sess = cls(logs_dir=logs_dir, backend="rust", loc=loc)
+        sess = cls(logs_dir=logs_dir, backend="rust", loc=loc, game_version=game_version)
+        if sess.game_version != DEFAULT_GAME_VERSION:
+            # The board is rebuilt by ``sts2_rs.state_from_dict``, which reads
+            # the build off ``$.game_version`` (absent = the default). The
+            # session's build wins over whatever the wire names, as in the
+            # Rust ``Game::start_imported``.
+            wire = {**wire, "game_version": sess.game_version}
         sess._backend_cls = partial(ImportedCombatBackend, wire, character)  # type: ignore[assignment]
         return sess
 
@@ -2567,6 +2602,15 @@ class BranchingLiveSession:
                     "run_mode": bool(self._run_mode),
                     "act1": self.act1,
                     "backend": self.backend,
+                    # GH #801: the build is part of the identity (a line only
+                    # replays under the rules that recorded it). Only written
+                    # off the default, so a v0.107.1 log is byte-identical to
+                    # before; a reader treats the missing key as v0.107.1.
+                    **(
+                        {"game_version": self.game_version}
+                        if self.game_version != DEFAULT_GAME_VERSION
+                        else {}
+                    ),
                 },
             )
             path = self._path_to(self._active_id)

@@ -467,11 +467,11 @@ pub fn champion_onnx_filename(character: CharacterId) -> &'static str {
 fn champion_entry(character: CharacterId) -> (&'static str, &'static str) {
     match character {
         // GENERATED FROM sts2-pycli/data/ppo/champions.toml -- DO NOT EDIT
-        CharacterId::Defect => ("ppo_fullrun_defect_deckmut_it150.onnx", ""),
-        CharacterId::Ironclad => ("ppo_fullrun_ironclad_plr_it550.onnx", ""),
-        CharacterId::Necrobinder => ("ppo_fullrun_necrobinder_deckmut_it150.onnx", ""),
-        CharacterId::Regent => ("ppo_fullrun_regent_deckmut_it150.onnx", ""),
-        CharacterId::Silent => ("ppo_fullrun_silent_cont_it300.onnx", ""),
+        CharacterId::Defect => ("ppo_fullrun_defect_deckmut_it150_v0111vocab.onnx", ""),
+        CharacterId::Ironclad => ("ppo_fullrun_ironclad_plr_it550_v0111vocab.onnx", ""),
+        CharacterId::Necrobinder => ("ppo_fullrun_necrobinder_deckmut_it150_v0111vocab.onnx", ""),
+        CharacterId::Regent => ("ppo_fullrun_regent_deckmut_it150_v0111vocab.onnx", ""),
+        CharacterId::Silent => ("ppo_fullrun_silent_cont_it300_v0111vocab.onnx", ""),
         // END GENERATED CHAMPIONS
     }
 }

@@ -501,7 +501,7 @@ fn decimillipede_reattach_effect(state: &mut CombatState, owner: CreatureUid) {
 /// PILE_COUNT impact — but its PRESENCE is observable in `monsters[*].powers`,
 /// so it must be modelled for state parity (bead `sts2-rs-ybtmu`).
 fn thieving_hopper_thievery_effect(state: &mut CombatState, owner: CreatureUid) {
-    use crate::cards::spec_index::rarity_for_card_id;
+    use crate::cards::spec_index::rarity_for_card_id_in;
     use crate::cards::CardRarity;
     use sts2_core::cards::{CardType, EnchantmentId};
 
@@ -538,7 +538,11 @@ fn thieving_hopper_thievery_effect(state: &mut CombatState, owner: CreatureUid) 
             state.cards[uid.get() as usize - 1].enchantment(EnchantmentId::Imbued) == 0
         };
         let rarity_of = |uid: &sts2_core::CardUid| -> Option<CardRarity> {
-            rarity_for_card_id(state.cards[uid.get() as usize - 1].card_id)
+            // GH #793: the rarity of the combat's game build.
+            rarity_for_card_id_in(
+                state.cards[uid.get() as usize - 1].card_id,
+                state.game_version,
+            )
         };
         let predicates: [Box<dyn Fn(&sts2_core::CardUid) -> bool>; 4] = [
             Box::new(|u| not_imbued(u) && rarity_of(u) == Some(CardRarity::Uncommon)),
@@ -625,7 +629,19 @@ fn louse_progenitor_web_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// `LouseProgenitor.cs` `CurlAndGrowMove`:
 /// `GainBlock(CurlBlock=14, Move) ; await PowerCmd.Apply<StrengthPower>(base.Creature, 5m, …)`.
 fn louse_progenitor_curl_and_grow_effect(state: &mut CombatState, owner: CreatureUid) {
-    apply_power_to_creature(state, owner, PowerKind::Strength, 5);
+    let grow = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: GrowStrength => GetValueIfAscension(DeadlyEnemies, 7, 5);
+        // v0.107.1 applied a flat 5m (decomp LouseProgenitor.cs:65,107)
+        sts2_core::ascension::get_value_if_ascension(
+            state.ascension,
+            sts2_core::ascension::AscensionLevel::DeadlyEnemies,
+            7,
+            5,
+        )
+    } else {
+        5
+    };
+    apply_power_to_creature(state, owner, PowerKind::Strength, grow);
 }
 
 /// Bead `sts2-rs-7qd1`: Ovicopter LAY_EGGS spawns 3
@@ -747,7 +763,16 @@ fn tough_egg_hatch_effect(state: &mut CombatState, owner: CreatureUid) {
         }
     }
     // C# `Rng.NextInt(19, 22)` is max-EXCLUSIVE → band 19..=21.
-    let hp = state.run_rng.niche.next_int_exclusive(19, 22);
+    let hp = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: `NextInt(HatchlingMinHp, HatchlingMaxHp + 1)` — the band is
+        // now inclusive, 19..=22 (A8 ToughEnemies 20..=23) (decomp ToughEgg.cs:56-58,172)
+        use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::ToughEnemies};
+        let min = get_value_if_ascension(state.ascension, ToughEnemies, 20, 19);
+        let max = get_value_if_ascension(state.ascension, ToughEnemies, 23, 22);
+        state.run_rng.niche.next_int_exclusive(min, max + 1)
+    } else {
+        state.run_rng.niche.next_int_exclusive(19, 22)
+    };
     if let Some(c) = state.creatures.iter_mut().find(|c| c.id == owner.0) {
         c.max_hp = hp;
         c.current_hp = hp;
@@ -780,6 +805,15 @@ fn myte_infest_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// C#-is-source-of-truth rule. Bead `sts2-rs-pnv5` / `sts2-rs-ybtmu`.
 fn entomancer_pheromone_spit_effect(state: &mut CombatState, uid: CreatureUid) {
     let hive = entomancer_personal_hive_amount(state, uid);
+    // v0.111.0: a MISSING PersonalHivePower takes the +2 Strength branch
+    // (`FirstOrDefault()` + `personalHivePower == null || Amount >= 3`); in
+    // v0.107.1 `First()` had no null case and Rust read the absent hive as 0
+    // and grew it (decomp Entomancer.cs:59-63). A power at 0 is removed, so
+    // amount 0 here means absent.
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 && hive == 0 {
+        apply_power_to_creature(state, uid, PowerKind::Strength, 2);
+        return;
+    }
     if hive < 3 {
         apply_power_to_creature(state, uid, PowerKind::PersonalHive, 1);
         apply_power_to_creature(state, uid, PowerKind::Strength, 1);
@@ -4069,6 +4103,138 @@ mod tests {
             vec![egg_ids[2], egg_ids[1], egg_ids[0]],
             "eggs front-inserted in reverse spawn order (slot-sort parity)"
         );
+    }
+
+    /// The hatchling's re-rolled max HP for a fresh egg at `seed`.
+    fn hatch_hp(seed: i32, ascension: u8, version: sts2_core::GameVersion) -> i32 {
+        let mut state = CombatState {
+            game_version: version,
+            ascension,
+            run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            ..CombatState::default()
+        };
+        let egg = state.spawn_enemy(MonsterKind::ToughEgg);
+        state.set_creature_ai(egg, create_tough_egg_ai());
+        tough_egg_hatch_effect(&mut state, egg);
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == egg.0)
+            .expect("egg alive")
+            .max_hp
+    }
+
+    /// v0.107.1 `ToughEgg.cs:172`: `NextInt(HatchlingMinHp, HatchlingMaxHp)`
+    /// is max-exclusive, so the hatchling never rolls 22.
+    #[test]
+    fn tough_egg_hatch_band_excludes_max() {
+        let seen: std::collections::BTreeSet<i32> = (0..400)
+            .map(|s| hatch_hp(s, 0, sts2_core::GameVersion::V0_107_1))
+            .collect();
+        assert_eq!(seen, (19..=21).collect());
+    }
+
+    /// v0.111.0 `ToughEgg.cs:172`: `NextInt(HatchlingMinHp, HatchlingMaxHp + 1)`
+    /// — the band is inclusive, 19..=22, and A8 ToughEnemies (`:56-58`) lifts
+    /// it to 20..=23.
+    #[test]
+    fn tough_egg_hatch_band_is_inclusive_v0111() {
+        let v = sts2_core::GameVersion::V0_111_0;
+        let a0: std::collections::BTreeSet<i32> = (0..400).map(|s| hatch_hp(s, 0, v)).collect();
+        assert_eq!(a0, (19..=22).collect());
+        let a8: std::collections::BTreeSet<i32> = (0..400).map(|s| hatch_hp(s, 8, v)).collect();
+        assert_eq!(a8, (20..=23).collect());
+    }
+
+    fn own_power(state: &CombatState, uid: sts2_core::CreatureUid, kind: PowerKind) -> i32 {
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .map_or(0, |c| {
+                c.powers
+                    .iter()
+                    .filter_map(|pu| state.powers.iter().find(|p| p.id == pu.0 && p.kind == kind))
+                    .map(|p| p.amount)
+                    .sum()
+            })
+    }
+
+    /// CURL_AND_GROW's Strength: a flat 5 in v0.107.1; v0.111.0
+    /// `LouseProgenitor.cs:65,107` `GrowStrength => GetValueIfAscension(
+    /// DeadlyEnemies, 7, 5)`.
+    #[test]
+    fn louse_progenitor_grow_scales_at_a9_v0111() {
+        use sts2_core::GameVersion;
+        for (version, ascension, want) in [
+            (GameVersion::V0_107_1, 9, 5),
+            (GameVersion::V0_111_0, 0, 5),
+            (GameVersion::V0_111_0, 9, 7),
+        ] {
+            let mut state = CombatState {
+                game_version: version,
+                ascension,
+                ..CombatState::default()
+            };
+            let uid = state.spawn_enemy(MonsterKind::LouseProgenitor);
+            let before = own_power(&state, uid, PowerKind::Strength);
+            louse_progenitor_curl_and_grow_effect(&mut state, uid);
+            assert_eq!(
+                own_power(&state, uid, PowerKind::Strength) - before,
+                want,
+                "{version} A{ascension}"
+            );
+        }
+    }
+
+    /// An Entomancer that has lost its PersonalHive: v0.107.1 Rust reads the
+    /// absent hive as 0 and grows it (+1 hive, +1 Strength); v0.111.0
+    /// `Entomancer.cs:59-63` takes the `personalHivePower == null` branch
+    /// (+2 Strength, no hive).
+    #[test]
+    fn entomancer_spit_without_hive_takes_strength_branch_v0111() {
+        use sts2_core::GameVersion;
+        for (version, want_str, want_hive) in
+            [(GameVersion::V0_107_1, 1, 1), (GameVersion::V0_111_0, 2, 0)]
+        {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            let uid = state.spawn_enemy(MonsterKind::Entomancer);
+            // Strip the on-spawn PersonalHive(1).
+            let hive: Vec<_> = state
+                .powers
+                .iter()
+                .filter(|p| p.kind == PowerKind::PersonalHive)
+                .map(|p| p.id)
+                .collect();
+            state.powers.retain(|p| !hive.contains(&p.id));
+            for c in &mut state.creatures {
+                c.powers.retain(|pu| !hive.contains(&pu.0));
+            }
+            assert_eq!(own_power(&state, uid, PowerKind::PersonalHive), 0);
+            entomancer_pheromone_spit_effect(&mut state, uid);
+            assert_eq!(
+                own_power(&state, uid, PowerKind::Strength),
+                want_str,
+                "{version}"
+            );
+            assert_eq!(
+                own_power(&state, uid, PowerKind::PersonalHive),
+                want_hive,
+                "{version}"
+            );
+        }
+        // With a hive present the 0.111 build still grows it.
+        let mut state = CombatState {
+            game_version: GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        let uid = state.spawn_enemy(MonsterKind::Entomancer);
+        entomancer_pheromone_spit_effect(&mut state, uid);
+        assert_eq!(own_power(&state, uid, PowerKind::PersonalHive), 2);
+        assert_eq!(own_power(&state, uid, PowerKind::Strength), 1);
     }
 
     /// Bead `sts2-rs-z4jsg`: full ToughEgg hatch lifecycle. C#

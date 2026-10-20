@@ -61,7 +61,7 @@ def test_trial_key_tracks_scenario_not_just_seed() -> None:
 
 
 def _make_oracle_tree(root: str, dll_bytes: bytes, harness_src: bytes = b"class RunSim {}") -> None:
-    libdir = os.path.join(root, "lib")
+    libdir = os.path.join(root, "lib", "v0.107.1")
     os.makedirs(libdir)
     with open(os.path.join(libdir, "sts2.dll"), "wb") as f:
         f.write(dll_bytes)
@@ -75,7 +75,7 @@ def _make_oracle_tree(root: str, dll_bytes: bytes, harness_src: bytes = b"class 
         f.write(b"static void Main() {}")
     # build output must be IGNORED — a fresh-MVID rebuild here must not move
     # the namespace (that is what makes the cache reusable across checkouts).
-    binp = os.path.join(src, "bin", "Debug", "net9.0")
+    binp = os.path.join(src, "bin", "v0.107.1", "Debug", "net9.0")
     os.makedirs(binp)
     with open(os.path.join(binp, "Sts2Headless.dll"), "wb") as f:
         f.write(b"NON-REPRODUCIBLE-BUILD-MVID-XYZ")
@@ -88,7 +88,7 @@ def test_namespace_changes_with_dll_bytes(tmp_path) -> None:
     na, nb = pa.cs_version_namespace(a), pa.cs_version_namespace(b)
     assert na and nb and na != nb
     assert na == pa.cs_version_namespace(a)  # stable
-    assert len(na) == 16
+    assert na.startswith("v0.107.1-") and len(na.split("-", 1)[1]) == 16
 
 
 def test_namespace_changes_with_harness_source(tmp_path) -> None:
@@ -107,7 +107,10 @@ def test_namespace_is_path_independent_for_cross_checkout_reuse(tmp_path) -> Non
     _make_oracle_tree(b, b"GAME")
     # diverge ONLY the (ignored) built DLL, as a real rebuild would
     with open(
-        os.path.join(b, "src", "Sts2Headless", "bin", "Debug", "net9.0", "Sts2Headless.dll"), "wb"
+        os.path.join(
+            b, "src", "Sts2Headless", "bin", "v0.107.1", "Debug", "net9.0", "Sts2Headless.dll"
+        ),
+        "wb",
     ) as f:
         f.write(b"a-totally-different-build-mvid")
     assert pa.cs_version_namespace(a) == pa.cs_version_namespace(b)

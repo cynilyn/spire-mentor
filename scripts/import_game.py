@@ -21,7 +21,7 @@ Steam locations and $STS2_GAME_DIR are tried.
 
 Tiers (each includes the ones before it):
     engine     nothing to import — the Rust workspace builds and tests as-is
-    oracle     sts2-pycli/lib/ (IL-patched game DLLs) + localization_eng/
+    oracle     sts2-pycli/lib/<ver>/ (IL-patched game DLLs) + localization_eng/
                -> the C# oracle, the parity harness, the full pytest suite
     workbench  + decompiled source, wiki data JSON, art (atlases, VFX, rooms
                and scenes, card frames, creature rigs), the sfx map, card
@@ -61,10 +61,17 @@ PYCLI = ROOT / "sts2-pycli"
 RS = ROOT / "sts2-rs"
 LOG = ROOT / "logs" / "import-game.log"
 
-# The build the engine simulates. sts2-rs/crates/sts2-workbench/src/data.rs
+# The builds the engine simulates (GH #789). The first is the default — the one
+# the shared, unversioned outputs (localization_eng/, the art, the card db, the
+# workbench bundle) describe; sts2-rs/crates/sts2-workbench/src/data.rs
 # (ENGINE_WIKI_VERSION) and sts2-pycli/python/workbench/localization.py
-# (_ENGINE_WIKI_VERSION) pin the same value; move all three together.
-PINNED_VERSION = "v0.107.1"
+# (_ENGINE_WIKI_VERSION) pin the same value; move all three together. Every
+# other supported build gets only its version-keyed outputs: its oracle
+# (sts2-pycli/lib/<ver>/ + bin/<ver>/), sts2-wiki/extracted|decompiled|data/<ver>/,
+# its vendored loc (sts2-pycli/localization_eng_<ver>/) and its workbench bundle
+# (sts2-rs/crates/sts2-workbench/data/game/<ver>/) — GH #801.
+SUPPORTED_VERSIONS = ("v0.107.1", "v0.111.0")
+DEFAULT_VERSION = SUPPORTED_VERSIONS[0]
 
 TIERS = ["engine", "oracle", "workbench", "sound"]
 
@@ -87,8 +94,11 @@ ILSPYCMD_INSTALL = "dotnet tool install -g ilspycmd --version 9.1.0.7988"
 class Step:
     """One idempotent step: `done()` says whether its output exists."""
 
-    def __init__(self, name: str, tier: str, done, run, needs: tuple[str, ...] = ()):
+    def __init__(self, name: str, tier: str, done, run, needs: tuple[str, ...] = (), versioned: bool = False):
         self.name, self.tier, self.done, self.run, self.needs = name, tier, done, run, needs
+        # True: the output is keyed by game version, so every supported build
+        # gets its own. False: one shared tree describing DEFAULT_VERSION.
+        self.versioned = versioned
 
 
 # --------------------------------------------------------------------------
@@ -357,7 +367,13 @@ def build_steps(build: Path, version: str) -> list[Step]:
     wiki_env = {"STS2_VERSION": version, "PYTHONUTF8": "1"}
     wiki_data = WIKI / "data" / version
     extracted = WIKI / "extracted" / version
-    loc_eng = PYCLI / "localization_eng"
+    is_default = version == DEFAULT_VERSION
+    loc_eng_default = PYCLI / "localization_eng"
+    # A non-default build's loc is a sibling copy (workbench.localization.loc_dir_for).
+    loc_eng = loc_eng_default if is_default else PYCLI / f"localization_eng_{version}"
+    bundle_dir = RS / "crates/sts2-workbench/data/game"
+    if not is_default:
+        bundle_dir = bundle_dir / version
     images = WIKI / "site/public/images"
     audio = WIKI / "site/public/audio"
     pck = str(build / "SlayTheSpire2.pck")
@@ -373,10 +389,11 @@ def build_steps(build: Path, version: str) -> list[Step]:
         # The DLLs alone are not the output: setup_oracle.py also IL-patches
         # sts2.dll (leaving sts2.dll.original behind) and builds the harness. A
         # run that was interrupted after the copy must not count as done.
-        harness = PYCLI / "src/Sts2Headless/bin/Debug/net9.0"
+        lib = PYCLI / "lib" / version
+        harness = PYCLI / "src/Sts2Headless/bin" / version / "Debug/net9.0"
         return (
-            all(real_file(PYCLI / "lib" / d) for d in GAME_DLLS)
-            and (PYCLI / "lib/sts2.dll.original").is_file()
+            all(real_file(lib / d) for d in GAME_DLLS)
+            and (lib / "sts2.dll.original").is_file()
             and (harness / "Sts2Headless.dll").is_file()
         )
 
@@ -384,14 +401,20 @@ def build_steps(build: Path, version: str) -> list[Step]:
         # --install-root: where to look for DLLs the data dir lacks (the folder
         # holding the pck, i.e. the real install root through the link).
         install_root = (build / "SlayTheSpire2.pck").resolve().parent
-        sh([sys.executable, "scripts/setup_oracle.py", str(build / "data"), "--install-root", str(install_root)], PYCLI)
+        sh([sys.executable, "scripts/setup_oracle.py", str(build / "data"), "--version", version,
+            "--install-root", str(install_root)], PYCLI)
 
     def extract_pck():
         for prefix in ("localization/eng", "images/atlases"):
             uv_python(["-m", "scripts.extract_pck", pck, str(extracted), "--prefix", prefix], WIKI, wiki_env)
 
     def localization():
-        sh([sys.executable, "scripts/vendor_localization.py", pck, "--version", version], PYCLI)
+        if not is_default and not loc_eng.is_dir() and loc_eng_default.is_dir():
+            # Seed from the default build's copy so the vendor merge retains the
+            # keys only the older build had (content the engine still implements).
+            shutil.copytree(loc_eng_default, loc_eng)
+        sh([sys.executable, "scripts/vendor_localization.py", pck, "--version", version,
+            "--out", str(loc_eng)], PYCLI)
 
     def decompile():
         env = dict(wiki_env)
@@ -455,8 +478,9 @@ def build_steps(build: Path, version: str) -> list[Step]:
         sh([sys.executable, "-m", "workbench.build_card_db"], PYCLI, env=py_env)
 
     def workbench_data():
-        sh([sys.executable, "scripts/build_asset_manifest.py"], PYCLI)
-        sh([sys.executable, "scripts/bundle_workbench_data.py"], PYCLI)
+        if is_default:
+            sh([sys.executable, "scripts/build_asset_manifest.py"], PYCLI)
+        sh([sys.executable, "scripts/bundle_workbench_data.py", "--version", version], PYCLI)
 
     def portraits():
         uv_python(["-m", "scripts.render_portraits", "site/public/images"], WIKI, wiki_env)
@@ -473,16 +497,18 @@ def build_steps(build: Path, version: str) -> list[Step]:
                   WIKI, wiki_env)
 
     return [
-        Step("game DLLs -> sts2-pycli/lib/ (IL-patched) + C# oracle build", "oracle", has_lib, oracle_lib, ("dotnet",)),
+        Step(f"game DLLs -> sts2-pycli/lib/{version}/ (IL-patched) + C# oracle build", "oracle", has_lib, oracle_lib,
+             ("dotnet",), versioned=True),
         Step("pck localization + atlases -> sts2-wiki/extracted/", "oracle",
-             lambda: (extracted / "localization").is_dir(), extract_pck, ("uv",)),
-        Step("localization -> sts2-pycli/localization_eng/", "oracle",
-             lambda: (loc_eng / "cards.json").is_file() and (loc_eng / "BUILD.txt").is_file(), localization, ("uv",)),
+             lambda: (extracted / "localization").is_dir(), extract_pck, ("uv",), versioned=True),
+        Step(f"localization -> sts2-pycli/{loc_eng.name}/", "oracle",
+             lambda: (loc_eng / "cards.json").is_file() and (loc_eng / "BUILD.txt").is_file(), localization, ("uv",),
+             versioned=True),
         Step("decompile sts2.dll -> sts2-wiki/decompiled/", "workbench",
-             lambda: (WIKI / "decompiled" / version).is_dir(), decompile, ("ilspycmd",)),
+             lambda: (WIKI / "decompiled" / version).is_dir(), decompile, ("ilspycmd",), versioned=True),
         Step("wiki data JSON -> sts2-wiki/data/", "workbench",
              lambda: (wiki_data / "cards.json").is_file() and (wiki_data / "vfx_bindings.json").is_file()
-             and (wiki_data / "power_flash_sites.json").is_file(), wiki_extract, ("uv",)),
+             and (wiki_data / "power_flash_sites.json").is_file(), wiki_extract, ("uv",), versioned=True),
         Step("atlas art + VFX -> sts2-wiki/site/public/images/", "workbench",
              lambda: (images / "vfx" / "manifest.json").is_file() and any(images.glob("card_atlas/*"))
              and any(images.glob("epoch_atlas/*"))
@@ -514,8 +540,8 @@ def build_steps(build: Path, version: str) -> list[Step]:
         Step("card text + card db -> sts2-pycli/", "workbench",
              lambda: (PYCLI / "web/public/card_text.json").is_file() and (PYCLI / "python/workbench/data/card_db.json").is_file(),
              card_text_and_db),
-        Step("workbench bundle -> sts2-rs/crates/sts2-workbench/data/game/", "workbench",
-             lambda: (RS / "crates/sts2-workbench/data/game/wiki_cards.json").is_file(), workbench_data),
+        Step(f"workbench bundle -> {bundle_dir.relative_to(ROOT).as_posix()}/", "workbench",
+             lambda: (bundle_dir / "wiki_cards.json").is_file(), workbench_data, versioned=True),
         Step("sound effects -> sts2-wiki/site/public/audio/ (FMOD: the game's own DLLs on Windows, else FMOD_SDK_ROOT)",
              "sound",
              lambda: any(audio.rglob("*.webm")), sfx, ("uv", "ffmpeg")),
@@ -550,19 +576,17 @@ def preflight(steps: list[Step]) -> None:
 
 
 def status(build: Path | None, version: str) -> int:
-    print(f"pinned build: {PINNED_VERSION}")
+    print(f"== {version}{' (default)' if version == DEFAULT_VERSION else ''}  (supported: {', '.join(SUPPORTED_VERSIONS)})")
     if build and build.is_dir():
         print(f"staged build: {build.relative_to(ROOT)}  (version {version})")
     else:
         print("staged build: none (sts2_binaries/<version>/ absent) — run `just import-game [GAME_DIR]`")
-    steps = build_steps(build or BINARIES / PINNED_VERSION, version)
+    steps = build_steps(build or BINARIES / version, version)
     for tier in TIERS[1:]:
         print(f"\n[{tier}]")
         for step in steps:
-            if step.tier == tier:
+            if step.tier == tier and (step.versioned or version == DEFAULT_VERSION):
                 print(f"  {'ok     ' if step.done() else 'MISSING'}  {step.name}")
-    print()
-    print("\n".join(art_coverage()))
     return 0
 
 
@@ -586,7 +610,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", action="store_true", help="report which artifacts exist and exit")
     parser.add_argument("--copy", action="store_true", help="copy the pck and DLLs into sts2_binaries/ instead of symlinking")
     parser.add_argument("--allow-version-mismatch", action="store_true",
-                        help=f"proceed even if the install is not {PINNED_VERSION} (the engine is pinned; expect drift)")
+                        help=f"proceed even if the install is none of {', '.join(SUPPORTED_VERSIONS)} (expect drift)")
     args = parser.parse_args(argv)
     tier = "sound" if args.tier == "all" else args.tier
     for stream in (sys.stdout, sys.stderr):
@@ -594,10 +618,12 @@ def main(argv: list[str] | None = None) -> int:
         stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
 
     if args.status:
-        staged = sorted(BINARIES.glob("v*")) if BINARIES.is_dir() else []
-        build = staged[-1] if staged else None
-        version = build.name if build else PINNED_VERSION
-        return status(build, version)
+        staged = {p.name: p for p in BINARIES.glob("v*")} if BINARIES.is_dir() else {}
+        for version in SUPPORTED_VERSIONS:
+            status(staged.get(version), version)
+            print()
+        print("\n".join(art_coverage()))
+        return 0
 
     if tier == "engine":
         print("tier engine: nothing to import — `cd sts2-rs && cargo nextest run --workspace` works as-is.")
@@ -606,15 +632,23 @@ def main(argv: list[str] | None = None) -> int:
     data_dir, pck, release_info = locate(args.game_dir)
     version = read_version(release_info)
     log(f"game install: data={data_dir} pck={pck} version={version}")
-    if version != PINNED_VERSION and not args.allow_version_mismatch:
+    if version not in SUPPORTED_VERSIONS and not args.allow_version_mismatch:
         raise SystemExit(
-            f"the install is {version} but the engine is pinned to {PINNED_VERSION}; the parity oracle and "
-            "the extracted data would describe a different game. Pass --allow-version-mismatch to proceed anyway."
+            f"the install is {version} but the engine supports {', '.join(SUPPORTED_VERSIONS)}; the parity oracle "
+            "and the extracted data would describe a different game. Pass --allow-version-mismatch to proceed anyway."
         )
     build = stage(data_dir, pck, release_info, version, args.copy)
 
     wanted = TIERS[: TIERS.index(tier) + 1]
     steps = [s for s in build_steps(build, version) if s.tier in wanted]
+    if version != DEFAULT_VERSION:
+        # The shared trees (localization_eng/, the art, the card db, the
+        # workbench bundle) describe the default build; another build gets only
+        # its version-keyed outputs, never an overwrite of those.
+        for s in steps:
+            if not s.versioned:
+                log(f"skip ({version} is not the default {DEFAULT_VERSION}): {s.name}")
+        steps = [s for s in steps if s.versioned]
     if (tier == "sound" and extract_sfx.find_fmod_runtime(build) is None
             and any(s.tier == "sound" and not s.done() for s in steps)):
         raise SystemExit(

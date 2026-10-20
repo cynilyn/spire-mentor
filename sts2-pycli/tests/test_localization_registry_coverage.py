@@ -64,6 +64,51 @@ _KNOWN_UNTITLED_CARDS = frozenset(
 )
 
 
+#: Registry ids that exist only in game build v0.111.0 (GH #799 put them in the
+#: card and potion registries so the PPO vocab can give them rows of their
+#: own). ``localization_eng/`` is the v0.107.1 build's tables (``BUILD.txt``),
+#: which cannot title them; per-version localization is the workbench data
+#: bundle's job (GH #801). Pinned exactly, like the set above, so any OTHER new
+#: untitled id still fails.
+_V0111_ONLY = {
+    "card": frozenset(
+        {
+            "ABUNDANCE",
+            "BLADE_SYMPHONY",
+            "BLAZE",
+            "CACOPHONY",
+            "CONCOCT",
+            "CONSTELLATION",
+            "DOWSING",
+            "FADE",
+            "HIBERNATE",
+            "IMITATION_LEARNING",
+            "MIDNIGHT",
+            "ONE_FOR_ALL",
+            "OUTRAGE",
+            "PLOT",
+            "SIDESTEP",
+            "SOULBOUND",
+            "THE_BALL",
+            "TUTOR",
+            "UNDERWORLD",
+        }
+    ),
+    "potion": frozenset({"AMBERGRIS"}),
+    "relic": frozenset(),
+}
+
+
+def _v0107_registry(kind: str) -> list[str]:
+    """The engine registry minus the v0.111.0-only ids."""
+    skip = _V0111_ONLY[kind]
+    names = list(sts2_rs.list_registry_names(kind))
+    assert skip <= {n.removesuffix(_CARD_SUFFIX) for n in names}, (
+        f"_V0111_ONLY[{kind!r}] names ids the registry no longer has"
+    )
+    return [n for n in names if n.removesuffix(_CARD_SUFFIX) not in skip]
+
+
 @cache
 def _loc(filename: str) -> dict[str, str]:
     return json.loads((_LOC_DIR / filename).read_text(encoding="utf-8"))
@@ -88,7 +133,7 @@ class TestEveryRegistryEntryHasATitle:
         ("kind", "filename"), [("relic", "relics.json"), ("potion", "potions.json")]
     )
     def test_no_untitled_entries(self, kind: str, filename: str) -> None:
-        missing = sorted(set(sts2_rs.list_registry_names(kind)) - _titles(filename))
+        missing = sorted(set(_v0107_registry(kind)) - _titles(filename))
         assert missing == [], (
             f"{len(missing)} {kind}(s) in the engine registry have no "
             f"'<KEY>.title' row in localization_eng/{filename}: {missing}. "
@@ -99,7 +144,7 @@ class TestEveryRegistryEntryHasATitle:
         titles = _titles("cards.json")
         missing = {
             name.removesuffix(_CARD_SUFFIX)
-            for name in sts2_rs.list_registry_names("card")
+            for name in _v0107_registry("card")
             if name.removesuffix(_CARD_SUFFIX) not in titles
         }
         assert missing <= _KNOWN_UNTITLED_CARDS, (
@@ -129,7 +174,7 @@ class TestTitlesRoundTripToRegistryIds:
         title_to_id = getattr(canonical_maps, map_name)
         broken = {
             name: title_to_id.get(_title_of(filename, name))
-            for name in sts2_rs.list_registry_names(kind)
+            for name in _v0107_registry(kind)
             if title_to_id.get(_title_of(filename, name)) != name
         }
         assert broken == {}, f"{kind} titles that do not invert back to their registry id: {broken}"

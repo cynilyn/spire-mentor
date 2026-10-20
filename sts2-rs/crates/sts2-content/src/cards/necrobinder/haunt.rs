@@ -10,7 +10,17 @@ pub(crate) fn play_haunt(state: &mut CombatState, _target: Option<CreatureUid>) 
     // C# Haunt.OnPlay: PowerCmd.Apply<HauntPower>(Owner, DynamicVars.HpLoss.BaseValue).
     // HpLossVar(6m); OnUpgrade → UpgradeValueBy(2m) ⇒ 8 (gated, not a stat field).
     // TargetType::Self_ — no enemy target.
-    let amount = if current_card_upgraded(state) { 8 } else { 6 };
+    // v0.111.0: HpLoss 6 -> 7, upgrade still +2 (decomp Haunt.cs:14,31).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        7
+    } else {
+        6
+    };
+    let amount = if current_card_upgraded(state) {
+        base + 2
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::Haunt, amount);
     EffectResult::Resolved
 }

@@ -29,6 +29,12 @@ pub use seedfind::SeedfindArgs;
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+
+    /// Game build to simulate (`v0.107.1` or `v0.111.0`; the bare `0.111.0`
+    /// form works too). Applies to every subcommand that builds a run or a
+    /// combat. GH #787.
+    #[arg(long, global = true, default_value_t = sts2_core::GameVersion::V0_107_1)]
+    pub game_version: sts2_core::GameVersion,
 }
 
 #[derive(Debug, Subcommand)]
@@ -42,4 +48,27 @@ pub enum Command {
     Fuzz(FuzzArgs),
     /// Search seeds for a specific run-content combination (GH #297).
     Seedfind(SeedfindArgs),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sts2_core::GameVersion;
+
+    #[test]
+    fn game_version_defaults_to_v0107() {
+        let cli = Cli::try_parse_from(["sts2-cli", "fuzz"]).expect("parses");
+        assert_eq!(cli.game_version, GameVersion::V0_107_1);
+    }
+
+    #[test]
+    fn game_version_is_global_and_parses_both_forms() {
+        let before = Cli::try_parse_from(["sts2-cli", "--game-version", "v0.111.0", "fuzz"])
+            .expect("before the subcommand");
+        assert_eq!(before.game_version, GameVersion::V0_111_0);
+        let after = Cli::try_parse_from(["sts2-cli", "fuzz", "--game-version", "0.111.0"])
+            .expect("after the subcommand");
+        assert_eq!(after.game_version, GameVersion::V0_111_0);
+        assert!(Cli::try_parse_from(["sts2-cli", "--game-version", "0.1", "fuzz"]).is_err());
+    }
 }

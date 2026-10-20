@@ -479,6 +479,53 @@ pub fn create_torch_head_amalgam_ai() -> MonsterAi {
     MonsterAi::new(s, "TACKLE_1")
 }
 
+/// v0.111.0 `TorchHeadAmalgam`: STRONG_TACKLE → TACKLE_2 → BEAM → TACKLE_3 →
+/// TACKLE_4 → BEAM → … (GH #796). The opener is now its own move
+/// (`STRONG_TACKLE_MOVE` → `StrongTackleMove`, `SingleAttackIntent(
+/// StrongTackleDamage)`, 26 / A9 32) instead of a first TACKLE; the rest of
+/// the ring is unchanged. Base damages here are A0; the v0.111.0 Tackle /
+/// Weak Tackle A9 values (22 / 16) come from
+/// [`crate::ascension_scaling::V0111_ATTACK_VALUES`].
+///
+/// [decompiled C# omitted — see the cited path]
+pub fn create_torch_head_amalgam_v0111_ai() -> MonsterAi {
+    let mut s = BTreeMap::new();
+    // v0.111.0: STRONG_TACKLE_MOVE 26 (A9 32) opener (decomp TorchHeadAmalgam.cs:51)
+    s.insert(
+        "STRONG_TACKLE",
+        mv(
+            "STRONG_TACKLE",
+            smallvec![Intent::Attack { damage: 26 }],
+            "TACKLE_2",
+        ),
+    );
+    s.insert(
+        "TACKLE_2",
+        mv("TACKLE_2", smallvec![Intent::Attack { damage: 18 }], "BEAM"),
+    );
+    s.insert(
+        "BEAM",
+        mv(
+            "BEAM",
+            smallvec![Intent::MultiAttack { damage: 8, hits: 3 }],
+            "TACKLE_3",
+        ),
+    );
+    s.insert(
+        "TACKLE_3",
+        mv(
+            "TACKLE_3",
+            smallvec![Intent::Attack { damage: 14 }],
+            "TACKLE_4",
+        ),
+    );
+    s.insert(
+        "TACKLE_4",
+        mv("TACKLE_4", smallvec![Intent::Attack { damage: 14 }], "BEAM"),
+    );
+    MonsterAi::new(s, "STRONG_TACKLE")
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // TheAdversary 3-phase boss encounter
 // ────────────────────────────────────────────────────────────────────────────

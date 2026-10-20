@@ -351,6 +351,11 @@ pub fn card_star_cost(card_id: CardId) -> i32 {
         | CardId::ParticleWall
         | CardId::Quasar => 2,
         CardId::CloakOfStars | CardId::CrescentSpear => 1,
+        // v0.111.0: the MP-only Constellation has `CanonicalStarCost => 2`
+        // (decomp Models.Cards/Constellation.cs:16), so CrescentSpear counts
+        // it. The id exists in no v0.107.1 state; mirrors the core
+        // `card_base_star_cost` row (GH #798).
+        CardId::Constellation => 2,
         _ => 0,
     }
 }

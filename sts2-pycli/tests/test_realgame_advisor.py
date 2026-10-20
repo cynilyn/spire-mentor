@@ -598,3 +598,78 @@ class TestEngineProjectionTable:
         path = ra._project_map_path(state, _RightmostPolicy(), 0, ra._projection_hp_table())
 
         assert path[1]["hp"] < path[0]["hp"]
+
+
+def _fixture_board() -> dict[str, Any]:
+    import json
+
+    path = Path(__file__).parent / "fixtures" / "realgame_adapter" / "single_enemy_ironclad.json"
+    state = json.loads(path.read_text(encoding="utf-8"))["state"]
+    state.pop("game_version", None)
+    state["type"] = "combat_action"
+    return state
+
+
+def _row(action: dict[str, Any], p_win: float, visits: int, *, best: bool = False) -> dict:
+    wins = round(p_win * visits)
+    return {
+        "action": action,
+        "p_win": p_win,
+        "q": p_win,
+        "visits": visits,
+        "wins": wins,
+        "losses": visits - wins,
+        "ties": 0,
+        "is_best": best,
+        "mean_final_hp": 50.0 + 10 * p_win,
+        "hp_n": visits,
+    }
+
+
+class TestCombatAdviceRows:
+    """`compute_combat_advice` also hands back the search's regret rows, and
+    the rows crown the same move the advice does (the coach grades against
+    them, the HUD shows the advice -- they must not disagree)."""
+
+    def _canned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sts2_rs = pytest.importorskip("sts2_rs")
+        result = {
+            "actions": [
+                _row({"action": "play", "card_index": 4, "target_index": 0}, 0.9, 500, best=True),
+                _row({"action": "play", "card_index": 2, "target_index": 0}, 0.8, 300),
+                _row({"action": "end_turn"}, 0.5, 100),
+            ],
+            "pv": [{"action": "play", "card_index": 4, "target_index": 0}],
+        }
+        monkeypatch.setattr(sts2_rs, "mcts_recommend", lambda *a, **k: result)
+
+    def test_compute_combat_advice_rows_match_options_best(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._canned(monkeypatch)
+        advice, _cs, _cfg, rows = ra.compute_combat_advice(
+            _fixture_board(), ra.RecommendConfig(threads=1), 64
+        )
+        (best_row,) = [r for r in rows if r["is_best"]]
+        assert best_row["stable_idx"] == advice["best"]["card_index"] == 4
+        assert best_row["target_index"] == advice["best"].get("target_index")
+        assert rows[0] is best_row
+        assert best_row["mean_final_hp"] == pytest.approx(59.0)
+        assert best_row["hp_n"] == 500
+
+    def test_rows_follow_the_veto_onto_the_new_best(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._canned(monkeypatch)
+        board = _fixture_board()
+        board["hand"][4]["playable"] = False  # the game refuses the Bash
+        advice, _cs, _cfg, rows = ra.compute_combat_advice(board, ra.RecommendConfig(threads=1), 64)
+        assert advice["best"]["card_index"] == 2
+        (best_row,) = [r for r in rows if r["is_best"]]
+        assert best_row["stable_idx"] == 2
+        assert rows[0] is best_row
+
+    def test_options_carry_final_hp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._canned(monkeypatch)
+        advice, *_ = ra.compute_combat_advice(_fixture_board(), ra.RecommendConfig(threads=1), 64)
+        best = next(o for o in advice["options"] if o["is_best"])
+        assert best["mean_final_hp"] == pytest.approx(59.0)
+        assert best["hp_n"] == 500

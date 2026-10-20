@@ -618,6 +618,47 @@ pub enum PowerKind {
     /// counterpart. C#: `.../Models/Powers/WitheringPresencePower.cs`. Bead
     /// `sts2-rs-v0107-content-port-wb8lk.2`.
     WitheringPresence,
+    // ── v0.111.0-only (GH #794). Not in [`PowerKind::all`], which stays the
+    // v0.107.1 universe (wire parser, registry names, affliction coverage);
+    // see [`PowerKind::V0111_ONLY`] / [`PowerKind::all_for`].
+    /// v0.111.0 `AmbergrisPower` (`Powers/AmbergrisPower.cs`): hidden Counter
+    /// buff applied by the Ambergris potion. While `Amount > 0` the owner takes
+    /// an extra turn; `AfterTakingExtraTurn` decrements it.
+    Ambergris,
+    /// v0.111.0 `CacophonyPower` (`Powers/CacophonyPower.cs`): Instanced
+    /// Counter buff (MP-only Cacophony card). Every 33 cards drawn it deals
+    /// `Amount` unpowered damage to a random hittable enemy. `counter` holds the
+    /// cards drawn since the last trigger.
+    Cacophony,
+    /// v0.111.0 `ConcoctPower` (`Powers/ConcoctPower.cs`): the owner's powered
+    /// attacks that deal unblocked damage apply `Amount` Poison; removed at the
+    /// end of the opposing side's turn (MP-only Concoct card).
+    Concoct,
+    /// v0.111.0 `FadePower : TemporaryDexterityPower` (`Powers/FadePower.cs`,
+    /// MP-only Fade card): +`Amount` Dexterity until the owner's turn end.
+    Fade,
+    /// v0.111.0 `HibernatePower` (`Powers/HibernatePower.cs`): marker Counter
+    /// read by FrostOrb; decrements at the owner's player-turn start.
+    Hibernate,
+    /// v0.111.0 `HyperbeamFocusDownPower : TemporaryFocusPower` with
+    /// `IsPositive => false` (`Powers/HyperbeamFocusDownPower.cs`): the
+    /// reworked Hyperbeam's -`Amount` Focus until the owner's turn end. A
+    /// Debuff (`TemporaryFocusPower.Type`).
+    HyperbeamFocusDown,
+    /// v0.111.0 `ImitationLearningPower` (`Powers/ImitationLearningPower.cs`):
+    /// Instanced, bound to another player whose Power plays it copies (MP-only).
+    ImitationLearning,
+    /// v0.111.0 `OneForAllPower` (`Powers/OneForAllPower.cs`): +`Amount`
+    /// damage to the owner's powered attacks from cards played for 0 energy
+    /// (not X-cost).
+    OneForAll,
+    /// v0.111.0 `SoulboundPower` (`Powers/SoulboundPower.cs`): when the
+    /// applier generates a Soul, add `Amount` Souls to the owner's draw pile.
+    Soulbound,
+    /// v0.111.0 `UnderworldPower` (`Powers/UnderworldPower.cs`): allies' (not
+    /// the owner's, not the owner's pet's) powered attacks apply Doom equal to
+    /// the damage times `Amount`; removed at the end of the enemy turn.
+    Underworld,
 }
 
 impl PowerKind {
@@ -898,6 +939,16 @@ impl PowerKind {
             Self::DevourLifePower => "DEVOUR_LIFE",
             Self::Tainted => "TAINTED",
             Self::WitheringPresence => "WITHERING_PRESENCE",
+            Self::Ambergris => "AMBERGRIS",
+            Self::Cacophony => "CACOPHONY",
+            Self::Concoct => "CONCOCT",
+            Self::Fade => "FADE",
+            Self::Hibernate => "HIBERNATE",
+            Self::HyperbeamFocusDown => "HYPERBEAM_FOCUS_DOWN",
+            Self::ImitationLearning => "IMITATION_LEARNING",
+            Self::OneForAll => "ONE_FOR_ALL",
+            Self::Soulbound => "SOULBOUND",
+            Self::Underworld => "UNDERWORLD",
         }
     }
 
@@ -1179,5 +1230,69 @@ impl PowerKind {
             Self::Tainted,
             Self::WitheringPresence,
         ]
+    }
+
+    /// Powers that exist only in game build v0.111.0 (GH #794).
+    pub const V0111_ONLY: [PowerKind; 10] = [
+        Self::Ambergris,
+        Self::Cacophony,
+        Self::Concoct,
+        Self::Fade,
+        Self::Hibernate,
+        Self::HyperbeamFocusDown,
+        Self::ImitationLearning,
+        Self::OneForAll,
+        Self::Soulbound,
+        Self::Underworld,
+    ];
+
+    /// Powers that v0.111.0 deleted (GH #794): `DiamondDiademPower` went with
+    /// the DiamondDiadem relic rework and `OutbreakPower` with the Outbreak
+    /// card rework (decomp `v0.107.1/.../Powers/DiamondDiademPower.cs`,
+    /// `OutbreakPower.cs`; neither file exists in v0.111.0).
+    pub const REMOVED_IN_V0111: [PowerKind; 2] = [Self::DiamondDiadem, Self::Outbreak];
+
+    /// The build a power first exists in.
+    #[must_use]
+    pub const fn introduced_in(self) -> crate::GameVersion {
+        match self {
+            Self::Ambergris
+            | Self::Cacophony
+            | Self::Concoct
+            | Self::Fade
+            | Self::Hibernate
+            | Self::HyperbeamFocusDown
+            | Self::ImitationLearning
+            | Self::OneForAll
+            | Self::Soulbound
+            | Self::Underworld => crate::GameVersion::V0_111_0,
+            _ => crate::GameVersion::V0_107_1,
+        }
+    }
+
+    /// Whether the power exists in game build `version`: introduced at or
+    /// before it, and not one of [`Self::REMOVED_IN_V0111`] from v0.111.0 on.
+    #[must_use]
+    pub const fn exists_in(self, version: crate::GameVersion) -> bool {
+        let introduced = self.introduced_in() as u8 <= version as u8;
+        let removed = matches!(self, Self::DiamondDiadem | Self::Outbreak)
+            && version as u8 >= crate::GameVersion::V0_111_0 as u8;
+        introduced && !removed
+    }
+
+    /// Every power of game build `version`: [`Self::all`] (the v0.107.1
+    /// universe, unchanged) for v0.107.1; from v0.111.0 on, minus
+    /// [`Self::REMOVED_IN_V0111`] plus [`Self::V0111_ONLY`].
+    #[must_use]
+    pub fn all_for(version: crate::GameVersion) -> Vec<PowerKind> {
+        let mut v: Vec<PowerKind> = Self::all()
+            .iter()
+            .copied()
+            .filter(|k| k.exists_in(version))
+            .collect();
+        if version >= crate::GameVersion::V0_111_0 {
+            v.extend_from_slice(&Self::V0111_ONLY);
+        }
+        v
     }
 }

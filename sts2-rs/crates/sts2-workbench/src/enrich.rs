@@ -1222,8 +1222,14 @@ pub fn enrich(mut step: Value, ctx: &EnrichCtx<'_>) -> Value {
 /// The loc maps this crate serves are process-lifetime statics (the
 /// embedded bundle); the combat-log resolvers need `'static` closures.
 fn loc_static(loc: &Loc) -> &'static Loc {
-    if std::ptr::eq(loc, Loc::embedded()) {
-        Loc::embedded()
+    // Every build's embedded bundle (GH #801), so a v0.111.0 session never
+    // leaks a copy per call.
+    if let Some(embedded) = sts2_core::GameVersion::ALL
+        .into_iter()
+        .map(Loc::embedded_for)
+        .find(|e| std::ptr::eq(loc, *e))
+    {
+        embedded
     } else {
         // A caller-supplied map (tests): leak a copy — bounded by the number
         // of distinct maps a test constructs.

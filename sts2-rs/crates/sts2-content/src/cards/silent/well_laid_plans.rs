@@ -13,7 +13,14 @@ pub(crate) fn play_well_laid_plans(
     state: &mut CombatState,
     _t: Option<CreatureUid>,
 ) -> EffectResult {
-    let amt = if current_card_upgraded(state) { 2 } else { 1 };
+    // v0.111.0: a fixed single stack; the upgrade lowers the cost instead
+    // (decomp WellLaidPlans.cs:18,24). The power's new semantics are S8b's.
+    let amt = if !crate::cards::v0111::is_v0111(state.game_version) && current_card_upgraded(state)
+    {
+        2
+    } else {
+        1
+    };
     apply_power_to_player(state, PowerKind::WellLaidPlans, amt);
     EffectResult::Resolved
 }

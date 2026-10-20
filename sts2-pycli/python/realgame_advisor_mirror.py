@@ -358,6 +358,12 @@ class AdvisorMirror:
             return
         if msg.get("decision_type") != "combat_action":
             return
+        if msg.get("action") == "end_turn":
+            # The coach's end-turn report (PROTOCOL.md v5). Not followed here:
+            # `_catch_up_turns` already ends the mirror's turn from the next
+            # board, and doing both would end it twice. Not a drop either --
+            # it is the one combat action with no card or potion by design.
+            return
         card = msg.get("card")
         drink = msg.get("potion")
         if isinstance(drink, dict) and drink.get("id"):

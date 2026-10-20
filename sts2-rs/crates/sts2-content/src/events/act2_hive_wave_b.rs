@@ -103,7 +103,7 @@ fn relic_trader_owned(state: &RunState) -> Vec<RelicId> {
         .copied()
         .filter(|&id| crate::relics::tradable::relic_is_tradable(id))
         .collect();
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, RELIC_TRADER_STREAM);
+    let mut rng = state.rng.named(RELIC_TRADER_STREAM);
     rng.stable_shuffle_by(&mut valid, &|a: RelicId, b: RelicId| {
         a.to_python_name().cmp(b.to_python_name())
     });
@@ -246,9 +246,11 @@ const SLIPPERY_BRIDGE_STREAM: &str = "SLIPPERY_BRIDGE";
 /// caller MUST store it back so the counter advances across HoldOn rerolls,
 /// matching C# `base.Rng` living for the whole event).
 fn slippery_bridge_take_rng(state: &mut RunState) -> sts2_core::dotnet_rng::Rng {
-    state.event_state.rng.take().unwrap_or_else(|| {
-        sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, SLIPPERY_BRIDGE_STREAM)
-    })
+    state
+        .event_state
+        .rng
+        .take()
+        .unwrap_or_else(|| state.rng.named(SLIPPERY_BRIDGE_STREAM))
 }
 
 /// Replay C# `SlipperyBridge.GetNewRandomCard` on its FIRST invocation
@@ -265,7 +267,7 @@ fn slippery_bridge_card_to_lose(
     state: &RunState,
     rng: &mut sts2_core::dotnet_rng::Rng,
 ) -> Option<usize> {
-    use crate::cards::spec_index::{card_is_removable_instance, rarity_for_card_id};
+    use crate::cards::spec_index::{card_is_removable_instance, rarity_for_card_id_in};
     use crate::cards::CardRarity;
     // C# `CardModel.IsRemovable => !Keywords.Contains(Eternal)` — basic
     // Strike/Defend ARE removable here (only the Eternal keyword blocks it),
@@ -280,7 +282,10 @@ fn slippery_bridge_card_to_lose(
     let mut candidates: Vec<usize> = removable
         .iter()
         .copied()
-        .filter(|&i| rarity_for_card_id(state.master_deck[i].card_id) != Some(CardRarity::Basic))
+        .filter(|&i| {
+            rarity_for_card_id_in(state.master_deck[i].card_id, state.game_version)
+                != Some(CardRarity::Basic)
+        })
         .collect();
     if candidates.is_empty() {
         candidates = removable;
@@ -407,9 +412,11 @@ fn slippery_bridge_hold_on(state: &mut RunState) -> EventOutcome {
 /// same contract the Rust backend uses for every other card name it emits.
 fn slippery_bridge_card_preview(state: &RunState) -> Option<String> {
     let idx = if state.event_state.scratch.is_empty() {
-        let mut rng = state.event_state.rng.clone().unwrap_or_else(|| {
-            sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, SLIPPERY_BRIDGE_STREAM)
-        });
+        let mut rng = state
+            .event_state
+            .rng
+            .clone()
+            .unwrap_or_else(|| state.rng.named(SLIPPERY_BRIDGE_STREAM));
         slippery_bridge_card_to_lose(state, &mut rng)?
     } else {
         usize::try_from(state.event_state.scratch[0]).ok()?
@@ -594,7 +601,7 @@ fn stone_lift_potion(state: &RunState) -> Option<usize> {
     if state.potions.is_empty() {
         return None;
     }
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, STONE_OF_ALL_TIME_STREAM);
+    let mut rng = state.rng.named(STONE_OF_ALL_TIME_STREAM);
     let len = i32::try_from(state.potions.len()).unwrap_or(1);
     Some(usize::try_from(rng.next_int_exclusive(0, len)).unwrap_or(0))
 }
@@ -817,8 +824,7 @@ fn future_of_potions_card_rarity(kind: sts2_core::potions::PotionKind) -> CardRa
 /// about slot 0 must still consume the draws that precede it.
 fn future_of_potions_card_types(state: &RunState) -> Vec<CardType> {
     use sts2_core::potions::PotionRarity;
-    let mut rng =
-        sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, THE_FUTURE_OF_POTIONS_STREAM);
+    let mut rng = state.rng.named(THE_FUTURE_OF_POTIONS_STREAM);
     state
         .potions
         .iter()
@@ -845,16 +851,18 @@ fn future_of_potions_pool(
     rarity: CardRarity,
     card_type: CardType,
 ) -> Vec<CardId> {
-    crate::cards::spec_index::specs_for_character(state.character_id)
-        .iter()
-        .map(|factory| factory())
-        .filter(|spec| {
-            spec.rarity == rarity
-                && spec.card_type == card_type
-                && !crate::cards::spec_index::is_multiplayer_only(spec.id)
-        })
-        .map(|spec| spec.id)
-        .collect()
+    // The run's game build decides each card's rarity (GH #793).
+    crate::cards::spec_index::specs_in(
+        crate::cards::spec_index::specs_for_character(state.character_id),
+        state.game_version,
+    )
+    .filter(|spec| {
+        spec.rarity == rarity
+            && spec.card_type == card_type
+            && !crate::cards::spec_index::is_multiplayer_only(spec.id)
+    })
+    .map(|spec| spec.id)
+    .collect()
 }
 
 /// C# `TheFutureOfPotions.Trade(potion)`: discard it, then offer three cards
@@ -895,6 +903,7 @@ fn the_future_of_potions_trade(state: &mut RunState, slot: usize) -> EventOutcom
         .pending_card_selects
         .push(sts2_core::runstate::PendingCardSelect {
             upgraded: vec![true; count],
+            enchantments: Vec::new(),
             options,
             post_add: Vec::new(),
         });
@@ -1266,7 +1275,7 @@ fn wongo_mystery(state: &mut RunState) -> EventOutcome {
 const WONGO_STREAM: &str = "WELCOME_TO_WONGOS";
 
 fn wongo_rng(state: &RunState) -> sts2_core::dotnet_rng::Rng {
-    sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, WONGO_STREAM)
+    state.rng.named(WONGO_STREAM)
 }
 
 fn wongo_leave(state: &mut RunState) -> EventOutcome {
@@ -1291,7 +1300,7 @@ fn wongo_leave(state: &mut RunState) -> EventOutcome {
     }
     let mut rng = wongo_rng(state);
     let pick = rng.next_int_exclusive(0, upgraded.len() as i32) as usize;
-    state.master_deck[upgraded[pick]].downgrade();
+    state.master_deck[upgraded[pick]].downgrade_for(state.game_version);
     EventOutcome::finished("Left Wongo's, downgrading a card.")
 }
 
@@ -1464,7 +1473,7 @@ pub const WHISPERING_HOLLOW_STREAM: &str = "WHISPERING_HOLLOW";
 fn whispering_rolled_gold(state: &RunState) -> i32 {
     // v0.107.1 single-player event seed: additive player term is 0
     // (`EventModel.cs:238` GetPlayerSlotIndex == 0; v0.103.2 used NetId == 1).
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, WHISPERING_HOLLOW_STREAM);
+    let mut rng = state.rng.named(WHISPERING_HOLLOW_STREAM);
     WHISPERING_GOLD_BASE + rng.next_int(-WHISPERING_GOLD_VARIANCE, WHISPERING_GOLD_VARIANCE)
 }
 
@@ -1979,8 +1988,7 @@ mod tests {
         let expected_cost = {
             // Mirror the production v0.107.1 single-player event seed (additive
             // player term 0 — `EventModel.cs:238` GetPlayerSlotIndex == 0).
-            let mut rng =
-                sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, WHISPERING_HOLLOW_STREAM);
+            let mut rng = rs.rng.named(WHISPERING_HOLLOW_STREAM);
             WHISPERING_GOLD_BASE + rng.next_int(-WHISPERING_GOLD_VARIANCE, WHISPERING_GOLD_VARIANCE)
         };
         run(&WHISPERING_HOLLOW, "gold", &mut rs);
@@ -2135,8 +2143,8 @@ mod tests {
         }
         rs.master_deck
             .push(crate::cards::spec_index::card_pod_from_id(CardId::Bash, false).unwrap());
-        let mut a = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, SLIPPERY_BRIDGE_STREAM);
-        let mut b = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, SLIPPERY_BRIDGE_STREAM);
+        let mut a = rs.rng.named(SLIPPERY_BRIDGE_STREAM);
+        let mut b = rs.rng.named(SLIPPERY_BRIDGE_STREAM);
         assert_eq!(
             slippery_bridge_card_to_lose(&rs, &mut a),
             slippery_bridge_card_to_lose(&rs, &mut b),

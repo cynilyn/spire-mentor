@@ -12,7 +12,7 @@ pub(crate) fn on_after_side_turn_start_candelabra(
     state: &mut CombatState,
     side: Side,
 ) -> EffectResult {
-    if side != Side::Player || state.round_no() != 2 {
+    if side != Side::Player || state.turn_number() != 2 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::Candelabra) {

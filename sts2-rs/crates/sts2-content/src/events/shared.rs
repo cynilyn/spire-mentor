@@ -59,6 +59,19 @@ fn lost_wisp_generate_options(_state: &RunState, _spec: &EventSpec) -> Vec<Event
 /// Rust branch ships the relic queue + a doc-pin divergence so the
 /// parity harness's future event-mode replay can detect the gap.
 fn lost_wisp_claim(state: &mut RunState) -> EventOutcome {
+    // v0.111.0: Claim adds the Decay curse before the relic
+    // (`CardPileCmd.AddCursesToDeck([Decay])`, decomp
+    // `Models.Events/LostWisp.cs:49`). v0.107.1 has the same line; its arm
+    // keeps the deferred (curse-less) behaviour so that build stays
+    // bit-identical (tracked for #806).
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        if let Some(curse) =
+            crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
+        {
+            state
+                .add_card_to_deck_with_hooks(curse, sts2_core::relic_effects::AddSource::EventGain);
+        }
+    }
     state.offer_relic_rewards(RelicId::LostWisp, 1);
     EventOutcome::finished("Gained Lost Wisp relic (Decay curse add deferred to 6ynt.4.deck-add).")
 }
@@ -112,11 +125,13 @@ pub const LOST_WISP: EventSpec = EventSpec {
 /// `GetPlayerSlotIndex(Owner) == Players.IndexOf(Owner) == 0` (`RunState.cs:620`),
 /// so the additive player term is **0** — v0.103.2 used `Owner.NetId == 1` here
 /// (`EventModel.cs:193`); the v0.107.1 change from `NetId` to `GetPlayerSlotIndex`
-/// drops it. [`Rng::with_name`] folds in `deterministic_hash_code(entry)`, matching
-/// the C# hash term exactly. `entry` is the event's `Id.Entry` (its L10N key root,
-/// e.g. `"TRASH_HEAP"`).
+/// drops it. [`sts2_core::RunRngSet::named`] folds in the build's
+/// `GetDeterministicHashCode(entry)` in the build's seed width, matching the C#
+/// hash term exactly — v0.111.0 (`EventModel.cs:234`) is the same sum in
+/// `ulong` with XxHash64 (GH #788). `entry` is the event's `Id.Entry` (its L10N
+/// key root, e.g. `"TRASH_HEAP"`).
 fn event_rng(state: &RunState, entry: &str) -> sts2_core::dotnet_rng::Rng {
-    sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, entry)
+    state.rng.named(entry)
 }
 
 /// `TrashHeap`'s `Id.Entry` (L10N key root) — names its own event stream.
@@ -307,7 +322,8 @@ fn amalgamator_remove_basic_tagged(
 ) -> usize {
     let rank = sts2_core::lookup_card_rarity_rank();
     let removable = sts2_core::lookup_card_removable();
-    let is_basic = |id| rank.map_or(true, |f| f(id) == 1);
+    let version = state.game_version;
+    let is_basic = |id| rank.map_or(true, |f| f(id, version) == 1);
     let is_removable = |c: &sts2_core::Card| removable.map_or(true, |f| f(c));
     let mut removed = 0;
     let mut i = 0;
@@ -514,7 +530,8 @@ fn battleworn_setting_3(state: &mut RunState) -> EventOutcome {
 ///   `CardCmd.Upgrade` (immediate, no pick).
 /// - Setting3: `RelicCmd.Obtain(RelicFactory.PullNextRelicFromFront)` —
 ///   roll the rarity on the rewards stream, then obtain the next front
-///   relic of that rarity.
+///   relic of that rarity. v0.111.0 offers that same relic as a
+///   `RelicReward` instead (`BattlewornDummy.cs:85-88,114`), see the body.
 ///
 /// **Approximation (Setting3):** C# `PullFromFront` filters `_ => true`
 /// (no owned-skip), whereas [`RunState::pop_relic_from_grab_bag`] skips
@@ -549,7 +566,19 @@ pub fn battleworn_dummy_resume(
         BattlewornDummySetting::Setting3 => {
             let rarity = state.roll_reward_relic_rarity();
             if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
-                state.grant_event_relic(id);
+                if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+                    // v0.111.0: the relic is OFFERED (`new RelicReward(relic,
+                    // Owner)` into `RewardsCmd.OfferCustom`) instead of
+                    // `RelicCmd.Obtain` — same pull, but the player may skip
+                    // it (decomp BattlewornDummy.cs:85-88,114). It rides the
+                    // PickRelicReward/SkipRelic surface like every other
+                    // event-combat relic offer (`grant_event_combat_outcome`),
+                    // even under `direct_event_relic_grant`, where the run
+                    // loop then takes it with the rest of the reward set.
+                    state.offer_relic_rewards(id, 1);
+                } else {
+                    state.grant_event_relic(id);
+                }
             }
         }
     }
@@ -750,58 +779,162 @@ pub const BYRDONIS_NEST: EventSpec = EventSpec {
 
 // ── ColorfulPhilosophers ─────────────────────────────────────────────
 
-fn philosopher_pool(state: &mut RunState) -> EventOutcome {
-    // Python: 3 CardReward instances (one per rarity) keyed to the
-    // chosen philosopher's character pool. Deferred — character_id /
-    // multi-rarity CardReward variants not landed yet. Queue 3
-    // placeholders.
-    for _ in 0..3 {
-        state
-            .pending_rewards
-            .push(Reward::Card(CardReward::empty()));
+/// `ColorfulPhilosophers`' `Id.Entry` (L10N key root) — names its event Rng.
+const COLORFUL_PHILOSOPHERS_STREAM: &str = "COLORFUL_PHILOSOPHERS";
+
+/// `CardsVar(3)` — options per card reward (`ColorfulPhilosophers.cs:27`).
+const COLORFUL_PHILOSOPHERS_CARDS: usize = 3;
+
+/// C# `CardPoolColorOrder` (`ColorfulPhilosophers.cs:18-25`), one option per
+/// pool, in this order.
+const COLORFUL_PHILOSOPHERS_POOLS: [sts2_core::potions::CharacterId; 5] = [
+    sts2_core::potions::CharacterId::Necrobinder,
+    sts2_core::potions::CharacterId::Ironclad,
+    sts2_core::potions::CharacterId::Regent,
+    sts2_core::potions::CharacterId::Silent,
+    sts2_core::potions::CharacterId::Defect,
+];
+
+/// `GenerateInitialOptions` (`ColorfulPhilosophers.cs:34-52`): one option per
+/// [`COLORFUL_PHILOSOPHERS_POOLS`] entry that is not the owner's own pool and
+/// is unlocked (every pool is, as for the oracle's unlock state), then
+/// `list.RemoveAt(Rng.NextInt(list.Count))` until at most three remain. With
+/// all five pools unlocked that is four candidates and ONE event-Rng draw.
+/// The Rng is the event's own stream, fresh at `BeginEvent` and untouched by
+/// `CalculateVars`, so re-deriving it here gives the same draw every time
+/// the options are presented.
+fn colorful_philosophers_generate_options(
+    state: &RunState,
+    spec: &EventSpec,
+) -> Vec<EventOptionInfo> {
+    let mut pools: Vec<usize> = (0..COLORFUL_PHILOSOPHERS_POOLS.len())
+        .filter(|&i| COLORFUL_PHILOSOPHERS_POOLS[i] != state.character_id)
+        .collect();
+    let mut rng = event_rng(state, COLORFUL_PHILOSOPHERS_STREAM);
+    let keep = pools.len().min(3);
+    while pools.len() > keep {
+        let idx = rng.next_int_exclusive(0, pools.len() as i32) as usize;
+        pools.remove(idx);
     }
-    EventOutcome::finished("Received card rewards from philosopher pool (deferred).")
+    let all = default_option_info_from_spec(state, spec);
+    pools.into_iter().map(|i| all[i].clone()).collect()
 }
 
+/// `OfferRewards(pool)` (`ColorfulPhilosophers.cs:55-67`): one Common, one
+/// Uncommon and one Rare `CardReward` of three cards each, all from the
+/// chosen pool, offered through `RewardsCmd.OfferCustom`. The options are
+/// `Uniform` odds with `NoRarityModification | NoCardPoolModifications` and no
+/// Rng override, so `RewardsSet.GenerateWithoutOffering` populates them in
+/// list order on `PlayerRng.Rewards`: per card one `NextItem` and one upgrade
+/// float. They are rolled here, at option time, and queued pre-resolved; the
+/// run loop surfaces them one at a time in that order (all three share
+/// `RewardsSetIndex` 5, so the sort keeps it).
+fn colorful_philosophers_offer(
+    state: &mut RunState,
+    pool: sts2_core::potions::CharacterId,
+) -> EventOutcome {
+    use crate::cards::CardRarity;
+    for rarity in [CardRarity::Common, CardRarity::Uncommon, CardRarity::Rare] {
+        let cards = crate::cards::spec_index::roll_uniform_rarity_reward_cards(
+            state,
+            pool,
+            rarity,
+            COLORFUL_PHILOSOPHERS_CARDS,
+            false,
+            None,
+        );
+        let cards = state.offer_card_slate(cards, true);
+        state
+            .pending_rewards
+            .push(Reward::Card(CardReward::from_cards(&cards)));
+    }
+    EventOutcome::finished(format!("The philosophers offer {pool:?} cards."))
+}
+
+fn colorful_philosophers_necrobinder(state: &mut RunState) -> EventOutcome {
+    colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Necrobinder)
+}
+
+fn colorful_philosophers_ironclad(state: &mut RunState) -> EventOutcome {
+    colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Ironclad)
+}
+
+fn colorful_philosophers_regent(state: &mut RunState) -> EventOutcome {
+    colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Regent)
+}
+
+fn colorful_philosophers_silent(state: &mut RunState) -> EventOutcome {
+    colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Silent)
+}
+
+fn colorful_philosophers_defect(state: &mut RunState) -> EventOutcome {
+    colorful_philosophers_offer(state, sts2_core::potions::CharacterId::Defect)
+}
+
+/// One option per pool, in [`COLORFUL_PHILOSOPHERS_POOLS`] order (the
+/// presenter indexes this list by that order). Loc keys are
+/// `"COLORFUL_PHILOSOPHERS.pages.INITIAL.options." + EnergyColorName.ToUpperInvariant()`.
 const PHILOSOPHER_OPTIONS: &[EventOptionSpec] = &[
     EventOptionSpec {
-        option_id: "pool_1",
-        loc_key: "",
-        default_label: "Philosopher 1",
-        default_description: "Card rewards from pool 1",
-        default_vars: &[],
+        option_id: "necrobinder",
+        loc_key: "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.NECROBINDER",
+        default_label: "Necrobinder Philosopher",
+        default_description: "Common, Uncommon and Rare Necrobinder card rewards.",
+        default_vars: &[("Cards", EventVarSpec::Int(3))],
         vars_fn: None,
         title_vars_fn: None,
-        handler: philosopher_pool,
+        handler: colorful_philosophers_necrobinder,
     },
     EventOptionSpec {
-        option_id: "pool_2",
-        loc_key: "",
-        default_label: "Philosopher 2",
-        default_description: "Card rewards from pool 2",
-        default_vars: &[],
+        option_id: "ironclad",
+        loc_key: "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.IRONCLAD",
+        default_label: "Ironclad Philosopher",
+        default_description: "Common, Uncommon and Rare Ironclad card rewards.",
+        default_vars: &[("Cards", EventVarSpec::Int(3))],
         vars_fn: None,
         title_vars_fn: None,
-        handler: philosopher_pool,
+        handler: colorful_philosophers_ironclad,
     },
     EventOptionSpec {
-        option_id: "pool_3",
-        loc_key: "",
-        default_label: "Philosopher 3",
-        default_description: "Card rewards from pool 3",
-        default_vars: &[],
+        option_id: "regent",
+        loc_key: "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.REGENT",
+        default_label: "Regent Philosopher",
+        default_description: "Common, Uncommon and Rare Regent card rewards.",
+        default_vars: &[("Cards", EventVarSpec::Int(3))],
         vars_fn: None,
         title_vars_fn: None,
-        handler: philosopher_pool,
+        handler: colorful_philosophers_regent,
+    },
+    EventOptionSpec {
+        option_id: "silent",
+        loc_key: "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.SILENT",
+        default_label: "Silent Philosopher",
+        default_description: "Common, Uncommon and Rare Silent card rewards.",
+        default_vars: &[("Cards", EventVarSpec::Int(3))],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: colorful_philosophers_silent,
+    },
+    EventOptionSpec {
+        option_id: "defect",
+        loc_key: "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.DEFECT",
+        default_label: "Defect Philosopher",
+        default_description: "Common, Uncommon and Rare Defect card rewards.",
+        default_vars: &[("Cards", EventVarSpec::Int(3))],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: colorful_philosophers_defect,
     },
 ];
 
-/// `ColorfulPhilosophers` spec. Pin: `shared.py:618`.
+/// `ColorfulPhilosophers` spec (`ColorfulPhilosophers.cs`; identical in
+/// v0.107.1 and v0.111.0). `IsAllowed` needs more than one unlocked card
+/// pool, always true with every pool unlocked.
 pub const COLORFUL_PHILOSOPHERS: EventSpec = EventSpec {
     id: EventId::ColorfulPhilosophers,
     python_name: "ColorfulPhilosophers",
     is_allowed: always_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: colorful_philosophers_generate_options,
     options: PHILOSOPHER_OPTIONS,
 };
 
@@ -1060,7 +1193,7 @@ pub const DENSE_VEGETATION_HEAL_PCT_DEN: i32 = 10;
 /// `run_seed + hash("DENSE_VEGETATION")` with no NetId — same shape as
 /// [`super::act2_hive::JUNGLE_MAZE_ADVENTURE`]'s gold swing).
 fn dense_vegetation_gold(state: &RunState) -> i32 {
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, "DENSE_VEGETATION");
+    let mut rng = state.rng.named("DENSE_VEGETATION");
     rng.next_int(61, 99)
 }
 
@@ -1088,12 +1221,56 @@ fn dense_vegetation_rest(state: &mut RunState) -> EventOutcome {
     // (`Hook.ModifyRestSiteHealRewards` -> Tiny Mailbox potions etc.). Route
     // through `rest_site_heal`, which fires `after_rest_site_heal` AND grants
     // the offered rewards — the prior bare `heal()` skipped both, so a mimicked
-    // rest with Tiny Mailbox gained no potion (sts2-rs-RP23). The second page
-    // (FIGHT `DenseVegetationEventEncounter` without exiting) is still deferred
-    // (no event-combat bridge).
+    // rest with Tiny Mailbox gained no potion (sts2-rs-RP23).
+    //
+    // Then `SetEventState(REST.description, [FIGHT])`: the event is NOT
+    // finished. The only way on is the page-1 FIGHT option
+    // ([`dense_vegetation_fight`]). Finishing here skipped the fight and its
+    // rewards entirely (GH #817).
     let base = state.max_hp * DENSE_VEGETATION_HEAL_PCT_NUM / DENSE_VEGETATION_HEAL_PCT_DEN;
     let healed = state.rest_site_heal(base);
-    EventOutcome::finished(format!("Healed {healed} HP (fight combat-setup deferred)."))
+    state.event_state.page = 1;
+    EventOutcome {
+        finished: false,
+        description: format!("Healed {healed} HP. Something stirs in the undergrowth."),
+        effects: Vec::new(),
+    }
+}
+
+/// `Fight` (page 1): C# `EnterCombatWithoutExitingEvent` with
+/// `DenseVegetationEventEncounter`, no extra rewards and
+/// `shouldResumeAfterCombat: false`. Four Wrigglers; the encounter's own
+/// Monster-room rewards (gold, potion odds, card reward) are granted on
+/// victory by the run loop (`EventEncounter::grants_base_room_rewards`).
+/// Returns a NOT-finished outcome so the event room stays open across the
+/// combat.
+fn dense_vegetation_fight(state: &mut RunState) -> EventOutcome {
+    state.event_combat = Some(EventCombatRequest::no_resume(
+        EventEncounter::DenseVegetation,
+        EventId::DenseVegetation,
+        Vec::new(),
+    ));
+    EventOutcome {
+        finished: false,
+        description: "The Wrigglers attack!".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+/// Number of page-0 options (`TrudgeOn`, `Rest`). The static option list
+/// also carries the page-1 `Fight` handler, which must not be presented at
+/// page 0: C# `GenerateInitialOptions` offers exactly two.
+const DENSE_VEGETATION_PAGE0_OPTIONS: usize = 2;
+
+/// Multi-page presenter: page 0 = the two initial options; page 1 = the
+/// single `Fight` option that [`dense_vegetation_rest`] opens.
+fn dense_vegetation_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let options = if state.event_state.page == 1 {
+        &spec.options[DENSE_VEGETATION_PAGE0_OPTIONS..]
+    } else {
+        &spec.options[..DENSE_VEGETATION_PAGE0_OPTIONS]
+    };
+    default_option_info_from_spec(state, &EventSpec { options, ..*spec })
 }
 
 const DENSE_VEGETATION_OPTIONS: &[EventOptionSpec] = &[
@@ -1120,6 +1297,17 @@ const DENSE_VEGETATION_OPTIONS: &[EventOptionSpec] = &[
         title_vars_fn: None,
         handler: dense_vegetation_rest,
     },
+    // ── page 1: the Fight follow-up ──
+    EventOptionSpec {
+        option_id: "fight",
+        loc_key: "DENSE_VEGETATION.pages.REST.options.FIGHT",
+        default_label: "Fight",
+        default_description: "Fight the Wrigglers.",
+        default_vars: &[],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: dense_vegetation_fight,
+    },
 ];
 
 /// `DenseVegetation` spec. Pin: `shared.py:803`.
@@ -1127,7 +1315,7 @@ pub const DENSE_VEGETATION: EventSpec = EventSpec {
     id: EventId::DenseVegetation,
     python_name: "DenseVegetation",
     is_allowed: always_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: dense_vegetation_generate_options,
     options: DENSE_VEGETATION_OPTIONS,
 };
 
@@ -1989,6 +2177,20 @@ mod tests {
         assert!(outcome.finished);
         assert_eq!(rs.relic_rewards.len(), 1);
         assert_eq!(rs.relic_rewards[0].relic_id, RelicId::LostWisp);
+        assert!(rs.master_deck.is_empty(), "v0.107.1 arm adds no curse");
+    }
+
+    /// v0.111.0 `LostWisp.Claim` (`LostWisp.cs:49`): Decay, then the relic.
+    #[test]
+    fn lost_wisp_claim_adds_decay_v0111() {
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let outcome = (LOST_WISP.options[0].handler)(&mut rs);
+        assert!(outcome.finished);
+        assert_eq!(rs.relic_rewards[0].relic_id, RelicId::LostWisp);
+        let ids: Vec<_> = rs.master_deck.iter().map(|c| c.card_id).collect();
+        assert_eq!(ids, vec![sts2_core::cards::CardId::Decay]);
     }
 
     #[test]
@@ -2238,7 +2440,8 @@ mod tests {
                 &COLORFUL_PHILOSOPHERS,
                 EventId::ColorfulPhilosophers,
                 "ColorfulPhilosophers",
-                &["pool_1", "pool_2", "pool_3"],
+                // One option per colour; three of them are presented (GH #817).
+                &["necrobinder", "ironclad", "regent", "silent", "defect"],
             ),
             (
                 &COLOSSAL_FLOWER,
@@ -2256,7 +2459,8 @@ mod tests {
                 &DENSE_VEGETATION,
                 EventId::DenseVegetation,
                 "DenseVegetation",
-                &["trudge_on", "rest"],
+                // `fight` is the page-1 option Rest opens (GH #817).
+                &["trudge_on", "rest", "fight"],
             ),
             (
                 &DOORS_OF_LIGHT_AND_DARK,
@@ -2337,6 +2541,21 @@ mod tests {
                     assert!(
                         rs.event_combat.is_some(),
                         "{name}/{}: must stage event_combat",
+                        opt.option_id
+                    );
+                } else if *id == EventId::DenseVegetation && opt.option_id != "trudge_on" {
+                    // C# `DenseVegetation.Rest` opens the FIGHT page and
+                    // `Fight` stages the Wriggler combat; neither finishes
+                    // the event (GH #817).
+                    assert!(
+                        !outcome.finished,
+                        "{name}/{}: leads on to the fight",
+                        opt.option_id
+                    );
+                    assert_eq!(
+                        rs.event_combat.is_some(),
+                        opt.option_id == "fight",
+                        "{name}/{}: only FIGHT stages event_combat",
                         opt.option_id
                     );
                 } else if *id == EventId::ColossalFlower && opt.option_id == "reach_deeper" {
@@ -2734,9 +2953,136 @@ mod tests {
         rs.max_hp = 80;
         rs.current_hp = 1;
         let outcome = dense_vegetation_rest(&mut rs);
-        assert!(outcome.finished);
+        // C# `Rest` ends in `SetEventState(.., [FIGHT])`, not a finish.
+        assert!(!outcome.finished, "Rest opens the FIGHT page");
+        assert_eq!(rs.event_state.page, 1);
         // 24 HP healed: 1 -> 25. The `+`/`*` mutants overshoot (>=79 healed),
         // the `/`/`%` mutants undershoot (<=2 healed); all differ from 24.
         assert_eq!(rs.current_hp, 25, "healed exactly 30% of max HP");
+    }
+}
+
+/// ColorfulPhilosophers (GH #817).
+#[cfg(test)]
+mod colorful_philosophers_tests {
+    use super::*;
+    use crate::cards::CardRarity;
+    use sts2_core::potions::CharacterId;
+
+    fn rs_for(character: CharacterId, seed: i32) -> RunState {
+        let mut rs = RunState::new();
+        rs.character_id = character;
+        rs.rng = sts2_core::RunRngSet::new(seed);
+        rs
+    }
+
+    /// `GenerateInitialOptions`: the four other pools in `CardPoolColorOrder`
+    /// (Necrobinder, Ironclad, Regent, Silent, Defect), minus one removed at
+    /// `Rng.NextInt(4)` on the event's own stream.
+    #[test]
+    fn options_are_three_other_colours_after_one_event_rng_removal() {
+        for seed in 0..40 {
+            let rs = rs_for(CharacterId::Silent, seed);
+            let mut others = vec!["necrobinder", "ironclad", "regent", "defect"];
+            let mut rng = rs.rng.named("COLORFUL_PHILOSOPHERS");
+            others.remove(rng.next_int_exclusive(0, 4) as usize);
+            let opts = (COLORFUL_PHILOSOPHERS.generate_options)(&rs, &COLORFUL_PHILOSOPHERS);
+            let ids: Vec<&str> = opts.iter().map(|o| o.option_id).collect();
+            assert_eq!(ids, others, "seed {seed}");
+            for o in &opts {
+                assert_eq!(
+                    o.loc_key,
+                    format!(
+                        "COLORFUL_PHILOSOPHERS.pages.INITIAL.options.{}",
+                        o.option_id.to_uppercase()
+                    )
+                );
+            }
+        }
+    }
+
+    /// The owner's own pool is never offered.
+    #[test]
+    fn own_colour_is_never_offered() {
+        for (character, id) in [
+            (CharacterId::Ironclad, "ironclad"),
+            (CharacterId::Silent, "silent"),
+            (CharacterId::Defect, "defect"),
+            (CharacterId::Regent, "regent"),
+            (CharacterId::Necrobinder, "necrobinder"),
+        ] {
+            for seed in 0..10 {
+                let rs = rs_for(character, seed);
+                let opts = (COLORFUL_PHILOSOPHERS.generate_options)(&rs, &COLORFUL_PHILOSOPHERS);
+                assert_eq!(opts.len(), 3);
+                assert!(opts.iter().all(|o| o.option_id != id));
+            }
+        }
+    }
+
+    /// `OfferRewards(pool)`: Common, Uncommon and Rare card rewards of three
+    /// cards from the chosen pool, rolled in that order on
+    /// `PlayerRng.Rewards` — per card one `NextItem` and one upgrade float.
+    #[test]
+    fn offer_rolls_common_uncommon_rare_from_the_chosen_pool() {
+        let mut rs = rs_for(CharacterId::Silent, 1001);
+        let mut replay = rs.rng.rewards.clone();
+        let out = colorful_philosophers_defect(&mut rs);
+        assert!(out.finished);
+        assert_eq!(rs.pending_rewards.len(), 3);
+        for (reward, rarity) in rs.pending_rewards.iter().zip([
+            CardRarity::Common,
+            CardRarity::Uncommon,
+            CardRarity::Rare,
+        ]) {
+            let Reward::Card(reward) = reward else {
+                panic!("card reward expected");
+            };
+            assert_eq!(reward.options.len(), 3, "{rarity:?}");
+            let distinct: std::collections::BTreeSet<_> = reward.options.iter().collect();
+            assert_eq!(distinct.len(), 3, "{rarity:?} cards are distinct");
+            for id in &reward.options {
+                assert_eq!(
+                    crate::cards::spec_index::rarity_for_card_id_in(*id, rs.game_version),
+                    Some(rarity)
+                );
+                assert!(
+                    crate::cards::spec_index::specs_for_character(CharacterId::Defect)
+                        .iter()
+                        .any(|s| s().id == *id),
+                    "{id:?} is a Defect card"
+                );
+            }
+        }
+        for _ in 0..9 {
+            let _ = replay.next_int(0, 1);
+            let _ = replay.next_float(1.0);
+        }
+        assert_eq!(rs.rng.rewards, replay, "18 Rewards draws, nothing else");
+    }
+
+    /// Resolving by presented index runs the matching colour's handler.
+    #[test]
+    fn resolve_by_index_offers_the_presented_colour() {
+        let mut rs = rs_for(CharacterId::Ironclad, 5);
+        rs.enter_event_room(EventId::ColorfulPhilosophers);
+        let presented = crate::events::dispatch::present(&rs).expect("event active");
+        let pool = match presented[1].option_id {
+            "necrobinder" => CharacterId::Necrobinder,
+            "regent" => CharacterId::Regent,
+            "silent" => CharacterId::Silent,
+            "defect" => CharacterId::Defect,
+            other => panic!("unexpected option {other}"),
+        };
+        let out = crate::events::dispatch::resolve_by_index(&mut rs, 1).expect("event active");
+        assert!(out.finished);
+        let Reward::Card(first) = &rs.pending_rewards[0] else {
+            panic!("card reward expected");
+        };
+        assert!(first.options.iter().all(|id| {
+            crate::cards::spec_index::specs_for_character(pool)
+                .iter()
+                .any(|s| s().id == *id)
+        }));
     }
 }

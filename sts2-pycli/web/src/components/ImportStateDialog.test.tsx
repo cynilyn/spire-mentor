@@ -48,3 +48,16 @@ test("a 404 from the game reads as 'no position yet'", async () => {
   expect(await screen.findByRole("alert")).toHaveProperty(
     "textContent", expect.stringMatching(/no position yet/));
 });
+
+test("import rebuilds in the launcher's game version (GH #801)", async () => {
+  mockPreview();
+  const imp = vi.spyOn(api.live, "importState").mockResolvedValue(
+    { import: { warnings: [] } } as unknown as Awaited<ReturnType<typeof api.live.importState>>);
+  const liveGame = vi.fn().mockResolvedValue(STATE);
+  render(<ImportStateDialog onImported={() => {}} onClose={() => {}} liveGame={liveGame} autoLive
+    gameVersion="v0.111.0" />);
+  const go = await screen.findByRole("button", { name: /import \(replaces/ });
+  await waitFor(() => expect(go).not.toBeDisabled());
+  fireEvent.click(go);
+  await waitFor(() => expect(imp).toHaveBeenCalledWith(STATE, "combat", "v0.111.0"));
+});

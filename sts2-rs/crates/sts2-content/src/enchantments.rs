@@ -226,33 +226,16 @@ pub fn enchant_block_additive(card: &Card) -> i32 {
     sts2_core::enchantment_hooks::enchant_block_additive(card)
 }
 
-/// Per-enchantment replay bonus C# grants for a card carrying Spiral / Glam:
-/// the FIXED `Times.IntValue` (canonical `1`), NOT the enchantment's stack
-/// `Amount`. Source: `Spiral.cs` / `Glam.cs` `EnchantPlayCount` both return
-/// `originalPlayCount + base.DynamicVars["Times"].IntValue`, and `Times` is a
-/// constant `IntVar("Times", 1m)` independent of the enchantment's `Amount`.
-const SPIRAL_GLAM_REPLAY_TIMES: i32 = 1;
-
-/// Extra-play-count bonus from enchantments.
+/// Extra-play-count bonus from enchantments (Spiral / Glam).
 ///
-/// C# `CardModel.GetEnchantedReplayCount` calls `Enchantment.EnchantPlayCount`
-/// ONCE on the card's single enchantment, and both Spiral and Glam add the
-/// fixed `Times.IntValue` (= 1), regardless of the enchantment `Amount`
-/// (`Spiral.cs` / `Glam.cs`). The earlier port added `card.enchantment(..)`
-/// (the stack amount), which over-counted a stacked Spiral/Glam (e.g.
-/// `Spiral(2)` → +2 instead of +1). We keep the additive shape for the Rust
-/// multi-enchantment model — a card in C# carries at most one enchantment, so
-/// only one term can ever contribute — but each contributes the fixed +1.
+/// Delegates to the canonical core implementation
+/// [`sts2_core::enchantment_hooks::enchant_play_count_bonus`], which both
+/// card-play paths (`combat_loop::play_card` and the auto-play resolver) fold
+/// into the play count — so this value and the replays actually performed
+/// share one source of truth.
 #[must_use]
 pub fn enchant_play_count_bonus(card: &Card) -> i32 {
-    let mut bonus = 0;
-    if card.has_enchantment(EnchantmentId::Spiral) {
-        bonus += SPIRAL_GLAM_REPLAY_TIMES;
-    }
-    if card.has_enchantment(EnchantmentId::Glam) && !glam_used(card) {
-        bonus += SPIRAL_GLAM_REPLAY_TIMES;
-    }
-    bonus
+    sts2_core::enchantment_hooks::enchant_play_count_bonus(card)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,10 +289,6 @@ pub fn add_momentum_bonus(card: &mut Card, amount: i32) {
         .combat_var(VarKey::RampageDamage)
         .saturating_add(amount);
     card.set_combat_var(VarKey::RampageDamage, v);
-}
-
-fn glam_used(card: &Card) -> bool {
-    card.combat_var(VarKey::Generic) & GLAM_USED != 0
 }
 
 /// Mark Vigorous as having fired this combat. Idempotent.
@@ -685,6 +664,31 @@ mod tests {
         assert_eq!(enchant_damage_additive(&c, true), 1);
         // Unpowered (e.g. self-damage tick): no enchantment damage.
         assert_eq!(enchant_damage_additive(&c, false), 0);
+    }
+
+    /// v0.111.0 `Inky.cs:19`: Inky keeps only `PowerVar<WeakPower>(1m)` and
+    /// no longer overrides `EnchantDamageAdditive`.
+    #[test]
+    fn inky_adds_nothing_v0111() {
+        use sts2_core::enchantment_hooks::enchant_damage_additive_for;
+        use sts2_core::GameVersion;
+        let mut c = strike_card();
+        c.set_enchantment(EnchantmentId::Inky, 1);
+        assert_eq!(
+            enchant_damage_additive_for(&c, true, GameVersion::V0_111_0),
+            0
+        );
+        assert_eq!(
+            enchant_damage_additive_for(&c, true, GameVersion::V0_107_1),
+            1
+        );
+        // Other enchantments are untouched by the build.
+        let mut s = strike_card();
+        s.set_enchantment(EnchantmentId::Sharp, 3);
+        assert_eq!(
+            enchant_damage_additive_for(&s, true, GameVersion::V0_111_0),
+            3
+        );
     }
 
     /// v0.107.1 (§8) NEW enchant `TezcatarasEmber`: `DamageVar(3)` +

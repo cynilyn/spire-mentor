@@ -32,6 +32,9 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 arc-swap = { workspace = true }
+# v0.111.0 seed hashing: `StringHelper.GetDeterministicHashCode` is XxHash64
+# of the UTF-8 bytes (GH #788).
+xxhash-rust = { workspace = true }
 # MCTS-hot state hashing (`hashing.rs`): fixed-seed ahash instead of the
 # std SipHash `DefaultHasher` — same ephemeral-cache-key contract, much
 # cheaper per byte on the per-node-expansion hash path.

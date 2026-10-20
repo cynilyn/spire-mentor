@@ -5,7 +5,17 @@ use super::prelude::*;
 // Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L583
 pub(crate) fn play_terraforming(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Terraforming.cs: VigorPower 6, +2 on upgrade → 8. Bead `sts2-rs-rjnca`.
-    let amount = if current_card_upgraded(state) { 8 } else { 6 };
+    // v0.111.0: Vigor 6 -> 7, upgrade +2 -> +3 (decomp Terraforming.cs:14,30).
+    let (base, upgraded) = if crate::cards::v0111::is_v0111(state.game_version) {
+        (7, 10)
+    } else {
+        (6, 8)
+    };
+    let amount = if current_card_upgraded(state) {
+        upgraded
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::Vigor, amount);
     EffectResult::Resolved
 }

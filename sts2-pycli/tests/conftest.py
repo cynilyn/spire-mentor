@@ -23,12 +23,57 @@ SKIPS — never to failures — without them:
   skip when it is missing.
 """
 
+import os
 from pathlib import Path
 
 import pytest
+import sts2_client
 from sts2_client import Game, OracleUnavailable, oracle_available
 
 ORACLE_SKIP_REASON = "C# oracle unavailable: lib/sts2.dll missing (run `just import-game`)"
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--game-version",
+        action="store",
+        default=None,
+        help=(
+            "game build the C# oracle tests run against "
+            f"({', '.join(sts2_client.SUPPORTED_GAME_VERSIONS)}; default: "
+            f"${sts2_client.GAME_VERSION_ENV} or {sts2_client.DEFAULT_GAME_VERSION}). "
+            "Oracle tests skip unless lib/<version>/ is staged and "
+            "`just build-cs <version>` has run."
+        ),
+    )
+
+
+def pytest_configure(config):
+    requested = config.getoption("--game-version")
+    if requested:
+        try:
+            sts2_client.set_game_version(requested)
+        except ValueError as exc:
+            raise pytest.UsageError(str(exc)) from exc
+    # Children (xdist workers, the headless oracle, parity pool workers)
+    # inherit the selection through the environment.
+    os.environ[sts2_client.GAME_VERSION_ENV] = sts2_client.GAME_VERSION
+
+
+def _oracle_skip_reason() -> str | None:
+    """Why the selected game build's C# oracle cannot run, or None if it can."""
+    ver = sts2_client.GAME_VERSION
+    if not oracle_available():
+        return f"C# oracle unavailable: lib/{ver}/sts2.dll missing (run `just import-game`)"
+    if not sts2_client.oracle_built():
+        return f"C# oracle for {ver} not built (run `just build-cs {ver}`)"
+    return None
+
+
+def pytest_report_header(config):
+    reason = _oracle_skip_reason()
+    return f"game version: {sts2_client.GAME_VERSION} (C# oracle: {reason or 'ready'})"
+
 
 _PYCLI = Path(__file__).resolve().parents[1]
 _MONO = _PYCLI.parent
@@ -104,9 +149,12 @@ def _needs(nodeid: str) -> str | None:
 
 
 def pytest_collection_modifyitems(items):
+    oracle_skip = _oracle_skip_reason()
     for item in items:
         if "game" in getattr(item, "fixturenames", ()):
             item.add_marker(pytest.mark.oracle)
+        if oracle_skip and item.get_closest_marker("oracle"):
+            item.add_marker(pytest.mark.skip(reason=oracle_skip))
         req = _needs(item.nodeid)
         if req:
             item.add_marker(pytest.mark.game_data)
@@ -161,8 +209,9 @@ def _reset_engine_unlock_state():
 @pytest.fixture
 def game():
     """Each test gets an independent game process."""
-    if not oracle_available():
-        pytest.skip(ORACLE_SKIP_REASON)
+    reason = _oracle_skip_reason()
+    if reason:
+        pytest.skip(reason)
     g = Game()
     yield g
     g.close()

@@ -5,7 +5,7 @@ pub(crate) fn on_after_block_cleared_captains_wheel(
     state: &mut CombatState,
     _ctx: &crate::hooks::BlockClearedCtx,
 ) -> EffectResult {
-    if state.side != Side::Player || state.round_no() != CAPTAINS_WHEEL_ROUND {
+    if state.side != Side::Player || state.turn_number() != CAPTAINS_WHEEL_ROUND {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::CaptainsWheel) {

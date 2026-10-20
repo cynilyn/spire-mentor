@@ -19,10 +19,21 @@ use super::prelude::*;
 /// Shared with the card face — see `crate::cards::preview`.
 pub(crate) fn preview_synchronize(
     state: &CombatState,
-    _card: &Card,
+    card: &Card,
     _target: Option<CreatureUid>,
 ) -> i32 {
-    2 * i32::try_from(state.player.orbs.distinct_kinds()).unwrap_or(0)
+    // v0.111.0: CalculationExtra 2 -> 1 Focus per orb kind, and the upgrade
+    // raises it by 1 instead of removing Exhaust (decomp Synchronize.cs:23,41).
+    let per_kind = if crate::cards::v0111::is_v0111(state.game_version) {
+        if card.upgraded {
+            2
+        } else {
+            1
+        }
+    } else {
+        2
+    };
+    per_kind * i32::try_from(state.player.orbs.distinct_kinds()).unwrap_or(0)
 }
 
 pub(crate) fn play_synchronize(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {

@@ -61,8 +61,49 @@ pub(crate) fn on_after_side_turn_start_emotion_chip(
     if !triggered {
         return EffectResult::NotImplemented;
     }
-    crate::orbs::passive_tick(state);
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        trigger_every_orb_passive_v0111(state);
+    } else {
+        crate::orbs::passive_tick(state);
+    }
     EffectResult::Resolved
+}
+
+/// v0.111.0 EmotionChip orb walk: each channeled orb's passive, in queue
+/// order, counted through `ModifyOrbPassiveTriggerCount`.
+///
+/// v0.111.0 `EmotionChip.AfterPlayerTurnStart` passes
+/// `countAffectedByHooks: true` (decomp `EmotionChip.cs:54`), which routes
+/// `OrbCmd.Passive` through the new `OrbModel.TriggerPassive`
+/// (`OrbModel.cs:246-261`):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The only `ModifyOrbPassiveTriggerCount` listener is GoldPlatedCables:
+/// `+1` for `OrbQueue.Orbs[0]` (`GoldPlatedCables.cs`). v0.107.1 called
+/// `orb.Passive` directly, so Cables never doubled an EmotionChip trigger.
+///
+/// Every orb kind fires, Plasma's `+1 energy` included — `PlasmaOrb.Passive`
+/// is `GainEnergy(PassiveVal)` in both builds. (The v0.107.1 branch above
+/// reuses the turn-end [`crate::orbs::passive_tick`], which skips Plasma;
+/// it is left unchanged so that build stays bit-identical.)
+fn trigger_every_orb_passive_v0111(state: &mut CombatState) {
+    let filled: smallvec::SmallVec<[usize; 10]> = state
+        .player
+        .orbs
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| !o.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    let cables = player_owns_relic(state, crate::RelicKind::GoldPlatedCables);
+    for (n, idx) in filled.into_iter().enumerate() {
+        let count = if n == 0 && cables { 2 } else { 1 };
+        for _ in 0..count {
+            crate::orbs::trigger_orb_passive_at(state, idx);
+        }
+    }
 }
 
 /// `EmotionChip.after_combat_end` — clear the HP-loss counter so it

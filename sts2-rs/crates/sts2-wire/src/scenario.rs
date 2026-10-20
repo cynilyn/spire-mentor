@@ -101,8 +101,45 @@ fn starter_args_for_move_state(kind: MonsterKind, move_state: &str) -> Option<Mo
     }
 }
 
+/// [`build_scenario_state_for_version`] at the default game build
+/// ([`sts2_core::GameVersion::V0_107_1`]) — the entry point every
+/// pre-multi-version caller uses, byte-identical to before GH #787.
 #[allow(clippy::too_many_arguments)]
 pub fn build_scenario_state(
+    seed: u64,
+    character: &str,
+    deck_ids: &[String],
+    hp: i32,
+    max_hp: i32,
+    relic_ids: &[String],
+    potion_ids: &[String],
+    encounter: &str,
+    ascension: u8,
+    monster_override: Option<&[String]>,
+    monster_move_states: Option<&[Option<String>]>,
+) -> Result<CoreCombatState, String> {
+    build_scenario_state_for_version(
+        sts2_core::GameVersion::default(),
+        seed,
+        character,
+        deck_ids,
+        hp,
+        max_hp,
+        relic_ids,
+        potion_ids,
+        encounter,
+        ascension,
+        monster_override,
+        monster_move_states,
+    )
+}
+
+/// Build a fresh scenario combat for game build `game_version` (GH #787).
+/// The version lands on [`CoreCombatState::game_version`] exactly like
+/// `ascension` lands on `ascension`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_scenario_state_for_version(
+    game_version: sts2_core::GameVersion,
     seed: u64,
     character: &str,
     deck_ids: &[String],
@@ -234,8 +271,11 @@ pub fn build_scenario_state(
             tags: sts2_content::cards::status::tags_for_card_id(spec.id),
             ..Card::pod_defaults()
         };
+        // v0.111.0: the scenario's game build decides the card's values
+        // (GH #793); v0.107.1 keeps the spec values above unchanged.
+        card.normalize_for_version(game_version);
         if plus_levels >= 1 && card.is_upgradable() {
-            card.upgrade();
+            card.upgrade_for(game_version);
         }
         if let Some((id, amount)) = enchant {
             let _ = sts2_content::enchantments::apply_static_enchantment(&mut card, id, amount);
@@ -322,7 +362,10 @@ pub fn build_scenario_state(
     // RNG, so a shuffle won't perturb the next HP roll and vice versa.
     // Bead `sts2-rs-943w7`. The bundle is moved into `state.run_rng`
     // after the HP-roll loop completes.
-    let mut run_rng = sts2_core::run_rng_set::RunRngSet::new(seed as i32);
+    //
+    // GH #788: seeded in the scenario's game build (v0.107.1 keeps the low
+    // 32 bits of `seed`, exactly the old `RunRngSet::new(seed as i32)`).
+    let mut run_rng = sts2_core::run_rng_set::RunRngSet::new_for(game_version, seed);
 
     // sts2-rs-3010t: when the harness passes an explicit monster_list
     // (resolved on the C# side post-EnterRoom), use it verbatim so
@@ -391,8 +434,12 @@ pub fn build_scenario_state(
     // `roll → finalize` loop (same niche reads, identity finalize). Beads
     // `sts2-rs-q6bix` / `8mpo1`.
     let roster_kinds: Vec<MonsterKind> = roster.iter().map(|(k, _)| *k).collect();
-    let max_hps =
-        sts2_core::monsters::roll_unique_max_hps(&roster_kinds, &mut run_rng.niche, ascension);
+    let max_hps = sts2_core::monsters::roll_unique_max_hps_for(
+        &roster_kinds,
+        &mut run_rng.niche,
+        ascension,
+        game_version,
+    );
     // Spawned below by the run path's `run_bridge::spawn_roster` (position,
     // spawn args, AI, on-spawn powers), once the state exists.
     let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = roster
@@ -508,6 +555,7 @@ pub fn build_scenario_state(
         is_over: false,
         player_won: false,
         ascension,
+        game_version,
         master_deck: Vec::new(),
         last_added_card: None,
         is_elite,

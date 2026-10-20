@@ -250,6 +250,10 @@ pub const fn spec_for(kind: PotionKind) -> PotionSpec {
         PotionKind::FoulPotion => spec(kind, "FOUL_POTION", E, AT, S, None, true),
         PotionKind::GlowwaterPotion => spec(kind, "GLOWWATER_POTION", E, CO, S, None, true),
         PotionKind::PotionShapedRock => spec(kind, "POTION_SHAPED_ROCK", T, CO, AE, None, true),
+        // v0.111.0-only (GH #792): `Rarity => Event`, `Usage => AnyTime`,
+        // `TargetType => AnyPlayer` (decomp Ambergris.cs:20-24). Event
+        // rarity keeps it out of every random potion pool.
+        PotionKind::Ambergris => spec(kind, "AMBERGRIS", E, AT, AP, None, true),
         // `PotionKind` is `#[non_exhaustive]` to allow downstream pin
         // bumps to add variants without breaking SemVer. Every variant
         // shipped at pin `01c094d` is handled above; a future variant
@@ -446,9 +450,23 @@ pub fn roll_event_potion_full_pool_uncommon(
     rng: &mut DotNetRng,
     character: CharacterId,
 ) -> Option<PotionKind> {
+    roll_event_potion_full_pool_of_rarity(rng, character, PotionRarity::Uncommon)
+}
+
+/// One `NextItem` over the character++shared pool filtered to `rarity`
+/// (`GetPotionOptions(owner).Where(p => p.Rarity == rarity)`). Consumes
+/// nothing when the filtered pool is empty (C# `NextItem` returns `default`
+/// without a draw). Callers: PotionCourier `Ransack` (Uncommon) and
+/// `CrystalSpherePotion.ToReward` (Common / Rare, on the event Rng).
+#[must_use]
+pub fn roll_event_potion_full_pool_of_rarity(
+    rng: &mut DotNetRng,
+    character: CharacterId,
+    rarity: PotionRarity,
+) -> Option<PotionKind> {
     let pool: Vec<PotionKind> = full_potion_options(character)
         .into_iter()
-        .filter(|k| spec_for(*k).rarity == PotionRarity::Uncommon)
+        .filter(|k| spec_for(*k).rarity == rarity)
         .collect();
     if pool.is_empty() {
         return None;

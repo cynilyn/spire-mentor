@@ -1,4 +1,4 @@
-# Spire Mentor wire protocol (v3 / advisor mode; v2 = phase 1b)
+# Spire Mentor wire protocol (v5.1 / coach 2; v5 / coach; v3 = advisor mode; v2 = phase 1b)
 
 Newline-delimited JSON over a single-client TCP socket on `127.0.0.1:<port>`
 (default `9002`, see `SpireMentor.conf`). One JSON object per line.
@@ -55,6 +55,7 @@ message-specific ones:
 | `act` | int | 1-based act number (`CurrentActIndex + 1`), `1` if no active run. |
 | `floor` | int | `RunState.TotalFloor` (floor across the whole run), `0` if no active run. |
 | `mod_version` | string | Spire Mentor mod version (e.g. `"0.1.0"`). |
+| `game_version` | string | **New (GH #800).** The running game build, `"v<major>.<minor>.<patch>"` (`"v0.107.1"` stable, `"v0.111.0"` beta): the game's own `ReleaseInfoManager.Instance.ReleaseInfo.Version` (its `release_info.json`), lower-case `v`, no leading zeros (`SimGameVersion` / `GameVersionFormat`). Falls back to the build the DLL was compiled for when the game has no `release_info.json`; any other shape is sent as read (`v`-prefixed) rather than guessed at. **Absent means `v0.107.1`** -- every mod build before the field -- so a consumer must treat a missing field exactly like `"v0.107.1"`. The advisor builds its engine for this build (`realgame_adapter.envelope_game_version` -> the engine wire's `$.game_version`) and answers a build it does not support with an `advice` whose `note` names the build and the supported ones, plus `unsupported_game_version`, and no `best`/`options` (section 5). |
 | `run_state` | object | See below. Always present, degrades to defaults/empty collections if no run/player is active. |
 | `state_id` | int | **New, phase 1b.** Monotonically increasing id, assigned fresh every time this envelope is built (`SimStateExtractor.ApplyEnvelope`/`SimProtocolHelpers.NextStateId`). See section 4's "stale-state guard" for how inbound actions may reference it. |
 | `request_id` | string | Present on every message that expects a reply (everything except `game_over`/`run_complete`/`error`/`pong`); injected by the transport layer, not by the handler. |
@@ -352,6 +353,27 @@ Fire-and-forget, no `request_id`.
 |---|---|---|
 | `result` | string | `"victory"` \| `"defeat"`. |
 | `message` | string | Literal `"Game over"`. |
+| `victory` | bool | **New in v5.1.** `result == "victory"`, as a bool (the advisor's run log reads it). |
+
+**Advisor mode (new in v5.1 / coach 2).** The autopilot has always sent
+`game_over`. Since v5.1 the mod also sends it in **Advisor mode**, once per
+run, when the game-over screen comes up -- only to an advisor that advertised
+`capabilities.coach >= 2` (section 5). It triggers the coach's death autopsy.
+One latch per run covers both senders, so a mode change on the game-over
+screen never sends it twice.
+
+### `combat_ended` -- new in v5.1 / coach 2
+
+Fire-and-forget, no `request_id`, common envelope. Sent in **Advisor mode**
+once per combat when the fight ends, only to an advisor that advertised
+`capabilities.coach >= 2`. It triggers the coach's fight recap.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `victory` | bool | The player creature is alive at combat end. `false` = the player died; the `game_over` that follows produces the feedback (the autopsy), not a recap. |
+| `round` | int | The ending combat's `RoundNumber`. |
+| `hp` / `max_hp` | int | The player's HP at combat end. |
+| `room_type` | string | Same as `combat_action.room_type`. |
 
 ### `run_complete`
 
@@ -596,6 +618,7 @@ carry, plus:
 | Field | Type | Meaning |
 |---|---|---|
 | `advice_for` | string | The v2 message type this request wraps (`combat_action`, `card_reward`, `map_select`, ...). The payload fields are those of that message type. |
+| `capabilities` | object | **New in v5 / coach.** What this mod build understands from the advisor: `{"coach": 1}` = it renders `coach` messages (section 5, "`coach`") and sends the v5 `human_action` kinds; `{"coach": 2}` (v5.1) = also renders `recap` / `autopsy` records and sends `combat_ended` / Advisor-mode `game_over`. Absent on older builds: treat as `{}` (no coach). |
 | `combat_log` | array | The game's own combat-log entries recorded SINCE THE PREVIOUS request (`SimCombatLog.Drain()`): one row per `CombatHistoryEntry`, in the same shape the Rust engine emits (`sts2_core::event_log`), so the workbench renders a live game through the identical formatter it uses for a simulated one. Display only — the advisor never reads it. Empty outside combat. |
 
 Each `combat_log` row carries `kind` (`damage` / `block` / `power` /
@@ -687,6 +710,8 @@ never appears as an `advice_request`.
 | `advice.options[].col/row` | int | `map_select` only: the option's map-graph coordinate, so the HUD can pin its score to the node on the map instead of printing a coordinate in a panel. |
 | `advice.path[]` | array | `map_select` only: the **projected route** through the act — `{col, row, type, hop, hp}`, `hop` 0 being the node being chosen now and `hp` the HP the projection expects to *arrive* at that node with (before its own room resolves). Produced by re-querying the same policy hop by hop with `map_coord` walked along the graph and HP walked forward through the run-AI's expected-cost tables, so the route runs the whole act rather than stopping a few floors out. Deck, gold, relics and potions stay frozen and the HP deltas are flat per-act expectations, so it is a projection, not a plan, and the HUD says so. `hp` is absent when the engine could not supply its cost tables (older wheel) — the route then draws with HP frozen, as it did before. Absent entirely when the net cannot see a route (single-child chains still count). |
 | `advice.pv` | array of string | Principal variation, rendered as the "line:" row. |
+| `capabilities` | object | **New in v5 / coach.** Top level of the `advice` message, next to `advice` (not inside it). What this advisor build understands: `{"coach": 1}` = it accepts the v5 `human_action` kinds (`end_turn`, non-combat choices) and grades them; `{"coach": 2}` (v5.1) = also accepts `combat_ended` / Advisor-mode `game_over` and answers them with `recap` / `autopsy` records. Absent on older advisors: treat as `{}`. The mod reads it from every reply (`SimAdvisor.AdvisorCoachCapability`) and also accepts `advice.capabilities`. |
+| `advice.unsupported_game_version` | string \| any | **New (GH #800).** Present only on a **refusal**: the request's envelope `game_version` (section 1) names a build the advisor has no engine for. The value is that `game_version` as sent; `advice.note` is the player-facing explanation (the build, the supported builds, what to do), and there is no `best` / `options` / `p_win` -- nothing to render or execute. A missing or `"v0.107.1"` `game_version` is never refused. |
 
 An `advice` message is **never executed** -- it only feeds the HUD and the
 action log. Phase 7's takeover hotkey executes the recommendation through
@@ -741,6 +766,128 @@ answered -- so the screen's own `advice_request` arrives BEFORE the
 `human_action` for the card that opened it. A client cannot use this message
 to park its mirror on that choice; that is what `card_select`'s
 `source_model` is for.
+
+### `human_action` -- v5 / coach additions
+
+New in v5 (coach plan 3). Every field below is additive; a v3 client that
+ignores them sees the old message.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `peeked` | bool | The player pressed the peek key (F5, Coach style) for THIS position before acting. Graders keep the grade but mark it "(peeked)". |
+| `position_id` | int | The mod's `state_id` of the position the player acted in: the `state_id` of the advice shown for it, else the current `state_id` when the action was reported. |
+| `choice` | object | Non-combat decisions only: `{"index": int \| null, "label": str}`. `index` is in the SAME index space as the advice's `options[].index` for that screen; `null` = skip. |
+
+**`advice_request_id` changes meaning.** It now names **the advice rendered
+for exactly this position, or `null`**. The mod remembers the request id and
+`state_id` of the last accepted advice reply and forgets both the moment the
+position changes (a new advice request is scheduled). The old meaning --
+"whatever request was in flight" -- let a fast player's second card point at
+the FIRST card's advice. A client must treat `null` as "no advice for this
+position" and never fall back to an older one.
+
+**New `action` value `"end_turn"`** (`decision_type: "combat_action"`, no
+`card`, no `potion`): the human ended their turn. It is sent when the enemy
+side actually starts, not when the button is pressed, so an end turn the game
+let the player back out of is never reported. End turns taken by the AI
+(takeover F6/F7, advisor autoplay, autopilot) are not reported.
+
+**New `decision_type` values** -- the `advice_for` values of the screen
+surfaces: `map_select | card_reward | card_bundle | shop | event | rest_site |
+boss_relic | treasure | card_select`. For these, `action` is `"choose"` or
+`"skip"` and `choice` is set (`index: null` for a skip). The mod sends one
+only when it can tell the pick with certainty:
+
+| `decision_type` | How the mod detects the pick |
+|---|---|
+| `map_select` | the run's visited map coordinates gain the chosen node |
+| `card_reward` | deck diff by card id, count-based; nothing added once the screen is gone = skip (closing the reward screen is the game's skip) |
+| `card_bundle` | deck diff: the one bundle whose cards all joined (no skip) |
+| `boss_relic`, `treasure` | relic diff by id; nothing added once the screen / room is gone = skip |
+| `event` | Harmony prefix on `NEventRoom.OptionButtonClicked(EventOption, int)` (same signature in v0.107.1 and v0.111.0); index by identity of the clicked `EventOption` among the unlocked buttons |
+| `rest_site` | Harmony prefix on `NRestSiteRoom.AfterSelectingOption(RestSiteOption)` -- only runs once the option succeeded, so a cancelled smith reports nothing |
+| `shop` | one message per purchase (card / relic / potion / removal diff); leaving the shop is not a choice |
+| `card_select` (out of combat, single-pick screens only) | the offered deck card that was removed or upgraded (by identity), else the offered card id that joined the deck; never a skip (an enchant or a cancel leaves nothing to read) |
+
+Unknown or ambiguous picks send **nothing** -- never a guessed index. Picks the
+AI executed (takeover) are not reported as human picks. In-combat card selects
+are not reported in v5.
+
+**Versioned degrade (normative):**
+
+- New `human_action` kinds that an old advisor would mis-handle (end turn: its
+  mirror DROPS on any card-less combat action) are sent only after the advisor
+  advertised `capabilities.coach >= 1`. Non-combat choices are gated the same
+  way.
+- `coach` messages are sent only to a mod that advertised it
+  (`advice_request.capabilities.coach >= 1`).
+
+So a new mod with an old advisor sends no `end_turn` and gets no chip; an old
+mod with a new advisor never receives `coach`.
+
+**v5.1 / coach 2 (normative):**
+
+- The mod sends `combat_ended` and the Advisor-mode `game_over` only to an
+  advisor with `capabilities.coach >= 2`.
+- The advisor sends `recap` / `autopsy` records only to a mod whose
+  `advice_request.capabilities.coach >= 2`. `turn` / `choice` / `withdraw`
+  stay at `>= 1`.
+
+So a plan-3 (`coach: 1`) mod or advisor keeps working with chips only: no
+recap, no autopsy, no `combat_ended`.
+
+### `coach` -- inbound, new in v5; rendered, never executed
+
+After-the-fact feedback the advisor computes from `human_action`s:
+
+```json
+{"action":"coach", "request_id":null, "state_id":null,
+ "coach":{"kind":"turn", "id":"turn:n42", "node_id":"n42", "turn":3, "floor":5,
+          "verdict":"blunder", "you":["Strike → Cultist","end turn"],
+          "ai":["Bash → Cultist","Defend","end turn"], "hp_drop":9.2,
+          "win_before":0.96, "win_after":0.94, "peeked":false,
+          "ungraded_actions":0}}
+```
+
+`request_id` and `state_id` are always `null`: a `coach` message answers no
+request and is not tied to the current position. The mod routes it by its
+`action` BEFORE the pending autopilot slot (like `advice` and the rewind
+verbs), so it can never complete -- or be swallowed by -- an autopilot wait
+(`BridgeServer.CoachReceived`). A `coach` message whose `coach` field is not
+an object is dropped.
+
+`coach` is one of:
+
+| `kind` | Fields |
+|---|---|
+| `turn` | `id, node_id, turn, floor, verdict` (`best \| tie \| slip \| blunder`), `you: [str]` (the human's turn, ending `"end turn"`), `ai: [str]` (the AI's line from the turn's first position), `hp_drop: number \| null` (expected extra HP lost), `win_before, win_after: number` (win chance of best / played at the turn's first graded decision), `peeked: bool`, `ungraded_actions: int` |
+| `choice` | `id, node_id, decision` (the `decision_type`), `label_kind` (display name: "Card reward", "Map", ...), `verdict` (`agree \| tossup \| flag`), `strength` (e.g. "strong preference"), `played: {label, prob, rank}`, `top: {label, prob}`, `alternatives: [{label, prob}]`, `peeked: bool`, `path: {"you": [...], "ai": [...]}` (map only, may be absent; each entry like `advice.path[]`, with `hp` when known) |
+| `recap` | **v5.1.** `id` (`"recap:<node_id>"`), `node_id`, `log_name`, `log_idx` (the fight's first decision), `floor, room_type, hp_start, hp_end, hp_lost`, `ai_hp_lost: number \| null` (reserved for the HP the AI's own line would lose; current advisors always send `null` -- the opening search's mean final HP overstated it, GH #856. Render `null` as the HP loss alone), `turns, turns_graded, turns_ungraded, unfinished_turns: int`, `costliest: [<turn record>]` (at most 2, `slip`/`blunder` only, by `severity`, each with `context`). Sent after a won fight. |
+| `autopsy` | **v5.1.** `id` (`"autopsy:<run key>"`), `log_name, floor, act`, `items: [{"kind": "turn" \| "choice", "record": <turn \| choice record>}]` (at most 3, display order), `turns_ungraded, decisions_graded: int`. Sent on death. `items` may be empty. |
+| `withdraw` | `ids: [str]` -- records undone by a rewind; hide them if shown. May name a `recap:` id. |
+
+**v5.1 additive fields on `turn` and `choice`:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `log_name` | string \| null | The workbench run-log file name, as the control plane's `GET /log` names it (sanitized `[A-Za-z0-9._-]`). |
+| `log_idx` | int \| null | The replay step index of the record's decision in that log ("open in workbench" seeks to it). |
+| `severity` | number | `turn` only: `max(win-chance points, HP)` of the turn's counted actions -- the ranking key. |
+| `context` | object | `turn` only: the position at the turn's start, `{hand: [str], energy, max_energy, hp, max_hp, block: int, enemies: [{name: str, hp: int, intent: str}]}` (alive enemies only). |
+
+`context.enemies[].intent` is display text: an attack renders `"attack {damage}"`
+or `"attack {damage}×{hits}"`, other intents as the lower-cased `intent_type`,
+joined by `" + "` for a multi-intent move (e.g. `"attack 6×2 + debuff"`). The
+mod renders it verbatim.
+
+`id` is stable: `"turn:<node_id>"` / `"choice:<node_id>"`, where `node_id` is
+the advisor's live run-tree node of the turn's first decision (or of the
+choice). Non-combat wording is agreement, never cost or win chance: only a
+policy distribution exists for those decisions.
+
+Thresholds belong to the advisor; the mod renders what it is sent, except that
+`best`/`tie`/`agree`/`tossup` records show only when the player turned on
+"show ✓ on good turns" (default off). Unknown `kind`s are ignored.
 
 ### `card_select.source_model` coverage
 
@@ -908,6 +1055,11 @@ serializes its own calls, so one-at-a-time is enforced client-side.
   `undo_no_tape`, `undo_bad_turn`, `undo_failed`. Recorded card choices replay through the game's
   automated-selector hook; choices outside CardSelectCmd (rare mid-combat
   relic selects) may still pop their UI during the fast-forward.
+- **Coach withdrawals** (v5): after `snapshot_restored` or `combat_undone`
+  the advisor withdraws every `coach` record whose node is no longer on the
+  path to the new position, with `{"action":"coach","coach":{"kind":"withdraw","ids":[...]}}`.
+  The mod also hides an unpinned chip on its own when the run rewinds; the
+  withdrawal is what removes it from the run log.
 - Progress stats / metrics for replayed floors double-count (v1: accepted
   and documented; single-player, private).
 

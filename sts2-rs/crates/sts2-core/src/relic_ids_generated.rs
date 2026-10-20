@@ -620,6 +620,15 @@ pub enum RelicId {
     Kaleidoscope,
     /// `RelicId.SILKEN_TRESS` in Python.
     SilkenTress,
+    // ── v0.111.0-only (GH #792). Not in [`RelicId::all`], which stays the
+    // v0.107.1 universe (ranker feature tables, PPO vocab, random fixture
+    // samplers read it); see [`RelicId::V0111_ONLY`] / [`RelicId::all_for`].
+    /// v0.111.0 Neow curse option: adds the Dowsing quest card
+    /// (`DowsingRod.cs`).
+    DowsingRod,
+    /// v0.111.0 Neow curse option: procures Ambergris, adds Guilty
+    /// (`NeowsSacrifice.cs`).
+    NeowsSacrifice,
 }
 
 impl RelicId {
@@ -924,6 +933,8 @@ impl RelicId {
             Self::FishingRod => "FISHING_ROD",
             Self::Kaleidoscope => "KALEIDOSCOPE",
             Self::SilkenTress => "SILKEN_TRESS",
+            Self::DowsingRod => "DOWSING_ROD",
+            Self::NeowsSacrifice => "NEOWS_SACRIFICE",
         }
     }
 
@@ -1229,5 +1240,30 @@ impl RelicId {
             Self::Kaleidoscope,
             Self::SilkenTress,
         ]
+    }
+
+    /// Relics that exist only in game build v0.111.0 (GH #792), in the
+    /// order the C# added them.
+    pub const V0111_ONLY: [RelicId; 2] = [Self::DowsingRod, Self::NeowsSacrifice];
+
+    /// The build a relic first exists in.
+    #[must_use]
+    pub const fn introduced_in(self) -> crate::GameVersion {
+        match self {
+            Self::DowsingRod | Self::NeowsSacrifice => crate::GameVersion::V0_111_0,
+            _ => crate::GameVersion::V0_107_1,
+        }
+    }
+
+    /// Every relic of game build `version`: [`Self::all`] (the v0.107.1
+    /// universe, unchanged so every pre-port consumer stays bit-identical)
+    /// plus, from v0.111.0 on, [`Self::V0111_ONLY`].
+    #[must_use]
+    pub fn all_for(version: crate::GameVersion) -> Vec<RelicId> {
+        let mut v = Self::all().to_vec();
+        if version >= crate::GameVersion::V0_111_0 {
+            v.extend_from_slice(&Self::V0111_ONLY);
+        }
+        v
     }
 }

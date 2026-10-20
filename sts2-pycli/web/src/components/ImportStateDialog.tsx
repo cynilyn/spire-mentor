@@ -22,6 +22,7 @@ export default function ImportStateDialog({
   onClose,
   liveGame,
   autoLive = false,
+  gameVersion,
 }: {
   onImported: (fidelity: ImportFidelity) => void;
   onClose: () => void;
@@ -30,6 +31,9 @@ export default function ImportStateDialog({
   liveGame?: () => Promise<string>;
   /** Fetch from `liveGame` as soon as the dialog opens. */
   autoLive?: boolean;
+  /** GH #801: the game build to rebuild the position in (the launcher pick);
+   *  omitted = the server default. */
+  gameVersion?: string;
 }) {
   const [text, setText] = useState("");
   const [fetchingLive, setFetchingLive] = useState(false);
@@ -115,7 +119,7 @@ export default function ImportStateDialog({
       // The rebuild reports things the PARSE could not know: a map that
       // disagrees with the paste, a refused RNG restore, a card that could not
       // be upgraded. Hand them up — the preview only covered the paste.
-      const step = await api.live.importState(text.trim(), lane);
+      const step = await api.live.importState(text.trim(), lane, gameVersion);
       onImported(step.import);
     } catch (e) {
       setError((e as Error).message || "could not rebuild that state");

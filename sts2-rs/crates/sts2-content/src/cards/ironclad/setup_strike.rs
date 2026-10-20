@@ -28,7 +28,17 @@ pub(crate) fn play_setup_strike(
     // benefits only from pre-existing Strength, not the buff it grants.
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
     // C# SetupStrike.cs OnUpgrade bumps Strength 2->3. Bead `sts2-rs-ja5qw`.
-    let amt = if current_upgraded(state) { 3 } else { 2 };
+    // v0.111.0: Strength 2 -> 3, upgrade still +1 (decomp SetupStrike.cs:23,43).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        3
+    } else {
+        2
+    };
+    let amt = if current_upgraded(state) {
+        base + 1
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::SetupStrike, amt);
     // C# `TemporaryStrengthPower.BeforeApplied`: applying SETUP_STRIKE also
     // grants the equivalent real Strength for the turn (removed at turn-end

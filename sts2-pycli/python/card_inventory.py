@@ -110,6 +110,37 @@ def engine_cards() -> dict[str, str]:
     return {names[cid]: rarity for cid, rarity in card_rarities().items() if cid in names}
 
 
-def sweepable_cards() -> set[str]:
-    """Card ids the coverage sweep's card axis is expected to cover."""
-    return {name for name, rarity in engine_cards().items() if rarity not in UNSWEEPABLE_RARITIES}
+_V0111_ONLY = re.compile(r"pub const V0111_ONLY: \[CardId; \d+\] = \[(.*?)\];", re.S)
+
+#: Cards v0.111.0 removed from the game (GH #793): the engine keeps their
+#: specs for v0.107.1, so they stay in `engine_cards`, but a v0.111.0 sweep
+#: must not name them.
+V0111_REMOVED_CARDS = frozenset({"SCARE"})
+
+
+@lru_cache(maxsize=1)
+def v0111_only_cards() -> frozenset[str]:
+    """Id strings of `CardId::V0111_ONLY` — cards that exist only in v0.111.0."""
+    text = _CARD_IDS_RS.read_text(encoding="utf-8")
+    m = _V0111_ONLY.search(text)
+    if m is None:
+        raise RuntimeError(f"no CardId::V0111_ONLY list found in {_CARD_IDS_RS}")
+    names = card_id_python_names()
+    return frozenset(names[v] for v in re.findall(r"Self::(\w+)", m.group(1)))
+
+
+def sweepable_cards(game_version: str = "v0.107.1") -> set[str]:
+    """Card ids the coverage sweep's card axis is expected to cover.
+
+    `game_version` picks the build: v0.107.1 (the default) leaves out the
+    v0.111.0-only cards, v0.111.0 leaves out the cards it removed.
+    """
+    if game_version == "v0.111.0":
+        excluded = V0111_REMOVED_CARDS
+    else:
+        excluded = v0111_only_cards()
+    return {
+        name
+        for name, rarity in engine_cards().items()
+        if rarity not in UNSWEEPABLE_RARITIES and name not in excluded
+    }

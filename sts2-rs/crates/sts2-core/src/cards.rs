@@ -302,6 +302,15 @@ pub enum VarKey {
     ///
     /// Appended after `Generic` so no existing discriminant moves.
     SneckoRollLive,
+    /// v0.111.0 (GH #793): energy-cost reduction that lasts until the card is
+    /// played — the running total of C# `EnergyCost.AddUntilPlayed(-1)`
+    /// (a `Relative`, `WhenPlayed` local modifier, `CardEnergyCost.cs:258`).
+    /// v0.111.0 RocketPunch banks one per player-generated Status card
+    /// (`RocketPunch.cs:49`) instead of v0.107.1's `SetUntilPlayed(0)`
+    /// ([`VarKey::FreeUntilPlayed`]). Folded into the local base cost before the
+    /// global `modify_card_cost` walk and cleared on play with the other
+    /// `WhenPlayed` riders. Never set at v0.107.1.
+    CostReductionUntilPlayed,
 }
 
 /// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
@@ -1144,7 +1153,7 @@ impl Card {
             && !matches!(self.card_type, CardType::Curse | CardType::Status)
             && !matches!(
                 self.card_id,
-                CardId::ByrdonisEgg | CardId::LanternKey | CardId::SpoilsMap
+                CardId::ByrdonisEgg | CardId::LanternKey | CardId::SpoilsMap | CardId::Dowsing
             )
     }
 
@@ -1153,6 +1162,91 @@ impl Card {
     /// the flag flip. Returns `true` iff this call flipped the flag (Python
     /// returns the (possibly mutated) card).
     pub fn upgrade(&mut self) -> bool {
+        self.upgrade_with(|id, up| crate::lookup_card_factory().and_then(|f| f(id, up)))
+    }
+
+    /// [`Self::upgrade`] in game build `version` (GH #793): the delta is the
+    /// difference between that build's un-upgraded and upgraded factory
+    /// builds, so a card whose `OnUpgrade` changed between builds (v0.111.0
+    /// Reave +3 instead of +2, Mirage drops Exhaust instead of costing 1
+    /// less, …) upgrades by the right amount. The default build is exactly
+    /// [`Self::upgrade`].
+    pub fn upgrade_for(&mut self, version: crate::GameVersion) -> bool {
+        if version.is_default() {
+            return self.upgrade();
+        }
+        // A card minted by a v0.107.1-only path first takes this build's
+        // base values, so the build's delta lands on the build's base.
+        self.normalize_for_version(version);
+        self.upgrade_with(|id, up| crate::build_card_for_version(id, up, version))
+    }
+
+    /// Move a card POD minted with v0.107.1 values onto game build
+    /// `version`'s values (GH #793): every POD field (cost, base damage,
+    /// base block, type, target, keyword override) that still holds the
+    /// v0.107.1 factory value for `(card_id, upgraded)` takes `version`'s
+    /// factory value. A field the game already changed (a cost set to 0 for
+    /// this turn, a Claw-buffed damage, …) is left alone.
+    ///
+    /// Idempotent: it only rewrites fields whose two build values differ, so
+    /// a second call (or a copy of an already-moved card) finds nothing
+    /// equal to the v0.107.1 value. No-op for the default build, for an id
+    /// with no registered factory, and for every card whose POD did not
+    /// change. Called where cards enter a combat (deck → draw pile, the
+    /// spawn helpers) and before [`Self::upgrade_for`] applies its delta, so
+    /// card construction sites that predate the multi-version port stay
+    /// correct.
+    pub fn normalize_for_version(&mut self, version: crate::GameVersion) {
+        if version.is_default() {
+            return;
+        }
+        let Some(factory) = crate::lookup_card_factory_for_version() else {
+            return;
+        };
+        let Some(old) = factory(self.card_id, self.upgraded, crate::GameVersion::V0_107_1) else {
+            return;
+        };
+        let Some(new) = factory(self.card_id, self.upgraded, version) else {
+            return;
+        };
+        // v0.111.0: a cost an effect SET this combat (Confused / Snecko's
+        // `EnergyCost.SetThisCombat(roll)`, decomp ConfusedPower.cs:42) is a
+        // local absolute modifier, not the build's base cost, so it is never
+        // re-based even when the roll happens to equal the v0.107.1 cost. An
+        // in-combat upgrade (Bellows, `upgrade_for`) normalizes first and was
+        // turning a rolled 1 on BeaconOfHope+ into the build's 2 (Ironclad mid
+        // seed 1809, hand_costs[0] cs=1 rs=2). The default build never gets
+        // here.
+        if self.cost == old.cost && self.combat_var(VarKey::CostAbsolutelySet) == 0 {
+            self.cost = new.cost;
+        }
+        if self.base_damage == old.base_damage {
+            self.base_damage = new.base_damage;
+        }
+        if self.base_block == old.base_block {
+            self.base_block = new.base_block;
+        }
+        if self.card_type == old.card_type {
+            self.card_type = new.card_type;
+        }
+        if self.target_type == old.target_type {
+            self.target_type = new.target_type;
+        }
+        if self.keyword_override == old.keyword_override {
+            self.keyword_override = new.keyword_override;
+        }
+    }
+
+    /// [`Self::downgrade`] in game build `version` — the exact inverse of
+    /// [`Self::upgrade_for`]. The default build is exactly [`Self::downgrade`].
+    pub fn downgrade_for(&mut self, version: crate::GameVersion) -> bool {
+        if version.is_default() {
+            return self.downgrade();
+        }
+        self.downgrade_with(|id, up| crate::build_card_for_version(id, up, version))
+    }
+
+    fn upgrade_with(&mut self, factory: impl Fn(CardId, bool) -> Option<Card>) -> bool {
         if self.upgraded {
             return false;
         }
@@ -1184,60 +1278,67 @@ impl Card {
         // If no factory is registered (e.g. core-only unit tests) or the id
         // is unknown, the flag flip alone is the graceful fallback — exactly
         // the prior behaviour.
-        if let Some(factory) = crate::lookup_card_factory() {
+        {
             if let (Some(base), Some(upgraded)) =
                 (factory(self.card_id, false), factory(self.card_id, true))
             {
-                let cost_delta = upgraded.cost - base.cost;
-                if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
-                    // C# `CardEnergyCost.UpgradeBy` (CardEnergyCost.cs:179-200):
-                    // the upgrade mutates the BASE; an Absolute local modifier
-                    // (Confused/SneckoOil roll, held in `self.cost` in the
-                    // collapsed model) keeps owning the evaluated cost, except
-                    // that a LOWERED base clamps every absolute modifier above
-                    // it down to the new base. Re-point any banked Snecko
-                    // delta at the new base so the WhenPlayed / turn-start
-                    // expiry restores to it (C#: dropping the modifier reveals
-                    // `_base`).
-                    if cost_delta < 0 {
-                        let new_base = upgraded.cost.max(0);
-                        self.cost = self.cost.min(new_base);
-                        if self.combat_var(VarKey::SneckoRollLive) != 0
-                            || self.combat_var(VarKey::SneckoCostDeltaThisTurn) != 0
-                        {
-                            self.set_combat_var(
-                                VarKey::SneckoCostDeltaThisTurn,
-                                i32::from(self.cost) - i32::from(new_base),
-                            );
-                        }
-                    }
-                    // cost_delta >= 0: the absolute modifier still owns the
-                    // evaluated cost — leave `self.cost` untouched.
-                } else {
-                    self.cost = self.cost.saturating_add(cost_delta);
-                }
-                self.base_damage = self
-                    .base_damage
-                    .saturating_add(upgraded.base_damage - base.base_damage);
-                self.base_block = self
-                    .base_block
-                    .saturating_add(upgraded.base_block - base.base_block);
-                // Bead `sts2-rs-59atd`: carry the upgrade-aware keyword set
-                // forward. The factory's upgraded build runs
-                // `apply_spec_upgrade`, which stamps `keyword_override` from
-                // the `CardUpgradeDelta.keywords` table for the ~27 cards
-                // whose keywords change on upgrade (Aggression gains INNATE,
-                // BurningPact drops EXHAUST, …). Cards with no keyword delta
-                // leave `keyword_override == None` and continue to defer to
-                // the `CardId`-keyed registries. Unlike the stat fields this
-                // is an absolute set, not an additive delta — the upgraded
-                // build already encodes the final keyword set.
-                if upgraded.keyword_override.is_some() {
-                    self.keyword_override = upgraded.keyword_override;
-                }
+                self.apply_upgrade_delta(&base, &upgraded);
             }
         }
         true
+    }
+
+    /// The additive upgrade delta shared by [`Self::upgrade`] and
+    /// [`Self::upgrade_for`]: `base` / `upgraded` are the un-upgraded and
+    /// upgraded factory builds of this card's id.
+    fn apply_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
+        let cost_delta = upgraded.cost - base.cost;
+        if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
+            // C# `CardEnergyCost.UpgradeBy` (CardEnergyCost.cs:179-200):
+            // the upgrade mutates the BASE; an Absolute local modifier
+            // (Confused/SneckoOil roll, held in `self.cost` in the
+            // collapsed model) keeps owning the evaluated cost, except
+            // that a LOWERED base clamps every absolute modifier above
+            // it down to the new base. Re-point any banked Snecko
+            // delta at the new base so the WhenPlayed / turn-start
+            // expiry restores to it (C#: dropping the modifier reveals
+            // `_base`).
+            if cost_delta < 0 {
+                let new_base = upgraded.cost.max(0);
+                self.cost = self.cost.min(new_base);
+                if self.combat_var(VarKey::SneckoRollLive) != 0
+                    || self.combat_var(VarKey::SneckoCostDeltaThisTurn) != 0
+                {
+                    self.set_combat_var(
+                        VarKey::SneckoCostDeltaThisTurn,
+                        i32::from(self.cost) - i32::from(new_base),
+                    );
+                }
+            }
+            // cost_delta >= 0: the absolute modifier still owns the
+            // evaluated cost — leave `self.cost` untouched.
+        } else {
+            self.cost = self.cost.saturating_add(cost_delta);
+        }
+        self.base_damage = self
+            .base_damage
+            .saturating_add(upgraded.base_damage - base.base_damage);
+        self.base_block = self
+            .base_block
+            .saturating_add(upgraded.base_block - base.base_block);
+        // Bead `sts2-rs-59atd`: carry the upgrade-aware keyword set
+        // forward. The factory's upgraded build runs
+        // `apply_spec_upgrade`, which stamps `keyword_override` from
+        // the `CardUpgradeDelta.keywords` table for the ~27 cards
+        // whose keywords change on upgrade (Aggression gains INNATE,
+        // BurningPact drops EXHAUST, …). Cards with no keyword delta
+        // leave `keyword_override == None` and continue to defer to
+        // the `CardId`-keyed registries. Unlike the stat fields this
+        // is an absolute set, not an additive delta — the upgraded
+        // build already encodes the final keyword set.
+        if upgraded.keyword_override.is_some() {
+            self.keyword_override = upgraded.keyword_override;
+        }
     }
 
     /// Revert a previously-upgraded card to its un-upgraded form. The
@@ -1256,28 +1357,36 @@ impl Card {
     /// unknown, the flag flip alone is the graceful fallback — the
     /// symmetric counterpart of [`Self::upgrade`]'s fallback.
     pub fn downgrade(&mut self) -> bool {
+        self.downgrade_with(|id, up| crate::lookup_card_factory().and_then(|f| f(id, up)))
+    }
+
+    fn downgrade_with(&mut self, factory: impl Fn(CardId, bool) -> Option<Card>) -> bool {
         if !self.upgraded {
             return false;
         }
         self.upgraded = false;
-        if let Some(factory) = crate::lookup_card_factory() {
+        {
             if let (Some(base), Some(upgraded)) =
                 (factory(self.card_id, false), factory(self.card_id, true))
             {
-                self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
-                self.base_damage = self
-                    .base_damage
-                    .saturating_sub(upgraded.base_damage - base.base_damage);
-                self.base_block = self
-                    .base_block
-                    .saturating_sub(upgraded.base_block - base.base_block);
-                // Restore the un-upgraded keyword set (absolute, not a
-                // delta) — `None` for all but the ~27 keyword-changing
-                // cards, which is exactly the base build's value.
-                self.keyword_override = base.keyword_override;
+                self.revert_upgrade_delta(&base, &upgraded);
             }
         }
         true
+    }
+
+    fn revert_upgrade_delta(&mut self, base: &Card, upgraded: &Card) {
+        self.cost = self.cost.saturating_sub(upgraded.cost - base.cost);
+        self.base_damage = self
+            .base_damage
+            .saturating_sub(upgraded.base_damage - base.base_damage);
+        self.base_block = self
+            .base_block
+            .saturating_sub(upgraded.base_block - base.base_block);
+        // Restore the un-upgraded keyword set (absolute, not a
+        // delta) — `None` for all but the ~27 keyword-changing
+        // cards, which is exactly the base build's value.
+        self.keyword_override = base.keyword_override;
     }
 
     /// Deterministic deep-clone with a caller-supplied `seed` used as the
@@ -2186,8 +2295,13 @@ fn reshuffle_rank(card_id: CardId) -> u16 {
     use std::sync::OnceLock;
     static RANKS: OnceLock<Vec<u16>> = OnceLock::new();
     let ranks = RANKS.get_or_init(|| {
-        let all = CardId::all();
-        let mut by_name: Vec<CardId> = all.to_vec();
+        // The UNION of every build's cards (GH #792): v0.111.0-only ids
+        // (`CardId::V0111_ONLY`) sit past `all()` in declaration order, so
+        // the table must cover them. Adding names only shifts ranks
+        // uniformly; the relative order of v0.107.1 cards, which is all the
+        // sort compares, is unchanged.
+        let all = CardId::all_for(crate::GameVersion::V0_111_0);
+        let mut by_name: Vec<CardId> = all.clone();
         by_name.sort_by(|a, b| a.to_python_name().cmp(b.to_python_name()));
         let mut table = vec![0u16; all.len()];
         for (rank, cid) in by_name.iter().enumerate() {

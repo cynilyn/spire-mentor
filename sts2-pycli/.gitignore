@@ -1,10 +1,12 @@
 # --- sts2-cli specifics ---
 decompiled/
-# Game DLLs in lib/ are vendored via git-lfs (see .gitattributes) so the
-# parity harness runs on any clone. Keep the unpatched backup and the
+# Game DLLs in lib/<version>/ are vendored via git-lfs (see .gitattributes) so
+# the parity harness runs on any clone. Keep the unpatched backup and the
 # transient IL-patch output out of git.
 lib/*.original
 lib/*.patched
+lib/*/*.original
+lib/*/*.patched
 bin/
 obj/
 results/

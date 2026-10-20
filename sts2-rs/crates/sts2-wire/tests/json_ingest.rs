@@ -147,3 +147,105 @@ fn malformed_json_text_fails_at_the_root() {
     assert_eq!(err.path(), "$");
     assert!(err.to_string().contains("invalid JSON"));
 }
+
+/// GH #787: `$.game_version` is optional — absent means the default build —
+/// and an explicit one reaches `CombatState::game_version`.
+#[test]
+fn game_version_key_is_optional_and_threaded() {
+    let mut value: serde_json::Value = serde_json::from_str(&fixture()).expect("valid JSON");
+    assert!(
+        value.get("game_version").is_none(),
+        "fixture predates the key"
+    );
+    let default = sts2_wire::state_from_json(&value).expect("default rebuild");
+    assert_eq!(default.game_version, sts2_core::GameVersion::V0_107_1);
+
+    value["game_version"] = serde_json::json!("0.111.0");
+    let v111 = sts2_wire::state_from_json(&value).expect("v0.111.0 rebuild");
+    assert_eq!(v111.game_version, sts2_core::GameVersion::V0_111_0);
+
+    value["game_version"] = serde_json::json!("v9.9.9");
+    assert!(sts2_wire::state_from_json(&value).is_err(), "unknown build");
+}
+
+/// The emitter writes `game_version` only for a non-default build, so every
+/// v0.107.1 wire keeps its historical key set, and the key round-trips.
+#[test]
+fn game_version_is_emitted_only_when_non_default() {
+    let mut state = state_from_json_str(&fixture()).expect("fixture must rebuild");
+    let wire = sts2_wire::emit::combat::combat_state_to_value(&state).expect("emit");
+    assert!(wire.get("game_version").is_none());
+
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let wire = sts2_wire::emit::combat::combat_state_to_value(&state).expect("emit");
+    assert_eq!(wire["game_version"], serde_json::json!("v0.111.0"));
+    let back = sts2_wire::state_from_json(&wire).expect("round trip");
+    assert_eq!(back.game_version, sts2_core::GameVersion::V0_111_0);
+}
+
+/// GH #788: `$.rng.run_seed` is a `uint` for v0.107.1 and a `ulong` for
+/// v0.111.0; the reconstruction seeds its streams in the wire's build.
+#[test]
+fn run_seed_width_follows_the_game_version() {
+    let wide: u64 = 0xCCD0_8772_EAB0_03D2;
+    let mut value: serde_json::Value = serde_json::from_str(&fixture()).expect("valid JSON");
+    value["rng"]["run_seed"] = serde_json::json!(wide);
+    value["rng"]["counters"] = serde_json::json!({});
+    let err = sts2_wire::state_from_json(&value).unwrap_err();
+    assert_eq!(err.path(), "$.rng.run_seed", "v0.107.1 seeds are 32-bit");
+
+    value["game_version"] = serde_json::json!("v0.111.0");
+    let state = sts2_wire::state_from_json(&value).expect("v0.111.0 accepts a u64 seed");
+    assert_eq!(state.run_rng.seed, wide);
+    assert_eq!(state.run_rng.game_version, sts2_core::GameVersion::V0_111_0);
+    assert_eq!(
+        state.run_rng,
+        sts2_core::RunRngSet::new_for(sts2_core::GameVersion::V0_111_0, wide)
+    );
+    // ...and the emitter writes the full width back out.
+    let wire = sts2_wire::emit::combat::combat_state_to_value(&state).expect("emit");
+    assert_eq!(wire["rng"]["run_seed"], serde_json::json!(wide));
+}
+
+/// The scenario builder threads the version like ascension, and the legacy
+/// entry point is exactly the default build.
+#[test]
+fn scenario_builder_threads_game_version() {
+    let deck = vec!["STRIKE_IRONCLAD".to_string()];
+    let build = |v| {
+        sts2_wire::scenario::build_scenario_state_for_version(
+            v,
+            3,
+            "Ironclad",
+            &deck,
+            50,
+            80,
+            &[],
+            &[],
+            "SHRINKER_BEETLE_WEAK",
+            0,
+            None,
+            None,
+        )
+        .expect("scenario builds")
+    };
+    assert_eq!(
+        build(sts2_core::GameVersion::V0_111_0).game_version,
+        sts2_core::GameVersion::V0_111_0
+    );
+    let legacy = sts2_wire::scenario::build_scenario_state(
+        3,
+        "Ironclad",
+        &deck,
+        50,
+        80,
+        &[],
+        &[],
+        "SHRINKER_BEETLE_WEAK",
+        0,
+        None,
+        None,
+    )
+    .expect("scenario builds");
+    assert_eq!(legacy, build(sts2_core::GameVersion::V0_107_1));
+}

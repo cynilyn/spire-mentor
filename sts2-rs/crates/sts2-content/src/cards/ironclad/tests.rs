@@ -1620,6 +1620,54 @@ fn thrash_fold_ignores_vulnerable_on_the_player() {
     );
 }
 
+/// Thrash under StrikeDummy exhausting a lone Strike-tagged attack (6 dmg).
+/// Returns the Thrash instance's folded `base_damage`.
+fn thrash_fold_under_strike_dummy(version: sts2_core::GameVersion) -> i32 {
+    install_pool();
+    sts2_core::relic_effects::install_default_registry();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.game_version = version;
+    state.init_player_creature();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::StrikeDummy,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+    let strike = push_hand_card(&mut state, CardId::PommelStrike);
+    state.cards[strike.0.get() as usize - 1].tags =
+        CardTags::one(sts2_core::cards::CardTag::Strike);
+    let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+    assert_eq!(
+        state.player.exhaust.as_slice(),
+        &[strike],
+        "the Strike is the fold pick"
+    );
+    state.cards[thrash.0.get() as usize - 1].base_damage
+}
+
+/// v0.107.1 Rust folds the exhausted Strike's printed 6 (no relic term).
+#[test]
+fn thrash_fold_skips_strike_dummy_v0107() {
+    assert_eq!(
+        thrash_fold_under_strike_dummy(sts2_core::GameVersion::V0_107_1),
+        10
+    );
+}
+
+/// v0.111.0: the fold's `Hook.ModifyDamage` carries the exhausted card as
+/// `cardSource` (Thrash.cs:70), so StrikeDummy's +3 is folded: 4 + 6 + 3
+/// (fuzz seed 395, `SPINY_TOAD_NORMAL`: Thrash hit 13 where C# hit 16).
+#[test]
+fn thrash_fold_includes_strike_dummy_v0111() {
+    assert_eq!(
+        thrash_fold_under_strike_dummy(sts2_core::GameVersion::V0_111_0),
+        13
+    );
+}
+
 /// Push a card POD into `state.cards` and the Hand pile; returns its uid.
 fn push_hand_card(state: &mut CombatState, card_id: CardId) -> sts2_core::CardUid {
     let raw = u32::try_from(state.cards.len() + 1).expect("cards len fits in u32");

@@ -46,11 +46,8 @@ pub fn ppo_observe_json(
     seed: i64,
     ascension: i64,
 ) -> PyResult<String> {
-    if phase == "event" && rm.inner.run_state.current_event.is_none() {
-        if let Some(id) = sts2_content::events::dispatch::pick_event(&mut rm.inner.run_state, None)
-        {
-            rm.inner.run_state.enter_event_room(id);
-        }
+    if phase == "event" {
+        sts2_content::events::dispatch::bind_pending_event_callback(&mut rm.inner.run_state);
     }
     let mut obs = build_obs(&rm.inner, phase, surface);
     obs.seed = seed;

@@ -163,9 +163,12 @@ full C# reference trace (init dump + per-step legal actions, chosen action, and
 post-action state with `rng_counters`) once, then replays **Rust-only** against
 it on every later sweep. Minutes → seconds.
 
-Invalidation rides the cache **namespace** = `cs_version_namespace()`, a content
-hash of `lib/*.dll` (game version + headless patch) + `src/**/*.cs` (harness
-logic, excluding `bin/`/`obj/`). Any change → new namespace → automatic full
+Invalidation rides the cache **namespace** = `cs_version_namespace()`,
+`<game version>-<hash>` (e.g. `v0.107.1-…`): a content hash of the selected
+build's `lib/<ver>/*.dll` (game version + headless patch) + `src/**/*.cs` /
+`*.csproj` (harness logic, excluding `bin/`/`obj/`). The build is
+`STS2_GAME_VERSION` / `--game-version` (default v0.107.1, GH #789), so the two
+oracle builds never share traces. Any change → new namespace → automatic full
 re-record. The SOURCE is hashed, not the built dll, because a .NET build is not
 byte-reproducible (fresh MVID per build) — hashing the binary would give every
 worktree its own namespace and break the committed-trace bundle in
@@ -270,7 +273,7 @@ scripts/wheel-venv.sh run -- python python/run_parity.py \
     --sweep --character Silent --seed RP --seeds 50 --steps 400 --replay-only -j 4
 ```
 
-The `lib/*.dll` are committed (git-lfs), so `cs_version_namespace()` reproduces
+The `lib/<ver>/*.dll` are committed (git-lfs), so `cs_version_namespace()` reproduces
 the same namespace on a no-game machine — the bundle a clone unpacks matches the
 namespace it recomputes at the same commit. The replay params **must match the
 baked grid** (same `--seed`/`--steps`, `--seeds ≤` baked); the bundle, the

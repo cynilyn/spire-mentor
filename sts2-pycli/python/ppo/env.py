@@ -346,12 +346,18 @@ class PpoRunEnv:
     # which is why G1 (`tests/test_ppo_env_parity.py`) is parameterised over
     # this token.
     act1: str = "overgrowth"
+    # GH #803: the game build this run simulates ("v0.107.1" / "v0.111.0").
+    # None means the process-wide selection, `sts2_client.GAME_VERSION`
+    # (`STS2_GAME_VERSION`, or `--game-version` on the entry point), which
+    # defaults to v0.107.1, so every existing caller keeps its engine.
+    game_version: str | None = None
     # Resolution log: (step_index, phase, surface|None, class) — the G1
     # ownership-audit record. Classes: 'combat-agent', 'combat-surrogate',
     # 'single-option-auto', 'net' (policy mode), 'expert' (expert mode).
     resolution_log: list[tuple[int, str, str | None, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        import sts2_client
         import sts2_rs
 
         # Parity-pinned construction (== run_arena `run_cell`, whose shared
@@ -377,7 +383,9 @@ class PpoRunEnv:
         # normal encoded decision and the net picks (#379 gave it a real
         # `potion_swap` surface). `_advance` mirrors that split, and both
         # sides must agree or G1 (`tests/test_ppo_env_parity.py`) breaks.
-        self.rm = sts2_rs.RunManager(
+        self.rm = sts2_client.rs_engine_call(
+            sts2_rs.RunManager,
+            version=self.game_version,
             seed=self.seed,
             character=self.character,
             ascension_level=self.ascension,

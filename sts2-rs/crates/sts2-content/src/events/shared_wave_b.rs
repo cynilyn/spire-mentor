@@ -56,12 +56,65 @@ fn reflections_touch(state: &mut RunState) -> EventOutcome {
     // the always-immediate primitive, NOT the interactive-aware
     // `upgrade_random_cards` (which would queue a card_select under the
     // workbench/lockstep `interactive_card_upgrade` flag).
-    let downgraded = state.downgrade_random_cards(2);
-    let upgraded = state.upgrade_random_cards_stable(4);
+    let (downgraded, upgraded) = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        reflections_touch_v0111(state)
+    } else {
+        (
+            state.downgrade_random_cards(2),
+            state.upgrade_random_cards_stable(4),
+        )
+    };
     EventOutcome::finished(format!(
         "Touched a mirror — downgraded {downgraded}, upgraded {upgraded} card(s)."
     ))
 }
+
+/// v0.111.0 TouchAMirror: both legs draw `base.Rng.NextItem` over a deck-order
+/// candidate list, removing each pick, and the upgradable list is built after
+/// the downgrades:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// (decomp `Models.Events/Reflections.cs:32`). `base.Rng` is the event's own
+/// `REFLECTIONS` stream. v0.107.1 has the same code, but its arm keeps the
+/// pre-port draws (rewards-stream downgrade, Niche `StableShuffle` upgrade) so
+/// that build stays bit-identical (tracked for #806).
+fn reflections_touch_v0111(state: &mut RunState) -> (usize, usize) {
+    let version = state.game_version;
+    let mut rng = state.rng.named(REFLECTIONS_STREAM);
+    let mut upgraded_cards: Vec<usize> = (0..state.master_deck.len())
+        .filter(|&i| state.master_deck[i].upgraded)
+        .collect();
+    let mut downgraded = 0;
+    for _ in 0..2 {
+        if upgraded_cards.is_empty() {
+            break;
+        }
+        let pick = rng.next_int_exclusive(0, upgraded_cards.len() as i32) as usize;
+        let deck_idx = upgraded_cards.remove(pick);
+        if state.master_deck[deck_idx].downgrade_for(version) {
+            downgraded += 1;
+        }
+    }
+    let mut upgradable_cards: Vec<usize> = (0..state.master_deck.len())
+        .filter(|&i| state.master_deck[i].is_upgradable())
+        .collect();
+    let mut upgraded = 0;
+    for _ in 0..4 {
+        if upgradable_cards.is_empty() {
+            break;
+        }
+        let pick = rng.next_int_exclusive(0, upgradable_cards.len() as i32) as usize;
+        let deck_idx = upgradable_cards.remove(pick);
+        if state.master_deck[deck_idx].upgrade_for(version) {
+            upgraded += 1;
+        }
+    }
+    (downgraded, upgraded)
+}
+
+/// `Reflections`'s `Id.Entry`, which names its own (non-shared) event stream.
+const REFLECTIONS_STREAM: &str = "REFLECTIONS";
 
 /// `Reflections::shatter` — Python duplicates the entire deck and
 /// adds a BadLuck curse (`shared.py:1361-1376`). Each clone gets a
@@ -593,7 +646,19 @@ fn spirit_grafter_rejection(state: &mut RunState) -> EventOutcome {
     // `post_hp_loss`), so an intermediate event-effect-parity snapshot taken
     // mid-select sees the damage one step early. Final-state-faithful; the
     // post-select deferral is a separate run-loop surface.
+    let queued_before = state.pending_deck_upgrades;
     let _ = state.upgrade_random_cards(1);
+    // v0.111.0: an interactive host's queued pick resolves before C#
+    // damages (`SpiritGrafter.cs:47-52`: `FromDeckForUpgrade`, `Upgrade`,
+    // then `CreatureCmd.Damage`), so park the damage until the pick drains.
+    // v0.107.1 has the same code; its arm keeps damaging up front
+    // (bit-identical, tracked for #806).
+    if state.game_version >= sts2_core::GameVersion::V0_111_0
+        && state.pending_deck_upgrades > queued_before
+    {
+        state.pending_post_upgrade_hp_loss += SPIRIT_GRAFTER_DAMAGE;
+        return EventOutcome::finished("Upgrade a card, then take damage.");
+    }
     let lost = state.lose_hp(SPIRIT_GRAFTER_DAMAGE);
     EventOutcome::finished(format!("Upgraded a card, took {lost} damage."))
 }
@@ -661,7 +726,7 @@ pub const SUNKEN_STATUE_STREAM: &str = "SUNKEN_STATUE";
 fn sunken_statue_rolled_gold(state: &RunState) -> i32 {
     // v0.107.1 single-player event seed: additive player term is 0
     // (`EventModel.cs:238` GetPlayerSlotIndex == 0; v0.103.2 used NetId == 1).
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, SUNKEN_STATUE_STREAM);
+    let mut rng = state.rng.named(SUNKEN_STATUE_STREAM);
     SUNKEN_STATUE_DIVE_GOLD
         + rng.next_int(-SUNKEN_STATUE_GOLD_VARIANCE, SUNKEN_STATUE_GOLD_VARIANCE)
 }
@@ -859,6 +924,7 @@ fn tablet_of_truth_decipher(state: &mut RunState) -> EventOutcome {
     }
     state.lose_max_hp(cost);
 
+    let version = state.game_version;
     let upgraded = if count + 1 == TABLET_OF_TRUTH_MAX_DECIPHERS {
         // `_decipherCount == 4` (i.e. this is the FIFTH decipher): C# upgrades
         // EVERY upgradable card in the deck and draws nothing from the event
@@ -867,7 +933,7 @@ fn tablet_of_truth_decipher(state: &mut RunState) -> EventOutcome {
             .master_deck
             .iter_mut()
             .filter(|c| c.is_upgradable())
-            .fold(0usize, |n, c| n + usize::from(c.upgrade()))
+            .fold(0usize, |n, c| n + usize::from(c.upgrade_for(version)))
     } else {
         // C#: `base.Rng.NextItem(deck.Where(IsUpgradable))` — a single
         // `NextInt(0, count)` read of the private "TABLET_OF_TRUTH" stream,
@@ -892,10 +958,10 @@ fn tablet_of_truth_decipher(state: &mut RunState) -> EventOutcome {
                 .event_state
                 .rng
                 .take()
-                .unwrap_or_else(|| Rng::with_name(state.rng.seed, TABLET_OF_TRUTH_STREAM));
+                .unwrap_or_else(|| state.rng.named(TABLET_OF_TRUTH_STREAM));
             let j = rng.next_int_exclusive(0, candidates.len() as i32) as usize;
             state.event_state.rng = Some(rng);
-            usize::from(state.master_deck[candidates[j]].upgrade())
+            usize::from(state.master_deck[candidates[j]].upgrade_for(version))
         }
     };
 
@@ -1092,10 +1158,9 @@ pub const TEZCATARA_COMFORT_3: RelicId = RelicId::GoldenCompass;
 pub fn tezcatara_deck_has_basic_strike(state: &RunState) -> bool {
     use sts2_core::cards::CardTag;
     let rank = sts2_core::lookup_card_rarity_rank();
-    state
-        .master_deck
-        .iter()
-        .any(|c| c.has_tag(CardTag::Strike) && rank.map_or(true, |f| f(c.card_id) == 1))
+    state.master_deck.iter().any(|c| {
+        c.has_tag(CardTag::Strike) && rank.map_or(true, |f| f(c.card_id, state.game_version) == 1)
+    })
 }
 
 /// Tezcatara option list: pool-1 label reflects whether `NutritiousSoup` is
@@ -1236,7 +1301,9 @@ fn the_lantern_key_keep_key(state: &mut RunState) -> EventOutcome {
 /// Bead `sts2-rs-ck9z6` (GH #166): enters a real `Phase::Combat` against
 /// the MysteriousKnight (FlailKnight base + Strength(6) + Plating(6)). The
 /// LanternKey card is the combat room's extra reward — granted on a clean
-/// victory only (a player death routes to `Phase::RunOver`). No resume:
+/// victory only (a player death routes to `Phase::RunOver`), after the
+/// fight's own Monster-room gold / potion / card reward set and before its
+/// card pick (`SpecialCardReward` is auto-collected, GH #817). No resume:
 /// the event finishes once the fight resolves. Returns a NOT-finished
 /// outcome so the dispatcher keeps the event room open across the combat.
 fn the_lantern_key_fight(state: &mut RunState) -> EventOutcome {
@@ -1351,7 +1418,7 @@ pub const THIS_OR_THAT_PLAIN_GOLD: i32 = 55;
 fn this_or_that_gold(state: &RunState) -> i32 {
     // v0.107.1 single-player event seed: additive player term is 0
     // (`EventModel.cs:238` GetPlayerSlotIndex == 0; v0.103.2 used NetId == 1).
-    let mut rng = sts2_core::DotNetRng::with_name(state.rng.seed, "THIS_OR_THAT");
+    let mut rng = state.rng.named("THIS_OR_THAT");
     rng.next_int_exclusive(41, 69)
 }
 
@@ -1656,7 +1723,7 @@ fn tinker_time_take_rng(state: &mut RunState) -> Rng {
         // single-player additive player term is 0 (GetPlayerSlotIndex == 0;
         // v0.103.2 used `Owner.NetId == 1`). Bead `sts2-rs-2guyj`; the 107-oracle
         // RNG re-trace is tracked by `sts2-rs-nbxaw`.
-        Rng::with_name(state.rng.seed, "TINKER_TIME")
+        state.rng.named("TINKER_TIME")
     })
 }
 
@@ -2197,8 +2264,9 @@ fn wood_carvings_transform(
         // Auto mode (parity-fuzz / headless): transform the first Basic
         // deck card (rarity via the C#-discriminant rank fn; Basic == 1).
         let rank = sts2_core::lookup_card_rarity_rank();
+        let version = state.game_version;
         let idx = state.master_deck.iter().position(|c| match rank {
-            Some(f) => f(c.card_id) == 1,
+            Some(f) => f(c.card_id, version) == 1,
             None => true,
         });
         if let Some(idx) = idx {
@@ -2328,7 +2396,7 @@ fn zen_weaver_emotional(state: &mut RunState) -> EventOutcome {
         return EventOutcome::finished("Could not afford Emotional Awareness.");
     }
     zen_weaver_remove(state, 1);
-    state.gold = state.gold.saturating_sub(ZEN_WEAVER_EMOTIONAL_COST);
+    zen_weaver_pay(state, ZEN_WEAVER_EMOTIONAL_COST);
     EventOutcome::finished(format!(
         "Paid {ZEN_WEAVER_EMOTIONAL_COST}g, removed a card."
     ))
@@ -2341,7 +2409,7 @@ fn zen_weaver_acupuncture(state: &mut RunState) -> EventOutcome {
         return EventOutcome::finished("Could not afford Arachnid Acupuncture.");
     }
     zen_weaver_remove(state, 2);
-    state.gold = state.gold.saturating_sub(ZEN_WEAVER_ACUPUNCTURE_COST);
+    zen_weaver_pay(state, ZEN_WEAVER_ACUPUNCTURE_COST);
     EventOutcome::finished(format!(
         "Paid {ZEN_WEAVER_ACUPUNCTURE_COST}g, removed 2 cards."
     ))
@@ -2350,6 +2418,23 @@ fn zen_weaver_acupuncture(state: &mut RunState) -> EventOutcome {
 /// Remove `count` deck cards via the C# `FromDeckForRemoval` shape: queue an
 /// interactive `card_select` when the host is interactive, else remove from the
 /// deck front (the headless/parity-fuzz convention). No RNG — the player picks.
+/// Pay a ZenWeaver removal option's gold. v0.111.0: C# pays only after the
+/// removal pick returns (`RemoveCardsAndProceed`, decomp
+/// `Models.Events/ZenWeaver.cs:70-74`):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// so an interactive host parks the cost until the queued removals drain and
+/// the removal screen still shows the unpaid gold. v0.107.1 has the same code;
+/// its arm keeps paying up front so that build stays bit-identical (#806).
+fn zen_weaver_pay(state: &mut RunState, cost: i32) {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 && state.interactive_card_removal {
+        state.pending_post_removal_gold_loss += cost;
+    } else {
+        state.gold = state.gold.saturating_sub(cost);
+    }
+}
+
 fn zen_weaver_remove(state: &mut RunState, count: u32) {
     if state.interactive_card_removal {
         state.pending_deck_removals += count;
@@ -2701,6 +2786,56 @@ mod tests {
         assert_eq!(upgraded, 4);
     }
 
+    /// v0.111.0 TouchAMirror (`Reflections.cs:32`): two `NextItem` downgrades
+    /// over the upgraded cards, then four `NextItem` upgrades over the
+    /// upgradable cards listed after the downgrades, all off the event's own
+    /// `REFLECTIONS` stream; the shared `rewards` / `niche` streams stay put.
+    #[test]
+    fn reflections_touch_draws_event_stream_v0111() {
+        let ids = [
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::Bash,
+            CardId::Anger,
+            CardId::Clash,
+            CardId::IronWave,
+            CardId::PommelStrike,
+            CardId::ShrugItOff,
+        ];
+        for seed in 0..16_u64 {
+            let mut rs = fresh_state();
+            rs.game_version = sts2_core::GameVersion::V0_111_0;
+            rs.rng = sts2_core::RunRngSet::new_for(rs.game_version, seed);
+            for &id in &ids {
+                push_card(&mut rs, id);
+            }
+            for i in [1, 3, 6] {
+                let _ = rs.master_deck[i].upgrade_for(rs.game_version);
+            }
+            // Expected, straight from the C# loop.
+            let mut rng = rs.rng.named("REFLECTIONS");
+            let mut expect: Vec<bool> = rs.master_deck.iter().map(|c| c.upgraded).collect();
+            let mut pool: Vec<usize> = (0..expect.len()).filter(|&i| expect[i]).collect();
+            for _ in 0..2 {
+                let k = rng.next_int_exclusive(0, pool.len() as i32) as usize;
+                expect[pool.remove(k)] = false;
+            }
+            let mut pool: Vec<usize> = (0..expect.len()).filter(|&i| !expect[i]).collect();
+            for _ in 0..4 {
+                let k = rng.next_int_exclusive(0, pool.len() as i32) as usize;
+                expect[pool.remove(k)] = true;
+            }
+            let (niche, rewards) = (rs.rng.niche.counter(), rs.rng.rewards.counter());
+
+            let outcome = (REFLECTIONS.options[0].handler)(&mut rs);
+            assert!(outcome.finished);
+            let got: Vec<bool> = rs.master_deck.iter().map(|c| c.upgraded).collect();
+            assert_eq!(got, expect, "seed {seed}");
+            assert_eq!(rs.rng.niche.counter(), niche);
+            assert_eq!(rs.rng.rewards.counter(), rewards);
+        }
+    }
+
     #[test]
     fn reflections_shatter_duplicates_deck_and_adds_curse() {
         let mut rs = fresh_state();
@@ -2832,6 +2967,30 @@ mod tests {
         // Headless (non-interactive) mode upgrades one deck card immediately.
         let upgraded_after = rs.master_deck.iter().filter(|c| c.upgraded).count();
         assert_eq!(upgraded_after, upgraded_before + 1);
+    }
+
+    /// v0.111.0 (`SpiritGrafter.cs:47-52`): with an interactive host the
+    /// damage waits for the queued upgrade pick; headless it still lands now.
+    #[test]
+    fn spirit_grafter_rejection_damages_after_the_pick_v0111() {
+        let mut rs = fresh_state();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.interactive_card_upgrade = true;
+        seed_deck(&mut rs, 3);
+        let hp_before = rs.current_hp;
+        let outcome = (SPIRIT_GRAFTER.options[1].handler)(&mut rs);
+        assert!(outcome.finished);
+        assert_eq!(rs.pending_deck_upgrades, 1);
+        assert_eq!(rs.current_hp, hp_before, "no damage before the pick");
+        assert_eq!(rs.pending_post_upgrade_hp_loss, SPIRIT_GRAFTER_DAMAGE);
+
+        let mut headless = fresh_state();
+        headless.game_version = sts2_core::GameVersion::V0_111_0;
+        seed_deck(&mut headless, 3);
+        let hp = headless.current_hp;
+        let _ = (SPIRIT_GRAFTER.options[1].handler)(&mut headless);
+        assert_eq!(headless.current_hp, hp - SPIRIT_GRAFTER_DAMAGE);
+        assert_eq!(headless.pending_post_upgrade_hp_loss, 0);
     }
 
     #[test]
@@ -3289,6 +3448,34 @@ mod tests {
         assert_eq!(rs.master_deck.len(), deck_before - 1);
     }
 
+    /// v0.111.0 (`ZenWeaver.cs:70-74`): an interactive host pays only once
+    /// the removal picks drain, so the cost is parked, not spent.
+    #[test]
+    fn zen_weaver_acupuncture_parks_cost_until_removals_drain_v0111() {
+        let mut rs = fresh_state();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.interactive_card_removal = true;
+        rs.gold = 500;
+        seed_deck(&mut rs, 3);
+        let outcome = (ZEN_WEAVER.options[2].handler)(&mut rs);
+        assert!(outcome.finished);
+        assert_eq!(rs.gold, 500, "unpaid while the removal screen is up");
+        assert_eq!(rs.pending_deck_removals, 2);
+        assert_eq!(rs.pending_post_removal_gold_loss, 250);
+    }
+
+    /// v0.107.1 keeps paying up front, even with an interactive host.
+    #[test]
+    fn zen_weaver_acupuncture_pays_up_front_interactive() {
+        let mut rs = fresh_state();
+        rs.interactive_card_removal = true;
+        rs.gold = 500;
+        seed_deck(&mut rs, 3);
+        let _ = (ZEN_WEAVER.options[2].handler)(&mut rs);
+        assert_eq!(rs.gold, 250);
+        assert_eq!(rs.pending_post_removal_gold_loss, 0);
+    }
+
     #[test]
     fn zen_weaver_acupuncture_spends_250_and_removes_two_cards() {
         let mut rs = fresh_state();
@@ -3453,17 +3640,17 @@ mod tests {
         // single-player additive player term is 0, so
         // event_seed == master + hash("TINKER_TIME")  (mod 2^32).
         let hash = sts2_core::deterministic_hash_code("TINKER_TIME") as u32;
-        let master = CSHARP_EVENT_SEED.wrapping_sub(hash) as i32;
+        let master = CSHARP_EVENT_SEED.wrapping_sub(hash);
 
         let mut rs = fresh_state();
-        rs.rng.seed = master;
+        rs.rng.seed = u64::from(master);
         rs.enter_event_room(EventId::TinkerTime);
 
         // Page 0 → card-type draw. Rust's event stream MUST seed identically.
         crate::events::dispatch::resolve(&mut rs, "choose_card_type").unwrap();
         assert_eq!(
             rs.event_state.rng.as_ref().unwrap().seed(),
-            CSHARP_EVENT_SEED,
+            u64::from(CSHARP_EVENT_SEED),
             "Rust event RNG stream seeds identically to the C# engine",
         );
 
@@ -3518,7 +3705,7 @@ mod tests {
         let rng = rs.event_state.rng.clone().expect("event rng created");
         // v0.107.1 single-player event seed has additive player term 0, so a
         // fresh stream is `Rng::with_name(seed, "TINKER_TIME")` at counter 0.
-        let fresh = Rng::with_name(rs.rng.seed, "TINKER_TIME");
+        let fresh = rs.rng.named("TINKER_TIME");
         assert_ne!(rng, fresh, "counter advanced by the first TakeRandom draw");
     }
 
@@ -3587,7 +3774,7 @@ mod tests {
         let rs = fresh_state();
         // v0.107.1 single-player event seed: additive player term is 0 (mirrors
         // `sunken_statue_rolled_gold` — `EventModel.cs:238` GetPlayerSlotIndex == 0).
-        let mut raw = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, SUNKEN_STATUE_STREAM);
+        let mut raw = rs.rng.named(SUNKEN_STATUE_STREAM);
         let variance = raw.next_int(-SUNKEN_STATUE_GOLD_VARIANCE, SUNKEN_STATUE_GOLD_VARIANCE);
         assert_eq!(
             sunken_statue_rolled_gold(&rs),

@@ -147,7 +147,7 @@ class TimelineStore:
         head = self._head
         if head.get("run_mode") is None or not head.get("character"):
             return None
-        return {
+        ident = {
             "character": head["character"],
             "seed": str(head.get("seed", "")),
             "ascension": int(head.get("ascension") or 0),
@@ -155,6 +155,12 @@ class TimelineStore:
             "act1": head.get("act1") or "overgrowth",
             "backend": head.get("backend") or "rust",
         }
+        # GH #801: the build the run simulated. The log writer omits it at the
+        # default (v0.107.1), so its absence means the default; only a
+        # non-default build is carried here.
+        if head.get("game_version"):
+            ident["game_version"] = head["game_version"]
+        return ident
 
     def replay_line(self, idx: int) -> list[dict[str, Any]] | None:
         """The ``[{"action", "args"}]`` line that reaches step ``idx``, or None.

@@ -1253,6 +1253,31 @@ pub const fn lantern_key() -> CardSpec {
     }
 }
 
+/// Dowsing — **v0.111.0-only** Quest card (`Cards/Dowsing.cs`, GH #792),
+/// added to the deck by the DowsingRod Neow relic:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// `CardType.Quest` has no Rust variant; like the other Quest cards
+/// (ByrdonisEgg / LanternKey / SpoilsMap) it is modelled as an Unplayable
+/// Skill. Its `BeforeRoomEntered` quest (5 `?` rooms -> transform into
+/// Abundance) is card content owned by S8a (#793) and not ported here.
+#[must_use]
+pub const fn dowsing() -> CardSpec {
+    CardSpec {
+        id: CardId::Dowsing,
+        name: "DOWSING",
+        cost: -1,
+        card_type: CardType::Skill,
+        target_type: TargetType::None,
+        rarity: CardRarity::Quest,
+        base_damage: 0,
+        base_block: 0,
+        keywords: CardKeywords::UNPLAYABLE,
+        ..CardSpec::base()
+    }
+}
+
 #[must_use]
 pub const fn spoils_map() -> CardSpec {
     CardSpec {

@@ -12,7 +12,7 @@ pub(crate) fn on_before_side_turn_start_red_mask(
     state: &mut CombatState,
     side: Side,
 ) -> EffectResult {
-    if side != Side::Player || state.round_no() != 1 {
+    if side != Side::Player || state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::RedMask) {

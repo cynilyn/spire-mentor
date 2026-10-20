@@ -468,7 +468,7 @@ fn dampen_after_applied(
     for uid in uids {
         if let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) {
             if card.upgraded {
-                card.downgrade();
+                card.downgrade_for(state.game_version);
                 // Mark this card as downgraded by Dampen so we can re-upgrade
                 // it when Dampen is removed.
                 card.set_combat_var(crate::cards::VarKey::DampenDowngradedMarker, 1);
@@ -485,7 +485,7 @@ fn dampen_after_removed(state: &mut CombatState, _old_owner: CreatureUid) -> Eff
     for uid in uids {
         if let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) {
             if card.combat_var(crate::cards::VarKey::DampenDowngradedMarker) != 0 {
-                card.upgrade();
+                card.upgrade_for(state.game_version);
                 // Clear the marker.
                 card.set_combat_var(crate::cards::VarKey::DampenDowngradedMarker, 0);
             }

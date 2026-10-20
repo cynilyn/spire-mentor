@@ -9,9 +9,14 @@ Console.WriteLine($"Patching {dllPath}...");
 var resolver = new DefaultAssemblyResolver();
 var libDir = Path.GetDirectoryName(dllPath)!;
 resolver.AddSearchDirectory(libDir);
-// Also search for GodotSharp.dll in the GodotStubs output (fallback)
-var stubsDir = Path.Combine(Path.GetDirectoryName(libDir)!, "src", "GodotStubs", "bin", "Debug", "net9.0");
-if (Directory.Exists(stubsDir)) resolver.AddSearchDirectory(stubsDir);
+// Also search for GodotSharp.dll in the GodotStubs output (fallback). The DLL
+// sits in lib/<version>/ (GH #789) or, in older checkouts, flat in lib/, so walk
+// up to the sts2-pycli root instead of assuming a fixed depth.
+for (var dir = new DirectoryInfo(libDir); dir != null; dir = dir.Parent)
+{
+    var stubsDir = Path.Combine(dir.FullName, "src", "GodotStubs", "bin", "Debug", "net9.0");
+    if (Directory.Exists(stubsDir)) { resolver.AddSearchDirectory(stubsDir); break; }
+}
 var module = ModuleDefinition.ReadModule(dllPath, new ReaderParameters {
     AssemblyResolver = resolver,
     ReadingMode = ReadingMode.Deferred  // Don't force-resolve all references upfront

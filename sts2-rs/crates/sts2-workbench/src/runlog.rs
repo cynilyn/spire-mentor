@@ -69,19 +69,20 @@ pub fn write_run_log(sess: &Session, now_iso: &str) -> Option<RunLog> {
     let ts = now_iso;
     let mut lines: Vec<String> = Vec::new();
     let mut step: u64 = 0;
-    lines.push(record(
-        step,
-        ts,
-        "meta",
-        json!({
-            "character": sess.character,
-            "seed": sess.seed,
-            "ascension": sess.ascension,
-            "run_mode": sess.run_mode(),
-            "act1": sess.act1,
-            "backend": sess.backend(),
-        }),
-    ));
+    let mut meta = json!({
+        "character": sess.character,
+        "seed": sess.seed,
+        "ascension": sess.ascension,
+        "run_mode": sess.run_mode(),
+        "act1": sess.act1,
+        "backend": sess.backend(),
+    });
+    // GH #801: only a non-default build is named (a v0.107.1 log keeps its
+    // bytes); `run_identity` reads absence as v0.107.1.
+    if !sess.game_version.is_default() {
+        meta["game_version"] = json!(sess.game_version.as_str());
+    }
+    lines.push(record(step, ts, "meta", meta));
     let log_wpa = |lines: &mut Vec<String>, step: u64, i: usize| {
         if let Some(v) = path[i].value {
             let taken = path.get(i + 1).map_or(Value::Null, |n| json!(n.label));
@@ -548,6 +549,14 @@ impl ReplayStore {
             .to_string()
     }
 
+    /// The build the recording was played in (GH #801): the meta's
+    /// `game_version`, v0.107.1 when absent (or unreadable — display only;
+    /// [`Self::run_identity`] refuses an unknown build).
+    #[must_use]
+    pub fn game_version(&self) -> sts2_core::GameVersion {
+        crate::session::parse_game_version(self.head.get("game_version")).unwrap_or_default()
+    }
+
     /// `fixture_path()`: a fixture-sourced recording's source (never set by
     /// the browser's own logs).
     #[must_use]
@@ -592,6 +601,7 @@ impl ReplayStore {
                 .filter(|s| !s.is_empty())
                 .unwrap_or("rust")
                 .to_string(),
+            game_version: crate::session::parse_game_version(self.head.get("game_version")).ok()?,
         })
     }
 
@@ -626,12 +636,23 @@ pub struct RunIdentity {
     pub run_mode: bool,
     pub act1: String,
     pub backend: String,
+    /// The build the run was played in; v0.107.1 when the meta carries no
+    /// `game_version` (GH #801).
+    pub game_version: sts2_core::GameVersion,
 }
 
 /// `resume_capability`: whether "play from here" can take this recording
 /// over. The browser has no fixture files, so only the `run` route exists.
 #[must_use]
 pub fn resume_capability(store: &ReplayStore) -> Value {
+    // A build this workbench does not know (a log from a newer one) is named
+    // as such, not reported as a missing action line (#855).
+    if let Err(e) = crate::session::parse_game_version(store.head.get("game_version")) {
+        return json!({
+            "kind": Value::Null,
+            "reason": format!("this recording cannot be resumed: {e}"),
+        });
+    }
     let last = store.len().saturating_sub(1);
     if store.run_identity().is_some() && store.replay_line(last).is_some() {
         return json!({"kind": "run", "reason": Value::Null});
@@ -880,6 +901,20 @@ mod tests {
         assert_eq!(store.run_identity().unwrap().character, "Silent");
         assert_eq!(store.replay_line(1).unwrap().len(), 1);
         assert_eq!(resume_capability(&store)["kind"], json!("run"));
+        let newer = text.replacen(
+            r#""character":"Silent""#,
+            r#""character":"Silent","game_version":"v9.9.9""#,
+            1,
+        );
+        let cap = resume_capability(&ReplayStore::parse("x.jsonl", &newer).unwrap());
+        assert_eq!(cap["kind"], Value::Null);
+        assert!(
+            cap["reason"]
+                .as_str()
+                .unwrap()
+                .contains("unknown game_version \"v9.9.9\""),
+            "{cap}"
+        );
         let logs = vec![("x.jsonl".to_string(), text.clone())];
         let runs = mcts_runs(&logs);
         assert_eq!(runs["runs"][0]["stem"], json!("x"));
@@ -889,6 +924,38 @@ mod tests {
         assert_eq!(agg["final_turn_histogram"], json!({"3": 1}));
         assert_eq!(agg["pattern_tags"], json!({"fast_death": 1}));
         assert!(ReplayStore::parse("y", "{not json").is_err());
+    }
+
+    /// The live advisor stamps coach records with `log_idx`, the index of
+    /// their decision's `state` line (`WorkbenchRunLogger.log_decision`), and
+    /// the mod opens the browser workbench at `?step=<log_idx>`. That only
+    /// lands on the right decision if every `state` line is exactly one
+    /// step, in file order, whatever else (`coach`, `action`, `mcts`) sits
+    /// between them -- the twin of the Python
+    /// `test_log_decision_returns_replay_index`.
+    #[test]
+    fn log_idx_points_at_state_line() {
+        let text = [
+            r#"{"step":0,"ts":"t","type":"meta","data":{"character":"Ironclad","seed":"S","ascension":0,"source":"realgame_advisor","live":true}}"#,
+            r#"{"step":1,"ts":"t","type":"state","data":{"decision":"event_choice","floor":3}}"#,
+            r#"{"step":1,"ts":"t","type":"action","data":{"label":"Smash","args":{"index":1}}}"#,
+            r#"{"step":1,"ts":"t","type":"coach","data":{"kind":"choice","id":"choice:1","log_idx":0}}"#,
+            r#"{"step":2,"ts":"t","type":"state","data":{"decision":"event_choice","floor":4}}"#,
+            r#"{"step":2,"ts":"t","type":"mcts","data":{"advice":{}}}"#,
+            r#"{"step":3,"ts":"t","type":"state","data":{"decision":"event_choice","floor":5}}"#,
+            r#"{"step":3,"ts":"t","type":"coach","data":{"kind":"withdraw","ids":["choice:1"]}}"#,
+            "",
+        ]
+        .join("\n");
+        let store = ReplayStore::parse("live.jsonl", &text).unwrap();
+        assert_eq!(store.len(), 3);
+        for (idx, floor) in [(0, 3), (1, 4), (2, 5)] {
+            assert_eq!(
+                store.get(idx).unwrap().meta["floor"],
+                json!(floor),
+                "step {idx}"
+            );
+        }
     }
 
     /// The live agent's own rows carry `action` and the search's `win_prob`.

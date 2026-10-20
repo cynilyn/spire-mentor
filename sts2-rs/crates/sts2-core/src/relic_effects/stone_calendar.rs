@@ -9,7 +9,7 @@ pub(crate) fn on_before_turn_end_stone_calendar(
     state: &mut CombatState,
     side: Side,
 ) -> EffectResult {
-    if side != Side::Player || state.round_no() != 7 {
+    if side != Side::Player || state.turn_number() != 7 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::StoneCalendar) {

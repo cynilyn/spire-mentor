@@ -125,6 +125,15 @@ internal sealed class SimScreenDecision
     public Func<int, bool> Choose = _ => false;
 
     public string ScreenName = "";
+
+    /// <summary>
+    /// The game object behind each option, in option order, where the human's
+    /// pick is detected by identity rather than by a diff (SimChoiceCapture):
+    /// the <c>EventOption</c> of an event button, the <c>RestSiteOption</c> of
+    /// a campfire button, the <c>CardModel</c> of a deck-select holder. Empty
+    /// for every other screen.
+    /// </summary>
+    public List<object?> OptionRefs = new();
 }
 
 internal static class SimScreenAdvice
@@ -574,6 +583,7 @@ internal static class SimScreenAdvice
             Signature = "rest:" + string.Join("|", buttons.Select(b => b.Option.OptionId)),
             Screen = room,
             ScreenName = nameof(NRestSiteRoom),
+            OptionRefs = buttons.Select(b => (object?)b.Option).ToList(),
             Choose = index => ClickHolder(buttons, index),
         };
     }
@@ -813,6 +823,7 @@ internal static class SimScreenAdvice
                         string.Join("|", options.Select(o => o.Option.TextKey)),
             Screen = room,
             ScreenName = "NEventRoom",
+            OptionRefs = options.Select(o => (object?)o.Option).ToList(),
             Choose = index => ChooseEventOption(room, index),
         };
     }
@@ -2315,6 +2326,7 @@ internal static class SimScreenAdvice
             OptionLabels = labels,
             Screen = screen,
             ScreenName = screen.GetType().Name,
+            OptionRefs = holders.Select(h => (object?)h.CardModel).ToList(),
             // `index == OptionCount` is the takeover's SKIP leg (SimAdvisor).
             Choose = index =>
                 index >= holders.Count

@@ -43,53 +43,74 @@ use super::{
 
 // ── CrystalSphere ────────────────────────────────────────────────────
 
-/// `CrystalSphere::pay` cost. Python rolls 50 + up_front.next_int(1, 50)
-/// (`act2.py:54`) — range [51, 100]. Pinned to the deterministic
-/// midpoint 75 until `6ynt.4.rng` lands.
-pub const CRYSTAL_SPHERE_PAY_COST: i32 = 75;
+/// `CrystalSphere`'s `Id.Entry` — names its event Rng.
+const CRYSTAL_SPHERE_STREAM: &str = "CRYSTAL_SPHERE";
 
-fn crystal_sphere_generate_options(state: &RunState, _spec: &EventSpec) -> Vec<EventOptionInfo> {
-    let cost = CRYSTAL_SPHERE_PAY_COST;
-    vec![
-        EventOptionInfo {
-            option_id: "pay",
-            loc_key: "CRYSTAL_SPHERE.pages.INITIAL.options.UNCOVER_FUTURE",
-            vars: Vec::new(),
-            title_vars: Vec::new(),
-            label: format!("Uncover Future ({cost}g)"),
-            description: "3 Prophesize picks.".to_string(),
-            enabled: state.gold >= cost,
-        },
-        EventOptionInfo {
-            option_id: "debt",
-            loc_key: "CRYSTAL_SPHERE.pages.INITIAL.options.PAYMENT_PLAN",
-            vars: Vec::new(),
-            title_vars: Vec::new(),
-            label: "Payment Plan".to_string(),
-            description: "6 Prophesize picks, gain Debt curse.".to_string(),
-            enabled: true,
-        },
-    ]
+/// `_uncoverFutureCost` (`CrystalSphere.cs:23`): the cost before the roll.
+pub const CRYSTAL_SPHERE_BASE_COST: i32 = 50;
+
+/// `_uncoverFutureProphesizeCount` (`CrystalSphere.cs:29`): divinations
+/// bought by Uncover Future.
+const CRYSTAL_SPHERE_UNCOVER_DIVINATIONS: u32 = 3;
+
+/// `_paymentPlanCount` (`CrystalSphere.cs:31`): divinations bought by the
+/// Payment Plan.
+const CRYSTAL_SPHERE_PAYMENT_PLAN_DIVINATIONS: u32 = 6;
+
+/// The event Rng after `CalculateVars`, plus the Uncover Future cost it
+/// rolled: `UncoverFutureCost.BaseValue += Rng.NextInt(1, 50)`
+/// (`CrystalSphere.cs:44-47`), so 51..=99. `BeginEvent` builds the Rng and
+/// runs `CalculateVars` before any option is shown, and nothing else draws
+/// from it until an option is taken, so re-deriving it is exact.
+fn crystal_sphere_rng_and_cost(state: &RunState) -> (sts2_core::dotnet_rng::Rng, i32) {
+    let mut rng = state.rng.named(CRYSTAL_SPHERE_STREAM);
+    let cost = CRYSTAL_SPHERE_BASE_COST + rng.next_int_exclusive(1, 50);
+    (rng, cost)
 }
 
-fn crystal_sphere_pay(state: &mut RunState) -> EventOutcome {
-    state.gold = state.gold.saturating_sub(CRYSTAL_SPHERE_PAY_COST);
-    EventOutcome::finished(format!(
-        "Paid {CRYSTAL_SPHERE_PAY_COST}g — 3 Prophesize picks deferred to 6ynt.4.prophesize."
-    ))
+/// The rolled Uncover Future cost (`UncoverFutureCost`).
+#[must_use]
+pub fn crystal_sphere_pay_cost(state: &RunState) -> i32 {
+    crystal_sphere_rng_and_cost(state).1
 }
 
-fn crystal_sphere_debt(state: &mut RunState) -> EventOutcome {
-    // C# `CrystalSphere` Payment Plan: `AddCurseToDeck<Debt>` (unconditional
-    // deck append), then a 6-pick Prophesize minigame — the multi-page picks
-    // stay deferred (`6ynt.4.prophesize`); only the Debt curse-add is wired here.
-    use sts2_core::cards::CardId;
-    if let Some(curse) = crate::cards::spec_index::card_pod_from_id(CardId::Debt, false) {
-        state.master_deck.push(curse);
+fn crystal_sphere_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let cost = crystal_sphere_pay_cost(state);
+    // C# offers both options unconditionally. `IsAllowed` needs 100 gold and
+    // the cost is at most 99, so Uncover Future is always affordable.
+    let mut options = super::default_option_info_from_spec(state, spec);
+    if let Some(pay) = options.first_mut() {
+        pay.label = format!("Uncover Future ({cost}g)");
+        pay.description = format!("Spend {cost} gold for 3 divinations.");
     }
-    EventOutcome::finished(
-        "Payment Plan — gained a Debt curse (6 Prophesize picks deferred to 6ynt.4.prophesize).",
-    )
+    options
+}
+
+/// `UncoverFuture` (`CrystalSphere.cs:66-72`): `LoseGold(cost, Spent)`, then
+/// a 3-divination minigame on the event Rng.
+fn crystal_sphere_pay(state: &mut RunState) -> EventOutcome {
+    let (mut rng, cost) = crystal_sphere_rng_and_cost(state);
+    state.gold = state.gold.saturating_sub(cost).max(0);
+    super::crystal_sphere::play_headless_and_offer(
+        state,
+        &mut rng,
+        CRYSTAL_SPHERE_UNCOVER_DIVINATIONS,
+    );
+    EventOutcome::finished(format!("Paid {cost} gold and gazed into the sphere."))
+}
+
+/// `PaymentPlan` (`CrystalSphere.cs:74-80`): `AddCurseToDeck<Debt>`, then a
+/// 6-divination minigame on the event Rng.
+fn crystal_sphere_debt(state: &mut RunState) -> EventOutcome {
+    use sts2_core::cards::CardId;
+    let (mut rng, _cost) = crystal_sphere_rng_and_cost(state);
+    super::crystal_sphere::add_curse_to_deck(state, CardId::Debt);
+    super::crystal_sphere::play_headless_and_offer(
+        state,
+        &mut rng,
+        CRYSTAL_SPHERE_PAYMENT_PLAN_DIVINATIONS,
+    );
+    EventOutcome::finished("Took the Payment Plan and gazed into the sphere.")
 }
 
 const CRYSTAL_SPHERE_OPTIONS: &[EventOptionSpec] = &[
@@ -97,15 +118,14 @@ const CRYSTAL_SPHERE_OPTIONS: &[EventOptionSpec] = &[
         option_id: "pay",
         loc_key: "CRYSTAL_SPHERE.pages.INITIAL.options.UNCOVER_FUTURE",
         default_label: "Uncover Future",
-        default_description: "Pay ~75g for 3 Prophesize picks.",
-        default_vars: &[
-            (
+        default_description: "Pay 51-99 gold for 3 divinations.",
+        default_vars: &[("UncoverFutureProphesizeCount", EventVarSpec::Int(3))],
+        vars_fn: Some(|s| {
+            vec![(
                 "UncoverFutureCost",
-                EventVarSpec::Int(CRYSTAL_SPHERE_PAY_COST as i64),
-            ),
-            ("UncoverFutureProphesizeCount", EventVarSpec::Int(3)),
-        ],
-        vars_fn: None,
+                sts2_core::EventVar::Int(i64::from(crystal_sphere_pay_cost(s))),
+            )]
+        }),
         title_vars_fn: None,
         handler: crystal_sphere_pay,
     },
@@ -113,7 +133,7 @@ const CRYSTAL_SPHERE_OPTIONS: &[EventOptionSpec] = &[
         option_id: "debt",
         loc_key: "CRYSTAL_SPHERE.pages.INITIAL.options.PAYMENT_PLAN",
         default_label: "Payment Plan",
-        default_description: "6 Prophesize picks, gain Debt curse.",
+        default_description: "6 divinations, gain Debt curse.",
         default_vars: &[
             ("CurseTitle", EventVarSpec::Text("Debt")),
             ("PaymentPlanCount", EventVarSpec::Int(6)),
@@ -124,7 +144,8 @@ const CRYSTAL_SPHERE_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:43`.
+/// `CrystalSphere` (`Models.Events/CrystalSphere.cs`; identical in v0.107.1
+/// and v0.111.0). The minigame lives in [`super::crystal_sphere`].
 pub const CRYSTAL_SPHERE: EventSpec = EventSpec {
     id: EventId::CrystalSphere,
     python_name: "CrystalSphere",
@@ -158,7 +179,7 @@ const DOLL_ROOM_DOLLS: [(RelicId, &str); 3] = [
 /// term is 0 (`EventModel.cs:238` GetPlayerSlotIndex == 0; v0.103.2 used
 /// `Owner.NetId == 1`, `EventModel.cs:193`).
 fn doll_room_rng(state: &RunState) -> sts2_core::dotnet_rng::Rng {
-    sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, DOLL_ROOM_STREAM)
+    state.rng.named(DOLL_ROOM_STREAM)
 }
 
 /// Grant the doll relic directly (C# `ChooseDollAndShowDescription` →
@@ -178,9 +199,10 @@ fn doll_room_random(state: &mut RunState) -> EventOutcome {
 /// Lose `damage` HP, then `_dolls.StableShuffle(Rng).Take(take)` → offer those
 /// dolls on page 1 (NOT finished, so the run-loop stays in `Phase::Event`).
 ///
-/// **Documented approximation:** C# `StableShuffle` sorts by `relic.CompareTo`
-/// before the Fisher-Yates pass; this sorts by [`DOLL_ROOM_DOLLS`] declaration
-/// order (RelicId) instead. The shuffle consumes the same draw count, and the
+/// **Documented approximation (v0.107.1 arm only):** C# `StableShuffle` sorts
+/// by `relic.CompareTo` before the Fisher-Yates pass; the v0.107.1 arm sorts by
+/// [`DOLL_ROOM_DOLLS`] declaration order (RelicId) instead, the v0.111.0 arm by
+/// the id entry as C# does. The shuffle consumes the same draw count, and the
 /// effect-parity harness only checks the page-1 option COUNT (not the doll
 /// order), so this is faithful for everything currently observable — the exact
 /// sub-menu ordering needs a dedicated multi-page-identity probe to pin.
@@ -188,7 +210,17 @@ fn doll_room_open_pick(state: &mut RunState, damage: i32, take: usize) -> EventO
     state.lose_hp(damage);
     let mut codes: Vec<i16> = (0..DOLL_ROOM_DOLLS.len() as i16).collect();
     let mut rng = doll_room_rng(state);
-    rng.stable_shuffle(&mut codes);
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: `StableShuffle` sorts the dolls by `relic.CompareTo`, i.e.
+        // `ModelId.CompareTo` = ordinal `Entry` order (decomp
+        // `Models.Events/DollRoom.cs:28`, `Models/ModelId.cs:43`): BING_BONG <
+        // DAUGHTER_OF_THE_WIND < MR_STRUGGLES. v0.107.1 has the same code; its
+        // arm keeps the declaration-order approximation (bit-identical).
+        let entry = |c: i16| DOLL_ROOM_DOLLS[c as usize].0.to_python_name();
+        rng.stable_shuffle_by(&mut codes, &|a: i16, b: i16| entry(a).cmp(entry(b)));
+    } else {
+        rng.stable_shuffle(&mut codes);
+    }
     codes.truncate(take);
     state.event_state.scratch = codes;
     state.event_state.page = 1;
@@ -353,7 +385,7 @@ fn endless_conveyor_grab(state: &mut RunState) -> EventOutcome {
 const ENDLESS_CONVEYOR_STREAM: &str = "ENDLESS_CONVEYOR";
 
 fn endless_conveyor_rng(state: &RunState) -> sts2_core::dotnet_rng::Rng {
-    sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, ENDLESS_CONVEYOR_STREAM)
+    state.rng.named(ENDLESS_CONVEYOR_STREAM)
 }
 
 fn endless_conveyor_observe(state: &mut RunState) -> EventOutcome {
@@ -385,7 +417,7 @@ fn endless_conveyor_observe(state: &mut RunState) -> EventOutcome {
     // CalculateVars → RollDish: one NextFloat before any option runs.
     let _ = rng.next_float(1.0);
     let pick = rng.next_int_exclusive(0, upgradable.len() as i32) as usize;
-    state.master_deck[upgradable[pick]].upgrade();
+    state.master_deck[upgradable[pick]].upgrade_for(state.game_version);
     EventOutcome::finished("Observed chef — upgraded a card.")
 }
 
@@ -470,7 +502,7 @@ const FAKE_MERCHANT_STOCK_SIZE: usize = 6;
 /// visit resolves exactly one option: buy XOR throw-foul XOR leave).
 fn fake_merchant_stock(state: &RunState) -> Vec<RelicId> {
     let mut idx: Vec<usize> = (0..FAKE_MERCHANT_INVENTORY.len()).collect();
-    sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, FAKE_MERCHANT_STREAM).shuffle(&mut idx);
+    state.rng.named(FAKE_MERCHANT_STREAM).shuffle(&mut idx);
     idx.truncate(FAKE_MERCHANT_STOCK_SIZE);
     idx.into_iter()
         .map(|i| FAKE_MERCHANT_INVENTORY[i])
@@ -498,7 +530,10 @@ fn fake_merchant_buy(state: &mut RunState) -> EventOutcome {
 /// granted — `FakeMerchantsRug` PLUS every *stocked* fake inventory relic, in
 /// the inventory's shuffle order, exactly as C# `FoulPotionThrown` builds its
 /// `List<RelicReward>` (`new RelicReward<FakeMerchantsRug>` then one per
-/// `Inventory.RelicEntries.Where(IsStocked)`). The thrown FoulPotion is
+/// `Inventory.RelicEntries.Where(IsStocked)`), after the fight's own
+/// Monster-room rewards: the encounter's flat 300 gold
+/// (`FakeMerchantEventEncounter.MinGoldReward/MaxGoldReward`), the potion
+/// odds and a card reward (GH #817). The thrown FoulPotion is
 /// consumed (the `Custom` merchant UI throws the potion the player holds).
 ///
 /// In the option-model a FakeMerchant visit resolves exactly one option, so
@@ -723,7 +758,7 @@ const JUNGLE_MAZE_JOIN_GOLD_BASE: f64 = 50.0;
 /// int — C# rolls a float on the event's own stream. Surfaced by the
 /// run-RNG lockstep (seed 1: C# +148 vs Rust +150).
 fn jungle_maze_gold(rs: &RunState) -> (i32, i32) {
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, "JUNGLE_MAZE_ADVENTURE");
+    let mut rng = rs.rng.named("JUNGLE_MAZE_ADVENTURE");
     // `as f32` mirrors C#'s `(float)` cast; add-then-truncate matches
     // `(int)(150m + decimal_swing)` (the swing can be negative, so the
     // truncation must follow the addition, not precede it).
@@ -826,7 +861,7 @@ pub const LUMINOUS_CHOIR_FALLBACK_RELIC: RelicId = RelicId::Circlet;
 fn luminous_choir_rolled_cost(state: &RunState) -> i32 {
     // v0.107.1 single-player event seed: additive player term is 0
     // (`EventModel.cs:238` GetPlayerSlotIndex == 0; v0.103.2 used NetId == 1).
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, LUMINOUS_CHOIR_STREAM);
+    let mut rng = state.rng.named(LUMINOUS_CHOIR_STREAM);
     LUMINOUS_CHOIR_TRIBUTE_BASE_COST - rng.next_int_exclusive(0, 50)
 }
 
@@ -1136,7 +1171,7 @@ const RANWID_STREAM: &str = "RANWID_THE_ELDER";
 /// Read-only and recomputed: nothing else draws from the stream, so the same
 /// pair comes out whether asked while presenting the options or resolving one.
 fn ranwid_asks_for(state: &RunState) -> (Option<usize>, Option<RelicId>) {
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(state.rng.seed, RANWID_STREAM);
+    let mut rng = state.rng.named(RANWID_STREAM);
     let potion = (!state.potions.is_empty()).then(|| {
         let len = i32::try_from(state.potions.len()).unwrap_or(1);
         usize::try_from(rng.next_int_exclusive(0, len)).unwrap_or(0)
@@ -1314,6 +1349,24 @@ mod tests {
         assert!(opts.iter().all(|o| o.enabled));
     }
 
+    /// v0.111.0: `StableShuffle` sorts the dolls by relic id entry (ordinal)
+    /// before the Fisher-Yates pass (`DollRoom.cs:28`), so every seed shuffles
+    /// [BingBong, Daughter, MrStruggles], not the declaration order.
+    #[test]
+    fn doll_room_take_time_shuffles_in_entry_order_v0111() {
+        for seed in 0..32 {
+            let mut rs = RunState::new();
+            rs.game_version = sts2_core::GameVersion::V0_111_0;
+            rs.rng = sts2_core::run_rng_set::RunRngSet::new_for(rs.game_version, seed);
+            rs.current_hp = 50;
+            let mut expected: Vec<i16> = vec![2, 0, 1];
+            doll_room_rng(&rs).shuffle(&mut expected);
+            expected.truncate(2);
+            let _ = doll_room_take_time(&mut rs);
+            assert_eq!(rs.event_state.scratch, expected, "seed {seed}");
+        }
+    }
+
     #[test]
     fn doll_room_examine_opens_three_doll_page_without_finishing() {
         let mut rs = RunState::new();
@@ -1338,16 +1391,46 @@ mod tests {
         assert!(rs.relics.contains(&RelicId::MrStruggles));
     }
 
-    // ── CrystalSphere ──────────────────────────────────────────────
+    // ── CrystalSphere (GH #817) ────────────────────────────────────
 
+    /// `CalculateVars`: `UncoverFutureCost = 50 + Rng.NextInt(1, 50)`, the
+    /// FIRST draw on the event's own `CRYSTAL_SPHERE` stream.
     #[test]
-    fn crystal_sphere_pay_deducts_cost() {
-        let mut rs = rs_with_gold(200);
-        let outcome = (CRYSTAL_SPHERE.options[0].handler)(&mut rs);
-        assert!(outcome.finished);
-        assert_eq!(rs.gold, 200 - CRYSTAL_SPHERE_PAY_COST);
+    fn crystal_sphere_cost_is_fifty_plus_first_event_rng_draw() {
+        for seed in 0..20u32 {
+            let mut rs = RunState::new();
+            rs.rng = sts2_core::RunRngSet::new(seed as i32 * 7919 + 13);
+            let mut rng = rs.rng.named("CRYSTAL_SPHERE");
+            let want = 50 + rng.next_int_exclusive(1, 50);
+            let cost = crystal_sphere_pay_cost(&rs);
+            assert_eq!(cost, want);
+            assert!((51..=99).contains(&cost));
+        }
     }
 
+    /// Uncover Future spends the rolled cost (and only gains gold back from
+    /// revealed gold items, 10 or 30 each).
+    #[test]
+    fn crystal_sphere_pay_deducts_rolled_cost() {
+        let mut rs = rs_with_gold(200);
+        let cost = crystal_sphere_pay_cost(&rs);
+        let outcome = (CRYSTAL_SPHERE.options[0].handler)(&mut rs);
+        assert!(outcome.finished);
+        let gained = rs.gold - (200 - cost);
+        assert!(
+            (0..=5 * 10 + 2 * 30).contains(&gained) && gained % 10 == 0,
+            "gold after paying {cost}: {}",
+            rs.gold
+        );
+        assert!(
+            !rs.master_deck
+                .iter()
+                .any(|c| c.card_id == sts2_core::cards::CardId::Debt),
+            "no Debt on Uncover Future"
+        );
+    }
+
+    /// Payment Plan adds Debt first and charges no gold.
     #[test]
     fn crystal_sphere_debt_adds_debt_curse_without_spending_gold() {
         use sts2_core::cards::CardId;
@@ -1355,18 +1438,26 @@ mod tests {
         let deck_before = rs.master_deck.len();
         let outcome = (CRYSTAL_SPHERE.options[1].handler)(&mut rs);
         assert!(outcome.finished);
-        assert_eq!(rs.gold, 50, "Payment Plan defers the gold cost");
-        assert_eq!(rs.master_deck.len(), deck_before + 1);
-        assert!(rs.master_deck.iter().any(|c| c.card_id == CardId::Debt));
+        assert!(rs.gold >= 50, "Payment Plan charges no gold");
+        assert_eq!(
+            rs.master_deck[deck_before].card_id,
+            CardId::Debt,
+            "Debt first"
+        );
     }
 
+    /// C# offers both options with no gold gate; the cost var carries the roll.
     #[test]
-    fn crystal_sphere_options_disable_pay_when_broke() {
+    fn crystal_sphere_options_are_ungated_and_carry_the_cost() {
         let rs = rs_with_gold(0);
         let opts = (CRYSTAL_SPHERE.generate_options)(&rs, &CRYSTAL_SPHERE);
         assert_eq!(opts.len(), 2);
-        assert!(!opts[0].enabled);
-        assert!(opts[1].enabled);
+        assert!(opts.iter().all(|o| o.enabled));
+        let cost = crystal_sphere_pay_cost(&rs);
+        assert!(opts[0].vars.contains(&(
+            "UncoverFutureCost",
+            sts2_core::EventVar::Int(i64::from(cost))
+        )));
     }
 
     // ── DollRoom ───────────────────────────────────────────────────

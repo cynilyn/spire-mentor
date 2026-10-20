@@ -251,10 +251,40 @@ pub(crate) fn axebot_stock_after_death(state: &mut CombatState, owner: CreatureU
         .filter(|c| c.current_hp > 0 || c.id == owner.0)
         .map(|c| c.max_hp)
         .collect();
-    let new_uid =
-        state.spawn_enemy_at_index_with_taken(sts2_core::MonsterKind::Axebot, dead_index, &taken);
+    let v0111 = state.game_version >= sts2_core::GameVersion::V0_111_0;
+    let new_uid = if v0111 {
+        // v0.111.0: the respawn's Min/MaxInitialHp carry `RespawnMaxHpBonus =
+        // RespawnCount * 10` with `RespawnCount = 2 - StockAmount`, and
+        // `StockAmount = dead - 1` is set before `CreatureCmd.Add` rolls the
+        // HP (decomp Axebot.cs:48-54, StockPower.cs:21-24).
+        let hp_bonus = (2 - new_stock) * 10;
+        state.spawn_enemy_at_index_with_taken_hp_bonus(
+            sts2_core::MonsterKind::Axebot,
+            dead_index,
+            &taken,
+            hp_bonus,
+        )
+    } else {
+        state.spawn_enemy_at_index_with_taken(sts2_core::MonsterKind::Axebot, dead_index, &taken)
+    };
     // C# `Axebot` with a `StockAmount` override opens on BOOT_UP.
-    let ai = create_axebot_ai(true);
+    let ai = if v0111 {
+        // v0.111.0: build through the versioned dispatch so the respawn carries
+        // the 0.111 One-Two / Hammer Uppercut values (and the A9 ones) like the
+        // encounter's own bots (decomp Axebot.cs:42-46). v0.107.1 keeps the
+        // historical A0 prototype below.
+        crate::monster_dispatch::build_ai_for_version(
+            sts2_core::MonsterKind::Axebot,
+            crate::monster_dispatch::MonsterSpawnArgs::Axebot {
+                start_with_boot_up: true,
+            },
+            crate::monster_dispatch::SpawnPosition::default(),
+            state.ascension,
+            state.game_version,
+        )
+    } else {
+        create_axebot_ai(true)
+    };
     // Telegraph BOOT_UP's intent — but ONLY when the respawn happens during
     // the PLAYER's turn. This mirrors C# `CombatManager.AfterCreatureAdded`
     // (CombatManager.cs:689-696): a mid-combat-added enemy has its move
@@ -2115,6 +2145,28 @@ pub fn create_mecha_knight_ai() -> MonsterAi {
         ),
     );
     MonsterAi::new(s, "CHARGE")
+}
+
+/// v0.111.0 `MechaKnight` (GH #796): the same CHARGE → FLAMETHROWER →
+/// WINDUP → HEAVY_CLEAVE ring, but FLAMETHROWER now ATTACKS before it shoves
+/// the 4 Burns into the hand. Its telegraph leads with the attack, so the
+/// primary intent `perform_intent` resolves is the hit and the Burn effect
+/// runs after it, which is the C# order:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// `FlamethrowerDamage` is `GetValueIfAscension(DeadlyEnemies, 12, 8)`
+/// (`MechaKnight.cs:54`): A0 8 here, A9 12 from
+/// [`crate::ascension_scaling::V0111_ATTACK_VALUES`].
+pub fn create_mecha_knight_v0111_ai() -> MonsterAi {
+    let mut ai = create_mecha_knight_ai();
+    if let Some(MonsterState::Move(m)) =
+        std::sync::Arc::make_mut(&mut ai.states).get_mut("FLAMETHROWER")
+    {
+        // v0.111.0: Flamethrower also attacks for 8 (A9 12) (decomp MechaKnight.cs:85)
+        m.intents = smallvec![Intent::Attack { damage: 8 }, Intent::StatusCard];
+    }
+    ai
 }
 
 /// `Osty` — HAUNT self-loop. SoulNexus-spawned pet/ally (HP 1).
@@ -4391,6 +4443,81 @@ mod tests {
                 })
             })
             .unwrap_or(0)
+    }
+
+    /// The respawned Axebot after a bot carrying `dead_stock` Stock dies.
+    fn axebot_respawn(
+        version: sts2_core::GameVersion,
+        dead_stock: i32,
+        seed: i32,
+    ) -> sts2_core::Creature {
+        use sts2_core::card_effects::apply_power_to_creature;
+        use sts2_core::{CreatureUid, MonsterKind};
+        let mut combat = combat_with_monster(MonsterKind::Axebot, "Axebot");
+        combat.game_version = version;
+        combat.run_rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+        let dead = CreatureUid::new(1).expect("nz");
+        apply_power_to_creature(&mut combat, dead, PowerKind::Stock, dead_stock);
+        if let Some(c) = combat.creatures.iter_mut().find(|c| c.id == dead.0) {
+            c.current_hp = 0;
+        }
+        axebot_stock_after_death(&mut combat, dead);
+        combat
+            .creatures
+            .iter()
+            .find(|c| c.id != dead.0 && c.current_hp > 0)
+            .cloned()
+            .expect("respawn present")
+    }
+
+    /// v0.107.1 Axebot.cs:44-46: a respawn rolls the plain 70..=78 band.
+    #[test]
+    fn axebot_respawn_hp_is_the_plain_band() {
+        for seed in 0..60 {
+            for stock in [2, 1] {
+                let c = axebot_respawn(sts2_core::GameVersion::V0_107_1, stock, seed);
+                assert!((70..=78).contains(&c.max_hp), "stock {stock}: {}", c.max_hp);
+            }
+        }
+    }
+
+    /// v0.111.0 Axebot.cs:48-54: `Min/MaxInitialHp += RespawnMaxHpBonus`,
+    /// `(2 - StockAmount) * 10`, with the respawn's `StockAmount = dead - 1`
+    /// set before `CreatureCmd.Add` rolls it (StockPower.cs:21-24). The first
+    /// respawn rolls 80..=88, the second 90..=98, and its moves carry the
+    /// v0.111.0 values.
+    #[test]
+    fn axebot_respawn_hp_carries_respawn_bonus_v0111() {
+        let v = sts2_core::GameVersion::V0_111_0;
+        for seed in 0..60 {
+            let first = axebot_respawn(v, 2, seed);
+            assert!(
+                (80..=88).contains(&first.max_hp),
+                "1st respawn {}",
+                first.max_hp
+            );
+            assert_eq!(first.current_hp, first.max_hp);
+            let second = axebot_respawn(v, 1, seed);
+            assert!(
+                (90..=98).contains(&second.max_hp),
+                "2nd respawn {}",
+                second.max_hp
+            );
+        }
+        let ai = axebot_respawn(v, 2, 0).ai.expect("respawn AI");
+        assert_eq!(ai.current_move().id, "BOOT_UP");
+        let head = |id: &str| match ai.states.get(id) {
+            Some(sts2_core::monster_ai::MonsterState::Move(m)) => m.intents.first().copied(),
+            _ => None,
+        };
+        assert_eq!(
+            head("ONE_TWO"),
+            Some(Intent::MultiAttack {
+                damage: 10,
+                hits: 2
+            })
+        );
+        assert_eq!(head("HAMMER_UPPERCUT"), Some(Intent::Attack { damage: 14 }));
     }
 
     #[test]

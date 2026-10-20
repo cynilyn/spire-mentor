@@ -14,7 +14,7 @@ use super::prelude::*;
 /// `AfterPlayerTurnStart`, which precedes the Rampart grant. Bead
 /// `sts2-rs-evh7` (original wiring).
 pub(crate) fn on_after_player_turn_start_festive_popper(state: &mut CombatState) -> EffectResult {
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::FestivePopper) {

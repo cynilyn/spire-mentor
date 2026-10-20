@@ -9,6 +9,7 @@ import random
 import subprocess
 import sys
 
+import sts2_client
 from game_log import GameLogger
 
 
@@ -46,7 +47,10 @@ def play_run(
     """Play a complete run and return the result."""
     logger = GameLogger(character, seed, enabled=log, ascension=ascension)
     proc = subprocess.Popen(
-        [DOTNET, "run", "--no-build", "--project", PROJECT],
+        # The selected game build's oracle (STS2_GAME_VERSION, GH #789): the
+        # built bin/<ver>/ apphost when present, else `dotnet run` with
+        # -p:GameVersion=<ver> — never a different build's binary.
+        sts2_client.headless_cmd(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE if not verbose else None,

@@ -18,6 +18,7 @@ crate (which mirrors the C# v0.103.2 ids):
 
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Any
@@ -1222,9 +1223,71 @@ _V2_FILLER: dict[str, tuple[str, ...]] = {
 }
 
 
-def _v2_card_pool(character: str) -> list[str]:
+# ---------------------------------------------------------------------------
+# Game-build card deltas (GH #793)
+# ---------------------------------------------------------------------------
+# v0.111.0 removed Scare and added 19 cards (`docs/plans/2026-10-17-v0.111.0-
+# port-inventory.md`, "S8a cards"). The v0.107.1 lists above stay exactly as
+# they were, so the default sweeps (and their trace caches) do not move. At
+# v0.111.0 the removed ids are dropped and the added ones APPENDED at the end
+# of each list, the same position-stable shape the autoplay axis uses.
+# MP-only cards are swept like the existing ones (TANK_CARD, SNEAKY_CARD, …):
+# a scenario deck can hold them even though no single-player pool offers them.
+_V0111_REMOVED_CARDS: frozenset[str] = frozenset({"SCARE"})
+_V0111_ADDED_CLASS_CARDS: dict[str, list[str]] = {
+    "Ironclad": ["BLAZE", "MIDNIGHT", "OUTRAGE"],
+    "Silent": ["BLADE_SYMPHONY", "CONCOCT_CARD", "FADE_CARD", "SIDESTEP"],
+    "Defect": ["HIBERNATE_CARD", "IMITATION_LEARNING_CARD", "ONE_FOR_ALL_CARD"],
+    "Necrobinder": ["CACOPHONY_CARD", "SOULBOUND_CARD", "UNDERWORLD_CARD"],
+    "Regent": ["CONSTELLATION", "PLOT", "TUTOR"],
+}
+_V0111_ADDED_COLORLESS_CARDS: list[str] = ["THE_BALL"]
+_V0111_ADDED_EVENT_CARDS: list[str] = ["ABUNDANCE"]
+
+
+def sweep_game_version() -> str:
+    """The game build the sweep lists are for: ``$STS2_GAME_VERSION`` or v0.107.1.
+
+    `sts2_client.apply_game_version_arg` (``--game-version``) sets the env var
+    for the whole process tree, so reading it here keeps this module free of
+    the client import.
+    """
+    raw = os.environ.get("STS2_GAME_VERSION", "").strip()
+    if not raw:
+        return "v0.107.1"
+    return raw if raw.startswith("v") else f"v{raw}"
+
+
+def _for_build(cards: list[str], added: list[str], game_version: str | None) -> list[str]:
+    """`cards` as game build `game_version` has them (see the deltas above)."""
+    version = game_version or sweep_game_version()
+    if version != "v0.111.0":
+        return cards
+    return [c for c in cards if c not in _V0111_REMOVED_CARDS] + added
+
+
+def class_cards_for_build(character: str, game_version: str | None = None) -> list[str]:
+    """A character's class cards at `game_version` (default: the sweep build)."""
+    return _for_build(
+        _V2_CLASS_CARDS[character], _V0111_ADDED_CLASS_CARDS[character], game_version
+    )
+
+
+def colorless_cards_for_build(game_version: str | None = None) -> list[str]:
+    """`ALL_COLORLESS_CARDS` at `game_version`."""
+    return _for_build(ALL_COLORLESS_CARDS, _V0111_ADDED_COLORLESS_CARDS, game_version)
+
+
+def event_cards_for_build(game_version: str | None = None) -> list[str]:
+    """`ALL_EVENT_CARDS` at `game_version`."""
+    return _for_build(ALL_EVENT_CARDS, _V0111_ADDED_EVENT_CARDS, game_version)
+
+
+def _v2_card_pool(character: str, game_version: str | None = None) -> list[str]:
     """Class cards + colorless — the deck pool for a character's v2 sweep."""
-    return _V2_CLASS_CARDS[character] + ALL_COLORLESS_CARDS
+    return class_cards_for_build(character, game_version) + colorless_cards_for_build(
+        game_version
+    )
 
 
 @dataclass(frozen=True)
@@ -1247,11 +1310,14 @@ class CoveragePack:
     include_encounters: bool
 
 
-def _coverage_pack(character: str) -> CoveragePack:
+def _coverage_pack(character: str, game_version: str | None = None) -> CoveragePack:
+    gv = game_version
     if character == "Ironclad":
         return CoveragePack(
             character="Ironclad",
-            cards=ALL_IC_CARDS + ALL_COLORLESS_CARDS + ALL_EVENT_CARDS,
+            cards=class_cards_for_build("Ironclad", gv)
+            + colorless_cards_for_build(gv)
+            + event_cards_for_build(gv),
             relics=ALL_RELICS,
             starter=_STARTER_DECK,
             filler=_CARD_TRIAL_FILLER,
@@ -1265,7 +1331,9 @@ def _coverage_pack(character: str) -> CoveragePack:
         # cross-class grantable surface the relic axis exists to saturate.
         return CoveragePack(
             character="Silent",
-            cards=ALL_SILENT_CARDS + ALL_COLORLESS_CARDS + ALL_EVENT_CARDS,
+            cards=class_cards_for_build("Silent", gv)
+            + colorless_cards_for_build(gv)
+            + event_cards_for_build(gv),
             relics=ALL_RELICS,
             starter=_SILENT_STARTER_DECK,
             filler=_SILENT_CARD_TRIAL_FILLER,
@@ -1277,7 +1345,9 @@ def _coverage_pack(character: str) -> CoveragePack:
         # encounters) with Defect's class cards / starter / filler.
         return CoveragePack(
             character="Defect",
-            cards=ALL_DEFECT_CARDS + ALL_COLORLESS_CARDS + ALL_EVENT_CARDS,
+            cards=class_cards_for_build("Defect", gv)
+            + colorless_cards_for_build(gv)
+            + event_cards_for_build(gv),
             relics=ALL_RELICS,
             starter=_DEFECT_STARTER_DECK,
             filler=_DEFECT_CARD_TRIAL_FILLER,
@@ -1288,7 +1358,9 @@ def _coverage_pack(character: str) -> CoveragePack:
         # Full mirror of the Ironclad pack with Necrobinder's class cards.
         return CoveragePack(
             character="Necrobinder",
-            cards=ALL_NECROBINDER_CARDS + ALL_COLORLESS_CARDS + ALL_EVENT_CARDS,
+            cards=class_cards_for_build("Necrobinder", gv)
+            + colorless_cards_for_build(gv)
+            + event_cards_for_build(gv),
             relics=ALL_RELICS,
             starter=_NECROBINDER_STARTER_DECK,
             filler=_NECROBINDER_CARD_TRIAL_FILLER,
@@ -1298,7 +1370,7 @@ def _coverage_pack(character: str) -> CoveragePack:
     if character == "Regent":
         return CoveragePack(
             character="Regent",
-            cards=ALL_REGENT_CARDS + ALL_EVENT_CARDS,
+            cards=class_cards_for_build("Regent", gv) + event_cards_for_build(gv),
             relics=ALL_REGENT_RELICS,
             starter=_REGENT_STARTER_DECK,
             filler=_REGENT_CARD_TRIAL_FILLER,
@@ -1326,7 +1398,9 @@ def _coverage_base(**kw: Any) -> Scenario:
     return Scenario(**params)
 
 
-def coverage_scenarios(character: str = "Ironclad") -> list[Scenario]:
+def coverage_scenarios(
+    character: str = "Ironclad", game_version: str | None = None
+) -> list[Scenario]:
     """Deterministic, single-variable coverage sweep over a character's content.
 
     One trial per card / relic / potion / encounter — each varying exactly
@@ -1340,7 +1414,7 @@ def coverage_scenarios(character: str = "Ironclad") -> list[Scenario]:
     Regent's relic pool) that was ported from the old Python sim and has never
     been A/B'd against the C# oracle.
     """
-    pack = _coverage_pack(character)
+    pack = _coverage_pack(character, game_version)
     scenarios: list[Scenario] = []
 
     # 1. Every card: the test card sits in a 5-card deck so the whole deck is

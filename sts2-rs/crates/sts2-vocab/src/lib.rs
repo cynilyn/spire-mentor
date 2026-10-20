@@ -42,7 +42,7 @@ use std::sync::OnceLock;
 
 use sts2_core::cards::CardId;
 use sts2_core::potions::PotionKind;
-use sts2_core::{EventId, RelicId};
+use sts2_core::{EventId, GameVersion, RelicId};
 
 /// Fixed map room-type vocab (sts2 `MapPointType`, snake form from
 /// `act_map()`). Order is embedding-index-significant — mirrors
@@ -363,17 +363,48 @@ pub fn parse_pin(text: &str) -> impl Iterator<Item = &str> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
 }
 
+/// The game build whose id universe the registries span: the NEWEST
+/// supported build, whose `all_for` is the union of every build's ids (each
+/// build's `all_for` only appends; ids a later build removed, such as
+/// v0.111.0's Scare, stay in the v0.107.1 `all()` it extends).
+///
+/// GH #799: the registries used to read the v0.107.1 universe (`CardId::all`,
+/// `RelicId::all`, `PotionKind::ALL`), which kept every v0.111.0-only id on the
+/// OOV row. They now span both builds. The pin files are append-only, so every
+/// v0.107.1 id keeps its row and the 0.111 ids sit after them. A v0.107.1 run
+/// never produces a 0.111 id, so on that build the only encoding change is the
+/// OOV/PAD index moving to the new tail, which a champion re-exported with
+/// `_widen_padded_embedding` (PPO `model.py`) reads identically.
+pub const VOCAB_BUILD: GameVersion = GameVersion::ALL[GameVersion::ALL.len() - 1];
+
+/// Every potion of every build, in declaration order (v0.107.1 first).
+fn potion_universe() -> impl Iterator<Item = &'static PotionKind> {
+    PotionKind::ALL.iter().chain(PotionKind::V0111_ONLY.iter())
+}
+
 /// The raw, sorted content universe for one of [`PINNED_KINDS`] — what the
 /// engine can actually produce today, before the pin imposes an order.
 /// [`registry_names`] is this filtered through the pin; the difference
 /// between the two is what `vocab_pins_cover_the_content` reports.
+///
+/// The universe is the **union of every supported game build** (GH #799):
+/// one net serves every build, so a v0.111.0-only id needs a row of its own
+/// rather than the OOV row. See [`VOCAB_BUILD`].
 #[must_use]
 pub fn content_ids(kind: &str) -> Option<BTreeSet<&'static str>> {
     Some(match kind {
-        "card" => CardId::all().iter().map(|k| k.to_python_name()).collect(),
-        "potion" => PotionKind::ALL.iter().map(|k| k.python_name()).collect(),
+        "card" => CardId::all_for(VOCAB_BUILD)
+            .iter()
+            .map(|k| k.to_python_name())
+            .collect(),
+        "potion" => potion_universe().map(|k| k.python_name()).collect(),
+        // v0.111.0 adds no event (the decomp's `Models.Events` file list is
+        // identical across the two builds).
         "event" => EventId::all().iter().map(|k| k.python_name()).collect(),
-        "relic_id" => RelicId::all().iter().map(|k| k.to_python_name()).collect(),
+        "relic_id" => RelicId::all_for(VOCAB_BUILD)
+            .iter()
+            .map(|k| k.to_python_name())
+            .collect(),
         // Straight from the generator's own `RoomKind::Boss` filter so the
         // vocab cannot drift from the content (see `all_boss_encounter_ids`).
         "boss" => sts2_core::run_room_gen::all_boss_encounter_ids()
@@ -441,19 +472,19 @@ pub fn registry_names(kind: &str) -> Option<Vec<String>> {
 #[must_use]
 pub fn registry_id_forms(kind: &str) -> Option<Vec<(String, String)>> {
     let forms: Vec<(String, String)> = match kind {
-        "card" => CardId::all()
+        // The same every-build universe as `content_ids` (GH #799).
+        "card" => CardId::all_for(VOCAB_BUILD)
             .iter()
             .map(|k| (format!("{k:?}"), k.to_python_name().to_string()))
             .collect(),
-        "potion" => PotionKind::ALL
-            .iter()
+        "potion" => potion_universe()
             .map(|k| (format!("{k:?}"), k.python_name().to_string()))
             .collect(),
         "event" => EventId::all()
             .iter()
             .map(|k| (format!("{k:?}"), k.python_name().to_string()))
             .collect(),
-        "relic_id" => RelicId::all()
+        "relic_id" => RelicId::all_for(VOCAB_BUILD)
             .iter()
             .map(|k| (format!("{k:?}"), k.to_python_name().to_string()))
             .collect(),
@@ -598,6 +629,79 @@ mod tests {
                  `cargo run -p sts2-runai --example dump_vocab_pins`:\n{}",
                 missing.join("\n")
             );
+        }
+    }
+
+    /// Row counts of the v0.107.1-only vocab every champion before GH #799 was
+    /// exported at. Those rows must keep their ids forever.
+    const V0107_ROWS: [(&str, usize); 3] = [("card", 580), ("relic_id", 297), ("potion", 63)];
+
+    /// GH #799: every v0.111.0-only id has a real (non-OOV) row, and those rows
+    /// sit AFTER every v0.107.1 row, so the union re-lays nothing a pre-0.111
+    /// champion learned.
+    #[test]
+    fn registries_span_the_v0111_ids_after_the_v0107_rows_v0111() {
+        let v0111: [(&str, &Registry, Vec<&str>); 3] = [
+            (
+                "card",
+                cards(),
+                CardId::V0111_ONLY
+                    .iter()
+                    .map(|k| k.to_python_name())
+                    .collect(),
+            ),
+            (
+                "relic_id",
+                relics(),
+                RelicId::V0111_ONLY
+                    .iter()
+                    .map(|k| k.to_python_name())
+                    .collect(),
+            ),
+            (
+                "potion",
+                potions(),
+                PotionKind::V0111_ONLY
+                    .iter()
+                    .map(|k| k.python_name())
+                    .collect(),
+            ),
+        ];
+        for ((kind, reg, ids), (kind_rows, v0107_rows)) in v0111.iter().zip(V0107_ROWS) {
+            assert_eq!(*kind, kind_rows);
+            assert_eq!(reg.names.len(), v0107_rows + ids.len(), "{kind}");
+            for id in ids {
+                let row = reg.index(id);
+                assert!(row != reg.oov, "{kind}: {id} is OOV");
+                assert!(row >= v0107_rows, "{kind}: {id} took v0.107.1 row {row}");
+            }
+        }
+    }
+
+    /// The v0.107.1 universe still maps onto the first rows, id for id: the
+    /// sorted v0.107.1 content is exactly the first `V0107_ROWS` pin lines.
+    #[test]
+    fn v0107_ids_keep_their_rows() {
+        let v0107: [(&str, BTreeSet<&str>); 3] = [
+            (
+                "card",
+                CardId::all().iter().map(|k| k.to_python_name()).collect(),
+            ),
+            (
+                "relic_id",
+                RelicId::all().iter().map(|k| k.to_python_name()).collect(),
+            ),
+            (
+                "potion",
+                PotionKind::ALL.iter().map(|k| k.python_name()).collect(),
+            ),
+        ];
+        for ((kind, ids), (_, rows)) in v0107.iter().zip(V0107_ROWS) {
+            let names = registry_names(kind).unwrap();
+            let head: BTreeSet<&str> = names[..rows].iter().map(String::as_str).collect();
+            // Every v0.107.1 id is in the head (the head may also hold ids the
+            // content has since dropped; those rows stay put, unreachable).
+            assert!(ids.is_subset(&head), "{kind}: a v0.107.1 id left its row");
         }
     }
 

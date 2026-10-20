@@ -12,7 +12,17 @@ pub(crate) fn play_spoils_of_battle(
 ) -> EffectResult {
     // C# SpoilsOfBattle.cs OnUpgrade bumps ForgeVar 5->8 (Cards
     // stays 2). Bead `sts2-rs-mnnnf`.
-    let forge = if current_card_upgraded(state) { 8 } else { 5 };
+    // v0.111.0: Forge 5 -> 6, upgrade still +3 (decomp SpoilsOfBattle.cs:15,34).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        6
+    } else {
+        5
+    };
+    let forge = if current_card_upgraded(state) {
+        base + 3
+    } else {
+        base
+    };
     let _ = forge_from_card(state, forge);
     let _ = sts2_core::cards::draw_via_state(state, 2);
     EffectResult::Resolved

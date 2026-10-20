@@ -71,7 +71,10 @@ pub(crate) fn play_seance(state: &mut CombatState, _target: Option<CreatureUid>)
                 .filter_map(|&uid| {
                     let card = state.cards.get(uid.0.get() as usize - 1)?;
                     Some((
-                        crate::cards::spec_index::card_rarity_rank_csharp(card.card_id),
+                        crate::cards::spec_index::card_rarity_rank_csharp_in(
+                            card.card_id,
+                            state.game_version,
+                        ),
                         card.card_id.to_python_name(),
                         uid,
                     ))

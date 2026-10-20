@@ -8,7 +8,17 @@ pub(crate) fn play_pillar_of_creation(
     _t: Option<CreatureUid>,
 ) -> EffectResult {
     // C# PillarOfCreation.cs OnUpgrade bumps Block 3->4. Bead `sts2-rs-mwts2`.
-    let amt = if current_card_upgraded(state) { 4 } else { 3 };
+    // v0.111.0: BlockVar 3 -> 2, upgrade still +1 (decomp PillarOfCreation.cs:17,31).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        2
+    } else {
+        3
+    };
+    let amt = if current_card_upgraded(state) {
+        base + 1
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::PillarOfCreation, amt);
     EffectResult::Resolved
 }

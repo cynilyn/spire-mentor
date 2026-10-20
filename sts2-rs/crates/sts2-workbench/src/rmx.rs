@@ -452,10 +452,7 @@ pub fn card_reward_bundles(rm: &RunManager) -> Option<Vec<Vec<String>>> {
 /// `materialize_event()` — bind the room's event if none is bound yet, then
 /// name it (`LostWisp`).
 pub fn materialize_event(rm: &mut RunManager) -> Option<String> {
-    if rm.run_state.current_event.is_none() {
-        let id = sts2_content::events::dispatch::pick_event(&mut rm.run_state, None)?;
-        rm.run_state.enter_event_room(id);
-    }
+    sts2_content::events::dispatch::bind_pending_event_callback(&mut rm.run_state);
     current_event_name(rm)
 }
 
@@ -479,9 +476,9 @@ pub fn act1_str(rm: &RunManager) -> &'static str {
     }
 }
 
-/// `run_seed` — the hashed master seed as `u32`.
+/// `run_seed` — the hashed master seed (fits `u32` in v0.107.1).
 #[must_use]
-pub fn run_seed(rm: &RunManager) -> u32 {
+pub fn run_seed(rm: &RunManager) -> u64 {
     emit::run_manager::run_seed(rm)
 }
 

@@ -20,12 +20,24 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
     // Filter the drawn cards to the non-0-cost / X-cost set (C#
     // `Scrape.cs:32` `EnergyCost.GetWithModifiers(Local) != 0 || CostsX`;
     // X-cost is encoded here as `cost == -1`, so `cost != 0` covers both).
+    let v0111 = state.game_version >= sts2_core::GameVersion::V0_111_0;
     let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 8]> = state.player.hand[pre..post]
         .iter()
         .copied()
-        .filter(|uid| {
+        .filter(|&uid| {
             let idx = uid.0.get() as usize - 1;
-            state.cards.get(idx).map_or(0, |c| c.cost) != 0
+            let Some(card) = state.cards.get(idx) else {
+                return false;
+            };
+            if v0111 {
+                // v0.111.0: `GetWithModifiers(CostModifiers.All) != 0 ||
+                // CostsX` — the GLOBAL cost modifiers count too (decomp
+                // Scrape.cs:32).
+                card.is_x_cost()
+                    || sts2_core::hooks::effective_card_cost_inst(state, card, uid) != 0
+            } else {
+                card.cost != 0
+            }
         })
         .collect();
     // C# `Scrape.cs:33` uses `CardCmd.Discard`, which fires `AfterCardDiscarded`

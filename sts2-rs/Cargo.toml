@@ -89,6 +89,10 @@ getrandom = "0.2"
 # `crc32fast` — the workbench's deterministic per-instance hue jitter
 # (port of `zlib.crc32` in sts2-pycli/python/workbench/server.py).
 crc32fast = "1"
+# `xxhash-rust` — XxHash64, the v0.111.0 game's `StringHelper.
+# GetDeterministicHashCode` (seed derivation, GH #788). Pure Rust, no_std,
+# builds for wasm32; only the `xxh64` one-shot is enabled.
+xxhash-rust = { version = "0.8.19", default-features = false, features = ["xxh64"] }
 # `regex` — PPO vocab/encoder canonicalization port (mirrors
 # `sts2-pycli/python/ppo/vocab.py::canonical()`), Task 4+.
 regex = "1"

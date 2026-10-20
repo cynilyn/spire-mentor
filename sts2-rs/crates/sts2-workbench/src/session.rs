@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
-use sts2_core::CombatState;
+use sts2_core::{CombatState, GameVersion};
 
 use crate::combatlog::{format_combat_log, LogNames};
 use crate::game::{Game, GameError};
@@ -164,6 +164,10 @@ pub struct Session {
     /// Which Act-1 model this run walks (GH #544); `seek` rebuilds the run
     /// from scratch, so it is remembered, not re-derived.
     pub act1: String,
+    /// The game build this run is played in (GH #801). Every constructor and
+    /// rebuild (`spawn_game`) hands it to the [`Game`]; saves, the persist
+    /// payload and the run log carry it when it is not the default.
+    pub game_version: GameVersion,
     pub(crate) nodes: BTreeMap<u64, Node>,
     next_id: u64,
     root_id: Option<u64>,
@@ -219,6 +223,7 @@ impl Session {
             seed: String::new(),
             ascension: 0,
             act1: "overgrowth".to_string(),
+            game_version: GameVersion::default(),
             nodes: BTreeMap::new(),
             next_id: 0,
             root_id: None,
@@ -248,6 +253,15 @@ impl Session {
             ppo_error: None,
             imported: None,
         }
+    }
+
+    /// A fresh session in game build `version`, rendering with that build's
+    /// embedded localization.
+    #[must_use]
+    pub fn new_for(version: GameVersion) -> Self {
+        let mut sess = Self::new(Loc::embedded_for(version));
+        sess.game_version = version;
+        sess
     }
 
     /// Attach (or detach) the PPO champion this run scores with, and the
@@ -295,6 +309,7 @@ impl Session {
     /// `_spawn_game`: a fresh driver opted into both display logs.
     pub(crate) fn spawn_game(&mut self) -> &mut Game {
         let mut game = Game::new();
+        game.game_version = self.game_version;
         game.set_record_card_plays(true);
         game.set_record_combat_log(true);
         self.game = Some(game);
@@ -1011,7 +1026,7 @@ impl Session {
                 })
             })
             .collect();
-        json!({
+        let mut out = json!({
             "schema_version": 1,
             "character": self.character,
             "seed": self.seed,
@@ -1030,12 +1045,19 @@ impl Session {
                 .as_ref()
                 .and_then(|s| serde_json::to_value(s).ok())
                 .unwrap_or(Value::Null),
-        })
+        });
+        // GH #801: named only when not the default, so a v0.107.1 persist
+        // keeps its bytes; a reader treats absence as v0.107.1.
+        if !self.game_version.is_default() {
+            out["game_version"] = json!(self.game_version.as_str());
+        }
+        out
     }
 
-    /// Rebuild from [`Self::export_persist`] output. `progress` is called
-    /// with `(done, total)` as the active path replays. Returns the active
-    /// leaf state.
+    /// Rebuild from [`Self::export_persist`] output into a session already
+    /// built in the payload's `game_version` ([`game_version_of`]).
+    /// `progress` is called with `(done, total)` as the active path replays.
+    /// Returns the active leaf state.
     pub fn import_persist(
         &mut self,
         payload: &Value,
@@ -1050,6 +1072,10 @@ impl Session {
         };
         let character = str_of("character");
         let seed = str_of("seed");
+        // The build is the caller's: `Workbench::import_persist` parses the
+        // payload's `game_version` (and owns its 409) and builds this session
+        // in it, so it is not parsed a second time here (#855).
+        debug_assert_eq!(game_version_of(payload).ok(), Some(self.game_version));
         let act1 = {
             let a = str_of("act1");
             if a.is_empty() {
@@ -1223,6 +1249,46 @@ impl Session {
     pub fn active_leaf(&self) -> Option<u64> {
         self.active_id
     }
+}
+
+/// The `game_version` a stored payload (save, persist, run-log meta)
+/// carries: absent or `null` is the default build (every payload written
+/// before GH #801, and every default-build one since). An unknown string is
+/// an error naming the supported builds.
+pub fn game_version_of(payload: &Value) -> Result<GameVersion, String> {
+    parse_game_version(payload.get("game_version"))
+}
+
+/// A `game_version` value as the wire carries it (see [`game_version_of`]):
+/// `None` / `null` is the default build; otherwise exactly one of the
+/// supported spellings (`"v0.107.1"`, `"v0.111.0"`).
+pub fn parse_game_version(value: Option<&Value>) -> Result<GameVersion, String> {
+    match value {
+        None | Some(Value::Null) => Ok(GameVersion::default()),
+        Some(Value::String(s)) => GameVersion::ALL
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .ok_or_else(|| {
+                format!(
+                    "unknown game_version {s:?} (supported: {})",
+                    supported_game_versions()
+                )
+            }),
+        Some(other) => Err(format!(
+            "game_version must be a string (supported: {}), got {other}",
+            supported_game_versions()
+        )),
+    }
+}
+
+/// `"v0.107.1, v0.111.0"` — the supported builds, for error messages.
+#[must_use]
+pub fn supported_game_versions() -> String {
+    GameVersion::ALL
+        .iter()
+        .map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Build a `{"action", "args"}` line entry.

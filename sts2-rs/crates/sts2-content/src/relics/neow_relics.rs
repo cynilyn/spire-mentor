@@ -43,7 +43,7 @@ use sts2_core::runstate::{PotionReward, RelicReward, RunState};
 use sts2_core::NeowRelic;
 
 use crate::cards::spec_index::{
-    card_pod_from_id, rarity_for_card_id, sample_distinct_cards_of_rarity,
+    card_pod_from_id, rarity_for_card_id_in, sample_distinct_cards_of_rarity,
 };
 use crate::cards::CardRarity;
 use crate::potions::all::create_random_potions_out_of_combat;
@@ -102,6 +102,17 @@ pub fn install_pool() {
         RelicId::SilkenTress,
         listener_silken_tress_card_reward as ModifyCardRewardOptionsLateRunFn,
     );
+    // v0.111.0-only Neow curse options (GH #792). Offered only by the
+    // v0.111.0 curse pool (`sts2_core::neow_offers::curse_pool_for`), so a
+    // v0.107.1 run can never obtain them and these listeners never fire.
+    register_after_obtained(
+        RelicId::DowsingRod,
+        listener_dowsing_rod as AfterObtainedRunFn,
+    );
+    register_after_obtained(
+        RelicId::NeowsSacrifice,
+        listener_neows_sacrifice as AfterObtainedRunFn,
+    );
     // Kaleidoscope (v0.107.1 Ancient/Neow positive relic) is offered at
     // Neow (see `sts2_core::neow_offers::POSITIVE_POOL`) but its
     // `AfterObtained` — gain 2 card rewards each drawn from 3 random
@@ -146,11 +157,49 @@ fn listener_neows_talisman(rs: &mut RunState) -> EffectResult {
 /// C# played a 9-damage Strike+, Rust a 6-damage Strike). `upgrade()`
 /// is a no-op on an already-upgraded card, matching C#'s `CardCmd.Upgrade`.
 fn upgrade_last_basic(rs: &mut RunState, ids: &[CardId]) {
+    let version = rs.game_version;
     if let Some(card) = rs.master_deck.iter_mut().rev().find(|c| {
-        ids.contains(&c.card_id) && rarity_for_card_id(c.card_id) == Some(CardRarity::Basic)
+        ids.contains(&c.card_id)
+            && rarity_for_card_id_in(c.card_id, version) == Some(CardRarity::Basic)
     }) {
-        card.upgrade();
+        card.upgrade_for(version);
     }
+}
+
+/// `DowsingRod::AfterObtained` — **v0.111.0** (`DowsingRod.cs:19-23`, GH #792):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// Adds one Dowsing quest card to the deck. The card's own quest (count
+/// `?` rooms, transform into Abundance at 5) is card content (S8a, #793).
+fn listener_dowsing_rod(rs: &mut RunState) -> EffectResult {
+    if rs.last_obtained_relic != Some(RelicId::DowsingRod) {
+        return EffectResult::NotImplemented;
+    }
+    if let Some(card) = card_pod_from_id(CardId::Dowsing, false) {
+        rs.master_deck.push(card);
+    }
+    EffectResult::Resolved
+}
+
+/// `NeowsSacrifice::AfterObtained` — **v0.111.0** (`NeowsSacrifice.cs:30-35`,
+/// GH #792):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// Procure first (through the `should_procure_potion` veto, like
+/// PhialHolster's `TryToProcure`), then add one Guilty curse.
+fn listener_neows_sacrifice(rs: &mut RunState) -> EffectResult {
+    if rs.last_obtained_relic != Some(RelicId::NeowsSacrifice) {
+        return EffectResult::NotImplemented;
+    }
+    let _ = rs.procure_potion(PotionReward::with_kind(
+        sts2_core::potions::PotionKind::Ambergris,
+    ));
+    if let Some(card) = card_pod_from_id(CardId::Guilty, false) {
+        rs.master_deck.push(card);
+    }
+    EffectResult::Resolved
 }
 
 /// `SilkenTress::AfterObtained` (v0.107.1 `SilkenTress.cs:42-45`):
@@ -180,6 +229,12 @@ fn listener_silken_tress(rs: &mut RunState) -> EffectResult {
 /// card reward while owned + unused.
 fn listener_silken_tress_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> EffectResult {
     if !rs.owns_active_relic(RelicId::SilkenTress) {
+        return EffectResult::NotImplemented;
+    }
+    // v0.111.0: only a slate with `IsCardReward` (decomp
+    // `Models.Relics/SilkenTress.cs:53`); the flag is only ever set by a
+    // v0.111.0 caller, see `RunState::offer_card_slate`.
+    if rs.card_slate_not_card_reward {
         return EffectResult::NotImplemented;
     }
     // `IsUsed` gate (`SilkenTress.cs:57`): only the first card reward fires.
@@ -270,7 +325,7 @@ const NEOWS_BONES_VALID_POOL: &[NeowRelic] = &[
 /// `NeowsBones.cs:28`).
 const NEOWS_BONES_CURSES: usize = 1;
 
-const NEOWS_BONES_CURSE_POOL: &[CardId] = &[
+pub(crate) const NEOWS_BONES_CURSE_POOL: &[CardId] = &[
     CardId::Clumsy,
     CardId::Debt,
     CardId::Decay,
@@ -313,7 +368,13 @@ fn listener_neows_bones(rs: &mut RunState) -> EffectResult {
     }
 
     // (1) Shuffle the valid pool with PlayerRng.Rewards (NeowsBones.cs:43).
-    let mut pool: Vec<NeowRelic> = NEOWS_BONES_VALID_POOL.to_vec();
+    let mut pool: Vec<NeowRelic> = match rs.game_version {
+        sts2_core::GameVersion::V0_107_1 => NEOWS_BONES_VALID_POOL.to_vec(),
+        // v0.111.0: `Neow.AllPossibleOptions` starts with the 10-entry
+        // CurseOptions (decomp Neow.cs:96), so the shuffle input grows by
+        // DowsingRod + NeowsSacrifice.
+        sts2_core::GameVersion::V0_111_0 => NEOWS_BONES_VALID_POOL_V0111.to_vec(),
+    };
     rs.rng.rewards.shuffle(&mut pool);
 
     // (2) Grant the first 2, ONE AT A TIME. C# `RewardsSet(...).Offer()`
@@ -384,6 +445,42 @@ fn listener_neows_bones(rs: &mut RunState) -> EffectResult {
 /// granted relic's own interactive `Niche` read (NewLeaf's transform), matching
 /// C#'s "curse drawn last" order. The pool/index logic lives here because the
 /// curse pool is content-owned; core only owns the `Niche` cursor.
+/// [`NEOWS_BONES_VALID_POOL`] for **v0.111.0** (GH #792): the same
+/// `AllPossibleOptions` walk (`Neow.cs:49-64`) over the v0.111.0
+/// `CurseOptions[10]` (`Neow.cs:96-108`) — DowsingRod lands after
+/// CursedPearl and NeowsSacrifice after the excluded NeowsBones. Neither
+/// overrides `IsAllowedAtNeow`, so both stay: 9 + 13 + 6 = 28.
+const NEOWS_BONES_VALID_POOL_V0111: &[NeowRelic] = &[
+    NeowRelic::CursedPearl,
+    NeowRelic::DowsingRod,
+    NeowRelic::HeftyTablet,
+    NeowRelic::LargeCapsule,
+    NeowRelic::LeafyPoultice,
+    NeowRelic::NeowsSacrifice,
+    NeowRelic::PrecariousShears,
+    NeowRelic::SilkenTress,
+    NeowRelic::SilverCrucible,
+    NeowRelic::ArcaneScroll,
+    NeowRelic::BoomingConch,
+    NeowRelic::FishingRod,
+    NeowRelic::GoldenPearl,
+    NeowRelic::Kaleidoscope,
+    NeowRelic::LeadPaperweight,
+    NeowRelic::LostCoffer,
+    NeowRelic::NeowsTorment,
+    NeowRelic::NewLeaf,
+    NeowRelic::PhialHolster,
+    NeowRelic::PreciseScissors,
+    NeowRelic::ScrollBoxes,
+    NeowRelic::WingedBoots,
+    NeowRelic::LavaRock,
+    NeowRelic::NeowsTalisman,
+    NeowRelic::NutritiousOyster,
+    NeowRelic::Pomander,
+    NeowRelic::SmallCapsule,
+    NeowRelic::StoneHumidifier,
+];
+
 #[must_use]
 pub fn roll_neows_bones_curse(rs: &mut RunState) -> Option<sts2_core::cards::Card> {
     let last = NEOWS_BONES_CURSE_POOL.len().checked_sub(1)?;
@@ -520,6 +617,7 @@ fn listener_phial_holster(rs: &mut RunState) -> EffectResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cards::spec_index::rarity_for_card_id;
     use sts2_core::run_effects::dispatch_after_obtained;
 
     fn card(id: CardId) -> sts2_core::cards::Card {
@@ -933,5 +1031,69 @@ mod tests {
             EffectResult::NotImplemented
         );
         assert!(!cards[0].has_enchantment(EnchantmentId::Glam));
+    }
+
+    // ── v0.111.0 (GH #792) ───────────────────────────────────────────
+
+    fn rs_v0111() -> RunState {
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs
+    }
+
+    /// `DowsingRod.cs:19-23`: AfterObtained adds one Dowsing (Quest,
+    /// Unplayable, cost -1, not upgradable) to the deck.
+    #[test]
+    fn dowsing_rod_adds_dowsing_card_v0111() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = rs_v0111();
+        let before = rs.master_deck.len();
+        rs.relics.push(RelicId::DowsingRod);
+        rs.last_obtained_relic = Some(RelicId::DowsingRod);
+        let _ = dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.master_deck.len(), before + 1);
+        let c = rs.master_deck.last().unwrap();
+        assert_eq!(c.card_id, CardId::Dowsing);
+        assert_eq!(c.cost, -1);
+        assert!(!c.is_upgradable(), "MaxUpgradeLevel => 0");
+        assert_eq!(rarity_for_card_id(CardId::Dowsing), Some(CardRarity::Quest));
+        assert!(rs.pending_rewards.is_empty());
+    }
+
+    /// `NeowsSacrifice.cs:30-35`: procure Ambergris, then add one Guilty.
+    #[test]
+    fn neows_sacrifice_procures_ambergris_and_adds_guilty_v0111() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = rs_v0111();
+        rs.relics.push(RelicId::NeowsSacrifice);
+        rs.last_obtained_relic = Some(RelicId::NeowsSacrifice);
+        let _ = dispatch_after_obtained(&mut rs);
+        assert_eq!(
+            rs.master_deck.last().map(|c| c.card_id),
+            Some(CardId::Guilty)
+        );
+        assert!(matches!(
+            rs.pending_rewards.as_slice(),
+            [sts2_core::runstate::Reward::Potion(p)]
+                if p.potion_kind == Some(sts2_core::potions::PotionKind::Ambergris)
+        ));
+    }
+
+    /// NeowsBones' shuffle input follows `Neow.AllPossibleOptions`, which
+    /// grows by the two v0.111.0 curse options (`Neow.cs:49`, `:96`).
+    #[test]
+    fn neows_bones_pool_includes_the_new_curse_options_v0111() {
+        assert_eq!(
+            NEOWS_BONES_VALID_POOL_V0111.len(),
+            NEOWS_BONES_VALID_POOL.len() + 2
+        );
+        let without_new: Vec<NeowRelic> = NEOWS_BONES_VALID_POOL_V0111
+            .iter()
+            .copied()
+            .filter(|r| !matches!(r, NeowRelic::DowsingRod | NeowRelic::NeowsSacrifice))
+            .collect();
+        assert_eq!(without_new, NEOWS_BONES_VALID_POOL);
+        assert_eq!(NEOWS_BONES_VALID_POOL_V0111[1], NeowRelic::DowsingRod);
+        assert_eq!(NEOWS_BONES_VALID_POOL_V0111[5], NeowRelic::NeowsSacrifice);
     }
 }

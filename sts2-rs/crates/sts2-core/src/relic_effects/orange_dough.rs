@@ -20,7 +20,7 @@ pub(crate) fn on_after_side_turn_start_orange_dough(
     side: Side,
 ) -> EffectResult {
     const ORANGE_DOUGH_CARDS: usize = 2;
-    if side != Side::Player || state.round_no() != 1 {
+    if side != Side::Player || state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::OrangeDough) {

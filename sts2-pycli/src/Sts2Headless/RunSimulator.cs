@@ -33,6 +33,9 @@ using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Timeline;
 using MegaCrit.Sts2.Core.Timeline.Epochs;
 using MegaCrit.Sts2.Core.Unlocks;
+#if GAME_V0111
+using MegaCrit.Sts2.Core.Modding;
+#endif
 
 namespace Sts2Headless;
 
@@ -174,6 +177,21 @@ internal sealed class GameThread : IDisposable
     }
 }
 
+#if GAME_V0111
+/// <summary>
+/// v0.111.0 RNG API drift (GH #790). <c>Rng</c> no longer exposes
+/// <c>Counter</c> (or <c>Seed</c>): saves carry the full xoshiro state
+/// (<c>SerializableRng</c>) and the read count lives in the private
+/// <c>_counter</c>, published only through <c>ToSerializable()</c>
+/// (Rng.cs:357), which copies state and has no side effect. Same number
+/// <c>Rng.Counter</c> returned in v0.107.1: one tick per draw.
+/// </summary>
+internal static class RngCompat
+{
+    public static int Counter(Rng rng) => rng.ToSerializable().counter;
+}
+#endif
+
 /// <summary>
 /// English localization lookup — loads localization_eng JSON files for display names.
 /// </summary>
@@ -183,8 +201,7 @@ internal class LocLookup
 
     public LocLookup()
     {
-        var baseDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
-        Load(Path.Combine(baseDir, "localization_eng"), _eng);
+        Load(HeadlessPaths.LocalizationDir, _eng);
     }
 
     private static void Load(string dir, Dictionary<string, Dictionary<string, string>> target)
@@ -256,7 +273,13 @@ internal class LocLookup
 /// </summary>
 public class RunSimulator
 {
+#if GAME_V0111
+    // v0.111.0 writes SerializableRun v20 (its migration manager's latest;
+    // "Current save versions: … SerializableRun v20" at start-up).
+    private const int CurrentSaveSchemaVersion = 20;
+#else
     private const int CurrentSaveSchemaVersion = 16;
+#endif
     private RunState? _runState;
     private static bool _modelDbInitialized;
     private static readonly GameThread _gameThread = new();
@@ -760,11 +783,19 @@ public class RunSimulator
         // removal. Capture both stream counters before/after so the Rust port
         // can be checked on RNG-read counts as well as item identity. M4 shop
         // parity (run_parity.py --shop-parity).
+#if GAME_V0111
+        int shops0 = RngCompat.Counter(player.PlayerRng.Shops);
+        int rewards0 = RngCompat.Counter(player.PlayerRng.Rewards);
+        var inv = MerchantInventory.CreateForNormalMerchant(player);
+        int shopsReads = RngCompat.Counter(player.PlayerRng.Shops) - shops0;
+        int rewardsReads = RngCompat.Counter(player.PlayerRng.Rewards) - rewards0;
+#else
         int shops0 = player.PlayerRng.Shops.Counter;
         int rewards0 = player.PlayerRng.Rewards.Counter;
         var inv = MerchantInventory.CreateForNormalMerchant(player);
         int shopsReads = player.PlayerRng.Shops.Counter - shops0;
         int rewardsReads = player.PlayerRng.Rewards.Counter - rewards0;
+#endif
 
         var cards = inv.CharacterCardEntries.Select(e => (object?)new Dictionary<string, object?>
         {
@@ -1439,6 +1470,27 @@ public class RunSimulator
         if (rng == null) return d;
         try
         {
+#if GAME_V0111
+            d["up_front"] = RngCompat.Counter(rng.UpFront);
+            d["shuffle"] = RngCompat.Counter(rng.Shuffle);
+            d["combat_card_generation"] = RngCompat.Counter(rng.CombatCardGeneration);
+            d["combat_potion_generation"] = RngCompat.Counter(rng.CombatPotionGeneration);
+            d["combat_card_selection"] = RngCompat.Counter(rng.CombatCardSelection);
+            d["combat_energy_costs"] = RngCompat.Counter(rng.CombatEnergyCosts);
+            d["combat_targets"] = RngCompat.Counter(rng.CombatTargets);
+            d["monster_ai"] = RngCompat.Counter(rng.MonsterAi);
+            d["niche"] = RngCompat.Counter(rng.Niche);
+            d["combat_orbs"] = RngCompat.Counter(rng.CombatOrbGeneration);
+            var prng = (_runState?.Players != null && _runState.Players.Count > 0)
+                ? _runState.Players[0].PlayerRng
+                : null;
+            if (prng != null)
+            {
+                d["rewards"] = RngCompat.Counter(prng.Rewards);
+                d["shops"] = RngCompat.Counter(prng.Shops);
+                d["transformations"] = RngCompat.Counter(prng.Transformations);
+            }
+#else
             d["up_front"] = rng.UpFront.Counter;
             d["shuffle"] = rng.Shuffle.Counter;
             d["combat_card_generation"] = rng.CombatCardGeneration.Counter;
@@ -1459,6 +1511,7 @@ public class RunSimulator
                 d["shops"] = prng.Shops.Counter;
                 d["transformations"] = prng.Transformations.Counter;
             }
+#endif
         }
         catch { /* best-effort diagnostic */ }
         return d;
@@ -4132,6 +4185,19 @@ public class RunSimulator
         // permanent card removal) before snapshotting the deck for rewards.
         WaitForActionExecutor();
 
+        // A combat the player LOST has no rewards screen: CombatManager
+        // ProcessPendingLoss just ends the combat (CombatManager.cs:1279) and
+        // the run is over. DetectDecisionPoint checks for death on entry, but
+        // the player can die after that check, while the CombatRoom branch
+        // pumps the enemy turn to completion, and then lands here with
+        // IsInProgress false. Seen on DenseVegetation's event fight (GH #817,
+        // PARITY114): without this the dead player was offered the Wrigglers'
+        // gold and card reward.
+        if (player.Creature != null && player.Creature.IsDead)
+        {
+            return GameOverState(_runState?.CurrentRoom?.IsVictoryRoom ?? false);
+        }
+
         // Bead sts2-rs-ck9z6 (GH #166): an event-nested combat that should resume
         // its parent event (BattlewornDummy — ShouldResumeParentEventAfterCombat)
         // grants its reward via the event's Resume(), NOT the combat-room reward
@@ -5541,6 +5607,18 @@ public class RunSimulator
         }
         Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
 
+#if GAME_V0111
+        // v0.111.0: ModelIdSerializationCache.Init sorts content through
+        // ContentSorter, which throws unless AssemblyInfo is initialized
+        // (ContentSorter.cs:48) — the game does it first in
+        // OneTimeInitialization.ExecuteEssential (AssemblyInfo.Init →
+        // ModelDb.Init → ModelIdSerializationCache.Init). Without it the cache
+        // stays uninitialized and v0.111.0's guard (ModelIdSerializationCache
+        // .cs:198) fails every card add / map move that serializes a ModelId.
+        try { AssemblyInfo.Init(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[WARN] AssemblyInfo.Init: {ex.Message}"); }
+#endif
+
         // Initialize net ID serialization cache (needed for combat actions)
         try
         {
@@ -5697,7 +5775,18 @@ public class RunSimulator
             if (next2 != null && post2 != null)
                 harmony.Patch(next2, postfix: new HarmonyMethod(post2));
 
+#if GAME_V0111
+            // v0.111.0: seeds are ulong (Rng.cs `Rng(ulong seed, string name)`)
+            // and Rng no longer keeps its seed, so the tracer records it from
+            // the base `Rng(ulong)` ctor every other ctor chains into.
+            var seedCtor = rngType.GetConstructor(new[] { typeof(ulong) });
+            var postS = typeof(RngTracePatches).GetMethod(nameof(RngTracePatches.RngSeedCtorPostfix));
+            if (seedCtor != null && postS != null)
+                harmony.Patch(seedCtor, postfix: new HarmonyMethod(postS));
+            var ctor = rngType.GetConstructor(new[] { typeof(ulong), typeof(string) });
+#else
             var ctor = rngType.GetConstructor(new[] { typeof(uint), typeof(string) });
+#endif
             var postC = typeof(RngTracePatches).GetMethod(nameof(RngTracePatches.RngNameCtorPostfix));
             if (ctor != null && postC != null)
                 harmony.Patch(ctor, postfix: new HarmonyMethod(postC));
@@ -5790,6 +5879,55 @@ public class RunSimulator
 
     internal static class RngTracePatches
     {
+#if GAME_V0111
+        // v0.111.0 Rng has neither `Seed` nor `Counter` (Rng.cs: private
+        // `_counter`, the seed only initialises MegaRandom). The seed is
+        // captured at construction (RngSeedCtorPostfix on `Rng(ulong)`); an Rng
+        // restored from a save (`Rng(SerializableRng)`) has none and traces
+        // as `seed=?`. Same line format as the v0.107.1 tracer below.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Rng, System.Runtime.CompilerServices.StrongBox<ulong>> Seeds = new();
+
+        public static void RngSeedCtorPostfix(Rng __instance, ulong seed) =>
+            Seeds.AddOrUpdate(__instance, new System.Runtime.CompilerServices.StrongBox<ulong>(seed));
+
+        private static string SeedOf(Rng r) =>
+            Seeds.TryGetValue(r, out var box) ? box.Value.ToString() : "?";
+
+        private static string Head(Rng r) =>
+            $"RNGTRACE seed={SeedOf(r)} ctr={RngCompat.Counter(r)}";
+
+        public static void NextInt1Postfix(
+            Rng __instance, int maxExclusive, int __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max={maxExclusive} r={__result}");
+
+        public static void NextInt2Postfix(
+            Rng __instance, int minInclusive, int maxExclusive, int __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max={minInclusive}:{maxExclusive} r={__result}");
+
+        public static void RngNameCtorPostfix(
+            Rng __instance, string name) =>
+            Console.Error.WriteLine($"RNGMAP seed={SeedOf(__instance)} name={name}");
+
+        public static void NextBoolPostfix(
+            Rng __instance, bool __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max=bool r={(__result ? 1 : 0)}");
+
+        public static void NextDoublePostfix(
+            Rng __instance, double __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max=dbl r={BitConverter.DoubleToInt64Bits(__result)}");
+
+        public static void NextDouble2Postfix(
+            Rng __instance, double __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max=dbl2 r={BitConverter.DoubleToInt64Bits(__result)}");
+
+        public static void NextFloatPostfix(
+            Rng __instance, float __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max=flt r={BitConverter.SingleToInt32Bits(__result)}");
+
+        public static void NextFloat2Postfix(
+            Rng __instance, float __result) =>
+            Console.Error.WriteLine($"{Head(__instance)} max=flt2 r={BitConverter.SingleToInt32Bits(__result)}");
+#else
         public static void NextInt1Postfix(
             MegaCrit.Sts2.Core.Random.Rng __instance, int maxExclusive, int __result)
         {
@@ -5847,6 +5985,7 @@ public class RunSimulator
             Console.Error.WriteLine(
                 $"RNGTRACE seed={__instance.Seed} ctr={__instance.Counter} max=flt2 r={BitConverter.SingleToInt32Bits(__result)}");
         }
+#endif
 
         // ── Card-rarity pity tracer (PARITY132) ──────────────────────────
         // `RARITYTRACE method=<roll|base|shop> type=<oddsType> offset=<pity>
@@ -5911,7 +6050,11 @@ public class RunSimulator
             var p = card.Owner;
             if (p == null)
                 return;
+#if GAME_V0111
+            long ctr = RngCompat.Counter(p.RunState.Rng.Shuffle);
+#else
             long ctr = p.RunState.Rng.Shuffle.Counter;
+#endif
             Console.Error.WriteLine(
                 $"PILETRACE evt=ap shufctr={ctr} card={card.Id}{(card.IsUpgraded ? "+" : "")} " +
                 $"draw={PileStr(p, MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw)} " +
@@ -5925,7 +6068,11 @@ public class RunSimulator
         {
             if (player == null)
                 return;
+#if GAME_V0111
+            long ctr = RngCompat.Counter(player.RunState.Rng.Shuffle);
+#else
             long ctr = player.RunState.Rng.Shuffle.Counter;
+#endif
             Console.Error.WriteLine(
                 $"PILETRACE evt=shuf shufctr={ctr} " +
                 $"draw={PileStr(player, MegaCrit.Sts2.Core.Entities.Cards.PileType.Draw)} " +
@@ -7709,13 +7856,22 @@ public class RunSimulator
             MegaCrit.Sts2.Core.Entities.Cards.CardPlay cardPlay,
             ref Task __result)
         {
+#if GAME_V0111
+            __result = WhirlwindOnPlaySafe(__instance, choiceContext, cardPlay);
+#else
             __result = WhirlwindOnPlaySafe(__instance, choiceContext);
+#endif
             return false;
         }
 
         private static async Task WhirlwindOnPlaySafe(
             object cardObj,
+#if GAME_V0111
+            PlayerChoiceContext choiceContext,
+            CardPlay cardPlay)
+#else
             MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext)
+#endif
         {
             try
             {
@@ -7726,7 +7882,12 @@ public class RunSimulator
                     await MegaCrit.Sts2.Core.Commands.DamageCmd
                         .Attack(card.DynamicVars.Damage.BaseValue)
                         .WithHitCount(num)
+#if GAME_V0111
+                        // v0.111.0: `FromCard(this, cardPlay)` (Whirlwind.cs:42).
+                        .FromCard(card, cardPlay)
+#else
                         .FromCard(card)
+#endif
                         .TargetingAllOpponents(card.CombatState)
                         .Execute(choiceContext);
                 }
@@ -7767,7 +7928,12 @@ public class RunSimulator
                 {
                     await MegaCrit.Sts2.Core.Commands.DamageCmd
                         .Attack(card.DynamicVars.Damage.BaseValue)
+#if GAME_V0111
+                        // v0.111.0: `FromCard(this, cardPlay)` (FlashOfSteel.cs:39).
+                        .FromCard(card, cardPlay)
+#else
                         .FromCard(card)
+#endif
                         .Targeting(cardPlay.Target)
                         .Execute(choiceContext);
                 }
@@ -7812,7 +7978,12 @@ public class RunSimulator
                 {
                     await MegaCrit.Sts2.Core.Commands.DamageCmd
                         .Attack(card.DynamicVars.Damage.BaseValue)
+#if GAME_V0111
+                        // v0.111.0: `FromCard(this, cardPlay)` (Slice.cs:35).
+                        .FromCard(card, cardPlay)
+#else
                         .FromCard(card)
+#endif
                         .Targeting(cardPlay.Target)
                         .Execute(choiceContext);
                 }
@@ -7945,7 +8116,7 @@ public class RunSimulator
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
             var tables = new Dictionary<string, LocTable>();
 
-            var locDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "localization_eng");
+            var locDir = HeadlessPaths.LocalizationDir;
             if (Directory.Exists(locDir))
             {
                 foreach (var file in Directory.GetFiles(locDir, "*.json"))
@@ -8229,7 +8400,12 @@ public class RunSimulator
                 // builder path is headless-safe. WithAttackerAnim is omitted (no
                 // animation in headless), exactly as Slice/FlashOfSteel do.
                 await DamageCmd.Attack(card.DynamicVars.Damage.BaseValue)
+#if GAME_V0111
+                    // v0.111.0: `FromCard(this, cardPlay)` (Neutralize.cs:43).
+                    .FromCard(card, play)
+#else
                     .FromCard(card)
+#endif
                     .Targeting(play.Target!)
                     .Execute(ctx);
                 await PowerCmd.Apply<WeakPower>(ctx, play.Target!, card.DynamicVars["WeakPower"].BaseValue,
@@ -8348,7 +8524,13 @@ public class RunSimulator
     /// which is why an act mismatch cannot show up as an `up_front` skew.
     /// </summary>
     private static Rng ActSelectionRng(string seedStr) =>
+#if GAME_V0111
+        // v0.111.0: `new Rng(StringHelper.GetDeterministicHashCode(seed), "act_selection")`
+        // — the XxHash64 ulong, no uint truncation (StartRunLobby.cs:468).
+        new Rng(StringHelper.GetDeterministicHashCode(seedStr), "act_selection");
+#else
         new Rng((uint)StringHelper.GetDeterministicHashCode(seedStr), "act_selection");
+#endif
 
     /// <summary>
     /// Resolve the `act1` command argument to an ActModel. "roll" reproduces
@@ -8403,6 +8585,59 @@ public class RunSimulator
         catch (Exception ex)
         {
             return ErrorWithTrace("RollActs failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Seed-derivation probe (GH #792), WITHOUT starting a run: the
+    /// <c>RunRngSet.Seed</c> this build derives from <paramref name="seed"/>
+    /// (canonicalised exactly as <c>StartRun</c> does), this build's
+    /// <c>StringHelper.GetDeterministicHashCode</c> of every name in
+    /// <paramref name="names"/> (unsigned, as every seed site mixes it in),
+    /// and the first <paramref name="draws"/> <c>NextInt(0, 1000000)</c> of
+    /// <c>new Rng(Seed, name)</c> — the shape of every named run stream
+    /// (<c>RunRngSet.CreateRng</c>, <c>StandardActMap</c>, …). Lets the Python
+    /// and Rust seed hashes be pinned against the game's own for each build
+    /// (v0.107.1 32-bit hash vs v0.111.0 XxHash64 ulong).
+    /// </summary>
+    public Dictionary<string, object?> RngProbe(string? seed, List<string> names, int draws) =>
+        _gameThread.Submit(() => RngProbeImpl(seed, names, draws));
+
+    private Dictionary<string, object?> RngProbeImpl(string? seed, List<string> names, int draws)
+    {
+        try
+        {
+            var seedStr = SeedHelper.CanonicalizeSeed(seed ?? "");
+            var set = new RunRngSet(seedStr);
+            var hashes = new Dictionary<string, object?>();
+            var streams = new Dictionary<string, object?>();
+            foreach (var name in names)
+            {
+#if GAME_V0111
+                hashes[name] = StringHelper.GetDeterministicHashCode(name);
+#else
+                hashes[name] = (uint)StringHelper.GetDeterministicHashCode(name);
+#endif
+                var rng = new Rng(set.Seed, name);
+                var xs = new List<int>();
+                for (var i = 0; i < draws; i++) xs.Add(rng.NextInt(0, 1000000));
+                streams[name] = xs;
+            }
+            var upFront = new List<int>();
+            for (var i = 0; i < draws; i++) upFront.Add(set.UpFront.NextInt(0, 1000000));
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "rng_probe",
+                ["seed"] = seedStr,
+                ["run_seed"] = set.Seed,
+                ["name_hashes"] = hashes,
+                ["streams"] = streams,
+                ["up_front"] = upFront,
+            };
+        }
+        catch (Exception ex)
+        {
+            return ErrorWithTrace("RngProbe failed", ex);
         }
     }
 

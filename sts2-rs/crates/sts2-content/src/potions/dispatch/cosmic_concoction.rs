@@ -35,6 +35,8 @@ pub(crate) fn drink_cosmic_concoction(
             let raw = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
             let uid = sts2_core::CardUid::new(raw).expect("non-zero uid");
             card.uid = uid;
+            // v0.111.0 card values (GH #793).
+            card.normalize_for_version(state.game_version);
             state.cards.push(card);
             uids.push(uid);
         }

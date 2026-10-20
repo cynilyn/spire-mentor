@@ -272,6 +272,11 @@ pub struct CardReward {
     /// `modify_card_reward_options_late` hook bus mutates this vector
     /// in place.
     pub options: Vec<CardId>,
+    /// Per-option upgrade flags of a pre-resolved reward, parallel to
+    /// [`Self::options`], or empty for "none upgraded". Set only by
+    /// [`Self::from_cards`] (a v0.111.0 caller whose slate went through the
+    /// `modify_card_reward_options_late` listeners, e.g. SilverCrucible).
+    pub upgraded: Vec<bool>,
 }
 
 impl CardReward {
@@ -280,13 +285,27 @@ impl CardReward {
     pub fn empty() -> Self {
         Self {
             options: Vec::new(),
+            upgraded: Vec::new(),
         }
     }
 
     /// Construct a `CardReward` from the given option list.
     #[must_use]
     pub fn from_options(options: Vec<CardId>) -> Self {
-        Self { options }
+        Self {
+            options,
+            upgraded: Vec::new(),
+        }
+    }
+
+    /// Construct a pre-resolved `CardReward` from offered card instances,
+    /// keeping each one's upgrade flag.
+    #[must_use]
+    pub fn from_cards(cards: &[Card]) -> Self {
+        Self {
+            options: cards.iter().map(|c| c.card_id).collect(),
+            upgraded: cards.iter().map(|c| c.upgraded).collect(),
+        }
     }
 }
 
@@ -308,6 +327,11 @@ pub struct PendingCardSelect {
     /// `modify_card_reward_options_late` pass (HeftyTablet's choose screen,
     /// the shop-event 1-of-N). Must stay `options.len()`-long.
     pub upgraded: Vec<bool>,
+    /// Per-option enchantments, parallel to [`Self::options`] (empty = none):
+    /// a slate run through [`RunState::offer_card_reward`] can carry a relic
+    /// stamp such as SilkenTress's Glam (`SilkenTress.cs:61-70`), which the
+    /// picked card must keep. GH #806.
+    pub enchantments: Vec<crate::cards::CardEnchantments>,
     /// Cards appended to the master deck AFTER the screen resolves, in
     /// order, *after* the chosen card (if any). Models C# `HeftyTablet`,
     /// which builds `[chosen?, Injury]` and adds them in ONE
@@ -326,6 +350,7 @@ impl PendingCardSelect {
         Self {
             options,
             upgraded,
+            enchantments: Vec::new(),
             post_add: Vec::new(),
         }
     }
@@ -339,6 +364,7 @@ impl PendingCardSelect {
         Self {
             options,
             upgraded,
+            enchantments: Vec::new(),
             post_add,
         }
     }
@@ -353,9 +379,11 @@ impl PendingCardSelect {
     pub fn from_cards(cards: &[Card]) -> Self {
         let options = cards.iter().map(|c| c.card_id).collect();
         let upgraded = cards.iter().map(|c| c.upgraded).collect();
+        let enchantments = cards.iter().map(|c| c.enchantments).collect();
         Self {
             options,
             upgraded,
+            enchantments,
             post_add: Vec::new(),
         }
     }
@@ -451,6 +479,12 @@ pub struct CardRewardGenerationOptions {
     /// Python `custom_card_ids` — explicit card-id slate consumed when
     /// `has_custom_card_pool` is true.
     pub custom_card_ids: Vec<CardId>,
+    /// C# `CardCreationFlags.IsFromCombat` (v0.111.0, `CardCreationFlags.cs:65`):
+    /// the card reward of a combat room's own reward set
+    /// (`RewardsSet.GenerateRewardsFor`, RewardsSet.cs:233-244). Extra card
+    /// rewards (PrayerWheel, DreamCatcher, ...) and event/shop rolls leave it
+    /// clear. Read only by v0.111.0 LastingCandy (`LastingCandy.cs:122`).
+    pub is_from_combat: bool,
 }
 
 impl Default for CardRewardGenerationOptions {
@@ -470,6 +504,7 @@ impl Default for CardRewardGenerationOptions {
             allow_hook_upgrades: true,
             has_custom_card_pool: false,
             custom_card_ids: Vec::new(),
+            is_from_combat: false,
         }
     }
 }
@@ -818,6 +853,12 @@ pub enum RestSiteOption {
     Mend,
 }
 
+/// `CookRestSiteOption._cardsToRemove` (`CookRestSiteOption.cs:15`).
+pub const COOK_CARDS_TO_REMOVE: u32 = 2;
+/// `CookRestSiteOption._maxHpGain` in v0.111.0 (decomp
+/// `CookRestSiteOption.cs:17`; v0.107.1 had 9).
+pub const COOK_MAX_HP_GAIN_V0111: i32 = 5;
+
 /// Outcome of [`RunState::do_rest_site_action`]. Mirrors the
 /// observable side-effects of Python's `RestSiteOption.execute`
 /// dispatch (`run_manager.py:739` / `rest_site.py:67-107`) without
@@ -859,6 +900,12 @@ pub enum RestSiteActionOutcome {
     /// grant reads the counter mirror at `before_combat_start`
     /// (`relic_effects::girya`).
     Lifted,
+    /// `Cook` selected (v0.111.0 only, GH #792): 2 cards are being removed
+    /// (interactively, or already removed in auto mode) and the max-HP gain
+    /// lands once the removal resolves. In v0.107.1 Cook stays
+    /// [`Self::Unsupported`] (a pre-existing gap; porting it there would
+    /// move the v0.107.1 baseline).
+    Cooked,
     /// The chosen option's [`RestSiteOption::enabled`] is `false`,
     /// or a pre-existing pending-choice blocked the request. No
     /// state mutation occurred.
@@ -1020,6 +1067,24 @@ pub struct RunState {
     /// into its offer-aligned `card_reward_upgraded` list.
     pub card_reward_upgraded_flags: Vec<bool>,
 
+    /// Per-option enchantments for the most recent card-reward offering,
+    /// parallel to [`Self::card_reward_upgraded_flags`] and set/taken at the
+    /// same sites. The bare-`CardId` callback also dropped the enchantment a
+    /// `TryModifyCardRewardOptionsLate` relic stamps on the offered card —
+    /// `SilkenTress` clones each option and `CardCmd.Enchant<Glam>`s it
+    /// (v0.107.1 `SilkenTress.cs:61-70`), and `CardReward` adds that clone to
+    /// the deck — so a picked Glam card entered the deck unenchanted (GH #806,
+    /// PARITY149).
+    pub card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
+
+    /// Set only while [`Self::offer_card_slate`] walks a slate that C#
+    /// builds WITHOUT `CardCreationFlags.IsCardReward`, i.e. a direct
+    /// `CardFactory.CreateForReward` that feeds a grid pick instead of a
+    /// `CardReward` (BrainLeech ShareKnowledge, RoomFullOfCheese Gorge). The
+    /// `IsCardReward`-gated listeners (SilverCrucible, SilkenTress) abstain
+    /// while it is set. Only v0.111.0 arms set it (see `offer_card_slate`).
+    pub card_slate_not_card_reward: bool,
+
     /// Relics the player has acquired this run. Mirrors Python
     /// `RunState.relics` (`run_state.py`). Bead `sts2-rs-zq8` (j87-b)
     /// landed this alongside [`Self::accept_relic_reward`] so the
@@ -1049,6 +1114,16 @@ pub struct RunState {
     /// (no escapes) and is overwritten on every combat exit. Bead
     /// `sts2-rs-RP15`.
     pub last_combat_gold_proportion: f64,
+
+    /// The just-won combat's encounter gold bounds when the encounter
+    /// overrides C# `EncounterModel.MinGoldReward`/`MaxGoldReward` (only
+    /// `FakeMerchantEventEncounter`, a flat 300 — see
+    /// [`crate::events::EventEncounter::gold_reward_bounds`]). Read by
+    /// [`Self::roll_encounter_gold`] for a Monster room in place of the
+    /// room-type defaults. `RunManager` sets it around an event fight's
+    /// reward roll and clears it right after, so it is `None` everywhere
+    /// else (GH #817).
+    pub combat_gold_bounds_override: Option<(i32, i32)>,
 
     /// The Ancient-rarity card `DustyTome` will add when obtained, chosen at
     /// the Darv-event option-generation moment (`Phase::BossRelic` entry) by
@@ -1411,6 +1486,30 @@ pub struct RunState {
     /// `sts2-rs-1hiht` (M5 event decision-granularity).
     pub pending_post_removal_hp_loss: i32,
 
+    /// Max HP to gain AFTER the current batch of interactive
+    /// [`Self::pending_deck_removals`] fully drains — the "remove, THEN gain"
+    /// twin of [`Self::pending_post_removal_hp_loss`]. Set only by the
+    /// v0.111.0 Cook rest-site option (`CookRestSiteOption.OnSelect`: remove 2
+    /// cards, then `CreatureCmd.GainMaxHp(5)`); always 0 in a v0.107.1 run.
+    /// Drained by [`crate::run_manager::RunManager::do_remove_deck_card_at`].
+    pub pending_post_removal_max_hp_gain: i32,
+
+    /// Gold to spend AFTER the current batch of interactive
+    /// [`Self::pending_deck_removals`] fully drains — the "remove, THEN pay"
+    /// twin of [`Self::pending_post_removal_hp_loss`]. Set only by the
+    /// v0.111.0 ZenWeaver removal options (`RemoveCardsAndProceed`: remove,
+    /// then `PlayerCmd.LoseGold`); always 0 in a v0.107.1 run. Drained by
+    /// [`crate::run_manager::RunManager::do_remove_deck_card_at`].
+    pub pending_post_removal_gold_loss: i32,
+
+    /// HP damage to apply AFTER the current batch of interactive
+    /// [`Self::pending_deck_upgrades`] fully drains — the upgrade twin of
+    /// [`Self::pending_post_removal_hp_loss`]. Set only by the v0.111.0
+    /// SpiritGrafter Rejection (`FromDeckForUpgrade`, then
+    /// `CreatureCmd.Damage(10)`); always 0 in a v0.107.1 run. Drained by
+    /// [`crate::run_manager::RunManager::do_upgrade_deck_card_at`].
+    pub pending_post_upgrade_hp_loss: i32,
+
     /// Cards to append to [`Self::master_deck`] only AFTER every interactive
     /// deck pick a relic-grant batch queued (upgrades, removals, transforms,
     /// enchants) AND any card/relic-reward offering it opened have fully
@@ -1559,6 +1658,12 @@ pub struct RunState {
     /// extra arg. Mirrors Python `RunState.ascension_level`
     /// (`run_state.py:1380`). Bead `sts2-rs-4aunm`.
     pub ascension_level: u8,
+
+    /// Game build this run simulates (GH #787). Threaded from
+    /// `RunManager::with_game_version` and copied onto every
+    /// [`crate::CombatState`] built from this run. Defaults to
+    /// [`crate::GameVersion::V0_107_1`].
+    pub game_version: crate::GameVersion,
 
     /// Storage for the current act's map. Populated by
     /// [`Self::generate_map`] (the immediate-regen primitive) and
@@ -1839,9 +1944,12 @@ impl Default for RunState {
             pending_card_grants: Vec::new(),
             pending_bundles: Vec::new(),
             card_reward_upgraded_flags: Vec::new(),
+            card_reward_enchantments: Vec::new(),
+            card_slate_not_card_reward: false,
             relics: Vec::new(),
             last_obtained_relic: None,
             last_combat_gold_proportion: 1.0,
+            combat_gold_bounds_override: None,
             dusty_tome_setup_card: None,
             current_room: None,
             // Python pin `sts2-rl-agent@01c094d:sts2_env/run/run_state.py:38-40`.
@@ -1887,6 +1995,9 @@ impl Default for RunState {
             pending_deck_removals: 0,
             pending_post_removal_cards: Vec::new(),
             pending_post_removal_hp_loss: 0,
+            pending_post_removal_max_hp_gain: 0,
+            pending_post_removal_gold_loss: 0,
+            pending_post_upgrade_hp_loss: 0,
             pending_post_pick_cards: Vec::new(),
             pending_neows_bones_curses: 0,
             pending_post_pick_relic_grants: Vec::new(),
@@ -1905,6 +2016,7 @@ impl Default for RunState {
             // generated yet at construction; RunManager::with_ascension
             // and Self::generate_map populate these.
             ascension_level: 0,
+            game_version: crate::GameVersion::V0_107_1,
             current_act_map: None,
             pinned_act_boss: None,
             generated_rooms: Vec::new(),
@@ -2480,8 +2592,14 @@ impl RunState {
         //
         // `DotNetRng::with_name(s, n) = Rng(s + deterministic_hash_code(n))`
         // (modulo u32 wrap), matching the C# seed with a 0 player term.
-        let mut event_rng = crate::DotNetRng::with_name(self.rng.seed, NEOW_EVENT_RNG_NAME);
-        self.neow_offers = Some(crate::roll_neow_offers(&mut event_rng));
+        // v0.111.0 `EventModel.cs:234` is the same sum in `ulong`; `named`
+        // follows the run's game build (GH #788).
+        let mut event_rng = self.rng.named(NEOW_EVENT_RNG_NAME);
+        // v0.111.0: the curse pool grew 8 -> 10 (decomp Neow.cs:96).
+        self.neow_offers = Some(crate::neow_offers::roll_neow_offers_for(
+            self.game_version,
+            &mut event_rng,
+        ));
     }
 
     /// Clear [`Self::current_event`]. Called by the events dispatcher
@@ -3165,8 +3283,9 @@ impl RunState {
                     // `_can_auto_resolve_deck_choice` when
                     // `len(cards) <= min_count == 1`.
                     let target_id = upgradable[0];
+                    let version = self.game_version;
                     for c in &mut self.master_deck {
-                        if c.card_id == target_id && !c.upgraded && c.upgrade() {
+                        if c.card_id == target_id && !c.upgraded && c.upgrade_for(version) {
                             return RestSiteActionOutcome::SmithUpgraded { card_id: target_id };
                         }
                     }
@@ -3233,10 +3352,32 @@ impl RunState {
                 *self.relic_counters.entry(RelicId::Girya).or_insert(0) += 1;
                 RestSiteActionOutcome::Lifted
             }
+            RestSiteOption::Cook { .. } if self.game_version >= crate::GameVersion::V0_111_0 => {
+                self.cook_v0111();
+                RestSiteActionOutcome::Cooked
+            }
             RestSiteOption::Dig
             | RestSiteOption::Cook { .. }
             | RestSiteOption::Clone
             | RestSiteOption::Mend => RestSiteActionOutcome::Unsupported,
+        }
+    }
+
+    /// v0.111.0 `CookRestSiteOption.OnSelect` (`CookRestSiteOption.cs:44-60`):
+    ///
+    /// [decompiled C# omitted — see the cited path]
+    ///
+    /// v0.111.0 lowered the gain 9 -> 5 (`_maxHpGain`, decomp
+    /// `CookRestSiteOption.cs:17`). The interactive path queues the two
+    /// removals and parks the gain until they drain (the PrecariousShears
+    /// pattern); the auto path removes from the deck front and gains now.
+    fn cook_v0111(&mut self) {
+        if self.interactive_card_removal {
+            self.pending_deck_removals += COOK_CARDS_TO_REMOVE;
+            self.pending_post_removal_max_hp_gain += COOK_MAX_HP_GAIN_V0111;
+        } else {
+            let _ = self.remove_cards_from_deck(COOK_CARDS_TO_REMOVE as usize);
+            self.gain_max_hp(COOK_MAX_HP_GAIN_V0111);
         }
     }
 
@@ -3249,6 +3390,28 @@ impl RunState {
     /// `modify_card_reward_options_late`. Bead `sts2-rs-9wx7`.
     pub fn offer_card_reward(&mut self, mut options: Vec<Card>) -> Vec<Card> {
         let _ = crate::run_effects::dispatch_modify_card_reward_options_late(self, &mut options);
+        options
+    }
+
+    /// [`Self::offer_card_reward`] for a slate whose C# options may lack
+    /// `CardCreationFlags.IsCardReward`.
+    ///
+    /// v0.111.0: a slate made by a direct `CardFactory.CreateForReward` (no
+    /// `CardReward` wrapper, so no `IsCardReward`, `CardReward.cs:115`) still
+    /// runs `Hook.TryModifyCardRewardOptions`, but SilverCrucible and
+    /// SilkenTress return early on it:
+    ///
+    /// [decompiled C# omitted — see the cited path]
+    ///
+    /// (decomp `Models.Relics/SilverCrucible.cs:104`, `SilkenTress.cs:53`). The
+    /// guard is in v0.107.1 too, but that arm keeps the old behaviour (every
+    /// slate is treated as a card reward) so v0.107.1 output stays
+    /// bit-identical; the fix is tracked for that build in #806.
+    pub fn offer_card_slate(&mut self, options: Vec<Card>, is_card_reward: bool) -> Vec<Card> {
+        let not_reward = !is_card_reward && self.game_version >= crate::GameVersion::V0_111_0;
+        self.card_slate_not_card_reward = not_reward;
+        let options = self.offer_card_reward(options);
+        self.card_slate_not_card_reward = false;
         options
     }
 
@@ -3879,8 +4042,9 @@ impl RunState {
             return Vec::new();
         }
         let cond = self.compute_ancient_conditions(next_act as i32);
-        let mut rng = crate::boss_ancient_offers::event_rng(self.rng.seed, ancient);
-        crate::boss_ancient_offers::roll_offers(ancient, &mut rng, &cond)
+        let mut rng = crate::boss_ancient_offers::event_rng_for(&self.rng, ancient);
+        // v0.111.0: Orobas / Darv pools changed (decomp Orobas.cs:28, Darv.cs:172).
+        crate::boss_ancient_offers::roll_offers_for(self.game_version, ancient, &mut rng, &cond)
     }
 
     /// Deck/run predicates the Ancient `GenerateInitialOptions` methods read.
@@ -3925,10 +4089,10 @@ impl RunState {
         // lookup as `amalgamator_allowed`); the Strike tag IS populated on
         // master-deck cards.
         let rank = crate::lookup_card_rarity_rank();
-        let tezcatara_basic_strike = self
-            .master_deck
-            .iter()
-            .any(|c| c.tags.contains(CardTag::Strike) && rank.map_or(true, |f| f(c.card_id) == 1));
+        let tezcatara_basic_strike = self.master_deck.iter().any(|c| {
+            c.tags.contains(CardTag::Strike)
+                && rank.map_or(true, |f| f(c.card_id, self.game_version) == 1)
+        });
         crate::boss_ancient_offers::AncientConditions {
             act_index: act_index_0based,
             goopy_eligible_count: goopy,
@@ -4163,6 +4327,73 @@ impl RunState {
         let _ = crate::run_effects::dispatch_modify_card_being_added_to_deck(self, card);
     }
 
+    /// Add `card` to the deck the way C# `CardPileCmd.Add(card, PileType.Deck)`
+    /// does: `Hook.ModifyCardBeingAddedToDeck` first (the eggs' upgrade), then
+    /// the append, then the add listeners C# reaches through
+    /// `AfterCardChangedPiles` (LuckyFysh's gold, DarkstonePeriapt, BingBong),
+    /// here the `on_card_added_to_deck` channel. Used by v0.111.0 arms only;
+    /// many v0.107.1 run-side adds still push straight onto the deck (#806).
+    pub fn add_card_to_deck_with_hooks(
+        &mut self,
+        mut card: Card,
+        source: crate::relic_effects::AddSource,
+    ) {
+        self.modify_card_being_added_to_deck(&mut card);
+        let ctx = crate::run_effects::CardAddedRunCtx {
+            card_id: card.card_id,
+            card_type: card.card_type,
+            source,
+        };
+        self.master_deck.push(card);
+        let _ = crate::run_effects::dispatch_on_card_added_to_deck(self, &ctx);
+    }
+
+    /// v0.111.0 Dowsing quest (GH #793): one `?` map node entered with the
+    /// card in the deck. `Cards/Dowsing.cs:43-60`:
+    ///
+    /// [decompiled C# omitted — see the cited path]
+    ///
+    /// The caller has already checked the map point is a `?` node and that
+    /// this is the node's first room (`CurrentRoomCount == 1`: only a map
+    /// move gets here, never a room stacked inside an event). `RoomsEntered`
+    /// is the card's `[SavedProperty]`, carried on the deck card as
+    /// [`crate::cards::VarKey::Generic`]. The transform is the deck branch of
+    /// `CardCmd.Transform` (`CardCmd.cs:416-447`): remove the original,
+    /// `ModifyCardBeingAddedToDeck`, append the replacement at the deck tail,
+    /// then `AfterCardChangedPiles`. `CompleteQuest` only writes run history.
+    pub fn tick_dowsing_quests_v0111(&mut self) {
+        use crate::cards::{CardId, VarKey};
+        let mut idx = 0;
+        while idx < self.master_deck.len() {
+            if self.master_deck[idx].card_id != CardId::Dowsing {
+                idx += 1;
+                continue;
+            }
+            let rooms = self.master_deck[idx].combat_var(VarKey::Generic) + 1;
+            self.master_deck[idx].set_combat_var(VarKey::Generic, rooms);
+            if rooms < 5 {
+                idx += 1;
+                continue;
+            }
+            let Some(mut abundance) =
+                crate::build_card_for_version(CardId::Abundance, false, self.game_version)
+            else {
+                idx += 1;
+                continue;
+            };
+            self.master_deck.remove(idx);
+            self.modify_card_being_added_to_deck(&mut abundance);
+            let ctx = crate::run_effects::CardAddedRunCtx {
+                card_id: abundance.card_id,
+                card_type: abundance.card_type,
+                source: crate::relic_effects::AddSource::Other,
+            };
+            self.master_deck.push(abundance);
+            let _ = crate::run_effects::dispatch_on_card_added_to_deck(self, &ctx);
+            // The deck shifted down over `idx`; re-check the same slot.
+        }
+    }
+
     /// Fire the `modify_merchant_card_creation_results` channel for
     /// `card`. Listeners may enchant or otherwise mutate the merchant
     /// inventory item before it's offered. `is_colorless` mirrors the
@@ -4208,6 +4439,12 @@ impl RunState {
     /// Bead `sts2-rs-vk9av`.
     pub fn roll_potion_reward(&mut self, room_type: RoomType) -> bool {
         let force = crate::run_effects::dispatch_should_force_potion_reward(self, room_type);
+        // v0.111.0: a forced reward returns before the roll — no `NextFloat`
+        // and no -0.1 pity swing (decomp PotionRewardOdds.cs:57). v0.107.1
+        // rolled and swung anyway.
+        if force && self.game_version >= crate::GameVersion::V0_111_0 {
+            return true;
+        }
         let is_elite = room_type == RoomType::Elite;
         self.potion_reward_odds
             .roll(&mut self.rng.rewards, is_elite, force)
@@ -4346,11 +4583,20 @@ impl RunState {
         if is_monster && gold_proportion <= 0.0 {
             return None;
         }
-        let (low, high) = match room_type {
-            RoomType::Monster => (ENCOUNTER_GOLD_LOW_MONSTER, ENCOUNTER_GOLD_HIGH_MONSTER),
-            RoomType::Elite => (ENCOUNTER_GOLD_LOW_ELITE, ENCOUNTER_GOLD_HIGH_ELITE),
-            RoomType::Boss => (ENCOUNTER_GOLD_LOW_BOSS, ENCOUNTER_GOLD_HIGH_BOSS),
-            _ => return None,
+        // An encounter that overrides `MinGoldReward`/`MaxGoldReward`
+        // (`FakeMerchantEventEncounter.cs:21-23`) replaces the base getter,
+        // Poverty multiplier included, so its bounds skip that step.
+        let overridden = if is_monster {
+            self.combat_gold_bounds_override
+        } else {
+            None
+        };
+        let (low, high) = match (overridden, room_type) {
+            (Some(bounds), _) => bounds,
+            (None, RoomType::Monster) => (ENCOUNTER_GOLD_LOW_MONSTER, ENCOUNTER_GOLD_HIGH_MONSTER),
+            (None, RoomType::Elite) => (ENCOUNTER_GOLD_LOW_ELITE, ENCOUNTER_GOLD_HIGH_ELITE),
+            (None, RoomType::Boss) => (ENCOUNTER_GOLD_LOW_BOSS, ENCOUNTER_GOLD_HIGH_BOSS),
+            (None, _) => return None,
         };
         // C# applies Poverty inside `EncounterModel.Min/MaxGoldReward`
         // (`EncounterModel.cs:52-57` / `:71-76`): `num *= 0.75; return
@@ -4362,7 +4608,7 @@ impl RunState {
         // banker's-round here; the C# decomp wins (2026-06-12 ascension
         // audit, bead sts2-rs-40ikw.2).
         let (mut low_f, mut high_f) = (f64::from(low), f64::from(high));
-        if self.ascension_level >= POVERTY_ASCENSION_LEVEL {
+        if overridden.is_none() && self.ascension_level >= POVERTY_ASCENSION_LEVEL {
             low_f = (low_f * POVERTY_ASCENSION_GOLD_MULTIPLIER).trunc();
             high_f = (high_f * POVERTY_ASCENSION_GOLD_MULTIPLIER).trunc();
         }
@@ -4618,8 +4864,9 @@ impl RunState {
         // success counter so a future race / pre-upgraded subset can't
         // overstate the result.
         let mut upgraded = 0_usize;
+        let version = self.game_version;
         for &deck_idx in candidates.iter().take(take) {
-            if self.master_deck[deck_idx].upgrade() {
+            if self.master_deck[deck_idx].upgrade_for(version) {
                 upgraded += 1;
             }
         }
@@ -4656,8 +4903,9 @@ impl RunState {
             candidates.swap(i, j);
         }
         let mut downgraded = 0_usize;
+        let version = self.game_version;
         for &deck_idx in candidates.iter().take(take) {
-            if self.master_deck[deck_idx].downgrade() {
+            if self.master_deck[deck_idx].downgrade_for(version) {
                 downgraded += 1;
             }
         }
@@ -4804,8 +5052,9 @@ impl RunState {
         let candidates: Vec<usize> = order.into_iter().map(|i| candidates[i]).collect();
         let take = count.min(candidates.len());
         let mut upgraded = 0_usize;
+        let version = self.game_version;
         for &deck_idx in candidates.iter().take(take) {
-            if self.master_deck[deck_idx].upgrade() {
+            if self.master_deck[deck_idx].upgrade_for(version) {
                 upgraded += 1;
             }
         }
@@ -5089,7 +5338,40 @@ impl RunState {
         let take = count.min(self.master_deck.len());
         self.master_deck.drain(0..take).count()
     }
+
+    /// v0.111.0 `Guilty.AfterCombatEnd`: every Guilty in the deck counts the
+    /// combat, and one that has seen [`GUILTY_MAX_COMBATS`] combats removes
+    /// itself from the deck.
+    ///
+    /// [decompiled C# omitted — see the cited path]
+    ///
+    /// (decomp `Models.Cards/Guilty.cs:46`; v0.107.1 has the same code, but the
+    /// v0.107.1 arm keeps its old behaviour (no removal) so that build's output
+    /// stays bit-identical.) The per-card `CombatsSeen` lives in the deck card's
+    /// [`crate::cards::VarKey::Generic`] slot: a Guilty is never enchanted
+    /// (it is an unplayable curse), so nothing else writes that slot. The only
+    /// `BeforeCardRemoved` listener `RemoveFromDeck` fires is SpoilsMap's own
+    /// removal, so a plain deck removal is the whole effect. Returns the number
+    /// of Guilty cards removed.
+    pub fn tick_guilty_after_combat_end(&mut self) -> usize {
+        use crate::cards::{CardId, VarKey};
+        let before = self.master_deck.len();
+        for card in &mut self.master_deck {
+            if card.card_id == CardId::Guilty {
+                let seen = card.combat_var(VarKey::Generic) + 1;
+                card.set_combat_var(VarKey::Generic, seen);
+            }
+        }
+        self.master_deck.retain(|c| {
+            c.card_id != CardId::Guilty || c.combat_var(VarKey::Generic) < GUILTY_MAX_COMBATS
+        });
+        before - self.master_deck.len()
+    }
 }
+
+/// `Guilty.maxCombats` (v0.111.0 `Models.Cards/Guilty.cs:13`): the combats a
+/// Guilty stays in the deck before it removes itself.
+pub const GUILTY_MAX_COMBATS: i32 = 5;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -7009,6 +7291,38 @@ mod tests {
         }
         assert_eq!(seen_min, 26, "low bound reachable");
         assert_eq!(seen_max, 33, "high bound reachable (33, not banker's 34)");
+    }
+
+    /// GH #817: `FakeMerchantEventEncounter` overrides `MinGoldReward` /
+    /// `MaxGoldReward` to 300, replacing the base getter (Poverty included),
+    /// while `GoldReward.Populate` still draws `Rewards.NextInt(300, 301)`
+    /// and the Monster arm still scales by `GoldProportion`.
+    #[test]
+    fn roll_encounter_gold_honours_encounter_bounds_override() {
+        let new_rs = || RunState {
+            rng: crate::run_rng_set::RunRngSet::new(0x817),
+            ascension_level: 10,
+            combat_gold_bounds_override: Some((300, 300)),
+            ..RunState::default()
+        };
+        let mut rs = new_rs();
+        let mut reference = new_rs();
+        assert_eq!(rs.roll_encounter_gold(RoomType::Monster, 1.0), Some(300));
+        let _ = reference.rng.rewards.next_int(0, 1);
+        assert_eq!(
+            rs.rng.rewards.next_int(0, 1_000_000),
+            reference.rng.rewards.next_int(0, 1_000_000),
+            "the fixed roll still consumes one Rewards draw"
+        );
+        let mut half = new_rs();
+        assert_eq!(half.roll_encounter_gold(RoomType::Monster, 0.5), Some(150));
+        // The override is the encounter's, which is a Monster room; an
+        // Elite roll keeps its own bounds.
+        let mut elite = new_rs();
+        let g = elite
+            .roll_encounter_gold(RoomType::Elite, 1.0)
+            .expect("rolls");
+        assert!((26..=33).contains(&g), "Poverty Elite bounds, got {g}");
     }
 
     #[test]

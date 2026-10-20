@@ -35,17 +35,28 @@ def _version_key(name: str) -> tuple[int, ...]:
     return tuple(int(p) for p in re.findall(r"\d+", name))
 
 
-def _latest_version_dir() -> Path:
-    """Pick the highest semver-style directory under data/.
+# The game version lookups answer for when STS2_VERSION is unset. Pinned
+# rather than "highest data/ dir": data/v0.111.0 (the beta port, GH #786)
+# lacks the LLM-extracted per-entity folders (monsters/, cards/, ...) these
+# lookups read, and v0.107.1 stays the default until the version flip in
+# docs/plans/2026-10-17-multi-version-v0.111.md (section 7).
+DEFAULT_VERSION = "v0.107.1"
 
-    Override with STS2_VERSION (e.g. STS2_VERSION=v0.101.0) when you need
-    to query an older snapshot.
+
+def _latest_version_dir() -> Path:
+    """Pick the data/ directory to query.
+
+    STS2_VERSION (e.g. STS2_VERSION=v0.101.0) selects a snapshot; otherwise
+    DEFAULT_VERSION, falling back to the highest semver-style directory
+    when that one is absent (e.g. an export carrying a single version).
     """
     override = os.environ.get("STS2_VERSION")
     if override:
         return DATA_ROOT / override
     if not DATA_ROOT.is_dir():
         raise SystemExit(f"No wiki data at {DATA_ROOT}; run `just extract` or set STS2_WIKI_DATA")
+    if (DATA_ROOT / DEFAULT_VERSION).is_dir():
+        return DATA_ROOT / DEFAULT_VERSION
     versions = [p for p in DATA_ROOT.iterdir() if p.is_dir() and p.name.startswith("v")]
     if not versions:
         raise SystemExit(f"No version directories found under {DATA_ROOT}")

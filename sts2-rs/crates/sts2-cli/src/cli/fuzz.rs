@@ -91,6 +91,11 @@ pub struct FuzzArgs {
     #[arg(long, default_value_t = false)]
     pub invincible: bool,
 
+    /// Game build to simulate — filled from the global `--game-version`
+    /// flag by `main` (GH #787), not a flag of its own.
+    #[arg(skip)]
+    pub game_version: sts2_core::GameVersion,
+
     /// Worker threads (`0` = all available cores).
     #[arg(long, default_value_t = 0)]
     pub jobs: usize,
@@ -143,9 +148,14 @@ struct Cell {
 }
 
 /// Run one `(seed, character)` cell, catching any panic.
-fn run_cell(seed: i32, character: CharacterId, cfg: &FullRunConfig) -> Cell {
+fn run_cell(
+    seed: i32,
+    character: CharacterId,
+    game_version: sts2_core::GameVersion,
+    cfg: &FullRunConfig,
+) -> Cell {
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let mut rm = new_run_manager_for_character(seed, character);
+        let mut rm = new_run_manager_for_character(seed, character).with_game_version(game_version);
         // NOTE: ascension is identity at this pin (CLAUDE.md); the run
         // manager is built at A0. An ascension-aware constructor can be
         // threaded here once the run-side scaling lands.
@@ -221,6 +231,7 @@ pub fn run<W: Write>(args: FuzzArgs, out: &mut W) -> io::Result<usize> {
         record_trace: false,
     };
 
+    let game_version = args.game_version;
     // Build the work-list: every (seed, character) cell.
     let characters = args.character.expand();
     let mut cells_in: Vec<(i32, CharacterId)> = Vec::new();
@@ -250,7 +261,7 @@ pub fn run<W: Write>(args: FuzzArgs, out: &mut W) -> io::Result<usize> {
     let run_all = || -> Vec<Cell> {
         cells_in
             .par_iter()
-            .map(|&(seed, c)| run_cell(seed, c, &cfg))
+            .map(|&(seed, c)| run_cell(seed, c, game_version, &cfg))
             .collect()
     };
     let cells: Vec<Cell> = if args.jobs == 0 {
@@ -382,6 +393,7 @@ mod tests {
             invincible: false,
             jobs: 1,
             record_dir: None,
+            game_version: sts2_core::GameVersion::default(),
         };
         let mut out: Vec<u8> = Vec::new();
         run(args, &mut out).expect("sweep run ok");

@@ -129,6 +129,18 @@ pub(crate) fn emit_err(e: sts2_wire::emit::EmitError) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
+/// Parse a Python `game_version=` kwarg (GH #787). `None` ⇒ the default
+/// build ([`sts2_core::GameVersion::V0_107_1`]); an unknown string raises
+/// `ValueError`. Accepts `"v0.111.0"` / `"0.111.0"` and the 0.107.1 forms.
+pub(crate) fn parse_game_version(raw: Option<&str>) -> PyResult<sts2_core::GameVersion> {
+    match raw {
+        None => Ok(sts2_core::GameVersion::default()),
+        Some(s) => s
+            .parse::<sts2_core::GameVersion>()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+    }
+}
+
 pub fn build_seeded_state(seed: u64, ascension: u8) -> CoreCombatState {
     CoreCombatState {
         rng: sts2_core::dotnet_rng::Rng::new((seed) as i32),
@@ -321,6 +333,7 @@ fn build_encounter_state(
         is_over: false,
         player_won: false,
         ascension,
+        game_version: sts2_core::GameVersion::V0_107_1,
         master_deck: Vec::new(),
         last_added_card: None,
         is_elite: false,
@@ -352,7 +365,10 @@ fn build_encounter_state(
 ///
 /// The construction now lives in [`sts2_wire::scenario::build_scenario_state`]
 /// so the browser SimLab sandbox rebuilds byte-identical boards; this is the
-/// thin oracle-side delegate every PyO3 caller here still routes through.
+/// thin default-build delegate the unit tests below use. The PyO3 entry point
+/// calls [`sts2_wire::scenario::build_scenario_state_for_version`] directly so
+/// it can honour `game_version=` (GH #787).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn build_scenario_state_impl(
     seed: u64,
@@ -651,15 +667,17 @@ impl PyCombatState {
 #[pymethods]
 impl PyCombatState {
     #[new]
-    #[pyo3(signature = (seed = 0, deck = None, relics = None, encounter = None, ascension = 0))]
+    #[pyo3(signature = (seed = 0, deck = None, relics = None, encounter = None, ascension = 0, game_version = None))]
     fn new(
         seed: u64,
         deck: Option<&Bound<'_, PyAny>>,
         relics: Option<&Bound<'_, PyAny>>,
         encounter: Option<&Bound<'_, PyAny>>,
         ascension: u8,
+        game_version: Option<&str>,
     ) -> PyResult<Self> {
         let _ = (deck, relics);
+        let game_version = parse_game_version(game_version)?;
         let enc_str: Option<String> = match encounter {
             Some(e) => Some(e.extract()?),
             None => None,
@@ -670,11 +688,20 @@ impl PyCombatState {
         } else {
             build_seeded_state(seed, ascension)
         };
+        let mut inner = inner;
+        inner.game_version = game_version;
         Ok(Self {
             inner,
             seed,
             intent_damage_known: true,
         })
+    }
+
+    /// The game build this combat simulates, as `"v0.107.1"` /
+    /// `"v0.111.0"` (GH #787).
+    #[getter]
+    fn game_version(&self) -> String {
+        self.inner.game_version.to_string()
     }
 
     /// Whether the wire-side enemy intents this state was built from
@@ -2794,9 +2821,63 @@ fn build_info(py: Python<'_>) -> PyResult<PyObject> {
 /// uint seed that C# `RunRngSet(stringSeed)` uses internally
 /// (`Seed = (uint)GetDeterministicHashCode(stringSeed)`), letting both
 /// engines start combat from byte-identical RNG state. Bead `sts2-rs-ykmk9`.
+///
+/// This is the v0.107.1 32-bit hash and is kept unchanged for existing
+/// callers; [`seed_hash`] / [`run_seed_hash`] are the version-aware forms.
 #[pyfunction]
 fn deterministic_hash_code(text: &str) -> i32 {
     sts2_core::deterministic_hash_code(text)
+}
+
+/// `StringHelper.GetDeterministicHashCode(text)` for game build
+/// `game_version` (default v0.107.1), as the unsigned value every seed
+/// derivation mixes in: `(uint)hash` in v0.107.1, XxHash64 of the UTF-8
+/// bytes in v0.111.0 (GH #788). Raises `ValueError` on an unknown version.
+#[pyfunction]
+#[pyo3(signature = (text, game_version = None))]
+fn seed_hash(text: &str, game_version: Option<&str>) -> PyResult<u64> {
+    Ok(parse_game_version(game_version)?.seed_hash(text))
+}
+
+/// C# `RunRngSet.Seed` for the seed string `seed` in game build
+/// `game_version` (default v0.107.1): [`seed_hash`], plus v0.111.0's
+/// `"old"`-prefix save-migration rule (GH #788). Pass the string exactly as
+/// C# hands it to `RunRngSet` — canonicalise human-typed seeds first.
+#[pyfunction]
+#[pyo3(signature = (seed, game_version = None))]
+fn run_seed_hash(seed: &str, game_version: Option<&str>) -> PyResult<u64> {
+    Ok(parse_game_version(game_version)?.run_seed_hash(seed))
+}
+
+/// Seed-derivation probe (GH #792): for the master seed `run_seed` in game
+/// build `game_version`, the first `draws` `NextInt(0, 1000000)` of C#
+/// `new Rng(run_seed, name)` for every name in `names`, plus the run's
+/// `up_front` stream (key `"up_front"`). The Rust twin of the C# oracle's
+/// `rng_probe` command, so a test can pin both engines' named streams for
+/// one seed string draw for draw.
+#[pyfunction]
+#[pyo3(signature = (run_seed, names, draws, game_version = None))]
+fn debug_named_stream_draws(
+    run_seed: u64,
+    names: Vec<String>,
+    draws: usize,
+    game_version: Option<&str>,
+) -> PyResult<std::collections::BTreeMap<String, Vec<i32>>> {
+    let version = parse_game_version(game_version)?;
+    let master = version.normalize_seed(run_seed);
+    let mut out = std::collections::BTreeMap::new();
+    for name in names {
+        let mut rng = sts2_core::dotnet_rng::Rng::with_name_for(version, master, &name);
+        // C# `NextInt(0, 1000000)` is half-open; `next_int` is inclusive.
+        let xs = (0..draws).map(|_| rng.next_int(0, 999_999)).collect();
+        out.insert(name, xs);
+    }
+    let mut set = sts2_core::RunRngSet::new_for(version, master);
+    let up = (0..draws)
+        .map(|_| set.up_front.next_int(0, 999_999))
+        .collect();
+    out.insert("up_front".to_string(), up);
+    Ok(out)
 }
 
 /// Roll the run's act list from a display seed — the port of C#
@@ -2816,22 +2897,26 @@ fn deterministic_hash_code(text: &str) -> i32 {
 /// false to match the headless oracle (pure seed roll), true to model a real
 /// singleplayer save where an undiscovered Underdocks is force-picked.
 #[pyfunction]
-#[pyo3(signature = (seed, underdocks_unlocked=false, underdocks_discovered=false, force_undiscovered=false))]
+#[pyo3(signature = (seed, underdocks_unlocked=false, underdocks_discovered=false, force_undiscovered=false, game_version=None))]
 fn roll_acts(
     seed: &str,
     underdocks_unlocked: bool,
     underdocks_discovered: bool,
     force_undiscovered: bool,
-) -> Vec<String> {
+    game_version: Option<&str>,
+) -> PyResult<Vec<String>> {
     let unlocks = sts2_core::ActSelectionUnlocks {
         underdocks_unlocked,
         underdocks_discovered,
         force_undiscovered,
     };
-    sts2_core::act_selection::roll_acts_for_seed(seed, &unlocks)
-        .iter()
-        .map(|a| a.id().to_string())
-        .collect()
+    let version = parse_game_version(game_version)?;
+    Ok(
+        sts2_core::act_selection::roll_acts_for_seed_for(version, seed, &unlocks)
+            .iter()
+            .map(|a| a.id().to_string())
+            .collect(),
+    )
 }
 
 /// `n` **pass-every-turn** playouts from `state`, reporting the win rate.
@@ -3251,6 +3336,87 @@ fn mcts_recommend<'py>(
     crate::value_to_pydict(py, &out)
 }
 
+/// Price ONE move from the position it is chosen FROM, with every
+/// simulation pinned to `action` at the root
+/// ([`sts2_wire::emit::mcts::score_action_forced`]).
+///
+/// The live coach's top-up for a played move the main search barely visited
+/// (GH #494: a low-visit root child's Q is a visit-count artifact). Same
+/// search config and defaults as [`mcts_recommend`]; always single-threaded
+/// (`Mcts::search_forced` has no root-parallel form). `action` is the bridge
+/// dict [`PyCombatState::apply`] takes (`{"action": "play", "card_index",
+/// "target_index"}` / `{"action": "end_turn"}` / `{"action": "potion",
+/// "slot"}` with the ENGINE's dense slot).
+///
+/// Returns the row dict (`p_win`, `q`, `visits`, `wins`, `losses`, `ties`,
+/// `mean_final_hp`, `hp_n`, …), or `None` when `action` is not a root action
+/// of `state` (or the root is terminal). The search runs off-GIL.
+#[pyfunction]
+#[pyo3(signature = (
+    state,
+    action,
+    *,
+    sims = 1000,
+    c_puct = None,
+    depth = 200,
+    seed = 0,
+    rollout_policy = None,
+    hidden_info = "beliefdraw",
+    draw_widening_c = None,
+    endturn_widening_c = None,
+    endturn_widening_alpha = None,
+    dominance_pruning = false,
+))]
+#[allow(clippy::too_many_arguments)]
+fn mcts_score_action_forced<'py>(
+    py: Python<'py>,
+    state: &PyCombatState,
+    action: &Bound<'py, PyAny>,
+    sims: u32,
+    c_puct: Option<f32>,
+    depth: u32,
+    seed: u64,
+    rollout_policy: Option<&str>,
+    hidden_info: &str,
+    draw_widening_c: Option<f32>,
+    endturn_widening_c: Option<f32>,
+    endturn_widening_alpha: Option<f32>,
+    dominance_pruning: bool,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let dict = action.downcast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(
+            "mcts_score_action_forced: expected a dict in bridge action shape",
+        )
+    })?;
+    let action = parse_bridge_action(dict)?;
+    let hidden_info = parse_hidden_info(hidden_info, "mcts_score_action_forced")?;
+    let (c_puct, draw_widening_c) =
+        resolve_search_constants(hidden_info, c_puct, draw_widening_c, sims);
+    let params = RecommendParams {
+        sims,
+        depth,
+        c_puct,
+        seed,
+        threads: 1,
+        fair: false,
+        rollout_policy: rollout_policy
+            .map(|p| sts2_wire::emit::mcts::parse_rollout_policy(p, "mcts_score_action_forced"))
+            .transpose()
+            .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        hidden_info,
+        draw_widening_c,
+        endturn_widening_c,
+        endturn_widening_alpha,
+        common_random_numbers: false,
+        dominance_pruning,
+    };
+    let root_state = state.inner.clone();
+    let out = py.allow_threads(move || {
+        sts2_wire::emit::mcts::score_action_forced(&root_state, &params, &action)
+    });
+    out.map(|v| crate::value_to_pydict(py, &v)).transpose()
+}
+
 /// Run a single (non-fair) MCTS search and serialize the **entire search
 /// tree** for the agent search-tree inspector.
 ///
@@ -3356,6 +3522,9 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(recompute_src_hash, m)?)?;
     m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(deterministic_hash_code, m)?)?;
+    m.add_function(wrap_pyfunction!(seed_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(run_seed_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_named_stream_draws, m)?)?;
     m.add_function(wrap_pyfunction!(roll_acts, m)?)?;
     m.add_function(wrap_pyfunction!(rollouts, m)?)?;
     m.add_function(wrap_pyfunction!(mcts_play_to_terminal, m)?)?;
@@ -3400,6 +3569,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Bead sts2-rs-cosb (hint-T4): MCTS recommendation surface +
     // win-probability bucket table.
     m.add_function(wrap_pyfunction!(mcts_recommend, m)?)?;
+    m.add_function(wrap_pyfunction!(mcts_score_action_forced, m)?)?;
     m.add_function(wrap_pyfunction!(mcts_search_tree, m)?)?;
     // Persistent-combat-mirror surface (the rest are `PyCombatState`
     // methods; this one is a pure classification of a choice kind).
@@ -3527,6 +3697,7 @@ fn state_from_dict_py(d: &Bound<'_, PyDict>) -> PyResult<PyCombatState> {
     monsters = None,
     potions = None,
     move_states = None,
+    game_version = None,
 ))]
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn build_scenario_state_py(
@@ -3541,9 +3712,12 @@ fn build_scenario_state_py(
     monsters: Option<Vec<String>>,
     potions: Option<Vec<String>>,
     move_states: Option<Vec<Option<String>>>,
+    game_version: Option<&str>,
 ) -> PyResult<PyCombatState> {
     let potions = potions.unwrap_or_default();
-    let inner = build_scenario_state_impl(
+    let game_version = parse_game_version(game_version)?;
+    let inner = sts2_wire::scenario::build_scenario_state_for_version(
+        game_version,
         seed,
         character,
         &deck,

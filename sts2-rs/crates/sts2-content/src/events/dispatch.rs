@@ -443,12 +443,22 @@ pub fn pick_event(state: &mut RunState, pool: Option<&[&str]>) -> Option<EventId
     }
 
     // Mutate state only after picking (avoids borrow conflicts).
-    if let Some(id) = picked {
-        state.visited_event_ids.insert(id);
+    if let Some(mut id) = picked {
         if uses_act_event_order {
             event_index = event_index.wrapping_add(1);
             state.acts[act_idx - 1].events_visited = event_index as u32;
+            // C# `ActModel.PullNextEvent` (ActModel.cs:451-456) runs
+            // `Hook.ModifyNextEvent` on the cursor's event and records the
+            // RESULT as visited. Its one listener is the LanternKey quest card,
+            // which in act 3 swaps in `WarHistorianRepy`
+            // (`Models.Cards/LanternKey.cs:30-37`). The cursor still advances
+            // past the replaced event, which stays unvisited.
+            if state.lantern_key_redirects_to_war_historian() {
+                id = EventId::WarHistorianRepy;
+            }
         }
+        state.visited_event_ids.insert(id);
+        picked = Some(id);
     }
     picked
 }
@@ -506,6 +516,18 @@ pub fn event_option_count_callback(state: &RunState) -> usize {
     present(state).map_or(0, |opts| opts.len())
 }
 
+/// `bind_pending_event` callback for [`sts2_core::run_manager::ContentCallbacks`].
+///
+/// Rolls the pending room's event and enters it, as `PpoRunEnv`'s
+/// `materialize_event` does (GH #302, #841). No-op once an event is bound.
+pub fn bind_pending_event_callback(state: &mut RunState) {
+    if state.current_event.is_none() {
+        if let Some(id) = pick_event(state, None) {
+            state.enter_event_room(id);
+        }
+    }
+}
+
 /// `resume_event_after_combat` callback for
 /// [`sts2_core::run_manager::ContentCallbacks`].
 ///
@@ -513,8 +535,8 @@ pub fn event_option_count_callback(state: &RunState) -> usize {
 /// handler (C# `EventModel.Resume(room)`). Only `resume`-flagged encounters
 /// reach here: `BattlewornDummy` grants its per-setting reward via
 /// [`super::shared::battleworn_dummy_resume`] (gated on `clean_victory` —
-/// `RanOutOfTime` → no reward). `MysteriousKnight` (TheLanternKey) and
-/// `FakeMerchant` are no-resume — their victory rewards are granted directly
+/// `RanOutOfTime` → no reward). `MysteriousKnight` (TheLanternKey),
+/// `FakeMerchant` and `DenseVegetation` are no-resume — their victory rewards are granted directly
 /// by the run loop — so they are no-ops here. Bead `sts2-rs-ck9z6` (GH #166).
 pub fn resume_event_after_combat_callback(
     state: &mut RunState,
@@ -525,7 +547,9 @@ pub fn resume_event_after_combat_callback(
         EventEncounter::BattlewornDummy(setting) => {
             super::shared::battleworn_dummy_resume(state, *setting, clean_victory);
         }
-        EventEncounter::MysteriousKnight | EventEncounter::FakeMerchant => {}
+        EventEncounter::MysteriousKnight
+        | EventEncounter::FakeMerchant
+        | EventEncounter::DenseVegetation => {}
     }
 }
 
@@ -710,6 +734,40 @@ mod tests {
         );
         // Picked id is now in visited_event_ids.
         assert!(rs.visited_event_ids.contains(&picked.unwrap()));
+    }
+
+    /// LanternKey's `ModifyNextEvent` (LanternKey.cs:30-37) via
+    /// `ActModel.PullNextEvent`: in act 3 the cursor's event is replaced by
+    /// WarHistorianRepy, which is recorded as visited; the cursor advances
+    /// past the replaced event and that event stays unvisited.
+    #[test]
+    fn pick_event_lantern_key_swaps_in_war_historian_in_act3() {
+        use sts2_core::cards::{Card, CardId};
+        let mut rs = RunState::new();
+        rs.act_index = 3;
+        rs.acts[2].event_ids_shuffled = vec!["SlipperyBridge", "Reflections"];
+        rs.master_deck.push(Card {
+            card_id: CardId::LanternKey,
+            ..Card::pod_defaults()
+        });
+        // What the cursor would pull without the key.
+        let mut keyless = rs.clone();
+        keyless.master_deck.clear();
+        let pool_pick = pick_event(&mut keyless, None).expect("pool event");
+
+        assert_eq!(pick_event(&mut rs, None), Some(EventId::WarHistorianRepy));
+        assert_eq!(rs.acts[2].events_visited, keyless.acts[2].events_visited);
+        assert!(rs.visited_event_ids.contains(&EventId::WarHistorianRepy));
+        assert!(!rs.visited_event_ids.contains(&pool_pick));
+
+        // Outside act 3 the key does nothing.
+        let mut act2 = RunState::new();
+        act2.act_index = 2;
+        act2.master_deck.push(Card {
+            card_id: CardId::LanternKey,
+            ..Card::pod_defaults()
+        });
+        assert_ne!(pick_event(&mut act2, None), Some(EventId::WarHistorianRepy));
     }
 
     #[test]

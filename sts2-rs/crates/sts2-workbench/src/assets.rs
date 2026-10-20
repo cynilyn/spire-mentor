@@ -209,6 +209,10 @@ pub struct AssetResolver {
     /// creature_visuals slug. Empty when absent — combatants then size by
     /// their fallback height.
     scales: BTreeMap<String, CreatureScale>,
+    /// A game build's art overlay folder (`v0.111.0`), tried before the
+    /// shared tree: the art that build added or redrew, under the shared
+    /// layout (GH #801). `None` for the default build.
+    overlay: Option<String>,
 }
 
 impl AssetResolver {
@@ -231,7 +235,16 @@ impl AssetResolver {
             manifest,
             card_folders: card_folders.into_iter().collect(),
             scales: creature_scales,
+            overlay: None,
         }
+    }
+
+    /// This resolver, trying `<overlay>/<rel>` before `<rel>` for every
+    /// lookup (the twin of `workbench.assets.AssetResolver(overlay=…)`).
+    #[must_use]
+    pub fn with_overlay(mut self, overlay: impl Into<String>) -> Self {
+        self.overlay = Some(overlay.into());
+        self
     }
 
     /// A resolver over `manifest` alone (no `creature_scales.json`).
@@ -243,17 +256,41 @@ impl AssetResolver {
         Self::new(manifest, BTreeMap::new())
     }
 
-    /// The resolver over the embedded art manifest + creature scales, built
-    /// once.
+    /// The resolver over the default build's embedded art manifest +
+    /// creature scales, built once.
     pub fn embedded() -> &'static AssetResolver {
-        static RESOLVER: OnceLock<AssetResolver> = OnceLock::new();
-        RESOLVER.get_or_init(|| {
-            let d = data::data();
-            AssetResolver::new(d.asset_manifest.iter().cloned(), d.creature_scales.clone())
+        Self::embedded_for(sts2_core::GameVersion::default())
+    }
+
+    /// The resolver over build `version`'s embedded art manifest + creature
+    /// scales, built once per build. A later build also reads its own art
+    /// overlay (`<version>/…`, see [`AssetResolver::with_overlay`]).
+    pub fn embedded_for(version: sts2_core::GameVersion) -> &'static AssetResolver {
+        use sts2_core::GameVersion;
+        static V0_107_1: OnceLock<AssetResolver> = OnceLock::new();
+        static V0_111_0: OnceLock<AssetResolver> = OnceLock::new();
+        let cell = match version {
+            GameVersion::V0_107_1 => &V0_107_1,
+            GameVersion::V0_111_0 => &V0_111_0,
+        };
+        cell.get_or_init(|| {
+            let d = data::data_for(version);
+            let r = AssetResolver::new(d.asset_manifest.iter().cloned(), d.creature_scales.clone());
+            if version == GameVersion::default() {
+                r
+            } else {
+                r.with_overlay(version.as_str())
+            }
         })
     }
 
     fn rel_if_exists(&self, rel: String) -> Option<String> {
+        if let Some(overlay) = &self.overlay {
+            let own = format!("{overlay}/{rel}");
+            if self.manifest.contains(&own) {
+                return Some(own);
+            }
+        }
         self.manifest.contains(&rel).then_some(rel)
     }
 
@@ -1276,6 +1313,69 @@ mod tests {
     #[cfg(workbench_game_data)] // only the game-data-gated tests use it
     fn no_rig(title: &str) -> bool {
         NO_ART.contains(&title) || NO_RIG_EXTRA.contains(&title)
+    }
+
+    #[test]
+    fn an_overlay_wins_over_the_shared_tree_and_only_for_its_build() {
+        let manifest = [
+            "card_atlas/defect/beta/voltaic.png",
+            "v0.111.0/card_atlas/defect/voltaic.png",
+            "v0.111.0/relic_atlas/dowsing_rod.png",
+        ];
+        let base = AssetResolver::from_manifest(manifest);
+        let beta = base.clone().with_overlay("v0.111.0");
+        assert_eq!(
+            base.card("Defect", "CARD.VOLTAIC", "Voltaic", Some("Defect"))
+                .as_deref(),
+            Some("card_atlas/defect/beta/voltaic.png")
+        );
+        assert_eq!(
+            beta.card("Defect", "CARD.VOLTAIC", "Voltaic", Some("Defect"))
+                .as_deref(),
+            Some("v0.111.0/card_atlas/defect/voltaic.png")
+        );
+        assert_eq!(base.relic("Dowsing Rod"), None);
+        assert_eq!(
+            beta.relic("Dowsing Rod").as_deref(),
+            Some("v0.111.0/relic_atlas/dowsing_rod.png")
+        );
+    }
+
+    #[cfg(workbench_game_data_v0_111_0)] // the bundled v0.111.0 art manifest
+    #[test]
+    fn the_v0_111_bundle_draws_its_new_and_redrawn_art() {
+        use sts2_core::GameVersion;
+        let old = AssetResolver::embedded_for(GameVersion::V0_107_1);
+        let new = AssetResolver::embedded_for(GameVersion::V0_111_0);
+        let blade = |r: &AssetResolver| {
+            r.card(
+                "Silent",
+                "CARD.BLADE_SYMPHONY",
+                "Blade Symphony",
+                Some("Silent"),
+            )
+        };
+        assert_eq!(blade(old), None);
+        assert_eq!(
+            blade(new).as_deref(),
+            Some("v0.111.0/card_atlas/silent/blade_symphony.png")
+        );
+        let voltaic =
+            |r: &AssetResolver| r.card("Defect", "CARD.VOLTAIC", "Voltaic", Some("Defect"));
+        assert_eq!(
+            voltaic(old).as_deref(),
+            Some("card_atlas/defect/beta/voltaic.png")
+        );
+        assert_eq!(
+            voltaic(new).as_deref(),
+            Some("v0.111.0/card_atlas/defect/voltaic.png")
+        );
+        // Art both builds share still comes from the shared tree.
+        assert_eq!(
+            new.card("Ironclad", "CARD.BASH", "Bash", Some("Ironclad"))
+                .as_deref(),
+            Some("card_atlas/ironclad/bash.png")
+        );
     }
 
     #[cfg(workbench_game_data)] // asserts on real game text (see build.rs)

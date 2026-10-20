@@ -28,7 +28,7 @@ from parity_fuzz_state import (
     normalize_csharp,
     normalize_rust,
 )
-from sts2_client import Game
+from sts2_client import Game, rs_engine_call
 
 DIVERGENCE_INIT = "INIT_DRIFT"
 DIVERGENCE_LEGAL = "LEGAL_ACTION_DRIFT"
@@ -52,10 +52,11 @@ class TrialResult:
 
 
 #: Shared run-level seed string for parity fuzz. C# derives its
-#: ``RunRngSet.Seed`` via ``(uint)GetDeterministicHashCode(SEED_STRING)``;
-#: Rust uses the same string hashed through
-#: ``sts2_rs.deterministic_hash_code`` so both engines enter combat with
-#: byte-identical RNG state. Bead `sts2-rs-ykmk9`.
+#: ``RunRngSet.Seed`` via ``GetDeterministicHashCode(SEED_STRING)`` (the
+#: build's hash: 32-bit ``uint`` in v0.107.1, XxHash64 ``ulong`` in v0.111.0);
+#: Rust uses the same string hashed through :func:`rust_master_seed`
+#: (``sts2_rs.run_seed_hash``) so both engines enter combat with
+#: byte-identical RNG state. Bead `sts2-rs-ykmk9`, GH #792.
 SEED_STRING = "parity_fuzz"
 
 
@@ -78,6 +79,27 @@ def _canonicalize_seed(seed: str) -> str:
 #: Canonical form of :data:`SEED_STRING`, used for the Rust-side seed hash
 #: so it matches the C# headless's canonicalized ``RunState`` seed.
 SEED_STRING_CANONICAL = _canonicalize_seed(SEED_STRING)
+
+
+def rust_master_seed(canonical_seed: str, game_version: str | None = None) -> int:
+    """The ``RunRngSet.Seed`` C# derives from an (already canonical) seed string.
+
+    Delegates to the engine's versioned ``sts2_rs.run_seed_hash``:
+
+    * v0.107.1 — ``(uint)StringHelper.GetDeterministicHashCode(seed)``, the
+      32-bit hash reinterpreted unsigned (what this harness used to spell
+      ``deterministic_hash_code(seed) & 0xFFFFFFFF``; identical value).
+    * v0.111.0 — ``XxHash64(utf8(seed), 0)`` as a ``ulong``
+      (``StringHelper.cs:140``), plus ``RunRngSet.cs:107``'s ``"old"``-prefix
+      escape hatch.
+
+    ``game_version`` defaults to the process-wide selection
+    (``sts2_client.GAME_VERSION`` / ``--game-version``).
+    """
+    import sts2_client
+
+    ver = sts2_client.normalize_game_version(game_version or sts2_client.GAME_VERSION)
+    return int(sts2_rs.run_seed_hash(canonical_seed, game_version=ver))
 
 
 def _csharp_card_id(name: str) -> str:
@@ -186,13 +208,11 @@ def _rust_init(
     Rust side returns `None` from `starter_args_for_move_state` and
     keeps the encounter-table default. Bead sts2-rs-u3wjj.
     """
-    # Mirror C#'s `RunRngSet.Seed = (uint)GetDeterministicHashCode(seedString)`
-    # so both engines start combat from byte-identical RNG state. The
-    # `& 0xFFFFFFFF` mirrors the i32→uint reinterpret on the C# side. Hash the
-    # CANONICALIZED seed: the C# headless canonicalizes before seeding
-    # `RunState` (74cc964), so the raw string would desync every trial's RNG.
-    rust_seed = sts2_rs.deterministic_hash_code(SEED_STRING_CANONICAL) & 0xFFFFFFFF
-    inner = sts2_rs.build_scenario_state(
+    rust_seed = rust_master_seed(SEED_STRING_CANONICAL)
+    # `rs_engine_call` passes the selected build as `game_version=`, so the
+    # scenario's `RunRngSet` is seeded in that build's width.
+    inner = rs_engine_call(
+        sts2_rs.build_scenario_state,
         seed=rust_seed,
         character=sc.character,
         deck=list(sc.deck),

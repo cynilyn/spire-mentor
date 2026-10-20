@@ -5,7 +5,17 @@ use super::prelude::*;
 /// `sts2-rl-agent@01c094d:sts2_env/cards/defect.py:597`. Bead `sts2-rs-l0be`.
 pub(crate) fn play_thunder(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# Thunder.cs OnUpgrade bumps ThunderPower 6->8. Bead `sts2-rs-tg28t`.
-    let amt = if current_card_upgraded(state) { 8 } else { 6 };
+    // v0.111.0: ThunderPower 6 -> 8, upgrade +2 -> +3 (decomp Thunder.cs:21,36).
+    let (base, upgraded) = if crate::cards::v0111::is_v0111(state.game_version) {
+        (8, 11)
+    } else {
+        (6, 8)
+    };
+    let amt = if current_card_upgraded(state) {
+        upgraded
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::Thunder, amt);
     EffectResult::Resolved
 }

@@ -389,6 +389,73 @@ pub fn apply_ascension_attack_scaling(ai: &mut MonsterAi, kind: MonsterKind, asc
     }
 }
 
+/// v0.111.0 attack damages that differ from v0.107.1, as `(kind, move_id,
+/// base, deadly)` — the full `GetValueIfAscension(DeadlyEnemies, deadly,
+/// base)` pair of the 0.111 property, so a row resolves the value at any
+/// ascension on its own. Applied by [`apply_v0111_attack_values`] AFTER the
+/// v0.107.1 tables (which stay the 0.107 truth), and only when the combat's
+/// `game_version` is `V0_111_0`. GH #796.
+#[rustfmt::skip]
+pub(crate) const V0111_ATTACK_VALUES: &[(MonsterKind, &str, i32, i32)] = &[
+    // v0.111.0: EbbDamage (.., 26, 22); was (.., 32, 26) (decomp Aeonglass.cs:40)
+    (MonsterKind::Aeonglass, "EBB_MOVE", 22, 26),
+    // v0.111.0: HammerUppercutDamage (.., 18, 14); was (.., 14, 12) (decomp Axebot.cs:46)
+    (MonsterKind::Axebot, "HAMMER_UPPERCUT", 14, 18),
+    // v0.111.0: OneTwoDamage (.., 11, 10); was (.., 10, 9) (decomp Axebot.cs:42)
+    (MonsterKind::Axebot, "ONE_TWO", 10, 11),
+    // v0.111.0: FlamethrowerDamage (.., 12, 8) — FLAMETHROWER gained a
+    // SingleAttackIntent (decomp MechaKnight.cs:54,85)
+    (MonsterKind::MechaKnight, "FLAMETHROWER", 8, 12),
+    // v0.111.0: DeGasDamage (.., 18, 16); was (.., 17, 16) (decomp SoulFysh.cs:54)
+    (MonsterKind::SoulFysh, "DE_GAS", 16, 18),
+    // v0.111.0: StrongTackleDamage (.., 32, 26) — the new opener
+    // (decomp TorchHeadAmalgam.cs:32,51)
+    (MonsterKind::TorchHeadAmalgam, "STRONG_TACKLE", 26, 32),
+    // v0.111.0: TackleDamage (.., 22, 18); was (.., 19, 18) (decomp TorchHeadAmalgam.cs:34)
+    (MonsterKind::TorchHeadAmalgam, "TACKLE_2", 18, 22),
+    // v0.111.0: WeakTackleDamage (.., 16, 14); was (.., 15, 14) (decomp TorchHeadAmalgam.cs:36)
+    (MonsterKind::TorchHeadAmalgam, "TACKLE_3", 14, 16),
+    (MonsterKind::TorchHeadAmalgam, "TACKLE_4", 14, 16),
+];
+
+/// Overwrite every [`V0111_ATTACK_VALUES`] move's attack damage with its
+/// v0.111.0 value at `ascension`. A no-op for any other build, so v0.107.1
+/// combats keep exactly what [`apply_ascension_attack_scaling`] produced.
+pub fn apply_v0111_attack_values(
+    ai: &mut MonsterAi,
+    kind: MonsterKind,
+    ascension: u8,
+    version: sts2_core::GameVersion,
+) {
+    if version < sts2_core::GameVersion::V0_111_0 {
+        return;
+    }
+    if !V0111_ATTACK_VALUES.iter().any(|e| e.0 == kind) {
+        return;
+    }
+    let deadly = ascension >= AscensionLevel::DeadlyEnemies as u8;
+    for state in std::sync::Arc::make_mut(&mut ai.states).values_mut() {
+        let MonsterState::Move(m) = state else {
+            continue;
+        };
+        let Some(&(_, _, base, deadly_value)) = V0111_ATTACK_VALUES
+            .iter()
+            .find(|e| e.0 == kind && e.1 == m.id)
+        else {
+            continue;
+        };
+        let value = if deadly { deadly_value } else { base };
+        for intent in &mut m.intents {
+            match intent {
+                Intent::Attack { damage }
+                | Intent::DeathBlow { damage }
+                | Intent::MultiAttack { damage, .. } => *damage = value,
+                _ => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sts2_core::powers::PowerKind;
@@ -1196,6 +1263,61 @@ mod tests {
             fails.len(),
             fails.join("\n")
         );
+    }
+
+    /// GH #796: every [`V0111_ATTACK_VALUES`] row resolves to a real attack
+    /// move of the v0.111.0 build whose A0 damage is `base` and whose A9
+    /// damage is `deadly`.
+    #[test]
+    fn v0111_attack_table_matches_real_moves_v0111() {
+        use sts2_core::GameVersion;
+        let mut fails = Vec::new();
+        for &(kind, move_id, base, deadly) in V0111_ATTACK_VALUES {
+            for (asc, want) in [(0_u8, base), (9_u8, deadly)] {
+                let ai = crate::monster_dispatch::build_ai_for_version(
+                    kind,
+                    MonsterSpawnArgs::None,
+                    SpawnPosition::default(),
+                    asc,
+                    GameVersion::V0_111_0,
+                );
+                match move_attack_damage(&ai, move_id) {
+                    Some(d) if d == want => {}
+                    got => fails.push(format!("{kind:?} {move_id} A{asc}: {got:?} != {want}")),
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
+    /// The v0.111.0 table never touches a v0.107.1 build: for every kind it
+    /// names, the v0.107.1 AI is exactly what `build_ai_with_ascension` built
+    /// before the table existed.
+    #[test]
+    fn v0111_attack_table_leaves_v0107_untouched() {
+        use sts2_core::GameVersion;
+        for &(kind, ..) in V0111_ATTACK_VALUES {
+            for asc in [0_u8, 9] {
+                let mut legacy = build_ai(kind, MonsterSpawnArgs::None, SpawnPosition::default());
+                apply_ascension_attack_scaling(&mut legacy, kind, asc);
+                let built = crate::monster_dispatch::build_ai_for_version(
+                    kind,
+                    MonsterSpawnArgs::None,
+                    SpawnPosition::default(),
+                    asc,
+                    GameVersion::V0_107_1,
+                );
+                let ids: Vec<_> = legacy.states.keys().copied().collect();
+                assert_eq!(ids, built.states.keys().copied().collect::<Vec<_>>());
+                for id in ids {
+                    assert_eq!(
+                        move_attack_damage(&legacy, id),
+                        move_attack_damage(&built, id),
+                        "{kind:?} {id} A{asc}"
+                    );
+                }
+            }
+        }
     }
 
     /// Below the DeadlyEnemies threshold the patch is a no-op.

@@ -116,7 +116,7 @@ impl CandidateMutation {
         match *self {
             CandidateMutation::Baseline => true,
             CandidateMutation::AddCard { card_id, upgraded } => {
-                match sts2_content::cards::spec_index::card_pod_from_id(card_id, upgraded) {
+                match sts2_content::cards::v0111::card_pod_for(card_id, upgraded, rs.game_version) {
                     Some(card) => {
                         rs.master_deck.push(card);
                         true
@@ -134,7 +134,7 @@ impl CandidateMutation {
             }
             CandidateMutation::UpgradeCard { deck_idx } => match rs.master_deck.get_mut(deck_idx) {
                 Some(card) => {
-                    let _ = card.upgrade();
+                    let _ = card.upgrade_for(rs.game_version);
                     true
                 }
                 None => false,
@@ -768,8 +768,12 @@ fn probe_one(
     let mut enc_rng = Rng::with_name(seed, enc.id);
     let roster_kinds = enc.roster(&mut enc_rng);
     let kinds: Vec<MonsterKind> = roster_kinds.iter().map(|&(k, _)| k).collect();
-    let hps =
-        sts2_core::monsters::roll_unique_max_hps(&kinds, &mut rs.rng.niche, rs.ascension_level);
+    let hps = sts2_core::monsters::roll_unique_max_hps_for(
+        &kinds,
+        &mut rs.rng.niche,
+        rs.ascension_level,
+        rs.game_version,
+    );
     let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = roster_kinds
         .iter()
         .zip(hps)

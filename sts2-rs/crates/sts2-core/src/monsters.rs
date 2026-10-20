@@ -1466,6 +1466,36 @@ impl MonsterKind {
         }
     }
 
+    /// [`Self::hp_roll`] for game build `version`. v0.107.1 is the table
+    /// above verbatim; v0.111.0 overrides only the species whose
+    /// `MinInitialHp` / `MaxInitialHp` changed (GH #796):
+    ///
+    /// - Exoskeleton: ToughEnemies 25-29 → 26-30 (base 24-28 unchanged),
+    ///   `v0.111.0/…/Exoskeleton.cs:30-32`.
+    /// - Entomancer: ToughEnemies 155 → 165 (base 145; `Max => Min`),
+    ///   `v0.111.0/…/Entomancer.cs:23-25`.
+    fn hp_roll_for(self, ascension: u8, version: crate::GameVersion) -> HpRoll {
+        use crate::ascension::{get_value_if_ascension, AscensionLevel::ToughEnemies};
+        if version >= crate::GameVersion::V0_111_0 {
+            match self {
+                // v0.111.0: Exoskeleton HP (A8) 25-29 -> 26-30 (decomp Exoskeleton.cs:30)
+                MonsterKind::Exoskeleton => {
+                    return HpRoll::Range(
+                        get_value_if_ascension(ascension, ToughEnemies, 26, 24),
+                        get_value_if_ascension(ascension, ToughEnemies, 30, 28),
+                    );
+                }
+                // v0.111.0: Entomancer min HP (A8) 155 -> 165 (decomp Entomancer.cs:23)
+                MonsterKind::Entomancer => {
+                    let hp = get_value_if_ascension(ascension, ToughEnemies, 165, 145);
+                    return HpRoll::Range(hp, hp);
+                }
+                _ => {}
+            }
+        }
+        self.hp_roll(ascension)
+    }
+
     /// Roll the monster's starting HP from its canonical range. Inclusive
     /// on both ends, matching Python's `random.randint(low, high)` /
     /// C# `Rng.NextInt(min, max+1)`. Fixed-HP species consume no RNG read
@@ -1494,7 +1524,14 @@ impl MonsterKind {
     /// overrides like `Nibbit.MinInitialHp` are themselves ascension-aware.
     #[must_use]
     pub fn min_initial_hp(self, ascension: u8) -> i32 {
-        match self.hp_roll(ascension) {
+        self.min_initial_hp_for(ascension, crate::GameVersion::V0_107_1)
+    }
+
+    /// [`Self::min_initial_hp`] for game build `version` (reads
+    /// [`Self::hp_roll_for`]).
+    #[must_use]
+    pub fn min_initial_hp_for(self, ascension: u8, version: crate::GameVersion) -> i32 {
+        match self.hp_roll_for(ascension, version) {
             HpRoll::Fixed(v) | HpRoll::Range(v, _) => v,
         }
     }
@@ -1528,7 +1565,43 @@ impl MonsterKind {
         taken: &std::collections::HashSet<i32>,
         ascension: u8,
     ) -> i32 {
-        match self.hp_roll(ascension) {
+        self.starting_hp_unique_for(rng, taken, ascension, crate::GameVersion::V0_107_1)
+    }
+
+    /// [`Self::starting_hp_unique`] for game build `version`: the same
+    /// unique-HP draw over [`Self::hp_roll_for`]'s range.
+    #[must_use]
+    pub fn starting_hp_unique_for(
+        self,
+        rng: &mut CombatRng,
+        taken: &std::collections::HashSet<i32>,
+        ascension: u8,
+        version: crate::GameVersion,
+    ) -> i32 {
+        self.starting_hp_unique_with_bonus_for(rng, taken, ascension, version, 0)
+    }
+
+    /// [`Self::starting_hp_unique_for`] with `bonus` added to BOTH ends of
+    /// the HP range before the draw — a C# override whose `MinInitialHp` and
+    /// `MaxInitialHp` carry a per-instance term. The only one is the
+    /// v0.111.0 Axebot respawn: `MinInitialHp => GetValueIfAscension(…) +
+    /// RespawnMaxHpBonus` with `RespawnMaxHpBonus => (2 - StockAmount) * 10`
+    /// (`v0.111.0/…/Axebot.cs:48-54`). `bonus == 0` is
+    /// [`Self::starting_hp_unique_for`] exactly.
+    #[must_use]
+    pub fn starting_hp_unique_with_bonus_for(
+        self,
+        rng: &mut CombatRng,
+        taken: &std::collections::HashSet<i32>,
+        ascension: u8,
+        version: crate::GameVersion,
+        bonus: i32,
+    ) -> i32 {
+        let roll = match self.hp_roll_for(ascension, version) {
+            HpRoll::Fixed(v) => HpRoll::Fixed(v + bonus),
+            HpRoll::Range(min, max) => HpRoll::Range(min + bonus, max + bonus),
+        };
+        match roll {
             HpRoll::Fixed(v) => {
                 // C# `CombatState.CreateCreature` calls
                 // `SetUniqueMonsterHpValue` for EVERY enemy
@@ -1659,13 +1732,25 @@ pub fn roll_unique_max_hps(
     niche: &mut CombatRng,
     ascension: u8,
 ) -> Vec<i32> {
+    roll_unique_max_hps_for(kinds, niche, ascension, crate::GameVersion::V0_107_1)
+}
+
+/// [`roll_unique_max_hps`] for game build `version`: the same two passes over
+/// [`MonsterKind::starting_hp_unique_for`]'s per-version ranges.
+#[must_use]
+pub fn roll_unique_max_hps_for(
+    kinds: &[MonsterKind],
+    niche: &mut CombatRng,
+    ascension: u8,
+    version: crate::GameVersion,
+) -> Vec<i32> {
     use std::collections::HashSet;
     // Pass 1: raw rolls, side-wide exclusion of prior creatures' RAW MaxHp.
     let mut taken_raw: HashSet<i32> = HashSet::new();
     let raws: Vec<i32> = kinds
         .iter()
         .map(|&kind| {
-            let r = kind.starting_hp_unique(niche, &taken_raw, ascension);
+            let r = kind.starting_hp_unique_for(niche, &taken_raw, ascension, version);
             taken_raw.insert(r);
             r
         })
@@ -1719,6 +1804,27 @@ impl MonsterKind {
             (MonsterKind::TestSubject, PowerKind::Enrage) => Some(3),
             _ => None,
         }
+    }
+
+    /// [`Self::on_spawn_self_buff_deadly`] for game build `version`.
+    ///
+    /// v0.111.0 adds one A9 on-spawn amount: GlobeHead's Galvanic
+    /// (`GalvanicPowerAmount => GetValueIfAscension(DeadlyEnemies, 8, 6)`,
+    /// `v0.111.0/…/GlobeHead.cs:39,46`; v0.107.1 applied a flat `6m`).
+    #[must_use]
+    pub fn on_spawn_self_buff_deadly_for(
+        self,
+        power: crate::powers::PowerKind,
+        version: crate::GameVersion,
+    ) -> Option<i32> {
+        use crate::powers::PowerKind;
+        if version >= crate::GameVersion::V0_111_0 {
+            // v0.111.0: GlobeHead Galvanic 6 -> 6 / A9 8 (decomp GlobeHead.cs:39)
+            if let (MonsterKind::GlobeHead, PowerKind::Galvanic) = (self, power) {
+                return Some(8);
+            }
+        }
+        self.on_spawn_self_buff_deadly(power)
     }
 
     #[must_use]

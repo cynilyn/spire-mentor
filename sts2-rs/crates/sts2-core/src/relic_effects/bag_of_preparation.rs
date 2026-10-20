@@ -11,7 +11,7 @@ pub(crate) fn on_modify_hand_draw_bag_of_preparation(
     if !player_owns_relic(state, crate::RelicKind::BagOfPreparation) {
         return current_draw;
     }
-    if state.round_no() == 1 {
+    if state.turn_number() == 1 {
         current_draw + 2
     } else {
         current_draw

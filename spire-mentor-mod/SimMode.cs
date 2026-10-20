@@ -11,7 +11,9 @@
 //   Off       -- the mod is inert beyond the TCP server: no Harmony behavior
 //                changes, no HUD, the game plays 100% vanilla.
 //   Advisor   -- the HUMAN plays; the mod observes decision points, asks the
-//                Python advisor for a ranking, and renders it. Must never
+//                Python advisor for a ranking, and renders it -- before the
+//                player acts in the Hints style, only on F5 / afterwards (the
+//                coach chip) in the Coach style (SimRuntime.Style). Must never
 //                enable NonInteractiveMode/AutoSlay paths: with
 //                AutoSlayerCheck active, Cmd.ScaledWait skips all waits and
 //                CombatManager.Pause() no-ops -- unplayable for a human.
@@ -70,6 +72,47 @@ public static class SimRuntime
             {
                 return;
             }
+            RaiseChanged();
+        }
+    }
+
+    private static int _style = (int)AdviceStyle.Coach; // values are AdviceStyle
+
+    /// <summary>
+    /// The advice style inside Advisor mode (CoachStyle.cs): Hints renders
+    /// the AI's opinion before the player acts, Coach renders nothing until
+    /// they have (F5 peeks). The advisor computes advice either way, so F6/F7
+    /// and the unattended drivers -- which read SimAdvisor's standing
+    /// recommendation, never the HUD -- work the same in both.
+    /// </summary>
+    public static AdviceStyle Style
+    {
+        get => (AdviceStyle)Volatile.Read(ref _style);
+        set
+        {
+            if (Interlocked.Exchange(ref _style, (int)value) == (int)value)
+            {
+                return;
+            }
+            RaiseChanged();
+        }
+    }
+
+    /// <summary>Advisor mode in the Coach style: every pre-action advice
+    /// surface (panel, eval bar, line, card scores, map markers, toolbar
+    /// note) stays empty.</summary>
+    public static bool CoachStyleActive => Mode == SimMode.Advisor && Style == AdviceStyle.Coach;
+
+    /// <summary>Set mode and style together, raising Changed at most once
+    /// per actual change.</summary>
+    public static void SetModeAndStyle(SimMode mode, AdviceStyle style)
+    {
+        // Style first: the mode flip is what subscribers react to, and it
+        // must already see the style it lands in.
+        bool styleChanged = Interlocked.Exchange(ref _style, (int)style) != (int)style;
+        bool modeChanged = Interlocked.Exchange(ref _mode, (int)mode) != (int)mode;
+        if (styleChanged || modeChanged)
+        {
             RaiseChanged();
         }
     }
@@ -165,7 +208,25 @@ public static class SimRuntime
     public static void InitializeFrom(SimConfig config)
     {
         _mode = (int)(config.AutoStart ? SimMode.Autopilot : SimMode.Off);
+        // The persisted default style (settings: "start in Coach style"). The
+        // launch path re-reads it once BaseLib has loaded the saved value
+        // (MainFile.CoachOnWhenReadyAsync).
+        // Guarded: the settings class derives from a BaseLib type, and a
+        // missing BaseLib must not take the boot down with it.
+        try
+        {
+            _style = (int)ReadDefaultStyle();
+        }
+        catch (Exception)
+        {
+            _style = (int)CoachStyle.FromDefaultFlag(CoachStyle.CoachByDefault);
+        }
     }
+
+    /// <summary>Separate and never inlined, so a BaseLib type-load failure
+    /// surfaces inside the caller's try instead of at its JIT.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static AdviceStyle ReadDefaultStyle() => SpireMentorModConfig.DefaultAdviceStyle;
 
     /// <summary>
     /// Raise Changed for live state that lives outside SimRuntime (e.g. a

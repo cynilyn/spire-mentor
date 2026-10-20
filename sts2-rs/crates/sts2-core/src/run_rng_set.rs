@@ -147,10 +147,16 @@ const RUN_DRAW_STREAM_SALTS: [u64; RUN_DRAW_STREAM_COUNT] = [
 /// that stream's counter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunRngSet {
-    /// `deterministic_hash_code(str(master_seed))` — the hashed master
-    /// seed all per-stream salts mix into. Stored so per-act map RNGs
-    /// can be created lazily.
-    pub seed: i32,
+    /// C# `RunRngSet.Seed` — the hashed master seed all per-stream salts
+    /// mix into. Stored so per-act map RNGs (and per-content RNGs, see
+    /// [`Self::named`]) can be created lazily. A `uint` (≤ `u32::MAX`) in
+    /// v0.107.1, a `ulong` in v0.111.0 (GH #788).
+    pub seed: u64,
+
+    /// The game build whose seed arithmetic [`Self::seed`] and every derived
+    /// stream follow (GH #788). Set at construction; mirrors
+    /// `RunState::game_version`.
+    pub game_version: crate::GameVersion,
 
     // --- Run-scoped, derived from `seed` -------------------------------
     pub up_front: Rng,
@@ -209,6 +215,17 @@ impl RunRngSet {
     /// byte-identical opening sequences on every named stream.
     #[must_use]
     pub fn new(master_seed: i32) -> Self {
+        Self::new_for(crate::GameVersion::V0_107_1, u64::from(master_seed as u32))
+    }
+
+    /// [`Self::new`] for game build `version`, from the already-hashed
+    /// master seed (`RunRngSet.Seed`; see
+    /// [`crate::GameVersion::run_seed_hash`] for going from the seed string).
+    /// The seed is first brought into the build's range
+    /// ([`crate::GameVersion::normalize_seed`]); every stream is then
+    /// `new Rng(Seed, snake_case(stream))` in that build's arithmetic.
+    #[must_use]
+    pub fn new_for(version: crate::GameVersion, master_seed: u64) -> Self {
         // C# `RunRngSet(string seed)` (v0.103.2 RunRngSet.cs:54-63) does
         // ONE hash from the string seed: `Seed = (uint)GetDeterministicHashCode(seed)`.
         // The string entrypoint takes the canonicalised seed (e.g.
@@ -225,34 +242,75 @@ impl RunRngSet {
         // diverged from the C# scraped corpus. Treat the i32 argument
         // here as already-hashed-once (i.e. the result of
         // `deterministic_hash_code(canonical_string_seed)`).
-        let seed = master_seed;
+        let v = version;
+        let seed = v.normalize_seed(master_seed);
         // v0.107.1 `Player.cs:329`: PlayerRngSet seed = hash(seed) +
         // GetPlayerSlotIndex(this), and GetPlayerSlotIndex == 0 in
         // single-player. v0.103.2 used `+ NetId` (== 1); the stale `+1`
         // desynced the player reward streams. Bead `sts2-rs-ms8mm` family.
-        let player_seed = seed;
+        // v0.111.0 `Player.cs:332` is the same sum in `ulong`:
+        // `new PlayerRngSet(GetDeterministicHashCode(seed) + (ulong)slot)`.
+        // (For an `"old"`-prefixed migrated seed C# hashes the WHOLE string
+        // here with XxHash64 while `RunRngSet` uses the old hash of the
+        // remainder; the engine only ever sees the hashed master seed, so it
+        // models the non-migrated case where the two agree.)
+        let player_seed = v.seed_offset(seed, 0);
+        let named = |base: u64, name: &str| Rng::with_name_for(v, base, name);
         Self {
             seed,
-            up_front: Rng::with_name(seed, "up_front"),
-            shuffle: Rng::with_name(seed, "shuffle"),
-            unknown_map_point: Rng::with_name(seed, "unknown_map_point"),
-            combat_card_generation: Rng::with_name(seed, "combat_card_generation"),
-            combat_potion_generation: Rng::with_name(seed, "combat_potion_generation"),
-            combat_card_selection: Rng::with_name(seed, "combat_card_selection"),
-            combat_energy_costs: Rng::with_name(seed, "combat_energy_costs"),
-            combat_targets: Rng::with_name(seed, "combat_targets"),
-            monster_ai: Rng::with_name(seed, "monster_ai"),
-            niche: Rng::with_name(seed, "niche"),
-            combat_orbs: Rng::with_name(seed, "combat_orbs"),
-            treasure_room: Rng::with_name(seed, "treasure_room_relics"),
+            game_version: v,
+            up_front: named(seed, "up_front"),
+            shuffle: named(seed, "shuffle"),
+            unknown_map_point: named(seed, "unknown_map_point"),
+            combat_card_generation: named(seed, "combat_card_generation"),
+            combat_potion_generation: named(seed, "combat_potion_generation"),
+            combat_card_selection: named(seed, "combat_card_selection"),
+            combat_energy_costs: named(seed, "combat_energy_costs"),
+            combat_targets: named(seed, "combat_targets"),
+            monster_ai: named(seed, "monster_ai"),
+            niche: named(seed, "niche"),
+            combat_orbs: named(seed, "combat_orbs"),
+            treasure_room: named(seed, "treasure_room_relics"),
             // Python `self._rng = Rng(seed + 9999)` — direct int offset,
-            // no salt-hash mixing. Bead `sts2-rs-lakuh`.
-            run_manager: Rng::new(seed.wrapping_add(RUN_MANAGER_RNG_SEED_OFFSET)),
-            rewards: Rng::with_name(player_seed, "rewards"),
-            shops: Rng::with_name(player_seed, "shops"),
-            transformations: Rng::with_name(player_seed, "transformations"),
+            // no salt-hash mixing. Bead `sts2-rs-lakuh`. No C# analog; the
+            // offset is added in the build's seed width like every other
+            // derivation.
+            run_manager: Rng::from_seed(
+                v.seed_offset(seed, i64::from(RUN_MANAGER_RNG_SEED_OFFSET)),
+            ),
+            rewards: named(player_seed, "rewards"),
+            shops: named(player_seed, "shops"),
+            transformations: named(player_seed, "transformations"),
             map_rngs: BTreeMap::new(),
         }
+    }
+
+    /// A per-content RNG off the run's master seed: C# `new Rng(RunState.Rng.Seed,
+    /// name)` and its single-player equivalents `EventModel.BeginEvent`'s
+    /// `Rng(Seed + slot + hash(Id.Entry))` and `Rng(player, id, 0)` (slot 0).
+    /// Computed in this set's game build ([`crate::GameVersion::content_seed`]).
+    #[must_use]
+    pub fn named(&self, name: &str) -> Rng {
+        self.named_at(0, name)
+    }
+
+    /// [`Self::named`] with a signed `int` offset folded into the master seed
+    /// first: `Rng(Seed + offset + hash(name))` — e.g. the per-encounter roster
+    /// RNG, whose offset is `TotalFloor` (`EncounterModel.GenerateMonstersWithSlots`).
+    #[must_use]
+    pub fn named_at(&self, offset: i64, name: &str) -> Rng {
+        let seed = self.game_version.content_seed(self.seed, offset, name);
+        if crate::dotnet_rng::rng_trace_enabled() {
+            eprintln!("RNGMAP seed={seed} name={name}");
+        }
+        Rng::from_seed(seed)
+    }
+
+    /// [`Self::seed`] as the wire spells `$.rng.run_seed`: the same integer.
+    /// (Kept as a method so producers do not each re-derive the width.)
+    #[must_use]
+    pub const fn wire_seed(&self) -> u64 {
+        self.seed
     }
 
     /// Borrow the `combat_potion` alias. Mirrors Python's
@@ -350,10 +408,10 @@ impl RunRngSet {
     /// 1-based salt name (`act_1_map`, `act_2_map`, …) computed from
     /// the 0-based `act_index` argument.
     pub fn map_rng(&mut self, act_index: i32) -> &mut Rng {
-        let seed = self.seed;
-        self.map_rngs
-            .entry(act_index)
-            .or_insert_with(|| Rng::with_name(seed, &format!("act_{}_map", act_index + 1)))
+        let (seed, version) = (self.seed, self.game_version);
+        self.map_rngs.entry(act_index).or_insert_with(|| {
+            Rng::with_name_for(version, seed, &format!("act_{}_map", act_index + 1))
+        })
     }
 
     /// The run-level draw streams, in canonical order: card-reward rarity /
@@ -508,7 +566,8 @@ mod tests {
         // with their salt — verify by reconstructing the expected seed
         // for one stream and checking the underlying Rng's seed.
         let set = RunRngSet::new(0);
-        let expected = (set.seed as u32).wrapping_add(deterministic_hash_code("up_front") as u32);
+        let expected =
+            u64::from((set.seed as u32).wrapping_add(deterministic_hash_code("up_front") as u32));
         assert_eq!(set.up_front.seed(), expected);
     }
 
@@ -519,7 +578,8 @@ mod tests {
         // run-seed base (NO `+1` NetId offset). Bead `sts2-rs-ms8mm` family.
         let set = RunRngSet::new(0);
         let player_seed = set.seed;
-        let expected = (player_seed as u32).wrapping_add(deterministic_hash_code("rewards") as u32);
+        let expected =
+            u64::from((player_seed as u32).wrapping_add(deterministic_hash_code("rewards") as u32));
         assert_eq!(set.rewards.seed(), expected);
     }
 
@@ -528,8 +588,9 @@ mod tests {
         // The Python attribute is `treasure_room` but the salt string
         // is `"treasure_room_relics"`. Parity demands the long form.
         let set = RunRngSet::new(0);
-        let expected =
-            (set.seed as u32).wrapping_add(deterministic_hash_code("treasure_room_relics") as u32);
+        let expected = u64::from(
+            (set.seed as u32).wrapping_add(deterministic_hash_code("treasure_room_relics") as u32),
+        );
         assert_eq!(set.treasure_room.seed(), expected);
     }
 
@@ -596,8 +657,9 @@ mod tests {
         let mut set = RunRngSet::new(0);
         let master_seed = set.seed;
         let r = set.map_rng(0);
-        let expected =
-            (master_seed as u32).wrapping_add(deterministic_hash_code("act_1_map") as u32);
+        let expected = u64::from(
+            (master_seed as u32).wrapping_add(deterministic_hash_code("act_1_map") as u32),
+        );
         assert_eq!(r.seed(), expected);
     }
 

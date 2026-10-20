@@ -11,9 +11,13 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.RestSite;
+using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Vfx.Utilities;
 
 namespace SpireMentor;
@@ -23,7 +27,7 @@ public static class MainFile
 {
     public const string ModId = "SpireMentor";
     // Keep in sync with SpireMentor.json "version" (package.ps1 reads that one).
-    public const string ModVersion = "0.5.2";
+    public const string ModVersion = "0.7.0";
 
     private static Harmony? _patcher;
     private static SimAutoSlayer? _autoSlayer;
@@ -38,6 +42,7 @@ public static class MainFile
     public static void Initialize()
     {
         Logger.Log($"=== {ModId} v{ModVersion} initializing ===");
+        SimGameVersion.LogAtStartup();
 
         SimConfig config = SimConfig.Instance;
         SimRuntime.InitializeFrom(config);
@@ -53,6 +58,11 @@ public static class MainFile
             ShieldBaseLibDamagePreview();
             ApplyPatch(typeof(HitStopTimeScalePatch));
             ApplyPatch(typeof(GameQuitPatch));
+            // Coach capture (PROTOCOL.md v5 human_action): the human's end
+            // turn and their event / campfire picks.
+            ApplyPatch(typeof(HumanEndTurnPatch));
+            ApplyPatch(typeof(EventOptionClickedPatch));
+            ApplyPatch(typeof(RestOptionSelectedPatch));
             SimReduceEffects.Install(_patcher);
 
             try
@@ -285,8 +295,12 @@ public static class MainFile
             {
                 return;
             }
-            Logger.Log("Coach on at launch (settings: \"Turn the coach on when the game starts\").");
-            SimRuntime.Mode = SimMode.Advisor;
+            // In the persisted default style (settings: "Start in Coach
+            // style"), read now that BaseLib has loaded the saved value.
+            AdviceStyle style = SpireMentorModConfig.DefaultAdviceStyle;
+            Logger.Log($"Coach on at launch in the {style} style " +
+                       "(settings: \"Turn the coach on when the game starts\").");
+            SimRuntime.SetModeAndStyle(SimMode.Advisor, style);
         }).CallDeferred();
     }
 
@@ -317,6 +331,66 @@ public static class MainFile
 // ---------------------------------------------------------------------------
 // Harmony Patches
 // ---------------------------------------------------------------------------
+
+/// <summary>
+/// The human's End turn, for the coach (SimAdvisor.OnEndTurnRequested decides
+/// whose it was; the report itself waits for the enemy side to start).
+/// Target, identical in both supported builds:
+/// <c>PlayerCmd.EndTurn(Player player, bool canBackOut, Func&lt;Task&gt;? actionDuringEnemyTurn = null)</c>
+/// -- PlayerCmd.cs:279 in both the v0.107.1 and v0.111.0 decomps.
+/// </summary>
+[HarmonyPatch(typeof(PlayerCmd), nameof(PlayerCmd.EndTurn))]
+public static class HumanEndTurnPatch
+{
+    [HarmonyPrefix]
+    static void Prefix(Player player, bool canBackOut)
+    {
+        SimAdvisor.OnEndTurnRequested(player, canBackOut);
+    }
+}
+
+/// <summary>
+/// An event option the player clicked (AI clicks are marked and ignored by
+/// SimChoiceCapture). Target, identical in both supported builds:
+/// <c>NEventRoom.OptionButtonClicked(EventOption option, int index)</c> --
+/// NEventRoom.cs:297 in both the v0.107.1 and v0.111.0 decomps. Every NEventOptionButton release lands
+/// here (NEventOptionButton.OnRelease).
+/// </summary>
+[HarmonyPatch(typeof(NEventRoom), nameof(NEventRoom.OptionButtonClicked))]
+public static class EventOptionClickedPatch
+{
+    [HarmonyPrefix]
+    static void Prefix(EventOption option)
+    {
+        if (option == null || option.IsLocked || SimRuntime.Mode != SimMode.Advisor)
+        {
+            return;
+        }
+        SimChoiceCapture.OnEventOptionClicked(option);
+    }
+}
+
+/// <summary>
+/// A campfire option that SUCCEEDED (a smith whose card select was cancelled
+/// never gets here). Target, identical in both supported builds:
+/// <c>NRestSiteRoom.AfterSelectingOption(RestSiteOption option)</c> --
+/// NRestSiteRoom.cs:380 in the v0.107.1 decomp, :372 in v0.111.0, called from
+/// NRestSiteButton.SelectOption once RestSiteSynchronizer.ChooseLocalOption
+/// returns true.
+/// </summary>
+[HarmonyPatch(typeof(NRestSiteRoom), nameof(NRestSiteRoom.AfterSelectingOption))]
+public static class RestOptionSelectedPatch
+{
+    [HarmonyPrefix]
+    static void Prefix(RestSiteOption option)
+    {
+        if (option == null || SimRuntime.Mode != SimMode.Advisor)
+        {
+            return;
+        }
+        SimChoiceCapture.OnRestOptionSelected(option);
+    }
+}
 
 /// <summary>
 /// Reports the game as a non-release build while autopilot is engaged.

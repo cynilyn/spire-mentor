@@ -45,6 +45,17 @@ export function usePanelFlag(key: string, fallback = false): [boolean, (v: boole
   return [on, set];
 }
 
+/** A persisted string choice (e.g. the launcher's game version). Stored
+ *  verbatim; the caller decides whether a remembered value is still valid. */
+export function usePanelChoice(key: string, fallback: string): [string, (v: string) => void] {
+  const [v, setV] = useState(() => readPref(key) || fallback);
+  const set = useCallback((next: string) => {
+    setV(next);
+    writePref(key, next);
+  }, [key]);
+  return [v, set];
+}
+
 /** A persisted panel height in px, clamped to [`min`, `max`] on read and write
  *  so a stored value from a bigger screen (or a hand-edited one) can never
  *  wedge a panel open at 900px on a tablet. */

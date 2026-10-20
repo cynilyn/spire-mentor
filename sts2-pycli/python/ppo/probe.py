@@ -24,6 +24,8 @@ import time
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sts2_client
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--policy",
@@ -90,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--shaping-upg-coef", type=float, default=0.035)
     ap.add_argument("--shaping-relic-coef", type=float, default=0.0)
     ap.add_argument("--shaping-offset", type=float, default=0.307)
+    sts2_client.add_game_version_arg(ap)
     args = ap.parse_args(argv)
+    sts2_client.apply_game_version_arg(args)
     if args.combat == "surrogate" and not args.surrogate_path:
         ap.error("--combat surrogate requires --surrogate-path")
     search = None

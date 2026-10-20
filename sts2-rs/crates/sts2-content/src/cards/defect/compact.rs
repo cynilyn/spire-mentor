@@ -29,7 +29,7 @@ pub(crate) fn play_compact(state: &mut CombatState, _t: Option<CreatureUid>) -> 
             // the flag, mirroring C# `CardCmd.Upgrade(cardModel)`. Bead
             // `sts2-rs-pnlm7`: was a direct `.upgraded = true` flip which
             // only worked because Fuel has no spec delta today.
-            let _ = fuel.upgrade();
+            let _ = fuel.upgrade_for(state.game_version);
         }
         let _ = state.transform_card(uid, fuel);
     }

@@ -209,6 +209,21 @@ impl UnknownMapPointOdds {
 }
 
 impl RunState {
+    /// Whether the deck's LanternKey quest card is active: it is in the deck
+    /// and the run is in act 3 (C# `CurrentActIndex == 2`). While it is, the
+    /// card turns every `?` into an Event (`ModifyUnknownMapPointRoomTypes`)
+    /// and replaces the next event with `WarHistorianRepy`
+    /// (`ModifyNextEvent`). Decomp `Models.Cards/LanternKey.cs:21-37`, the
+    /// same in v0.107.1 and v0.111.0.
+    #[must_use]
+    pub fn lantern_key_redirects_to_war_historian(&self) -> bool {
+        self.act_index() == 3
+            && self
+                .master_deck
+                .iter()
+                .any(|c| c.card_id == crate::cards::CardId::LanternKey)
+    }
+
     /// Resolve an `?` (unknown) map-point room type to a concrete
     /// [`RoomType`]. Mirrors the resolver in Python
     /// `run_manager._enter_room` (called when the player lands on an
@@ -246,6 +261,13 @@ impl RunState {
         // Walk the relic-side channel (JuzuBracelet drops `Monster`
         // pre-act-3-treasure, etc.).
         room_types = self.modify_unknown_map_point_room_types(room_types);
+        // The LanternKey quest card's listener on the same hook: in act 3
+        // every `?` is an Event (decomp `Models.Cards/LanternKey.cs:21-28`).
+        // The other listeners only narrow the set (JuzuBracelet) or also
+        // return `{Event}` (GoldenCompass), so their order does not matter.
+        if self.lantern_key_redirects_to_war_historian() {
+            room_types = std::iter::once(RoomType::Event).collect();
+        }
 
         // Roll.
         self.unknown_map_point_odds
@@ -374,5 +396,42 @@ mod tests {
         let blacklist: BTreeSet<RoomType> = [RoomType::Monster].into_iter().collect();
         let got = rs.resolve_unknown_room(blacklist);
         assert_ne!(got, RoomType::Monster);
+    }
+
+    fn lantern_key() -> crate::cards::Card {
+        crate::cards::Card {
+            card_id: crate::cards::CardId::LanternKey,
+            ..crate::cards::Card::pod_defaults()
+        }
+    }
+
+    /// LanternKey's `ModifyUnknownMapPointRoomTypes` (LanternKey.cs:21-28):
+    /// in act 3 a `?` is always an Event, and the roll still draws its float
+    /// without moving the odds (nothing in `{Event}` has odds to reset).
+    #[test]
+    fn lantern_key_makes_every_act3_unknown_an_event() {
+        let mut rs = RunState::new();
+        rs.act_index = 3;
+        rs.master_deck.push(lantern_key());
+        rs.unknown_map_point_odds
+            .current
+            .insert(RoomType::Monster, 1.0);
+        let odds_before = rs.unknown_map_point_odds.clone();
+        let counter_before = rs.rng.unknown_map_point.counter();
+        assert_eq!(rs.resolve_unknown_room(BTreeSet::new()), RoomType::Event);
+        assert_eq!(rs.rng.unknown_map_point.counter(), counter_before + 1);
+        assert_eq!(rs.unknown_map_point_odds, odds_before);
+    }
+
+    /// Outside act 3 the card does nothing (`2 != CurrentActIndex`).
+    #[test]
+    fn lantern_key_leaves_other_acts_alone() {
+        let mut rs = RunState::new();
+        rs.act_index = 2;
+        rs.master_deck.push(lantern_key());
+        rs.unknown_map_point_odds
+            .current
+            .insert(RoomType::Monster, 1.0);
+        assert_eq!(rs.resolve_unknown_room(BTreeSet::new()), RoomType::Monster);
     }
 }

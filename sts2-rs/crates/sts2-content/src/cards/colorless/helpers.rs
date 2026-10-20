@@ -164,6 +164,19 @@ pub(crate) fn card_rarity_for_id(id: CardId) -> Option<crate::cards::types::Card
     None
 }
 
+/// [`card_rarity_for_id`] in game build `version` (GH #793): v0.107.1 is
+/// exactly [`card_rarity_for_id`]; v0.111.0 reads that build's rarity.
+pub(crate) fn card_rarity_for_id_in(
+    id: CardId,
+    version: sts2_core::GameVersion,
+) -> Option<crate::cards::types::CardRarity> {
+    if crate::cards::v0111::is_v0111(version) {
+        crate::cards::spec_index::rarity_for_card_id_in(id, version)
+    } else {
+        card_rarity_for_id(id)
+    }
+}
+
 /// Internal helper: present the draw-pile cards whose Card POD's
 /// `card_type` equals `kind` as a player choice and add the chosen one
 /// to hand. Mirrors C# `SecretTechnique`/`SecretWeapon`
@@ -211,9 +224,10 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
     candidates.sort_by(|a, b| {
         let ca = &state.cards[a.0.get() as usize - 1];
         let cb = &state.cards[b.0.get() as usize - 1];
-        crate::cards::spec_index::card_rarity_rank_csharp(ca.card_id)
-            .cmp(&crate::cards::spec_index::card_rarity_rank_csharp(
+        crate::cards::spec_index::card_rarity_rank_csharp_in(ca.card_id, state.game_version)
+            .cmp(&crate::cards::spec_index::card_rarity_rank_csharp_in(
                 cb.card_id,
+                state.game_version,
             ))
             .then_with(|| ca.card_id.to_python_name().cmp(cb.card_id.to_python_name()))
     });
@@ -434,6 +448,8 @@ pub fn sample_distinct_colorless_cards_for_hook(
             let raw = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
             let uid = CardUid::new(raw).expect("non-zero uid");
             card.uid = uid;
+            // v0.111.0 card values (GH #793).
+            card.normalize_for_version(state.game_version);
             state.cards.push(card);
             uids.push(uid);
         }
@@ -464,6 +480,8 @@ pub fn sample_colorless_cards_for_hook(
         let raw = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
         let uid = CardUid::new(raw).expect("non-zero uid");
         card.uid = uid;
+        // v0.111.0 card values (GH #793).
+        card.normalize_for_version(state.game_version);
         state.cards.push(card);
         uids.push(uid);
     }
@@ -517,6 +535,8 @@ pub(crate) fn create_character_ethereal_cards_into_arena(
         // C# `CardModel.DeckVersion == null` marker for combat-generated
         // cards (see core `spawn_card_into_pile`). Bead `sts2-rs-a4096`.
         card.set_combat_var(sts2_core::cards::VarKey::GeneratedInCombat, 1);
+        // v0.111.0 card values (GH #793).
+        card.normalize_for_version(state.game_version);
         state.cards.push(card);
         uids.push(uid);
     }
@@ -575,6 +595,79 @@ pub(crate) fn combat_generatable_pool(
         CharacterId::Regent => &POOLS[4],
     };
     slot.get_or_init(|| build_combat_generatable_pool(character))
+}
+
+/// [`combat_generatable_pool`] in game build `version` (GH #793): the
+/// v0.107.1 pool with each slot moved onto that build's card and values
+/// ([`crate::cards::v0111::pool_spec_of`]: Sidestep in Scare's Silent slot,
+/// Outbreak a Skill, …) and the cards the build flagged
+/// `CanBeGeneratedInCombat => false` dropped (Eidolon, Nightmare,
+/// Transfigure). Pool order is kept — C# filters with `Where`. Sidestep is
+/// the only card the build adds to a single-player character pool, so this
+/// map + filter over the v0.107.1 pool is the whole difference.
+pub(crate) fn combat_generatable_pool_in(
+    character: sts2_core::potions::CharacterId,
+    version: sts2_core::GameVersion,
+) -> &'static [CardSpec] {
+    use std::collections::BTreeMap;
+    use std::sync::{OnceLock, RwLock};
+
+    use sts2_core::potions::CharacterId;
+
+    if !crate::cards::v0111::is_v0111(version) {
+        return combat_generatable_pool(character);
+    }
+    fn build(
+        character: sts2_core::potions::CharacterId,
+        version: sts2_core::GameVersion,
+    ) -> Vec<CardSpec> {
+        combat_generatable_pool(character)
+            .iter()
+            .map(|s| crate::cards::v0111::pool_spec_of(*s, version))
+            .filter(|s| crate::cards::v0111::can_be_generated_in_combat(s.id, version))
+            .collect()
+    }
+    if crate::unlocks::any_locked() {
+        // Same generation-keyed leak as `locked_filtered_combat_pool`.
+        static CACHE: RwLock<Option<(u64, BTreeMap<u8, &'static [CardSpec]>)>> = RwLock::new(None);
+        let generation = crate::unlocks::locked_generation();
+        let key = character as u8;
+        if let Some((gen, map)) = CACHE.read().expect("pool cache poisoned").as_ref() {
+            if *gen == generation {
+                if let Some(slice) = map.get(&key) {
+                    return slice;
+                }
+            }
+        }
+        let leaked: &'static [CardSpec] = Box::leak(build(character, version).into_boxed_slice());
+        let mut guard = CACHE.write().expect("pool cache poisoned");
+        match guard.as_mut() {
+            Some((gen, map)) if *gen == generation => {
+                map.insert(key, leaked);
+            }
+            _ => {
+                let mut map = BTreeMap::new();
+                map.insert(key, leaked);
+                *guard = Some((generation, map));
+            }
+        }
+        return leaked;
+    }
+    static POOLS: [OnceLock<Vec<CardSpec>>; 5] = [
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+    ];
+    let slot = match character {
+        CharacterId::Ironclad => &POOLS[0],
+        CharacterId::Silent => &POOLS[1],
+        CharacterId::Defect => &POOLS[2],
+        CharacterId::Necrobinder => &POOLS[3],
+        CharacterId::Regent => &POOLS[4],
+    };
+    slot.get_or_init(|| build(character, version))
 }
 
 /// The epoch-filtered variant of [`combat_generatable_pool`], reached only
@@ -755,7 +848,7 @@ fn card_is_multiplayer_only(id: CardId) -> bool {
             | CardId::SneakyCard
             | CardId::TagTeam
             | CardId::TankCard
-    )
+    ) || crate::cards::spec_index::is_multiplayer_only(id)
 }
 
 /// Transform the card at `card_uid` into a random card from its
@@ -806,7 +899,7 @@ pub fn transform_card_to_random_for_hook(
     use crate::cards::types::CardRarity;
 
     let original_id = state.cards.iter().find(|c| c.uid == card_uid)?.card_id;
-    let rarity = crate::cards::spec_index::rarity_for_card_id(original_id);
+    let rarity = crate::cards::spec_index::rarity_for_card_id_in(original_id, state.game_version);
     // C# `CardFactory.GetDefaultTransformationOptions`:
     //   pool = (Type != Quest && Rarity not in {Event,Ancient,Token})
     //              ? original.Pool : ColorlessCardPool
@@ -826,9 +919,17 @@ pub fn transform_card_to_random_for_hook(
     // Detect a genuinely-colorless original via the authoritative full
     // `COLORLESS_SPECS` set (64 cards) rather than the narrower
     // `is_colorless_card_id` list, which omitted several colorless ids.
+    // v0.111.0: TheBall is listed by `ColorlessCardPool` (decomp
+    // ColorlessCardPool.cs:85), so its `original.Pool` is the colorless pool
+    // (CardFactory.cs:173). It lives in `V0111_ONLY_SPECS`, not
+    // `COLORLESS_SPECS`, so it fell through to the player's character pool
+    // (Entropy on a Silent hand TheBall rolled KNIFE_TRAP where C# rolls the
+    // colorless PREP_TIME). The id exists in no v0.107.1 state.
     let is_colorless_original = crate::cards::spec_index::COLORLESS_SPECS
         .iter()
-        .any(|f| f().id == original_id);
+        .any(|f| f().id == original_id)
+        || (state.game_version >= sts2_core::GameVersion::V0_111_0
+            && original_id == CardId::TheBall);
     // Event / Ancient / **Token** originals are FORCED onto the
     // ColorlessCardPool by C#
     // (`(Type != Quest && Rarity not in {Event,Ancient,Token}) ? Pool :
@@ -916,7 +1017,7 @@ pub fn transform_card_to_random_for_hook(
         // character-owned).
         let character = crate::cards::spec_index::character_for_card_id(original_id)
             .or(state.player.character)?;
-        combat_generatable_pool(character)
+        combat_generatable_pool_in(character, state.game_version)
             .iter()
             .copied()
             .filter(|s| s.id != original_id)
@@ -968,7 +1069,7 @@ pub(crate) fn create_filtered_character_cards_into_arena(
     if count == 0 {
         return SmallVec::new();
     }
-    let pool: SmallVec<[CardSpec; 96]> = combat_generatable_pool(character)
+    let pool: SmallVec<[CardSpec; 96]> = combat_generatable_pool_in(character, state.game_version)
         .iter()
         .copied()
         .filter(|s| card_type.map_or(true, |kt| s.card_type == kt))
@@ -1003,6 +1104,8 @@ pub(crate) fn create_filtered_character_cards_into_arena(
         // C# `CardModel.DeckVersion == null` marker for combat-generated
         // cards (see core `spawn_card_into_pile`). Bead `sts2-rs-a4096`.
         card.set_combat_var(sts2_core::cards::VarKey::GeneratedInCombat, 1);
+        // v0.111.0 card values (GH #793).
+        card.normalize_for_version(state.game_version);
         state.cards.push(card);
         uids.push(uid);
     }
@@ -1028,11 +1131,12 @@ pub(crate) fn distinct_character_card_ids(
     if count == 0 {
         return SmallVec::new();
     }
-    let mut pool: SmallVec<[CardId; 96]> = combat_generatable_pool(character)
-        .iter()
-        .filter(|s| card_type.map_or(true, |kt| s.card_type == kt))
-        .map(|s| s.id)
-        .collect();
+    let mut pool: SmallVec<[CardId; 96]> =
+        combat_generatable_pool_in(character, state.game_version)
+            .iter()
+            .filter(|s| card_type.map_or(true, |kt| s.card_type == kt))
+            .map(|s| s.id)
+            .collect();
     if pool.is_empty() {
         return SmallVec::new();
     }
@@ -1587,6 +1691,12 @@ pub fn is_visual_pool_colorless(id: CardId) -> bool {
     {
         return true;
     }
+    // v0.111.0 (GH #793): Abundance is an Ancient-rarity card that lives in
+    // `EventCardPool` (`EventCardPool.cs`, `IsColorless`), so the rarity test
+    // below would miss it. The id exists in no v0.107.1 state.
+    if id == CardId::Abundance {
+        return true;
+    }
     matches!(
         crate::cards::spec_index::rarity_for_card_id(id),
         Some(CardRarity::Token | CardRarity::Event)
@@ -1787,6 +1897,8 @@ pub fn create_colorless_modifier_cards(
         let raw = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
         let uid = CardUid::new(raw).expect("non-zero uid");
         card.uid = uid;
+        // v0.111.0 card values (GH #793).
+        card.normalize_for_version(state.game_version);
         state.cards.push(card);
         uids.push(uid);
     }

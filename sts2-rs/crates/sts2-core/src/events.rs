@@ -48,13 +48,13 @@ pub enum EventId {
     /// + `post_combat_phase="RUN_OVER"` which the run-loop driver
     /// will read once those surfaces land. Bead `sts2-rs-6ynt.4.3`.
     TheArchitect,
-    /// `WarHistorianRepy` — act3 LantenKey-gated event. Disabled
-    /// (`is_allowed` returns `false` at pin `01c094d`; spawns only
-    /// when the `LANTERN_KEY` card is in the deck, which the Rust
-    /// port doesn't yet model). Choices: `unlock_cage` (free Repy,
-    /// gain `HISTORY_COURSE` relic, remove all `LANTERN_KEY` copies
-    /// from deck) / `unlock_chest` (remove `LANTERN_KEY`s, gain 2
-    /// potion-rewards + 2 relic-rewards). Bead `sts2-rs-6ynt.4.3`.
+    /// `WarHistorianRepy` — act-3 LanternKey quest event. Never rolled
+    /// from the pool (`IsAllowed => false`); the `LANTERN_KEY` card's
+    /// `ModifyNextEvent` swaps it in for the next act-3 event. Choices:
+    /// `unlock_cage` (remove a `LANTERN_KEY`, obtain `HISTORY_COURSE`) /
+    /// `unlock_chest` (remove a `LANTERN_KEY`, take 2 potions + 2
+    /// relics). A second key opens a page with the other option. Full
+    /// port in `sts2-content/src/events/act3_glory.rs` (GH #817).
     WarHistorianRepy,
     /// `Neow` — act3 starting event (relic selection). Triggered at
     /// run start by game logic (`is_allowed` returns `false`).
@@ -903,6 +903,45 @@ pub enum EventEncounter {
     MysteriousKnight,
     /// `FakeMerchantEventEncounter` (FakeMerchant "throw foul potion").
     FakeMerchant,
+    /// `DenseVegetationEventEncounter` (DenseVegetation "Rest" → "Fight"):
+    /// four `Wriggler`s in slots `wriggler1..4`, `StartStunned = false`.
+    DenseVegetation,
+}
+
+impl EventEncounter {
+    /// Whether a won fight against this encounter grants the encounter's
+    /// NORMAL combat-room rewards (gold, potion odds, card reward) on top of
+    /// the request's `victory_rewards`.
+    ///
+    /// C# grants them for every event fight whose encounter gives rewards:
+    /// `EventCombatSynchronizer` builds a real `CombatRoom` whose `RoomType`
+    /// is the encounter's (`RoomType.Monster` for every event encounter), and
+    /// at combat end `RewardsCmd.OfferForRoomEnd` (`RewardsCmd.cs:21-36`) →
+    /// `RewardsSet.WithRewardsFromRoom` adds `GenerateRewardsFor(room)` and
+    /// THEN the room's `ExtraRewards` (`RewardsSet.cs:88-104`). The only
+    /// exception is `EncounterModel.ShouldGiveRewards == false`, which the
+    /// three `BattlewornDummyEventV{1,2,3}Encounter`s set (they resume their
+    /// event instead). Identical in v0.107.1 and v0.111.0 (GH #817).
+    #[must_use]
+    pub const fn grants_base_room_rewards(self) -> bool {
+        !matches!(self, Self::BattlewornDummy(_))
+    }
+
+    /// The encounter's `MinGoldReward`/`MaxGoldReward` when it overrides the
+    /// room-type defaults, else `None`.
+    ///
+    /// `FakeMerchantEventEncounter.cs:21-23` returns a flat 300 for both.
+    /// The override replaces `EncounterModel.MinGoldReward` outright, so the
+    /// Poverty multiplier in the base getter never applies; the Monster-room
+    /// `GoldProportion` scaling (`RewardsSet.cs:228-231`) still does, and
+    /// `GoldReward.Populate` still draws one `Rewards.NextInt(300, 301)`.
+    #[must_use]
+    pub const fn gold_reward_bounds(self) -> Option<(i32, i32)> {
+        match self {
+            Self::FakeMerchant => Some((300, 300)),
+            _ => None,
+        }
+    }
 }
 
 /// A request, raised by an event-option handler, to enter a real
@@ -923,15 +962,19 @@ pub struct EventCombatRequest {
     /// Whether to resume the parent event after combat (C#
     /// `shouldResumeAfterCombat`). When `true` (BattlewornDummy) the
     /// `resume_event_after_combat` callback grants the per-setting reward
-    /// on a clean victory. When `false` (TheLanternKey / FakeMerchant) the
-    /// combat-room `victory_rewards` are granted directly on victory.
+    /// on a clean victory. When `false` (TheLanternKey / FakeMerchant /
+    /// DenseVegetation) a victory grants the encounter's Monster-room
+    /// rewards plus `victory_rewards`.
     pub resume: bool,
     /// The event that launched this combat — keyed for the resume
     /// dispatch (C# `CombatRoom.ParentEventId`).
     pub parent_event: EventId,
     /// Extra rewards granted ONLY on a clean victory when `resume` is
-    /// `false` (C# `extraRewards` added via `CombatRoom.AddExtraReward`):
-    /// TheLanternKey's LanternKey card, FakeMerchant's FakeMerchantsRug.
+    /// `false` (C# `extraRewards` added via `CombatRoom.AddExtraReward`),
+    /// collected with the room's own rewards: TheLanternKey's
+    /// `SpecialCardReward(LanternKey)` (modelled as a one-card `CardReward`
+    /// with pre-resolved options, added straight to the deck), and
+    /// FakeMerchant's FakeMerchantsRug plus its stocked relics.
     pub victory_rewards: Vec<crate::runstate::Reward>,
 }
 

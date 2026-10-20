@@ -99,6 +99,10 @@ pub mod uproar;
 pub mod voltaic;
 pub mod white_noise;
 pub mod zap;
+// v0.111.0-only cards (GH #793).
+pub mod hibernate_card;
+pub mod imitation_learning_card;
+pub mod one_for_all_card;
 
 pub use helpers::defect_starter_deck;
 
@@ -106,6 +110,7 @@ pub use helpers::defect_starter_deck;
 /// [`crate::cards::dispatch::install_default_registry`].
 pub fn install_pool() {
     card_effects::register_many(POOL);
+    card_effects::register_many(POOL_V0111);
 }
 
 #[allow(clippy::type_complexity)]
@@ -309,4 +314,22 @@ const POOL: &[(CardId, PlayCardFn)] = &[
         biased_cognition::play_biased_cognition as PlayCardFn,
     ),
     (CardId::Quadcast, quadcast::play_quadcast as PlayCardFn),
+];
+
+/// The v0.111.0-only cards of this pool (GH #793), kept beside [`POOL`]
+/// so the v0.107.1 table is unchanged. Their ids exist in no v0.107.1 state.
+#[allow(clippy::type_complexity)]
+const POOL_V0111: &[(CardId, PlayCardFn)] = &[
+    (
+        CardId::HibernateCard,
+        hibernate_card::play_hibernate as PlayCardFn,
+    ),
+    (
+        CardId::ImitationLearningCard,
+        imitation_learning_card::play_imitation_learning as PlayCardFn,
+    ),
+    (
+        CardId::OneForAllCard,
+        one_for_all_card::play_one_for_all as PlayCardFn,
+    ),
 ];

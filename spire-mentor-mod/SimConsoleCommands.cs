@@ -22,7 +22,7 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
 {
     public override string CmdName => "spirementor";
 
-    public override string Args => "[mode off|advisor] [speed <0.1-4.0>] [hud on|off] [log] [waitmult <f>] [animmult <f>]";
+    public override string Args => "[mode off|advisor|hints|coach] [speed <0.1-4.0>] [hud on|off] [log] [waitmult <f>] [animmult <f>]";
 
     public override string Description => "Spire Mentor control: show status, switch mode, set game speed / HUD / autopilot multipliers.";
 
@@ -35,7 +35,7 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
         if (args.Length == 0)
         {
             return new CmdResult(success: true,
-                $"mode={SimRuntime.Mode} speed={SimSpeed.Current:0.0}x hud={(SpireMentorModConfig.ShowHud ? "on" : "off")} " +
+                $"mode={SimRuntime.Mode} style={SimRuntime.Style} speed={SimSpeed.Current:0.0}x hud={(SpireMentorModConfig.ShowHud ? "on" : "off")} " +
                 $"waitmult={SimRuntime.WaitMultiplier:0.###} animmult={SimRuntime.AnimMultiplier:0.###}");
         }
 
@@ -93,7 +93,7 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
         {
             string[] candidates = args[0].ToLowerInvariant() switch
             {
-                "mode" => ["off", "advisor"],
+                "mode" => ["off", "advisor", "hints", "coach"],
                 "hud" => ["on", "off"],
                 _ => [],
             };
@@ -114,22 +114,29 @@ public class SpireMentorConsoleCmd : AbstractConsoleCmd
         string? target = value?.ToLowerInvariant();
         // Only a valid target stops the slayer -- a typo must not silently
         // end an autopilot session.
-        string note = (target == "off" || target == "advisor") && MainFile.StopAutopilot()
+        AdviceStyle? style = CoachStyle.Parse(target);
+        string note = (target == "off" || target == "advisor" || style != null) && MainFile.StopAutopilot()
             ? " (autopilot stopped)"
             : "";
+        if (style is AdviceStyle s)
+        {
+            SimRuntime.SetModeAndStyle(SimMode.Advisor, s);
+            return new CmdResult(success: true, $"mode -> Advisor, style -> {s}{note}");
+        }
         switch (target)
         {
             case "off":
                 SimRuntime.Mode = SimMode.Off;
                 return new CmdResult(success: true, $"mode -> Off{note}");
             case "advisor":
+                // Keeps the current style (hints / coach pick one explicitly).
                 SimRuntime.Mode = SimMode.Advisor;
-                return new CmdResult(success: true, $"mode -> Advisor{note}");
+                return new CmdResult(success: true, $"mode -> Advisor ({SimRuntime.Style}){note}");
             case "autopilot":
                 return new CmdResult(success: false,
                     "Autopilot cannot be entered at runtime (needs auto_start=true in SpireMentor.conf at launch).");
             default:
-                return new CmdResult(success: false, "usage: spirementor mode off|advisor");
+                return new CmdResult(success: false, "usage: spirementor mode off|advisor|hints|coach");
         }
     }
 

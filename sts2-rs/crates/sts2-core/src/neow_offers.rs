@@ -67,6 +67,12 @@ pub enum NeowRelic {
     /// positive pool (it is a static `PositiveOptions` member now). The
     /// variant stays for exhaustive pattern-matching.
     ScrollBoxes,
+    // ── v0.111.0 curse-pool additions (`Neow.cs:96-108`, GH #792) ─────
+    /// v0.111.0: new curse option — adds the Dowsing quest card.
+    DowsingRod,
+    /// v0.111.0: new curse option — procures Ambergris + adds Guilty, and
+    /// strips PhialHolster / LostCoffer from the positive offers.
+    NeowsSacrifice,
 }
 
 impl NeowRelic {
@@ -105,6 +111,8 @@ impl NeowRelic {
             Self::FishingRod => RelicId::FishingRod,
             Self::Kaleidoscope => RelicId::Kaleidoscope,
             Self::SilkenTress => RelicId::SilkenTress,
+            Self::DowsingRod => RelicId::DowsingRod,
+            Self::NeowsSacrifice => RelicId::NeowsSacrifice,
         })
     }
 
@@ -143,6 +151,8 @@ impl NeowRelic {
             Self::FishingRod => "FISHING_ROD",
             Self::Kaleidoscope => "KALEIDOSCOPE",
             Self::SilkenTress => "SILKEN_TRESS",
+            Self::DowsingRod => "DOWSING_ROD",
+            Self::NeowsSacrifice => "NEOWS_SACRIFICE",
         }
     }
 }
@@ -211,6 +221,35 @@ const CURSE_POOL: &[NeowRelic] = &[
     NeowRelic::SilverCrucible,
 ];
 
+/// Curse pool — **v0.111.0** `Neow.cs:96-108` `CurseOptions[10]`, in the
+/// exact C# array order (the `next_item` curse draw indexes it): the
+/// v0.107.1 eight plus `DowsingRod` (after `CursedPearl`) and
+/// `NeowsSacrifice` (after `NeowsBones`). Neither new relic overrides
+/// `IsAllowedAtNeow`/`IsAllowed` (`DowsingRod.cs`, `NeowsSacrifice.cs`), so
+/// both stay in the single-player pool unconditionally.
+const CURSE_POOL_V0111: &[NeowRelic] = &[
+    NeowRelic::CursedPearl,
+    NeowRelic::DowsingRod,
+    NeowRelic::HeftyTablet,
+    NeowRelic::LargeCapsule,
+    NeowRelic::LeafyPoultice,
+    NeowRelic::NeowsBones,
+    NeowRelic::NeowsSacrifice,
+    NeowRelic::PrecariousShears,
+    NeowRelic::SilkenTress,
+    NeowRelic::SilverCrucible,
+];
+
+/// The Neow curse pool for game build `version`.
+#[must_use]
+pub fn curse_pool_for(version: crate::GameVersion) -> &'static [NeowRelic] {
+    match version {
+        crate::GameVersion::V0_107_1 => CURSE_POOL,
+        // v0.111.0: CurseOptions grew 8 -> 10 (decomp Neow.cs:96).
+        crate::GameVersion::V0_111_0 => CURSE_POOL_V0111,
+    }
+}
+
 /// Inline `Rng.NextItem(IList<T>)` — uniform pick over a non-empty
 /// slice. C# `Rng.NextItem` calls `NextInt(0, list.Count - 1)`
 /// (inclusive both ends); our `next_int(low, high)` matches that
@@ -255,8 +294,20 @@ fn next_item<T: Copy>(rng: &mut Rng, lst: &[T]) -> T {
 /// `Neow.cs:218-223` / `:269-275`).
 #[must_use]
 pub fn roll_neow_offers(rng: &mut Rng) -> NeowOffers {
+    roll_neow_offers_for(crate::GameVersion::V0_107_1, rng)
+}
+
+/// [`roll_neow_offers`] for game build `version` (GH #792). v0.107.1 is the
+/// function above, bit for bit; v0.111.0 draws the curse from the 10-entry
+/// pool ([`curse_pool_for`]) and, when it lands on `NeowsSacrifice`, drops
+/// `PhialHolster` and `LostCoffer` from the positive pool before the add-ins
+/// and the shuffle (`Neow.cs:244-248`):
+///
+/// [decompiled C# omitted — see the cited path]
+#[must_use]
+pub fn roll_neow_offers_for(version: crate::GameVersion, rng: &mut Rng) -> NeowOffers {
     // (1) curse pick — Neow.cs:217 + :227.
-    let cursed = next_item(rng, CURSE_POOL);
+    let cursed = next_item(rng, curse_pool_for(version));
 
     // (2) base positive pool, drop curse↔positive conflicts
     //     (Neow.cs:228-244).
@@ -267,6 +318,12 @@ pub fn roll_neow_offers(rng: &mut Rng) -> NeowOffers {
         NeowRelic::LeafyPoultice => positive_pool.retain(|r| *r != NeowRelic::NewLeaf),
         NeowRelic::PrecariousShears => {
             positive_pool.retain(|r| *r != NeowRelic::PreciseScissors);
+        }
+        // v0.111.0: NeowsSacrifice strips the PhialHolster / LostCoffer
+        // offers (decomp Neow.cs:244). Unreachable in v0.107.1 (not in its
+        // curse pool).
+        NeowRelic::NeowsSacrifice => {
+            positive_pool.retain(|r| *r != NeowRelic::PhialHolster && *r != NeowRelic::LostCoffer);
         }
         _ => {}
     }
@@ -623,5 +680,90 @@ mod tests {
                 "mismatch for {nr:?}"
             );
         }
+    }
+
+    // ── v0.111.0 (GH #792) ───────────────────────────────────────────
+
+    use crate::GameVersion;
+
+    /// `Neow.cs:96-108` CurseOptions[10], in C# array order.
+    #[test]
+    fn curse_pool_matches_decomp_order_v0111() {
+        assert_eq!(
+            curse_pool_for(GameVersion::V0_111_0),
+            &[
+                NeowRelic::CursedPearl,
+                NeowRelic::DowsingRod,
+                NeowRelic::HeftyTablet,
+                NeowRelic::LargeCapsule,
+                NeowRelic::LeafyPoultice,
+                NeowRelic::NeowsBones,
+                NeowRelic::NeowsSacrifice,
+                NeowRelic::PrecariousShears,
+                NeowRelic::SilkenTress,
+                NeowRelic::SilverCrucible,
+            ]
+        );
+        assert_eq!(curse_pool_for(GameVersion::V0_107_1), CURSE_POOL);
+    }
+
+    /// The v0.107.1 entry point is the versioned roll at v0.107.1, and the
+    /// v0.111.0-only relics never appear in a v0.107.1 offer.
+    #[test]
+    fn v0107_offers_are_unchanged_and_never_offer_v0111_relics() {
+        for seed in 0..500 {
+            let mut a = Rng::with_name(seed, "NEOW");
+            let mut b = Rng::with_name(seed, "NEOW");
+            let o = roll_neow_offers(&mut a);
+            assert_eq!(o, roll_neow_offers_for(GameVersion::V0_107_1, &mut b));
+            assert_eq!(a, b, "same RNG consumption, seed {seed}");
+            for r in [o.positive_1, o.positive_2, o.cursed] {
+                assert!(
+                    !matches!(r, NeowRelic::DowsingRod | NeowRelic::NeowsSacrifice),
+                    "seed {seed}: {r:?}"
+                );
+            }
+        }
+    }
+
+    /// `Neow.cs:244-248`: a NeowsSacrifice curse strips PhialHolster and
+    /// LostCoffer from the positives; both new curses are reachable.
+    #[test]
+    fn neows_sacrifice_strips_phial_holster_and_lost_coffer_v0111() {
+        let (mut saw_sacrifice, mut saw_dowsing) = (false, false);
+        for seed in 0..2000 {
+            let mut rng = Rng::with_name(seed, "NEOW");
+            let o = roll_neow_offers_for(GameVersion::V0_111_0, &mut rng);
+            assert!(curse_pool_for(GameVersion::V0_111_0).contains(&o.cursed));
+            saw_dowsing |= o.cursed == NeowRelic::DowsingRod;
+            if o.cursed == NeowRelic::NeowsSacrifice {
+                saw_sacrifice = true;
+                for p in [o.positive_1, o.positive_2] {
+                    assert!(
+                        !matches!(p, NeowRelic::PhialHolster | NeowRelic::LostCoffer),
+                        "seed {seed}: {p:?} offered beside NeowsSacrifice"
+                    );
+                }
+            }
+        }
+        assert!(saw_sacrifice && saw_dowsing);
+    }
+
+    #[test]
+    fn v0111_neow_relics_map_to_relic_ids_v0111() {
+        assert_eq!(
+            NeowRelic::DowsingRod.to_relic_id(),
+            Some(RelicId::DowsingRod)
+        );
+        assert_eq!(
+            NeowRelic::NeowsSacrifice.to_relic_id(),
+            Some(RelicId::NeowsSacrifice)
+        );
+        assert_eq!(NeowRelic::DowsingRod.snake_case_id(), "DOWSING_ROD");
+        assert_eq!(NeowRelic::NeowsSacrifice.snake_case_id(), "NEOWS_SACRIFICE");
+        assert_eq!(RelicId::DowsingRod.introduced_in(), GameVersion::V0_111_0);
+        assert!(!RelicId::all().contains(&RelicId::DowsingRod));
+        assert!(RelicId::all_for(GameVersion::V0_111_0).contains(&RelicId::NeowsSacrifice));
+        assert_eq!(RelicId::all_for(GameVersion::V0_107_1), RelicId::all());
     }
 }

@@ -149,6 +149,33 @@ pub fn fire_pending(state: &mut CombatState) -> bool {
     fired
 }
 
+/// Would [`fire_pending`] fire anything right now? The same corpse /
+/// armed-power / registered-handler filter, with no side effects.
+///
+/// C# runs a dying creature's `AfterDeath` (Infested's Wriggler spawn) inside
+/// the killing `CreatureCmd.Damage`, so by the time a caller asks
+/// `CombatManager.IsOverOrEnding` the reinforcements already stand — combat is
+/// not ending. Rust defers that spawn to [`fire_pending`] at the combat-end
+/// chokepoint, so a side-effect-free "is combat ending?" read has to treat a
+/// still-armed death power as "the fight goes on".
+#[must_use]
+pub fn has_pending(state: &CombatState) -> bool {
+    state.enemy_uids.iter().any(|uid| {
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .filter(|c| c.current_hp <= 0)
+            .is_some_and(|c| {
+                c.powers.iter().any(|puid| {
+                    state.powers.get_by_id(puid.0).is_some_and(|p| {
+                        p.kind != PowerKind::Adaptable && p.amount != 0 && lookup(p.kind).is_some()
+                    })
+                })
+            })
+    })
+}
+
 /// Fire the on-death second-phase effect for a SINGLE just-died creature,
 /// at the moment of its death.
 ///
@@ -275,6 +302,25 @@ mod tests {
         assert!(
             !fire_for_owner(&mut state, uid),
             "no fire for a live creature"
+        );
+    }
+
+    /// `has_pending` is `fire_pending`'s filter without the side effects: true
+    /// for an armed corpse, false once the handler fired (amount zeroed) and
+    /// for an `Adaptable` corpse (revived at the next enemy turn instead).
+    #[test]
+    fn has_pending_mirrors_fire_pending_filter() {
+        register(PowerKind::Stock, marker_handler);
+        let (mut state, _) = corpse_with_power(PowerKind::Stock, 2);
+        assert!(has_pending(&state));
+        assert!(fire_pending(&mut state));
+        assert!(!has_pending(&state), "fired power is spent");
+
+        register(PowerKind::Adaptable, marker_handler);
+        let (state, _) = corpse_with_power(PowerKind::Adaptable, 1);
+        assert!(
+            !has_pending(&state),
+            "Adaptable is not a death-chokepoint fire"
         );
     }
 

@@ -75,6 +75,7 @@ class LiveRunTree:
             "seekable": False,
             "turn": None,
             "tape_id": None,
+            "log_idx": None,
         }
         self._next_id += 1
         self._nodes[node["id"]] = node
@@ -107,8 +108,14 @@ class LiveRunTree:
 
     # -- events (called from the advisor loop) -------------------------
 
-    def on_decision(self, msg: dict[str, Any], advice_for: str) -> None:
-        """A new advised decision: append a node under the active pointer."""
+    def on_decision(self, msg: dict[str, Any], advice_for: str, log_idx: int | None = None) -> None:
+        """A new advised decision: append a node under the active pointer.
+
+        ``log_idx`` is the replay step index of the decision's ``state`` line
+        in the run log (``WorkbenchRunLogger.log_decision``): the node -> step
+        join the live coach's "open in workbench" links need, since node ids
+        and step indices diverge (root, room entries, rewind forks).
+        """
         with self._lock:
             self._maybe_switch_run_locked(self._run_key_of(msg))
             label = advice_for.replace("_", " ")
@@ -138,10 +145,11 @@ class LiveRunTree:
             # concatenates the active path, so seeking back truncates it.
             node["combat_log_raw"] = list(msg.get("combat_log") or [])
             node["player_id"] = (msg.get("run_state") or {}).get("character")
+            node["log_idx"] = log_idx
             self._active = node["id"]
             self._pending_label = node["id"]
 
-    def on_human_action(self, msg: dict[str, Any]) -> None:
+    def on_human_action(self, msg: dict[str, Any]) -> int | None:
         """Refine a decision node's label with what the human actually did.
 
         The target is the node the action ANSWERED, not whichever node is
@@ -153,10 +161,13 @@ class LiveRunTree:
         onto each report (`advice_request_id`), so the exact node is
         recoverable; reports without one fall back to the newest node still
         awaiting its label.
+
+        Returns the id of the node the action answered (the live coach keys
+        its grades by it), or ``None`` when no decision node took it.
         """
         detail = msg.get("detail") or msg.get("action")
         if not detail:
-            return
+            return None
         with self._lock:
             node = None
             rid = msg.get("advice_request_id")
@@ -182,9 +193,10 @@ class LiveRunTree:
                     "game_over",
                 )
             ):
-                return
+                return None
             floor = node.get("floor")
             node["label"] = f"f{floor} · {detail}" if floor is not None else str(detail)
+            return node["id"]
 
     def on_snapshot_saved(self, msg: dict[str, Any]) -> None:
         """Stamp the mod's snapshot onto the tree.
@@ -332,6 +344,24 @@ class LiveRunTree:
             return None
 
     # -- projection ----------------------------------------------------
+
+    def log_idx(self, node_id: Any) -> int | None:
+        """The run-log replay step of ``node_id`` (``None`` when unknown)."""
+        with self._lock:
+            node = self._nodes.get(node_id) if isinstance(node_id, int) else None
+            return node.get("log_idx") if node is not None else None
+
+    def active_path(self) -> list[int]:
+        """Node ids from the root to the active node (the live coach withdraws
+        grades for nodes off this path after a rewind)."""
+        with self._lock:
+            path: list[int] = []
+            cur = self._active
+            while cur is not None:
+                path.append(cur)
+                cur = self._nodes[cur]["parent_id"]
+            path.reverse()
+            return path
 
     def timeline(self) -> dict[str, Any]:
         """The ``LiveTimeline`` wire shape (plus snapshot_id/seekable)."""

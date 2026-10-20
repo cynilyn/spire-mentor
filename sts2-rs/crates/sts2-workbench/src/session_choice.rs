@@ -61,6 +61,9 @@ pub struct ChoiceVerdict {
 /// Grade pick `played` among `probs`: agreement when it is the top pick; a
 /// flag only when the top pick is ≥ [`FLAG_TOP_MIN`] and ≥ [`FLAG_RATIO`]×
 /// the pick's probability; otherwise a toss-up.
+///
+/// Twin: `sts2-pycli/python/choice_grade.py::grade_choice` (the live mod
+/// coach). Keep the constants, tie-breaks and the unit cases below in step.
 #[must_use]
 pub fn grade_choice(probs: &[f64], played: usize) -> ChoiceVerdict {
     let top = probs

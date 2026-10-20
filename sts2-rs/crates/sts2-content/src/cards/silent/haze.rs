@@ -11,8 +11,15 @@ use super::prelude::*;
 /// `OnUpgrade UpgradeValueBy(2m)` → 6. Bead `sts2-rs-b1e1j` fixed the
 /// status + amount; bead `sts2-rs-9ob1y` adds the upgrade scaling.
 pub(crate) fn play_haze(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    let amount = if current_card_upgraded(state) { 6 } else { 4 };
+    let upgraded = current_card_upgraded(state);
+    let amount = if upgraded { 6 } else { 4 };
     apply_power_to_all_enemies(state, PowerKind::Poison, amount);
+    if crate::cards::v0111::is_v0111(state.game_version) {
+        // v0.111.0: then Weak 1 (upgraded 2) to every hittable enemy
+        // (decomp Haze.cs:22,42,63). Cost 3 -> 2 and the dropped Sly keyword
+        // ride `cards::v0111::spec_for` / `card_effects::card_sly_in`.
+        apply_power_to_all_enemies(state, PowerKind::Weak, if upgraded { 2 } else { 1 });
+    }
     EffectResult::Resolved
 }
 

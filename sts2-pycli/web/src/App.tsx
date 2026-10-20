@@ -51,7 +51,10 @@ import PpoPolicyPanel from "./components/PpoPolicyPanel";
 import { useShortcuts } from "./useShortcuts";
 import { useMediaQuery, NARROW_QUERY, PHONE_LANDSCAPE_QUERY, SHORT_QUERY } from "./useMediaQuery";
 import { CollapseButton, PanelGrip } from "./components/panelChrome";
-import { usePanelFlag, usePanelHeight } from "./panelPrefs";
+import { usePanelChoice, usePanelFlag, usePanelHeight } from "./panelPrefs";
+import {
+  DEFAULT_GAME_VERSION, declaredGameVersion, effectiveGameVersion, gameVersionBody, gameVersionLabel,
+} from "./gameVersion";
 import { bestAction, toggleHintsLatch } from "./hint";
 import { createActionGate } from "./actionGate";
 import { HintsProvider, useHints } from "./hints/HintsContext";
@@ -76,6 +79,7 @@ import RunEnded from "./components/RunEnded";
 import RunLauncher from "./components/RunLauncher";
 import { generateSeed } from "./seed";
 import { computeRunEnd, shouldShowViewToggle, type EndedRun } from "./runControl";
+import { parseFollowParams, resolveRunPath, seekIndex } from "./followUrl";
 
 // Live moves whose parent is a combat decision — the ones the regret coach can
 // judge against the MCTS line.
@@ -237,6 +241,19 @@ function AppBody() {
   // says C# is spawnable. The list used to be hardcoded, so the deployed
   // (deliberately C#-free) image offered an engine whose pick could only fail.
   const [backends, setBackends] = useState<string[]>(["rust"]);
+  // GH #801: which game build a new run plays. The pick is remembered; what
+  // is SENT is `gameVersion` -- the pick when this server can run it, else its
+  // default -- so an older single-version server neither gets a version it
+  // would 400 nor overwrites the remembered preference.
+  const [gameVersionPick, setGameVersionPick] = usePanelChoice("wb.gameVersion", DEFAULT_GAME_VERSION);
+  const [gameVersions, setGameVersions] = useState<string[]>([DEFAULT_GAME_VERSION]);
+  const [serverDefaultVersion, setServerDefaultVersion] = useState(DEFAULT_GAME_VERSION);
+  const gameVersion = effectiveGameVersion(gameVersionPick, gameVersions, serverDefaultVersion);
+  // The build the CURRENT live session plays, read off the live step itself
+  // (`state.game_version`; writers omit the default). Derived, not tracked, so
+  // every path that replaces `live` -- restore, start, faithful, import,
+  // play-from-here, loading a save, seek -- reports the right build.
+  const liveGameVersion = live ? declaredGameVersion(live) : null;
   // Feature flags from the same probe: a control whose route this deployment
   // cannot answer is hidden rather than left as a button whose every call
   // answers 501. Absent flags (the classic backend) mean everything is on.
@@ -529,20 +546,22 @@ function AppBody() {
     }
   }, []);
   useEffect(() => { void refreshRunList(); }, [refreshRunList]);
-  // `?follow=1[&run=<path>]` (the mod's "Open Workbench" button): open the
-  // named run — or the newest one — in the replay view with Follow on.
+  // `?follow=1[&run=<path>][&step=<idx>]` (the mod's "Open Workbench" button,
+  // and its coach chips / recap / autopsy "open in workbench"): open the
+  // named run — or the newest one — in the replay view with Follow on, at
+  // replay step `step` when given, else at the newest step.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("follow") !== "1") return;
+    const { follow, run, step } = parseFollowParams(window.location.search);
+    if (!follow) return;
     followFromUrlRef.current = true;
     let cancelled = false;
     (async () => {
-      let path = params.get("run");
       // The live advisor knows exactly which file it is writing — prefer that
       // over the /api/runs head, which is only ever a guess at which file the
-      // game is in.
+      // game is in. A link naming that same file by its bare name opens it by
+      // the live path (resolveRunPath).
       const live = await liveLogPath();
-      if (!path) path = live;
+      let path = resolveRunPath(run, live);
       if (!path) {
         const r = await api.runs();
         path = r.runs[0] ?? null;
@@ -553,8 +572,12 @@ function AppBody() {
       if (cancelled) return;
       setFollow(true);
       setFollowIsLive(!!live && live === path);
-      // A live view opens at the newest step, not the run's first.
-      if (n > 0) setIdx(n - 1);
+      // A live view opens at the newest step, not the run's first — unless
+      // the link names a step. Then the Follow poll must not snap it back to
+      // the tail: it keeps refreshing the file but only auto-advances at the
+      // tail (atTailRef), so clear that now, before the next tick can see it.
+      if (step !== null) atTailRef.current = false;
+      if (n > 0) setIdx(seekIndex(step, n));
     })().catch(() => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -633,9 +656,11 @@ function AppBody() {
     let cancelled = false;
     api
       .capabilities()
-      .then(({ backends: available, features: flags }) => {
+      .then(({ backends: available, features: flags, game_versions, default_game_version }) => {
         if (cancelled) return;
         if (flags) setFeatures(flags);
+        if (game_versions?.length) setGameVersions(game_versions);
+        if (default_game_version) setServerDefaultVersion(default_game_version);
         if (!available?.length) return;
         // The browser-only build has exactly one engine, whatever it reports.
         const list = isStaticMode() ? ["rust"] : available;
@@ -933,7 +958,12 @@ function AppBody() {
     if (runSeed !== seed) setSeed(runSeed);
     let s: Step;
     try {
-      s = await api.live.start({ character, seed: runSeed, ascension, backend, act1 });
+      s = await api.live.start({
+        character, seed: runSeed, ascension, backend, act1,
+        // Only the Rust engine plays a non-default build; the C# oracle
+        // 400s on one, so it always gets the default (#855).
+        ...gameVersionBody(backend === "rust" ? gameVersion : null),
+      });
     } catch (e) {
       setLiveError(`start failed: ${e}`);
       return;
@@ -1095,7 +1125,8 @@ function AppBody() {
     setImportNotes(fidelity.warnings ?? []);
     try {
       setMode("play");
-      setLive(await api.live.state());
+      const s = await api.live.state();
+      setLive(s);
       await refreshTimeline();
     } catch (e) {
       setLiveError(`import failed: ${e}`);
@@ -1660,6 +1691,7 @@ function AppBody() {
           sims: monsterSims,
           boss_sims: bossSims,
           threads: faithfulThreads,
+          ...gameVersionBody(gameVersion),
         });
         setMode("play");
         resetReplayView();
@@ -2010,9 +2042,13 @@ function AppBody() {
             // only show on non-combat play screens.
             const showAuto = mode === "play" && live && runMode
               && cur.decision !== "combat_play" && cur.decision !== "game_over";
+            // GH #801: a run on a non-default game build says so, quietly --
+            // the same seed is a different run on the beta.
+            const versionTag = mode === "play" && live && liveGameVersion
+              && liveGameVersion !== DEFAULT_GAME_VERSION ? liveGameVersion : null;
             return (
               <>
-                {(showAuto || (deck.length > 0 && !analyzeInTopbar)) && (
+                {(showAuto || versionTag || (deck.length > 0 && !analyzeInTopbar)) && (
                   <div className="mono wb-runbar" style={{ display: "flex", gap: 8, alignItems: "center",
                     padding: "4px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap", fontSize: 12 }}>
                     {showAuto && (
@@ -2056,6 +2092,12 @@ function AppBody() {
                           background: "var(--bg)", cursor: "pointer", font: "inherit" }}>
                         📊 analyze
                       </button>
+                    )}
+                    {versionTag && (
+                      <span data-testid="run-game-version" title="this run plays a non-default game build"
+                        style={{ marginLeft: "auto", color: "var(--muted)" }}>
+                        {gameVersionLabel(versionTag)}
+                      </span>
                     )}
                   </div>
                 )}
@@ -2102,6 +2144,7 @@ function AppBody() {
                   ascension={ascension} onAscension={setAscension}
                   act1={act1} onAct1={setAct1}
                   backend={backend} onBackend={setBackend} backends={backends}
+                  gameVersion={gameVersion} onGameVersion={setGameVersionPick} gameVersions={gameVersions}
                   onPlay={startLive}
                   onWatch={runMode ? launchAutoplay : undefined}
                   busy={autoRunning}
@@ -2417,6 +2460,7 @@ function AppBody() {
           onClose={() => setImportOpen(false)}
           liveGame={bridgeConnected ? fetchLiveGameState : undefined}
           autoLive={importFromLive}
+          gameVersion={gameVersion}
         />
       )}
       {treeOpen && (

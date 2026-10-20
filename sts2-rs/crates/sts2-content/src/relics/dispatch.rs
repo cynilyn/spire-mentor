@@ -46,6 +46,7 @@ pub fn install_default_registry() {
         // ChoicesParadox listeners that store synthetic options on
         // `PendingChoice`.
         sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+        sts2_core::register_card_factory_for_version(crate::cards::v0111::card_pod_for);
         crate::relics::starter::install_pool();
         crate::relics::common::install_pool();
         // P7-3 (sts2-rs-l22): registered below.

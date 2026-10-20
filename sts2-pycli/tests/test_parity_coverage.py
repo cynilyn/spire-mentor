@@ -287,6 +287,39 @@ def test_every_playable_engine_card_is_covered() -> None:
     )
 
 
+def _all_card_subjects_for(game_version: str) -> set[str]:
+    out: set[str] = set()
+    for character in _CHARACTERS:
+        out |= {
+            s.coverage_subject.split(":", 1)[1]
+            for s in m.coverage_scenarios(character, game_version)
+            if s.coverage_subject and s.coverage_subject.startswith("card:")
+        }
+    return out
+
+
+def test_every_playable_engine_card_is_covered_v0111() -> None:
+    """The v0.111.0 coverage packs cover every card that build can hold (GH #793).
+
+    The v0.111.0-only cards are appended to the packs at that build only, and
+    the removed Scare is dropped from them.
+    """
+    from card_inventory import V0111_REMOVED_CARDS, sweepable_cards
+
+    covered = _all_card_subjects_for("v0.111.0")
+    missing = sorted(sweepable_cards("v0.111.0") - covered)
+    assert not missing, f"{len(missing)} v0.111.0 engine cards have no coverage trial: {missing}"
+    assert not (covered & V0111_REMOVED_CARDS), "a v0.111.0 pack still sweeps a removed card"
+
+
+def test_v0107_coverage_never_names_a_v0111_card() -> None:
+    """The default (v0.107.1) packs must not sweep a card that build lacks."""
+    from card_inventory import v0111_only_cards
+
+    leaked = sorted(_all_card_subjects() & v0111_only_cards())
+    assert not leaked, f"v0.107.1 coverage sweeps v0.111.0-only cards: {leaked}"
+
+
 def test_no_coverage_subject_names_a_card_the_engine_lacks() -> None:
     """The other direction: a stale/renamed id would sweep nothing.
 

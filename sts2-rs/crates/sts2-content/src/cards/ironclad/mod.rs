@@ -97,11 +97,16 @@ pub mod unrelenting;
 pub mod uppercut;
 pub mod vicious;
 pub mod whirlwind;
+// v0.111.0-only cards (GH #793).
+pub mod blaze;
+pub mod midnight;
+pub mod outrage;
 
 /// Register every handler in this pool. Called from
 /// [`crate::cards::dispatch::install_default_registry`].
 pub fn install_pool() {
     card_effects::register_many(POOL);
+    card_effects::register_many(POOL_V0111);
 }
 
 #[allow(clippy::type_complexity)]
@@ -304,4 +309,13 @@ const POOL: &[(CardId, PlayCardFn)] = &[
         CardId::CorruptionCard,
         corruption::play_corruption as PlayCardFn,
     ),
+];
+
+/// The v0.111.0-only cards of this pool (GH #793), kept beside [`POOL`]
+/// so the v0.107.1 table is unchanged. Their ids exist in no v0.107.1 state.
+#[allow(clippy::type_complexity)]
+const POOL_V0111: &[(CardId, PlayCardFn)] = &[
+    (CardId::Blaze, blaze::play_blaze as PlayCardFn),
+    (CardId::Midnight, midnight::play_midnight as PlayCardFn),
+    (CardId::Outrage, outrage::play_outrage as PlayCardFn),
 ];

@@ -64,6 +64,7 @@ from run_parity import (
     map_signature,
     run_signature,
 )
+from sts2_client import add_game_version_arg, apply_game_version_arg
 from workbench.backends.base import make_backend
 
 # Mirrors ``sts2_core::full_run::INVINCIBLE_HP`` (the engine-internal invincible
@@ -665,7 +666,9 @@ def main() -> int:
     )
     ap.add_argument("--seed", help="single verbose run for this seed (overrides sweep)")
     ap.add_argument("--verbose", action="store_true", help="dump per-step trace (single run)")
+    add_game_version_arg(ap)
     args = ap.parse_args()
+    apply_game_version_arg(args)
 
     assert_wheel_fresh()
     invincible = not args.no_invincible

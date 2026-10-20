@@ -27,7 +27,8 @@ pub(crate) fn play_anointed(state: &mut CombatState, _t: Option<CreatureUid>) ->
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
             let card_id = state.cards[idx].card_id;
-            card_rarity_for_id(card_id) == Some(crate::cards::types::CardRarity::Rare)
+            card_rarity_for_id_in(card_id, state.game_version)
+                == Some(crate::cards::types::CardRarity::Rare)
         })
         .collect();
     // C# `TakeRandom` = `UnstableShuffle(rng).Take(count)`; `CombatCardSelection`

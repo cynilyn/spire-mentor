@@ -17,7 +17,17 @@ pub(crate) fn play_rampage(state: &mut CombatState, target: Option<CreatureUid>)
     let _ = deal_damage_player_to_enemy(state, t, dmg);
     // Bead `sts2-rs-mgsv9`: C# `Rampage.cs` `DynamicVar("Increase", 5)` with
     // `OnUpgrade UpgradeValueBy(4m)` → +5 per play base / +9 per play upgraded.
-    let increase = if current_upgraded(state) { 9 } else { 5 };
+    // v0.111.0: the upgrade raises Increase by 5, was 4 (decomp Rampage.cs:63).
+    let upgraded_increase = if crate::cards::v0111::is_v0111(state.game_version) {
+        10
+    } else {
+        9
+    };
+    let increase = if current_upgraded(state) {
+        upgraded_increase
+    } else {
+        5
+    };
     set_card_var(state, uid, VarKey::RampageDamage, bonus + increase);
     EffectResult::Resolved
 }

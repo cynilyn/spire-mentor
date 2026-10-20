@@ -365,6 +365,13 @@ def _rng_block(msg: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if not isinstance(counters, dict):
         return None
+    # A v0.111.0 master seed is a full ``ulong`` (GH #788). A negative integer
+    # is a 32-bit seed written signed: its ``uint`` view. Mirrors the Rust
+    # ``state_import::rng_block``.
+    if run_seed < 0:
+        run_seed &= 0xFFFF_FFFF
+    elif run_seed > 0xFFFF_FFFF_FFFF_FFFF:
+        return None
     clean = {
         str(k): int(v)
         for k, v in counters.items()

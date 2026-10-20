@@ -15,15 +15,83 @@ import re
 from pathlib import Path
 from typing import Any
 
+from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS
+
 _VER_NUMS = re.compile(r"\d+")
 
-# The engine simulates ONE pinned game build (build_id == v0.107.1; see
-# ../sts2-rs/CLAUDE.md). Resolve display localization against THAT version's
-# wiki data so card/relic/potion text matches the rules the engine actually
-# plays — not whatever newer ``data/<ver>/`` happens to be highest on disk
-# (the wiki also carries older v0.103.2 / v0.105.1 reference data). Flip this in
-# lockstep when the engine pin moves.
-_ENGINE_WIKI_VERSION = "v0.107.1"
+# The engine simulates the game build a run was started on (GH #801): the
+# default v0.107.1 (see ../sts2-rs/CLAUDE.md) or the v0.111.0 beta. Resolve
+# display localization against THAT version's wiki data so card/relic/potion
+# text matches the rules the engine actually plays — not whatever newer
+# ``data/<ver>/`` happens to be highest on disk (the wiki also carries older
+# v0.103.2 / v0.105.1 reference data).
+#
+# ``DEFAULT_GAME_VERSION`` is the build every loader reads when no version is
+# passed; it mirrors ``sts2_core::GameVersion::default()`` and the Rust
+# ``data::ENGINE_WIKI_VERSION``. Each supported build maps to the wiki
+# ``data/<ver>/`` dir describing it (``engine_wiki_version``).
+# The build list itself lives in ``sts2_client`` (one list for the oracle and
+# the workbench); every build's wiki dir is named after the build.
+_ENGINE_WIKI_VERSIONS: dict[str, str] = {v: v for v in SUPPORTED_GAME_VERSIONS}
+# The default build's wiki dir. Kept under its historical name: scripts
+# (``bundle_workbench_data.py``, ``synergy.gen_card_text``) and tests import it.
+_ENGINE_WIKI_VERSION = _ENGINE_WIKI_VERSIONS[DEFAULT_GAME_VERSION]
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def engine_wiki_version(version: str | None = None) -> str:
+    """The wiki ``data/<ver>/`` dir name describing game build ``version``.
+
+    Args:
+        version: A supported build (``"v0.107.1"`` / ``"v0.111.0"``); ``None``
+            means :data:`DEFAULT_GAME_VERSION`.
+
+    Raises:
+        ValueError: ``version`` is not a supported build.
+    """
+    key = version or DEFAULT_GAME_VERSION
+    try:
+        return _ENGINE_WIKI_VERSIONS[key]
+    except KeyError:
+        raise ValueError(
+            f"unsupported game version {key!r}; supported: {', '.join(SUPPORTED_GAME_VERSIONS)}"
+        ) from None
+
+
+def loc_dir_for(version: str | None = None, repo_root: Path | None = None) -> Path:
+    """The vendored English localization dir for game build ``version``.
+
+    The default build reads ``localization_eng/`` (unchanged); every other
+    build reads its sibling ``localization_eng_<ver>/``, vendored by
+    ``scripts/vendor_localization.py`` as a MERGE over the default copy (the
+    newer build wins its keys, keys only the older build had are retained).
+
+    Args:
+        version: A supported build; ``None`` means the default.
+        repo_root: The ``sts2-pycli`` root (default: this checkout's).
+    """
+    key = version or DEFAULT_GAME_VERSION
+    engine_wiki_version(key)  # validate
+    root = repo_root if repo_root is not None else _REPO_ROOT
+    if key == DEFAULT_GAME_VERSION:
+        return root / "localization_eng"
+    return root / f"localization_eng_{key}"
+
+
+def available_game_versions(repo_root: Path | None = None) -> list[str]:
+    """The supported builds this checkout can DISPLAY, oldest first.
+
+    The default build is always listed; any other needs its vendored
+    ``localization_eng_<ver>/`` (a public snapshot ships without it), or
+    every card and relic would render as a raw loc key. Rust twin:
+    ``data::embedded_versions``.
+    """
+    return [
+        v
+        for v in SUPPORTED_GAME_VERSIONS
+        if v == DEFAULT_GAME_VERSION or loc_dir_for(v, repo_root).is_dir()
+    ]
 
 
 def _highest_version(paths: list[Path]) -> Path:
@@ -31,21 +99,29 @@ def _highest_version(paths: list[Path]) -> Path:
     return max(paths, key=lambda p: tuple(int(n) for n in _VER_NUMS.findall(p.parent.name)) or (0,))
 
 
-def _engine_manifest(wiki_data_dir: Path) -> Path | None:
+def _engine_manifest(wiki_data_dir: Path, version: str | None = None) -> Path | None:
     """Return the engine-pinned ``<ver>/cards.json`` under ``wiki_data_dir``.
 
-    Prefers ``_ENGINE_WIKI_VERSION``; falls back to the highest version present
-    only if the pinned build's data isn't on disk (e.g. a trimmed deploy)."""
-    pinned = wiki_data_dir / _ENGINE_WIKI_VERSION / "cards.json"
+    Prefers the build's own wiki dir (:func:`engine_wiki_version`). For the
+    DEFAULT build only, falls back to the highest version present if the
+    pinned build's data isn't on disk (e.g. a trimmed deploy); a non-default
+    build never borrows another build's manifest — it would describe the
+    wrong rules."""
+    wiki_ver = engine_wiki_version(version)
+    pinned = wiki_data_dir / wiki_ver / "cards.json"
     if pinned.is_file():
         return pinned
+    if wiki_ver != _ENGINE_WIKI_VERSION:
+        return None
     manifests = list(wiki_data_dir.glob("*/cards.json"))
     if not manifests:
         return None
     return _highest_version(manifests)
 
 
-def load_card_localization(repo_loc_json: Path, wiki_data_dir: Path | None) -> dict[str, str]:
+def load_card_localization(
+    repo_loc_json: Path, wiki_data_dir: Path | None, *, version: str | None = None
+) -> dict[str, str]:
     """Build a ``loc_key -> string`` map for card titles and descriptions.
 
     Args:
@@ -53,6 +129,7 @@ def load_card_localization(repo_loc_json: Path, wiki_data_dir: Path | None) -> d
             ``{"KEY.title": "...", "KEY.description": "..."}`` dict).
         wiki_data_dir: Optional path to the wiki's ``data/`` dir holding
             versioned ``<ver>/cards.json`` manifests.
+        version: The game build to describe (default: the default build).
 
     Returns:
         Mapping such as ``{"PREPARED.title": "Prepared",
@@ -75,7 +152,7 @@ def load_card_localization(repo_loc_json: Path, wiki_data_dir: Path | None) -> d
     # engine implemented the v0.107.1 ``OnPlay`` gate, letting you play it for no
     # effect. Bug report ``wb-66e36e372eef4bea``.
     if wiki_data_dir and wiki_data_dir.is_dir():
-        manifest = _engine_manifest(wiki_data_dir)
+        manifest = _engine_manifest(wiki_data_dir, version)
         if manifest is not None:
             try:
                 cards: Any = json.loads(manifest.read_text(encoding="utf-8"))
@@ -165,14 +242,22 @@ def load_card_localization(repo_loc_json: Path, wiki_data_dir: Path | None) -> d
     return loc
 
 
-def _engine_versioned_subdir(wiki_data_dir: Path, subdir: str) -> Path | None:
+def _engine_versioned_subdir(
+    wiki_data_dir: Path, subdir: str, version: str | None = None
+) -> Path | None:
     """Return the engine-pinned ``<ver>/<subdir>`` dir under ``wiki_data_dir``.
 
-    Prefers ``_ENGINE_WIKI_VERSION``; falls back to the highest version present
-    only if the pinned build's subdir isn't on disk."""
-    pinned = wiki_data_dir / _ENGINE_WIKI_VERSION / subdir
+    Prefers the build's own wiki dir; for the DEFAULT build only, falls back
+    to the highest version present if the pinned build's subdir isn't on disk.
+    A non-default build has no such fallback: ``data/v0.111.0/`` ships only
+    the aggregates, and borrowing v0.107.1's per-item files would fill its
+    gaps with the other build's text."""
+    wiki_ver = engine_wiki_version(version)
+    pinned = wiki_data_dir / wiki_ver / subdir
     if pinned.is_dir():
         return pinned
+    if wiki_ver != _ENGINE_WIKI_VERSION:
+        return None
     dirs = [p for p in wiki_data_dir.glob(f"*/{subdir}") if p.is_dir()]
     if not dirs:
         return None
@@ -186,7 +271,9 @@ def _class_name_to_loc_key(class_name: str) -> str:
     return result.upper()
 
 
-def load_owned_localization(wiki_data_dir: Path | None) -> dict[str, str]:
+def load_owned_localization(
+    wiki_data_dir: Path | None, *, version: str | None = None
+) -> dict[str, str]:
     """Build a ``<LOC_KEY>.description_plain`` map for relics and potions.
 
     The regex-extracted aggregates (``<ver>/relics.json`` / ``potions.json``,
@@ -206,6 +293,7 @@ def load_owned_localization(wiki_data_dir: Path | None) -> dict[str, str]:
     Args:
         wiki_data_dir: Path to the wiki's ``data/`` dir holding versioned
             ``<ver>/{relics,potions}.json`` (and optionally the per-item dirs).
+        version: The game build to describe (default: the default build).
 
     Returns:
         Mapping such as ``{"BURNING_BLOOD.description_plain":
@@ -214,8 +302,9 @@ def load_owned_localization(wiki_data_dir: Path | None) -> dict[str, str]:
     loc: dict[str, str] = {}
     if not (wiki_data_dir and wiki_data_dir.is_dir()):
         return loc
+    wiki_ver = engine_wiki_version(version)
     for subdir in ("relics", "potions"):
-        agg = wiki_data_dir / _ENGINE_WIKI_VERSION / f"{subdir}.json"
+        agg = wiki_data_dir / wiki_ver / f"{subdir}.json"
         if agg.is_file():
             try:
                 rows: Any = json.loads(agg.read_text(encoding="utf-8"))
@@ -230,7 +319,7 @@ def load_owned_localization(wiki_data_dir: Path | None) -> dict[str, str]:
                     if not class_name or not desc:
                         continue
                     loc.setdefault(f"{_class_name_to_loc_key(class_name)}.description_plain", desc)
-        items_dir = _engine_versioned_subdir(wiki_data_dir, subdir)
+        items_dir = _engine_versioned_subdir(wiki_data_dir, subdir, version)
         if items_dir is None:
             continue
         for path in sorted(items_dir.glob("*.json")):
@@ -302,7 +391,9 @@ def plain_owned_description(item_id: str | None, loc: dict[str, str]) -> str | N
     return loc.get(f"{item_id}.description_plain")
 
 
-def load_card_meta(wiki_data_dir: Path | None) -> dict[str, dict[str, str]]:
+def load_card_meta(
+    wiki_data_dir: Path | None, *, version: str | None = None
+) -> dict[str, dict[str, str]]:
     """Build a ``loc_key -> {"card_type", "rarity", "cost", "upgraded_cost"}``
     map from the wiki manifest.
 
@@ -315,11 +406,12 @@ def load_card_meta(wiki_data_dir: Path | None) -> dict[str, dict[str, str]]:
     Args:
         wiki_data_dir: Path to the wiki's ``data/`` dir holding versioned
             ``<ver>/cards.json`` manifests.
+        version: The game build to describe (default: the default build).
     """
     meta: dict[str, dict[str, str]] = {}
     if not (wiki_data_dir and wiki_data_dir.is_dir()):
         return meta
-    manifest = _engine_manifest(wiki_data_dir)
+    manifest = _engine_manifest(wiki_data_dir, version)
     if manifest is None:
         return meta
     try:
@@ -725,7 +817,9 @@ def resolve_state_names(state: dict[str, Any] | None, loc: dict[str, str]) -> di
     return out
 
 
-def load_monster_hp_ranges(wiki_data_dir: Path | None) -> dict[str, dict[str, int]]:
+def load_monster_hp_ranges(
+    wiki_data_dir: Path | None, *, version: str | None = None
+) -> dict[str, dict[str, int]]:
     """``MonsterKind -> {min, max, min_asc, max_asc, hp_ascension}`` HP ranges.
 
     ``Creature.SetUniqueMonsterHpValue`` rolls each monster's max HP inside
@@ -741,6 +835,7 @@ def load_monster_hp_ranges(wiki_data_dir: Path | None) -> dict[str, dict[str, in
     Args:
         wiki_data_dir: Path to the wiki's ``data/`` dir holding versioned
             ``<ver>/monsters.json`` manifests.
+        version: The game build to describe (default: the default build).
 
     Returns:
         Mapping keyed by the manifest's ``class_name``, which IS the
@@ -750,7 +845,7 @@ def load_monster_hp_ranges(wiki_data_dir: Path | None) -> dict[str, dict[str, in
     out: dict[str, dict[str, int]] = {}
     if not (wiki_data_dir and wiki_data_dir.is_dir()):
         return out
-    cards = _engine_manifest(wiki_data_dir)
+    cards = _engine_manifest(wiki_data_dir, version)
     manifest = (cards.parent / "monsters.json") if cards is not None else None
     if manifest is None or not manifest.is_file():
         return out
@@ -794,3 +889,76 @@ def load_monster_hp_ranges(wiki_data_dir: Path | None) -> dict[str, dict[str, in
             else 0,
         }
     return out
+
+
+def build_workbench_loc(
+    wiki_data_dir: Path | None,
+    *,
+    version: str | None = None,
+    repo_root: Path | None = None,
+) -> tuple[dict[str, str], dict[str, dict[str, int]]]:
+    """The workbench server's display loc map + monster HP bands for a build.
+
+    Reproduces ``workbench.server.create_app``'s merge order exactly (the Rust
+    ``localization::build_loc`` twin is pinned to the same order):
+
+    1. :func:`load_card_localization` (wiki manifest wins, in-repo dump fills);
+    2. ``update`` with the card-keyword, affliction and rest-site tables;
+    3. ``setdefault`` ``<id>.card_type`` / ``.rarity`` / ``.cost`` /
+       ``.upgraded_cost`` from :func:`load_card_meta`;
+    4. ``update`` with the raw ``relics.json`` then ``potions.json`` dumps;
+    5. ``setdefault`` every ``characters.json`` string;
+    6. ``setdefault`` every :func:`load_owned_localization` entry;
+    7. ``setdefault`` every ``events.json`` entry.
+
+    Args:
+        wiki_data_dir: The wiki's ``data/`` dir (``None`` = no wiki checkout).
+        version: The game build (default: :data:`DEFAULT_GAME_VERSION`). Picks
+            both the vendored loc dir (:func:`loc_dir_for`) and the wiki
+            ``data/<ver>/`` manifests (:func:`engine_wiki_version`).
+        repo_root: The ``sts2-pycli`` root (default: this checkout's).
+
+    Returns:
+        ``(loc, hp_ranges)`` — ``hp_ranges`` is
+        :func:`load_monster_hp_ranges` for the same build.
+    """
+    loc_dir = loc_dir_for(version, repo_root)
+    card_loc = load_card_localization(loc_dir / "cards.json", wiki_data_dir, version=version)
+    hp_ranges = load_monster_hp_ranges(wiki_data_dir, version=version)
+    card_loc.update(load_card_keyword_localization(loc_dir))
+    card_loc.update(load_affliction_localization(loc_dir))
+    card_loc.update(load_rest_site_localization(loc_dir))
+    for key, meta in load_card_meta(wiki_data_dir, version=version).items():
+        if meta.get("card_type"):
+            card_loc.setdefault(f"{key}.card_type", meta["card_type"])
+        if meta.get("rarity"):
+            card_loc.setdefault(f"{key}.rarity", meta["rarity"])
+        if meta.get("cost") is not None:
+            card_loc.setdefault(f"{key}.cost", meta["cost"])
+        if meta.get("upgraded_cost") is not None:
+            card_loc.setdefault(f"{key}.upgraded_cost", meta["upgraded_cost"])
+    for fname in ("relics.json", "potions.json"):
+        path = loc_dir / fname
+        if path.is_file():
+            try:
+                card_loc.update(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                pass
+    characters_path = loc_dir / "characters.json"
+    if characters_path.is_file():
+        try:
+            for key, value in json.loads(characters_path.read_text(encoding="utf-8")).items():
+                if isinstance(value, str):
+                    card_loc.setdefault(key, value)
+        except (OSError, json.JSONDecodeError):
+            pass
+    for owned_key, owned_plain in load_owned_localization(wiki_data_dir, version=version).items():
+        card_loc.setdefault(owned_key, owned_plain)
+    events_path = loc_dir / "events.json"
+    if events_path.is_file():
+        try:
+            for key, val in json.loads(events_path.read_text(encoding="utf-8")).items():
+                card_loc.setdefault(key, val)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return card_loc, hp_ranges

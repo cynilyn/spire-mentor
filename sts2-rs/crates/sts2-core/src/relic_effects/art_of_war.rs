@@ -51,7 +51,7 @@ pub(crate) fn on_after_turn_end_art_of_war(state: &mut CombatState, side: Side) 
 /// _attacks_last_turn: combat.gain_energy(owner, 1)`
 /// (`rare.py::ArtOfWar`, line 58). Bead `sts2-rs-80vi`.
 pub(crate) fn on_after_energy_reset_art_of_war(state: &mut CombatState) -> EffectResult {
-    if state.round_no() <= 1 {
+    if state.turn_number() <= 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::ArtOfWar) {

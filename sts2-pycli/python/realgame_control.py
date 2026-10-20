@@ -59,7 +59,6 @@ import gzip
 import io
 import json
 import logging
-import re
 import shutil
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,6 +67,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from realgame_livetree import LiveRunTree
+from realgame_workbench_log import run_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -340,8 +340,9 @@ class ControlPlane:
         except OSError as exc:
             return 404, {"error": "no_log", "detail": str(exc)}
         # The bundled page stores it under this key (its run store takes a
-        # bare filename, engineRoutes.ts RUN_FILENAME).
-        name = re.sub(r"[^A-Za-z0-9._-]", "_", file.name)
+        # bare filename, engineRoutes.ts RUN_FILENAME); coach records name
+        # their file by the same rule.
+        name = run_log_name(str(file)) or ""
         payload: dict[str, Any] = {"name": name, "size": st.st_size, "mtime": st.st_mtime}
         if not stat_only:
             # The advisor appends while we read: a torn last record would

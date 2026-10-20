@@ -1068,16 +1068,11 @@ impl RunPolicy for PpoPolicy {
     /// `env.py::observe`'s event surface calls `rm.materialize_event()`,
     /// which needs `&mut RunManager`; `choose` stays `&RunManager` (see
     /// the `RunPolicy::prepare` doc comment), so the event is bound
-    /// here instead. Byte-copy of `sts2-py::run_manager.rs`'s
-    /// `materialize_event` (~:1451): idempotent (no-op once an event is
-    /// bound) and RNG-free (deterministic pick), so calling it on every
-    /// non-event decision too costs nothing observable.
+    /// here instead. `drive_full_run` already binds (GH #841); this keeps
+    /// callers that step the policy themselves (the PyO3 agent) bound too.
+    /// Idempotent and RNG-free, so the second call costs nothing.
     fn prepare(&mut self, rm: &mut RunManager) {
-        if rm.phase() == Phase::Event && rm.run_state.current_event.is_none() {
-            if let Some(id) = sts2_content::events::dispatch::pick_event(&mut rm.run_state, None) {
-                rm.run_state.enter_event_room(id);
-            }
-        }
+        rm.bind_pending_event();
     }
 
     fn choose(&mut self, rm: &RunManager, actions: &[RunAction]) -> Option<usize> {

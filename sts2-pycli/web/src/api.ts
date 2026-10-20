@@ -4,6 +4,7 @@ import type { IntentModifier } from "./intentBreakdown";
 // WASM engine in a Web Worker. See src/transport/.
 import { apiFetch, configuredAssetsBase, isStaticMode } from "./transport";
 import { bridgeBase, bridgeFetch } from "./bridge";
+import { gameVersionBody } from "./gameVersion";
 // Static mode has no server to build a bug report: the page builds the dump
 // and posts it to the host's Pages Function. See src/bugreport.ts.
 import { captureBrowserBugReport, fetchBrowserBugReport } from "./bugreport";
@@ -380,7 +381,11 @@ export interface Step {
     turn: number | null; step_no: number; floor?: number | null; act?: number | null;
     act_name?: string | null; advice?: StepAdvice | null;
     bg_seed?: number | null; bg_row?: number | null; bg_col?: number | null;
+    /** GH #801: the session's game build; absent = v0.107.1. */
+    game_version?: string;
   };
+  /** GH #801: the session's game build; absent = v0.107.1. */
+  game_version?: string;
 }
 /**
  * Whether the loaded recording can be taken over interactively, and where.
@@ -1270,7 +1275,13 @@ export const api = {
   // than hardcoded -- offering an engine the server cannot spawn turned "Start
   // run" into a no-op.
   capabilities: () =>
-    apiFetch("/api/capabilities").then(json<{ backends: string[]; features?: CapabilityFeatures }>),
+    apiFetch("/api/capabilities").then(json<{
+      backends: string[];
+      features?: CapabilityFeatures;
+      /** GH #801: the game builds this engine can run; absent = v0.107.1 only. */
+      game_versions?: string[];
+      default_game_version?: string;
+    }>),
   runs: () => apiFetch("/api/runs").then(json<{ runs: string[] }>),
   runStat: (path: string) =>
     apiFetch(`/api/runs/stat?path=${encodeURIComponent(path)}`).then(
@@ -1401,6 +1412,8 @@ export const api = {
       backend?: string;
       /** GH #544: "overgrowth" | "underdocks" | "roll" (the real lobby pick). */
       act1?: string;
+      /** GH #801: "v0.107.1" (default) | "v0.111.0". */
+      game_version?: string;
     }) =>
       apiFetch("/api/live/start", {
         method: "POST",
@@ -1419,6 +1432,8 @@ export const api = {
       boss_sims?: number;  // MCTS iters in boss combat
       reward_sims?: number; // boss-sim depth per card-reward candidate
       threads?: number;
+      /** GH #801: "v0.107.1" (default) | "v0.111.0". */
+      game_version?: string;
     }) =>
       apiFetch("/api/live/start-faithful", {
         method: "POST",
@@ -1737,11 +1752,13 @@ export const api = {
       }).then(json<ImportPreview>),
     // Rebuild it, replacing the live run. `lane` "combat" resumes the exact
     // fight; "run" rebuilds the run position; "auto" prefers the fight.
-    importState: (payload: string, lane: ImportLane = "auto") =>
+    // `gameVersion` (GH #801) is sent only when it is not the default, so a
+    // 0.107 import posts the body it always did.
+    importState: (payload: string, lane: ImportLane = "auto", gameVersion?: string) =>
       apiFetch("/api/live/import-state", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ payload, lane }),
+        body: JSON.stringify({ payload, lane, ...gameVersionBody(gameVersion) }),
       }).then(json<Step & { import: ImportFidelity }>),
     // Launch a SimLab sweep from live board position(s). Naming several
     // branch nodes compares them as distributions, not single playouts.

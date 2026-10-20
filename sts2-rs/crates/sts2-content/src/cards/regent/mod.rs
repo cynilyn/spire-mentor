@@ -99,6 +99,10 @@ pub mod tyranny_card;
 pub mod venerate;
 pub mod void_form;
 pub mod wrought_in_war;
+// v0.111.0-only cards (GH #793).
+pub mod constellation;
+pub mod plot;
+pub mod tutor;
 
 pub use helpers::card_star_cost;
 pub use helpers::combat_forge;
@@ -115,6 +119,7 @@ pub use helpers::CRESCENT_SPEAR_EXTRA_DAMAGE_UPGRADED;
 /// [`crate::cards::dispatch::install_default_registry`].
 pub fn install_pool() {
     card_effects::register_many(POOL);
+    card_effects::register_many(POOL_V0111);
     // Bead `sts2-rs-j9x8`: late-effect bus consumers.
     card_effects::register_many_late_effects(&[(
         CardId::MakeItSo,
@@ -383,4 +388,16 @@ const POOL: &[(CardId, PlayCardFn)] = &[
         CardId::TheSealedThrone,
         the_sealed_throne::play_the_sealed_throne as PlayCardFn,
     ),
+];
+
+/// The v0.111.0-only cards of this pool (GH #793), kept beside [`POOL`]
+/// so the v0.107.1 table is unchanged. Their ids exist in no v0.107.1 state.
+#[allow(clippy::type_complexity)]
+const POOL_V0111: &[(CardId, PlayCardFn)] = &[
+    (
+        CardId::Constellation,
+        constellation::play_constellation as PlayCardFn,
+    ),
+    (CardId::Plot, plot::play_plot as PlayCardFn),
+    (CardId::Tutor, tutor::play_tutor as PlayCardFn),
 ];

@@ -68,3 +68,6 @@ pub(crate) mod status_specs_generated;
 // `--deck` parser can see every card whose dispatch handler exists.
 // Bead `sts2-rs-pjln` (cliext H4).
 pub mod spec_index;
+
+// v0.111.0 card values / rarities / keywords / pools overlay (GH #793).
+pub mod v0111;

@@ -651,6 +651,59 @@ mod tests {
         }
     }
 
+    /// Every event room reaches `choose` BOUND, with its real options.
+    ///
+    /// While an event room is unbound the engine offers one placeholder
+    /// `EventChoice`, which resolves option 0, so a policy that never bound
+    /// never made an event choice in the arena while `PpoRunEnv` (which binds
+    /// first, GH #302) let it choose: G1 diverged on seed 1, a LostWisp where
+    /// the two picked differently (GH #841). `drive_full_run` now binds, so
+    /// this spy implements ONLY `choose`, the way `TieredPolicy`, the
+    /// labeler and every other wrapper do, and runs on the arena's own run
+    /// construction (Neow start + `initialize_run_setup`).
+    #[test]
+    fn every_event_room_is_bound_before_choose() {
+        struct ChooseOnly {
+            inner: HeuristicPolicy,
+            events: usize,
+        }
+        impl RunPolicy for ChooseOnly {
+            fn choose(&mut self, rm: &RunManager, actions: &[RunAction]) -> Option<usize> {
+                if rm.phase() == Phase::Event {
+                    assert!(
+                        rm.run_state.current_event.is_some(),
+                        "event room reached choose unbound at floor {}",
+                        rm.run_state.total_floor
+                    );
+                    // Neow is pre-bound at run start; count the rooms that need it.
+                    if rm.run_state.total_floor > 0 {
+                        self.events += 1;
+                    }
+                }
+                self.inner.choose(rm, actions)
+            }
+        }
+        let mut seen = 0;
+        for seed in 0..8 {
+            let mut rm = crate::arena::new_arena_run_manager(
+                seed,
+                CharacterId::Ironclad,
+                0,
+                crate::arena::Act1Choice::Roll,
+            );
+            let mut spy = ChooseOnly {
+                inner: HeuristicPolicy::new(),
+                events: 0,
+            };
+            let _ = drive_full_run(&mut rm, &mut spy, &FullRunConfig::default());
+            seen += spy.events;
+        }
+        assert!(
+            seen >= 3,
+            "only {seen} post-Neow event rooms in 8 runs: the test proves nothing"
+        );
+    }
+
     /// V scores reach the audit hook with take semantics.
     #[test]
     fn v_scores_flow_through_take() {

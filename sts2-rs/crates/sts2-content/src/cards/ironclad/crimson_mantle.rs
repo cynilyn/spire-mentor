@@ -14,7 +14,14 @@ pub(crate) fn play_crimson_mantle(
     _t: Option<CreatureUid>,
 ) -> EffectResult {
     // C# CrimsonMantle.cs OnUpgrade bumps CrimsonMantlePower 8->10. Bead `sts2-rs-ja5qw`.
-    let amt = if current_upgraded(state) { 10 } else { 8 };
+    // v0.111.0: CrimsonMantlePower 8 -> 7, upgrade +2 -> +3 (decomp
+    // CrimsonMantle.cs:15,33) — the upgraded amount stays 10.
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        7
+    } else {
+        8
+    };
+    let amt = if current_upgraded(state) { 10 } else { base };
     apply_power_to_player(state, PowerKind::CrimsonMantle, amt);
     increment_player_power_counter(state, PowerKind::CrimsonMantle, 1);
     EffectResult::Resolved

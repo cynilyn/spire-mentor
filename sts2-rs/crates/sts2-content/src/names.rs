@@ -228,6 +228,21 @@ pub fn card_id_from_str(input: &str) -> Option<CardId> {
             }
         }
     }
+    // GH #793: the v0.111.0-only ids are outside `CardId::all` (the v0.107.1
+    // universe the tables above walk). A v0.111.0 scenario deck names them, so
+    // resolve them last — after every v0.107.1 name, which they cannot shadow.
+    let v0111: Vec<CardId> = CardId::V0111_ONLY.to_vec();
+    let v0111_names: Vec<&'static str> = v0111.iter().map(|v| v.to_python_name()).collect();
+    if let Some(hit) = name_lookup(input, &v0111, &v0111_names) {
+        return Some(hit);
+    }
+    for (value, python_name) in v0111.iter().zip(v0111_names.iter()) {
+        if let Some(stripped) = python_name.strip_suffix("_CARD") {
+            if normalize(stripped) == normalized_input {
+                return Some(*value);
+            }
+        }
+    }
     None
 }
 
@@ -632,6 +647,14 @@ pub fn resolve_card_name(
     deck_card_spec_registry()
         .into_iter()
         .find_map(|(id, _class, f)| (id == card_id).then(f))
+        // GH #793: a v0.111.0-only card (kept out of the v0.107.1 registry
+        // the CLI pools read).
+        .or_else(|| {
+            crate::cards::spec_index::V0111_ONLY_SPECS
+                .iter()
+                .map(|f| f())
+                .find(|spec| spec.id == card_id)
+        })
         .ok_or_else(|| UnknownCard {
             input: input.to_string(),
             // CardId resolved but no factory registered — surface the

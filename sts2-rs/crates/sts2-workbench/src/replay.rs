@@ -293,6 +293,7 @@ impl Rebuilt {
             .replay_line(last)
             .ok_or_else(|| "this run cannot be resumed (no replayable action line)".to_string())?;
         let mut game = Game::new();
+        game.game_version = ident.game_version;
         game.set_record_card_plays(true);
         game.set_record_combat_log(true);
         if ident.run_mode {

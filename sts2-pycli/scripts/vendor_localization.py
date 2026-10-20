@@ -19,6 +19,19 @@ Usage::
     uv run python scripts/vendor_localization.py \\
         ../sts2_binaries/v0.107.1/SlayTheSpire2.pck --version v0.107.1
 
+**Per-version copies (GH #801).** ``localization_eng/`` is the DEFAULT build's
+(v0.107.1) dump; every other supported build gets a sibling
+``localization_eng_<ver>/`` (e.g. ``localization_eng_v0.111.0/``), read through
+``workbench.localization.loc_dir_for``. Seed it from the default copy so the
+merge keeps the keys only the older build had, then vendor over it. An
+already-extracted ``localization/eng`` tree (``sts2-wiki/extracted/<ver>/``)
+can stand in for the pck::
+
+    cp -r localization_eng localization_eng_v0.111.0
+    uv run python scripts/vendor_localization.py \\
+        ../sts2-wiki/extracted/v0.111.0/localization/eng --extracted \\
+        --version v0.111.0 --out localization_eng_v0.111.0
+
 Re-run it when the engine pin moves, and move ``_ENGINE_WIKI_VERSION`` in the
 same commit.
 """
@@ -58,11 +71,16 @@ def _extract(pck: Path, dest: Path) -> Path:
     return eng
 
 
-def vendor(pck: Path, out_dir: Path, *, version: str) -> dict[str, int]:
-    """Merge the pck's tables over ``out_dir`` in place. Returns a per-kind tally."""
+def vendor(pck: Path, out_dir: Path, *, version: str, extracted: bool = False) -> dict[str, int]:
+    """Merge the pck's tables over ``out_dir`` in place. Returns a per-kind tally.
+
+    With ``extracted``, ``pck`` is an already-unpacked ``localization/eng``
+    directory rather than a ``.pck``.
+    """
     stats = {"tables": 0, "new_tables": 0, "changed_keys": 0, "added_keys": 0, "retained_keys": 0}
+    out_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sts2loc") as tmp:
-        eng = _extract(pck, Path(tmp))
+        eng = pck if extracted else _extract(pck, Path(tmp))
         for src in sorted(eng.iterdir()):
             # The pck also carries ``patch_notes/`` — 100+ markdown files of
             # release notes. Nothing here reads them and they are bulky game
@@ -102,10 +120,15 @@ def vendor(pck: Path, out_dir: Path, *, version: str) -> dict[str, int]:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pck", type=Path, help="Path to the build's SlayTheSpire2.pck")
+    parser.add_argument(
+        "--extracted",
+        action="store_true",
+        help="PCK is an already-extracted localization/eng directory",
+    )
     parser.add_argument("--version", required=True, help='Build tag to record, e.g. "v0.107.1"')
     parser.add_argument("--out", type=Path, default=_DEFAULT_OUT, help="localization_eng/ dir")
     args = parser.parse_args(argv)
-    stats = vendor(args.pck, args.out, version=args.version)
+    stats = vendor(args.pck, args.out, version=args.version, extracted=args.extracted)
     print(
         f"{args.version}: {stats['tables']} tables ({stats['new_tables']} new), "
         f"{stats['changed_keys']} keys changed, {stats['added_keys']} added, "

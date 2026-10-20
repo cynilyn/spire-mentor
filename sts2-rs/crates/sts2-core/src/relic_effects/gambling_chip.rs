@@ -25,7 +25,7 @@ use super::prelude::*;
 /// 1004/1047). The dispatcher suspends the rest of the turn-start tail on
 /// [`crate::PendingClusterResume::relic_start`] when this opens its choice.
 pub(crate) fn on_after_player_turn_start_gambling_chip(state: &mut CombatState) -> EffectResult {
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::GamblingChip) {

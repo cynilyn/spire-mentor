@@ -43,14 +43,15 @@ import os
 import pathlib
 import random
 import re
-import signal
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 sys.path.insert(0, "python")
 
+from sts2_client import add_game_version_arg, apply_game_version_arg, rs_engine_call
 from workbench.backends.base import make_backend
 
 
@@ -596,7 +597,10 @@ def act_parity(base: str, character: str, ascension: int, n: int) -> int:
             cs_acts = [_canon(a) for a in cs.get("acts") or []]
             unlocked = bool(cs.get("underdocks_unlocked"))
             pool_was_open |= unlocked
-            rs_acts = [_canon(a) for a in sts2_rs.roll_acts(seed, underdocks_unlocked=unlocked)]
+            rs_acts = [
+                _canon(a)
+                for a in rs_engine_call(sts2_rs.roll_acts, seed, underdocks_unlocked=unlocked)
+            ]
             match = cs_acts == rs_acts
             ok += match
             if not match:
@@ -646,7 +650,8 @@ def underdocks_parity(base: str, character: str, ascension: int, n: int) -> int:
             cs = g.send({"cmd": "dump_rooms"}).get("acts", [])
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
+        rm = rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -764,7 +769,8 @@ def map_parity(base: str, character: str, ascension: int, n: int) -> int:
             cm = g.get_map()
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
+        rm = rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -811,7 +817,8 @@ def encounter_parity(base: str, character: str, ascension: int, n: int) -> int:
             cs = g.send({"cmd": "dump_rooms"}).get("acts", [])
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
+        rm = rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -885,7 +892,8 @@ def reward_parity(
             cs = g.send({"cmd": "dump_card_reward", "room_type": room_type}).get("cards", [])
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
+        rm = rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -942,7 +950,8 @@ def relic_reward_parity(base: str, character: str, ascension: int, n: int, count
             cs = g.send({"cmd": "dump_relic_reward", "count": count}).get("relics", [])
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
+        rm = rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -1009,7 +1018,8 @@ def shop_parity(base: str, character: str, ascension: int, n: int) -> int:
             cs = g.send({"cmd": "dump_shop"})
         finally:
             g.close()
-        rm = sts2_rs.RunManager(
+        rm = rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -1120,7 +1130,8 @@ def roster_parity(base: str, character: str, ascension: int, n: int) -> int:
     from sts2_client import Game
 
     def _mk(character_seed: str) -> Any:
-        return sts2_rs.RunManager(
+        return rs_engine_call(
+            sts2_rs.RunManager,
             string_seed=character_seed,
             character=character,
             ascension_level=ascension,
@@ -1255,6 +1266,45 @@ def _harness_hash() -> str:
     return h.hexdigest()[:8]
 
 
+class _StepWatchdog:
+    """Per-step deadline for the C# recording that works on every platform.
+
+    It used to be SIGALRM, which Windows does not have: every recorded run died
+    at step 0 with `module 'signal' has no attribute 'SIGALRM'`, so a Windows
+    sweep reported 0/100 clean. A timer thread instead calls ``on_trip`` (the
+    backend's ``close``, which terminates the headless process); the main
+    thread's blocked read then fails with EOF and the caller, seeing
+    ``tripped``, books the run as ``record_timeout``. Unlike a signal it also
+    works off the main thread.
+    """
+
+    def __init__(self, timeout_s: int, on_trip: Callable[[], None]) -> None:
+        self._timeout_s = timeout_s
+        self._on_trip = on_trip
+        self._timer: threading.Timer | None = None
+        self.tripped = False
+
+    def reset(self) -> None:
+        """Restart the deadline (a no-op when the watchdog is off)."""
+        self.cancel()
+        if self._timeout_s > 0:
+            self._timer = threading.Timer(self._timeout_s, self._trip)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _trip(self) -> None:
+        self.tripped = True
+        try:
+            self._on_trip()
+        except Exception:
+            pass
+
+
 def _record_cs_trajectory(
     seed: str, character: str, ascension: int, max_steps: int
 ) -> dict[str, Any]:
@@ -1267,32 +1317,23 @@ def _record_cs_trajectory(
     NEXT step's incoming view == ``entries[i]['view']`` after the act). The final
     entry carries ``verb=None`` (terminal: ``game_over`` / no enumerable choice).
     """
-    # Per-step wall-clock watchdog (SIGALRM): the C# headless can wedge on a
+    # Per-step wall-clock watchdog: the C# headless can wedge on a
     # swallowed-NRE stuck turn for specific seeds, which would otherwise hang a
     # whole bundle bake forever. `STS2_RUNPARITY_RECORD_TIMEOUT` (seconds, 0=off,
-    # set by pack.sh) abandons a wedged record as `record_timeout` instead. Only
-    # arm in the main thread (signals are main-thread-only); pool workers run the
-    # task in their main thread, so this covers the bake.
+    # set by pack.sh) abandons a wedged record as `record_timeout` instead.
     timeout_s = int(os.environ.get("STS2_RUNPARITY_RECORD_TIMEOUT", "0") or "0")
-    arm = timeout_s > 0 and threading.current_thread() is threading.main_thread()
-
-    def _on_alarm(_signum: int, _frame: Any) -> None:
-        raise TimeoutError(f"C# record wedged > {timeout_s}s")
-
-    old_handler = signal.signal(signal.SIGALRM, _on_alarm) if arm else None
 
     rng = random.Random(f"runparity:{seed}")
     CS = make_backend("csharp")
     g = CS()
+    watchdog = _StepWatchdog(timeout_s, g.close)
     entries: list[dict[str, Any]] = []
     terminal = "max_steps"
     try:
-        if arm:
-            signal.alarm(timeout_s)
+        watchdog.reset()
         view = g.start(character=character, seed=seed, ascension=ascension)
         for _ in range(max_steps):
-            if arm:
-                signal.alarm(timeout_s)  # reset per step: trips only a wedged step
+            watchdog.reset()  # per step: trips only a wedged step
             dec = view.get("decision") or view.get("type")
             in_map = Snap.of(view, "cs").phase == "map"
             map_raw = g.get_map() if in_map else None
@@ -1319,15 +1360,15 @@ def _record_cs_trajectory(
                 terminal = "cs_act_reject"
                 break
             view = after
-    except TimeoutError:
-        # Wedged C# turn: keep the prefix recorded so far; replay diffs Rust
+    except Exception:
+        if not watchdog.tripped:
+            raise
+        # Wedged C# turn: the watchdog closed the backend, so the blocked read
+        # failed (EOF). Keep the prefix recorded so far; replay diffs Rust
         # against it and reports `incomplete:record_timeout` if nothing diverged.
         terminal = "record_timeout"
     finally:
-        if arm:
-            signal.alarm(0)
-            if old_handler is not None:
-                signal.signal(signal.SIGALRM, old_handler)
+        watchdog.cancel()
         try:
             g.close()
         except Exception:
@@ -1741,9 +1782,9 @@ def sweep(
 
     # Bound a wedged C# oracle. A specific seed can hang the headless on a stuck
     # turn forever (observed 60+ min at 0% CPU, then killing it tore down the
-    # pool). The per-step record watchdog (`_record_cs_trajectory`, SIGALRM —
-    # main-thread-only, which pool workers run their task on) abandons such a step
-    # as `record_timeout` instead. Default it ON for sweeps so one pathological
+    # pool). The per-step record watchdog (`_record_cs_trajectory`,
+    # `_StepWatchdog`) closes the backend and abandons such a step as
+    # `record_timeout` instead. Default it ON for sweeps so one pathological
     # seed can't stall the whole run; override/disable via the same env var. Set
     # before the pool forks so workers inherit it.
     os.environ.setdefault("STS2_RUNPARITY_RECORD_TIMEOUT", "90")
@@ -1755,7 +1796,7 @@ def sweep(
         if cs_ns:
             namespace = f"{cs_ns}-{_harness_hash()}"
             cdir = cache_dir
-            print(f"[cache] enabled — C# v{namespace} @ {os.path.join(cache_dir, namespace)}")
+            print(f"[cache] enabled — C# {namespace} @ {os.path.join(cache_dir, namespace)}")
         else:
             print("[cache] DISABLED — could not locate C# oracle DLLs to namespace; running live.")
     if replay_only and not (cdir and namespace):
@@ -1856,13 +1897,13 @@ def sweep(
             absent = sum(1 for r in rows if r.get("signature") == "MISS:not_in_cache")
             print(
                 f"\n[cache] replay-only — served {hits}/{len(trials)} from bundle "
-                f"(C# v{namespace}); {absent} absent (re-bake with "
+                f"(C# {namespace}); {absent} absent (re-bake with "
                 f"data/run-parity-cache/pack.sh)",
                 file=sys.stderr,
             )
         else:
             print(
-                f"\n[cache] served {hits}/{hits + misses} from cache (C# v{namespace}); "
+                f"\n[cache] served {hits}/{hits + misses} from cache (C# {namespace}); "
                 f"recorded {misses}",
                 file=sys.stderr,
             )
@@ -1999,7 +2040,9 @@ def main() -> int:
         "no-game-DLL agents). Warm the bundle first with "
         "data/run-parity-cache/unpack.sh. (env: STS2_RUNPARITY_REPLAY_ONLY)",
     )
+    add_game_version_arg(ap)
     args = ap.parse_args()
+    apply_game_version_arg(args)
 
     if args.sweep:
         chars = list(CHARACTERS) if args.all_characters else [args.character]

@@ -10,7 +10,17 @@ pub(crate) fn play_refine_blade(state: &mut CombatState, _t: Option<CreatureUid>
     // C# RefineBlade.cs OnUpgrade bumps ForgeVar 9->13; EnergyVar(1)
     // is not upgrade-scaled. Bead `sts2-rs-a3428`.
     apply_power_to_player(state, PowerKind::EnergyNextTurn, 1);
-    let forge = if current_card_upgraded(state) { 13 } else { 9 };
+    // v0.111.0: Forge 9 -> 8, upgrade still +4 (decomp RefineBlade.cs:16,36).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        8
+    } else {
+        9
+    };
+    let forge = if current_card_upgraded(state) {
+        base + 4
+    } else {
+        base
+    };
     let _ = forge_from_card(state, forge);
     EffectResult::Resolved
 }

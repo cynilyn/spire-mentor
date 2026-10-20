@@ -203,3 +203,40 @@ def test_seek_rebuilds_an_imported_run(live_run, tmp_path):
     assert back["decision"] == "map_select"
     assert sess.game.rm.current_hp == 55
     assert sess.game.rm.gold == 217
+
+
+def test_a_v0111_seed_above_i64_max_is_restored():
+    """v0.111.0 master seeds are a full u64 (GH #788); about half of them are
+    above i64::MAX and once raised OverflowError out of the import (#855)."""
+    import sts2_rs
+
+    v111 = "v0.111.0"
+    seed, rm = next(
+        (s, r)
+        for s, r in (
+            (s, sts2_rs.RunManager(string_seed=s, character="Ironclad", act1="roll", game_version=v111))
+            for s in (f"BIGSEED{i}" for i in range(64))
+        )
+        if r.run_seed > 2**63 - 1
+    )
+    rm.dump_card_reward(3, "Monster")
+    counters = dict(rm.rng_counters())
+    msg = _message(rm, seed=seed)
+    imported = parse_pasted_state(json.dumps(msg))
+    assert imported.run.rng is not None
+    assert imported.run.rng["run_seed"] == rm.run_seed
+
+    game = RustGame(game_version=v111)
+    game.start_imported(imported.run)
+    assert dict(game.rm.rng_counters())["rewards"] == counters["rewards"]
+    assert not [n for n in game.import_notes() if "not restored" in n]
+
+
+def test_a_negative_32bit_seed_reads_as_its_uint_view():
+    """The Rust ``state_import::rng_block`` reads a signed 32-bit seed as its
+    ``uint`` view; the Python parser must agree or the two hosts diverge."""
+    from workbench.state_import import _rng_block
+
+    block = _rng_block({"rng": {"run_seed": -1, "counters": {"rewards": 1}}})
+    assert block == {"run_seed": 0xFFFF_FFFF, "counters": {"rewards": 1}}
+    assert _rng_block({"rng": {"run_seed": 2**64, "counters": {"rewards": 1}}}) is None

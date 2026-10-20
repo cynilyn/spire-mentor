@@ -45,6 +45,27 @@ def test_a_checkpoint_declaring_the_feature_uses_it(tmp_path, monkeypatch):
     assert pol.features == frozenset({"reward_upgrade"})
 
 
+def test_every_champion_checkpoint_cfg_matches_its_manifest_schema():
+    """GH #841: a champion's checkpoint cfg names the schema `champions.toml` does.
+
+    `NetPolicy` serves a checkpoint at its own cfg, and `promote-champion`
+    re-derives the manifest's `features` from it. The Ironclad and Silent
+    checkpoints carried `cfg.features = "reward_upgrade"` though GH #723
+    established they were collected at the default schema, so the workbench's
+    torch and ONNX backends fed the same net different encodings (per-option
+    probs 0.22 apart). The cfg is now fixed in the files themselves.
+    """
+    import champions
+    from ppo import schema
+    from ppo.net_policy import NetPolicy
+
+    for champ in champions.all_champions().values():
+        if champ.ckpt is None:
+            continue
+        pol = NetPolicy(champions.ckpt_path(champ.character))
+        assert pol.features == schema.parse_features(champ.features), champ.character
+
+
 def test_by_onnx_filename_resolves_the_real_champion_path():
     import champions
 

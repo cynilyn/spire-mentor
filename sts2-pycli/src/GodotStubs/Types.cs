@@ -86,13 +86,33 @@ public struct Variant
 public struct Callable
 {
     private readonly Delegate? _delegate;
+    // Set only by From<TResult>(Func<TResult>): a parameterless delegate whose
+    // return value Godot discards. Kept apart so every other callable's Call()
+    // behaves exactly as before.
+    private readonly Action? _discardResult;
     public Callable(Delegate? d) => _delegate = d;
+    private Callable(Delegate d, Action discardResult)
+    {
+        _delegate = d;
+        _discardResult = discardResult;
+    }
 
     public static Callable From(Action action) => new(action);
     public static Callable From<T>(Action<T> action) => new(action);
     public static Callable From<T1, T2>(Action<T1, T2> action) => new(action);
+    /// <summary>
+    /// v0.111.0 calls it from <c>GameAction.Cancel</c>
+    /// (<c>Callable.From(() =&gt; _completionSource.TrySetCanceled()).CallDeferred()</c>,
+    /// GameAction.cs:208); without it every cancelled action throws
+    /// MissingMethodException. Like every stub callable it runs synchronously.
+    /// </summary>
+    public static Callable From<TResult>(Func<TResult> func) => new(func, () => func());
 
-    public void Call(params Variant[] args) => (_delegate as Action)?.Invoke();
+    public void Call(params Variant[] args)
+    {
+        if (_discardResult != null) { _discardResult(); return; }
+        (_delegate as Action)?.Invoke();
+    }
     public void CallDeferred(params Variant[] args) => Call(args);
 }
 

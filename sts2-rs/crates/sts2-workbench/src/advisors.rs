@@ -1399,7 +1399,8 @@ fn evaluate_candidate(
         let seed = cfg.seed.wrapping_add(i64::from(r));
         #[allow(clippy::cast_possible_truncation)]
         let run_seed = seed as i32;
-        sim.run_state.rng = RunRngSet::new(run_seed);
+        // In the run's own build (GH #801): `RunRngSet::new` is v0.107.1's.
+        sim.run_state.rng = RunRngSet::new_for(sim.game_version, u64::from(run_seed as u32));
         #[allow(clippy::cast_sign_loss)]
         let mut rng = rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(seed as u64);
         #[allow(clippy::cast_sign_loss)]

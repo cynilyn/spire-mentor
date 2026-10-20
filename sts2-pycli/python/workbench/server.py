@@ -93,6 +93,9 @@ class StartRequest(BaseModel):
     # half of all seeds, which is what made act-1 bug reports irreproducible.
     # Pin it to `"overgrowth"` / `"underdocks"` to force one.
     act1: str = "roll"
+    # GH #801: the game build to simulate — `"v0.107.1"` (default) or
+    # `"v0.111.0"`. Anything else is a 400 naming the supported builds.
+    game_version: str | None = None
 
 
 class ImportStateRequest(BaseModel):
@@ -102,6 +105,8 @@ class ImportStateRequest(BaseModel):
     """Whatever the user pasted — see :mod:`workbench.state_import` for the shapes."""
     lane: str = "auto"
     """``"auto"`` (the fight if the paste has one, else the run), ``"combat"``, or ``"run"``."""
+    game_version: str | None = None
+    """The game build to rebuild the paste under (GH #801); default ``"v0.107.1"``."""
 
 
 class SimlabSweepRequest(BaseModel):
@@ -149,6 +154,7 @@ class StartFaithfulRequest(BaseModel):
     boss_sims: int = 4000
     threads: int = 1
     reward_sims: int | None = None  # accepted, ignored — stale SPA compat
+    game_version: str | None = None  # GH #801; see StartRequest.game_version
 
 
 class ActionRequest(BaseModel):
@@ -1258,6 +1264,23 @@ def _faithful_replay_plan(
     return fixture_path, actions, cfg
 
 
+def _requested_game_version(raw: str | None) -> str:
+    """The game build a start/import request names, or a 400 (GH #801).
+
+    Exact match only: the wire takes ``"v0.107.1"`` / ``"v0.111.0"``, and a
+    missing (or null) key is the default build.
+    """
+    if raw is None:
+        return sts2_client.DEFAULT_GAME_VERSION
+    if raw not in sts2_client.SUPPORTED_GAME_VERSIONS:
+        raise HTTPException(
+            400,
+            f"unsupported game_version {raw!r} "
+            f"(supported: {', '.join(sts2_client.SUPPORTED_GAME_VERSIONS)})",
+        )
+    return raw
+
+
 def create_app(
     images_root: str | Path,
     logs_dir: str | Path,
@@ -1311,6 +1334,18 @@ def create_app(
     if assets_manifest:
         manifest = set(json.loads(Path(assets_manifest).read_text(encoding="utf-8")))
     assets = AssetResolver(images_root, manifest=manifest)
+    # One resolver per game build: a later build reads its art overlay first
+    # (GH #801). The default build's is ``assets`` itself.
+    assets_by_version: dict[str, AssetResolver] = {sts2_client.DEFAULT_GAME_VERSION: assets}
+
+    def assets_for(version: str) -> AssetResolver:
+        """The art resolver for game build *version*."""
+        if version not in assets_by_version:
+            assets_by_version[version] = AssetResolver(
+                images_root, manifest=manifest, overlay=version
+            )
+        return assets_by_version[version]
+
     logs_dir = Path(logs_dir)
 
     def get_session(request: Request) -> Session:
@@ -1330,85 +1365,66 @@ def create_app(
     images_path = Path(images_root)
     # images_root is <wiki>/site/public/images -> wiki data dir is <wiki>/data
     wiki_data = images_path.parents[2] / "data" if len(images_path.parents) >= 3 else None
-    card_loc = localization.load_card_localization(
-        repo_root / "localization_eng" / "cards.json", wiki_data
-    )
-    # Per-monster initial-HP bands, which no wire carries: the game sizes each
-    # member of a repeated-monster group by where its rolled max HP landed in
-    # its band (`NCombatRoom.RandomizeEnemyScalesAndHues`). Empty on a deploy
-    # with no wiki manifest, which simply leaves every enemy at its authored
-    # size — what the board did before.
-    hp_ranges = localization.load_monster_hp_ranges(wiki_data)
-    # Display titles for the keywords a card prints on its face ("Exhaust.",
-    # "Ethereal.", …) — keyed ``card_keyword.<Name>`` so they cannot collide
-    # with a card/relic loc key.
-    card_loc.update(localization.load_card_keyword_localization(repo_root / "localization_eng"))
-    # Same idea for the afflictions the game prints on a card face ("Bound"):
-    # keyed ``affliction.<ID>.<field>``, so an afflicted card can say so.
-    card_loc.update(localization.load_affliction_localization(repo_root / "localization_eng"))
-    # Rest-site option names ("Rest", "Smith", "Kindle", …) — keyed
-    # ``rest_site.OPTION_<ID>.name`` off the engine's own ``OptionId``, so a
-    # relic-added option (Dig / Lift / Kindle / Cook / Hatch) is named by the
-    # game's own row instead of falling back to a numbered button.
-    card_loc.update(localization.load_rest_site_localization(repo_root / "localization_eng"))
+    # The display loc map + per-monster HP bands for the default build, in
+    # the exact merge order the Rust twin pins (``localization.build_workbench_loc``
+    # documents it):
+    # - the in-repo card dump fills what the engine-pinned wiki manifest lacks;
+    # - card-keyword / affliction / rest-site titles, namespaced
+    #   (``card_keyword.<Name>`` / ``affliction.<ID>.<field>`` /
+    #   ``rest_site.OPTION_<ID>.name``), so a card face prints "Exhaust.";
+    # - card meta folded in as flat ``<id>.card_type`` / ``.rarity`` / ``.cost``
+    #   keys, since the engine ships every card as a generic ``type: "card"``;
+    # - relic / potion dumps (overwrite), character titles (fill), the wiki's
+    #   pre-resolved ``<KEY>.description_plain`` relic/potion text (fill — the
+    #   Rust backend can't ship a ``vars`` dict), and event titles + bodies
+    #   (fill, so an event id colliding with the relic it grants — LOST_WISP —
+    #   keeps the relic's name).
+    # The HP bands size each member of a repeated-monster group by where its
+    # rolled max HP landed (``NCombatRoom.RandomizeEnemyScalesAndHues``); empty
+    # with no wiki manifest, which leaves every enemy at its authored size.
+    card_loc, hp_ranges = localization.build_workbench_loc(wiki_data, repo_root=repo_root)
+    # The same pair for every other supported build (GH #801), built on first
+    # use: a v0.111.0 run displays v0.111.0's card names and rules text, and
+    # its monsters' HP bands. The default build's pair is the one above.
+    loc_by_version: dict[str, tuple[dict[str, str], dict[str, dict[str, int]]]] = {
+        sts2_client.DEFAULT_GAME_VERSION: (card_loc, hp_ranges)
+    }
+
+    def loc_bundle(version: str) -> tuple[dict[str, str], dict[str, dict[str, int]]]:
+        """``(loc, hp_ranges)`` for game build *version*."""
+        if version not in loc_by_version:
+            loc_by_version[version] = localization.build_workbench_loc(
+                wiki_data, version=version, repo_root=repo_root
+            )
+        return loc_by_version[version]
+
+    def replay_version(store: Any) -> str:
+        """The build a loaded recording was played on.
+
+        A workbench run log names a non-default build in its head meta
+        (absent = the default); every other recording is the default build.
+        """
+        ident = store.run_identity() if hasattr(store, "run_identity") else None
+        version = ident.get("game_version") if isinstance(ident, dict) else None
+        if version not in sts2_client.SUPPORTED_GAME_VERSIONS:
+            version = sts2_client.DEFAULT_GAME_VERSION
+        return version
+
+    def replay_bundle(store: Any) -> tuple[dict[str, str], dict[str, dict[str, int]]]:
+        """``(loc, hp_ranges)`` for the build a loaded recording was played on."""
+        return loc_bundle(replay_version(store))
+
+    def live_step(session: Session, state: dict[str, Any]) -> dict[str, Any]:
+        """:func:`_live_step` under the localization of *session*'s live run."""
+        version = getattr(session.live, "game_version", None)
+        if not isinstance(version, str):
+            version = sts2_client.DEFAULT_GAME_VERSION
+        loc, ranges = loc_bundle(version)
+        return _live_step(state, assets_for(version), loc, ranges)
+
     # Owns the live-run slot of every client session: starting, restoring and
     # replacing a run all go through it (see ``workbench.live_runs``).
-    live_runs = LiveRuns(logs_dir, card_loc)
-    # The engine ships every card with a generic ``type: "card"`` and no rarity;
-    # fold the real category + rarity (keyed by card id == manifest loc_key) into
-    # the loc map as flat ``<id>.card_type`` / ``<id>.rarity`` keys so ``_enrich``
-    # can resolve them without a new signature thread-through.
-    for key, meta in localization.load_card_meta(wiki_data).items():
-        if meta.get("card_type"):
-            card_loc.setdefault(f"{key}.card_type", meta["card_type"])
-        if meta.get("rarity"):
-            card_loc.setdefault(f"{key}.rarity", meta["rarity"])
-        if meta.get("cost") is not None:
-            card_loc.setdefault(f"{key}.cost", meta["cost"])
-        if meta.get("upgraded_cost") is not None:
-            card_loc.setdefault(f"{key}.upgraded_cost", meta["upgraded_cost"])
-    # Relic/potion loc keys (flat ``KEY.title``/``KEY.description`` dicts) so a
-    # relic/potion whose name arrives as a raw key resolves to a display
-    # string. Keys are namespaced, so merging into the same map is safe.
-    for fname in ("relics.json", "potions.json"):
-        path = repo_root / "localization_eng" / fname
-        if path.is_file():
-            try:
-                card_loc.update(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError):
-                pass
-    # Character titles (``IRONCLAD.title`` -> "The Ironclad"), for the combat
-    # log's actor names. Merged with setdefault so a colliding card/relic key
-    # keeps its meaning; the five character ids collide with nothing today.
-    characters_path = repo_root / "localization_eng" / "characters.json"
-    if characters_path.is_file():
-        try:
-            for key, value in json.loads(characters_path.read_text(encoding="utf-8")).items():
-                if isinstance(value, str):
-                    card_loc.setdefault(key, value)
-        except (OSError, json.JSONDecodeError):
-            pass
-    # Pre-resolved relic/potion descriptions (numbers already substituted) from
-    # the wiki per-item data — the display fallback for the Rust backend, which
-    # can't ship a ``vars`` dict. Keyed ``<KEY>.description_plain``; merged
-    # without overwriting the templates above.
-    for owned_key, owned_plain in localization.load_owned_localization(wiki_data).items():
-        card_loc.setdefault(owned_key, owned_plain)
-
-    # Event titles + page bodies (the Rust backend emits ``<EVENT>.title`` /
-    # ``<EVENT>.pages.INITIAL.description`` keys). Merge WITHOUT overwriting: a
-    # handful of event ids collide with the relic they grant (e.g.
-    # ``LOST_WISP.title`` = "The Lost Wisp" vs the relic's "Lost Wisp"), and the
-    # relic name must win for relic displays — the event header falling back to
-    # the relic name reads fine. Unique event keys (most titles, all bodies)
-    # still land.
-    events_path = repo_root / "localization_eng" / "events.json"
-    if events_path.is_file():
-        try:
-            for key, val in json.loads(events_path.read_text(encoding="utf-8")).items():
-                card_loc.setdefault(key, val)
-        except (OSError, json.JSONDecodeError):
-            pass
+    live_runs = LiveRuns(logs_dir, card_loc, loc_for=lambda v: loc_bundle(v)[0])
 
     @app.get("/api/health")
     def health() -> dict[str, bool]:
@@ -1416,7 +1432,7 @@ def create_app(
         return {"ok": True}
 
     @app.get("/api/capabilities")
-    def capabilities() -> dict[str, list[str]]:
+    def capabilities() -> dict[str, Any]:
         """Which game engines this deployment can actually run.
 
         The SPA's engine dropdown is built from this. The deployed image is
@@ -1427,7 +1443,14 @@ def create_app(
         backends = ["rust"]
         if sts2_client.headless_available():
             backends.append("csharp")
-        return {"backends": backends}
+        # GH #801: the game builds a run can be started on (the SPA hides its
+        # version picker when there is only one) — only those this checkout
+        # carries the display data for.
+        return {
+            "backends": backends,
+            "game_versions": localization.available_game_versions(repo_root),
+            "default_game_version": sts2_client.DEFAULT_GAME_VERSION,
+        }
 
     @app.get("/api/runs")
     def runs() -> dict[str, list[str]]:
@@ -1629,13 +1652,14 @@ def create_app(
         if store is None:
             raise HTTPException(400, "no run loaded")
         steps = store.all()
-        resolved = [_names_resolved(s["state"], card_loc) for s in steps]
+        rloc, _ = replay_bundle(store)
+        resolved = [_names_resolved(s["state"], rloc) for s in steps]
 
         # Per-step combat-log rows: workbench-saved runs record each action's
         # display rows directly; bridge logs instead carry the raw engine log
         # on every state, so a step's slice is the tail its successor's log
         # grew by (a shorter successor means a new fight began — take it all).
-        names = _combat_log_names(card_loc)
+        names = _combat_log_names(rloc)
         player_id = store.character().upper().replace(" ", "_")
 
         def _step_rows(i: int) -> list[dict[str, Any]]:
@@ -1744,7 +1768,7 @@ def create_app(
             s = store.get(idx)
         except IndexError as exc:
             raise HTTPException(404, str(exc)) from exc
-        return _enrich(dict(s), assets, card_loc, hp_ranges)
+        return _enrich(dict(s), assets_for(replay_version(store)), *replay_bundle(store))
 
     def _deck_of(state: dict[str, Any]) -> list[dict[str, Any]]:
         return (state.get("player") or {}).get("deck") or []
@@ -1916,14 +1940,16 @@ def create_app(
         # enough for it — a log written before the labels were resolved at
         # record time still holds raw keys there.
 
+        rloc, _ = replay_bundle(store)
+
         def _named_step(s: dict[str, Any]) -> dict[str, Any]:
             rows = [
-                {**r, "action": localization.resolve_name(r.get("action"), card_loc)}
+                {**r, "action": localization.resolve_name(r.get("action"), rloc)}
                 if r.get("action")
                 else r
                 for r in (s.get("scores") or [])
             ]
-            return {**s, "state": _names_resolved(s["state"], card_loc), "scores": rows}
+            return {**s, "state": _names_resolved(s["state"], rloc), "scores": rows}
 
         steps = [_named_step(s) for s in steps]
         if recompute:
@@ -2033,6 +2059,7 @@ def create_app(
     @app.post("/api/live/start")
     def live_start(req: StartRequest, session: Session = Depends(get_session)) -> dict[str, Any]:
         """Start a fresh live run, replacing any existing session."""
+        game_version = _requested_game_version(req.game_version)
         try:
             state = live_runs.start(
                 session,
@@ -2041,10 +2068,11 @@ def create_app(
                 ascension=req.ascension,
                 act1=req.act1,
                 backend=req.backend,
+                game_version=game_version,
             )
         except RestoreError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
-        return _live_step(state, assets, card_loc, hp_ranges)
+        return live_step(session, state)
 
     @app.post("/api/live/start-faithful")
     def live_start_faithful(
@@ -2055,6 +2083,7 @@ def create_app(
         Routes through :meth:`BranchingLiveSession.start_faithful` (rust backend,
         integer seed, no interactive UI flags). Follow with ``/api/live/play-to-end``
         to run it out with the benchmark policy. 400 on a bad seed / config."""
+        game_version = _requested_game_version(req.game_version)
         try:
             state = live_runs.start_run_mode(
                 session,
@@ -2064,10 +2093,11 @@ def create_app(
                 sims=req.sims,
                 boss_sims=req.boss_sims,
                 threads=req.threads,
+                game_version=game_version,
             )
         except RestoreError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
-        return _live_step(state, assets, card_loc, hp_ranges)
+        return live_step(session, state)
 
     def _parse_import(payload: str) -> Any:
         """Parse a pasted state, turning a bad paste into a 422 the UI can show."""
@@ -2148,20 +2178,28 @@ def create_app(
         422 when the paste cannot be read, 409 when it cannot fill the
         requested lane, 400 when the engine cannot rebuild it.
         """
+        game_version = _requested_game_version(req.game_version)
         imported = _parse_import(req.payload)
         lane = _import_lane(imported, req.lane)
+        version_loc = loc_bundle(game_version)[0]
 
         # Build the factory first; it runs only once the live slot is free.
         def build() -> tuple[BranchingLiveSession, dict[str, Any]]:
             if lane == "combat":
                 sess = BranchingLiveSession.from_imported_combat(
                     logs_dir=str(logs_dir),
-                    loc=card_loc,
+                    loc=version_loc,
                     wire=imported.combat_wire,
                     character=imported.run.character,
+                    game_version=game_version,
                 )
                 return sess, sess.start(imported.run.character, imported.run.seed, 0)
-            sess = BranchingLiveSession(logs_dir=str(logs_dir), backend="rust", loc=card_loc)
+            sess = BranchingLiveSession(
+                logs_dir=str(logs_dir),
+                backend="rust",
+                loc=version_loc,
+                game_version=game_version,
+            )
             return sess, sess.start_imported(imported.run)
 
         prior = session.live
@@ -2179,7 +2217,7 @@ def create_app(
         session.live = sess
         session.imported = imported
 
-        step = _live_step(state, assets, card_loc, hp_ranges)
+        step = live_step(session, state)
         fidelity = imported.fidelity()
         fidelity["lane"] = lane
         # Whatever the graft itself could not reproduce (map disagreements, a
@@ -2307,7 +2345,7 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {
-            "step": _live_step(out["state"], assets, card_loc, hp_ranges),
+            "step": live_step(session, out["state"]),
             "steps": out["steps"],
             "victory": out["victory"],
             "over": out["over"],
@@ -2334,7 +2372,7 @@ def create_app(
         # faithful_step(); error also terminates the loop.
         done = out.get("done", False) or (out.get("error") is not None)
         return {
-            "step": _live_step(out["state"], assets, card_loc, hp_ranges),
+            "step": live_step(session, out["state"]),
             "done": done,
             "over": out["over"],
             "victory": out["victory"],
@@ -2366,7 +2404,7 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         done = out.get("done", False) or (out.get("error") is not None)
         return {
-            "step": _live_step(out["state"], assets, card_loc, hp_ranges),
+            "step": live_step(session, out["state"]),
             "done": done,
             "over": out["over"],
             "victory": out["victory"],
@@ -2393,7 +2431,7 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {
-            "step": _live_step(out["state"], assets, card_loc, hp_ranges),
+            "step": live_step(session, out["state"]),
             "diff": out["diff"],
             "autoplayed": out["autoplayed"],
             "stopped": out["stopped"],
@@ -2422,7 +2460,7 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {
-            "step": _live_step(out["state"], assets, card_loc, hp_ranges),
+            "step": live_step(session, out["state"]),
             "diff": out["diff"],
             "played": out["played"],
             "stopped": out["stopped"],
@@ -2469,7 +2507,7 @@ def create_app(
             state = live_runs.resume_recording(session, store, req.idx)
         except RestoreError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
-        return _live_step(state, assets, card_loc, hp_ranges)
+        return live_step(session, state)
 
     @app.get("/api/live/state")
     def live_state(session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -2481,7 +2519,7 @@ def create_app(
         # rendered its repeated monsters without the per-instance size jitter
         # every other route stamps (the browser workbench's golden fixtures
         # caught the asymmetry).
-        return _live_step(sess.state(), assets, card_loc, hp_ranges)
+        return live_step(session, sess.state())
 
     @app.get("/api/live/map")
     def live_map(session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -2521,7 +2559,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {
-            "step": _live_step(result["state"], assets, card_loc, hp_ranges),
+            "step": live_step(session, result["state"]),
             "error": result["error"],
             "label": result["label"],
             "details": result["details"],
@@ -2615,7 +2653,7 @@ def create_app(
             state = sess.seek(req.node_id)
         except KeyError as exc:
             raise HTTPException(404, f"unknown node: {req.node_id}") from exc
-        return {"step": _live_step(state, assets, card_loc, hp_ranges)}
+        return {"step": live_step(session, state)}
 
     @app.post("/api/live/hint")
     def live_hint(req: HintRequest, session: Session = Depends(get_session)) -> dict[str, Any]:
@@ -2865,6 +2903,7 @@ def create_app(
             line=line,
             act1=sess.act1,
             node_values=sess.active_node_values(),
+            game_version=getattr(sess, "game_version", saves_mod.DEFAULT_GAME_VERSION),
         )
         return {"name": req.name, "path": str(path), "step_count": len(line)}
 
@@ -2887,7 +2926,7 @@ def create_app(
             state = live_runs.restore_save(session, payload)
         except RestoreError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
-        return _live_step(state, assets, card_loc, hp_ranges)
+        return live_step(session, state)
 
     @app.post("/api/bugreport")
     def capture_bugreport(

@@ -139,4 +139,7 @@ def test_the_first_ten_pad_columns_are_frozen():
     that an insertion happened. The two causes look the same here; the
     positional-identity test above is what tells them apart.
     """
-    assert schema.empty_cat()[:10] == [581, 17, 298, 64, 10, 70, 12, 8, 16, 13]
+    # GH #799 grew card / relic / potion for the v0.111.0 ids (581 -> 600,
+    # 298 -> 300, 64 -> 65) and re-exported every champion over them
+    # (`scripts/reexport_champions_vocab.py`, the `_v0111vocab` nets).
+    assert schema.empty_cat()[:10] == [600, 17, 300, 65, 10, 70, 12, 8, 16, 13]

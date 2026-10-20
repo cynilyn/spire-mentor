@@ -3,6 +3,7 @@ import { assetUrl } from "../api";
 import { characterKey } from "../characters";
 import { ASCENSION_LEVELS, ascensionLevel, ascensionModifiers } from "../ascension";
 import { canonicalizeSeed, generateSeed } from "../seed";
+import { DEFAULT_GAME_VERSION, gameVersionLabel } from "../gameVersion";
 import CombatBudget, { type CombatPreset } from "./CombatBudget";
 import RichText from "./RichText";
 import "../skins/runend.css";
@@ -35,6 +36,7 @@ export default function RunLauncher({
   ascension, onAscension,
   act1, onAct1,
   backend, onBackend, backends,
+  gameVersion = DEFAULT_GAME_VERSION, onGameVersion, gameVersions = [],
   onPlay, onWatch, busy, error,
   offCombatBrain, onOffCombatBrain,
   combat,
@@ -50,6 +52,12 @@ export default function RunLauncher({
   backend: string;
   onBackend: (b: string) => void;
   backends: string[];
+  /** GH #801: the game build the run plays, from the server's
+   *  `game_versions`. The select only shows when there are two or more to
+   *  choose between. */
+  gameVersion?: string;
+  onGameVersion?: (v: string) => void;
+  gameVersions?: string[];
   /** "Play yourself": start an interactive run. */
   onPlay: () => void;
   /** "Watch the AI play": start a run and let the run agent play it out.
@@ -269,6 +277,21 @@ export default function RunLauncher({
               ))}
             </select>
           </label>
+          {gameVersions.length > 1 && onGameVersion && (
+            <label title="Which game build the engine plays. v0.111.0 is the beta: its content and RNG seeding differ, so the same seed is a different run.">
+              version{" "}
+              {/* Only the Rust engine plays a non-default build: with C#
+                  the picker shows (and the run starts on) the default. */}
+              <select aria-label="version"
+                value={backend === "rust" ? gameVersion : DEFAULT_GAME_VERSION}
+                onChange={(e) => onGameVersion(e.target.value)}
+                disabled={busy || backend !== "rust"}>
+                {gameVersions.map((v) => (
+                  <option key={v} value={v}>{gameVersionLabel(v)}</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </div>
     </div>

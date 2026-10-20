@@ -69,6 +69,20 @@ const SOWN_USED_BIT: i32 = 0b1000;
 /// additive was never threaded into `modify_damage`).
 #[must_use]
 pub fn enchant_damage_additive(card: &crate::cards::Card, is_powered: bool) -> i32 {
+    enchant_damage_additive_for(card, is_powered, crate::GameVersion::V0_107_1)
+}
+
+/// [`enchant_damage_additive`] for game build `version`. v0.111.0 drops
+/// Inky's `+1`: the enchantment keeps only its `PowerVar<WeakPower>(1)` and
+/// no longer overrides `EnchantDamageAdditive` (`v0.111.0/…/Enchantments/
+/// Inky.cs:19`; v0.107.1 `Inky.cs:43` returned `DamageVar(1m)` on a powered
+/// attack). Every other term is version-independent.
+#[must_use]
+pub fn enchant_damage_additive_for(
+    card: &crate::cards::Card,
+    is_powered: bool,
+    version: crate::GameVersion,
+) -> i32 {
     if !is_powered {
         return 0;
     }
@@ -90,7 +104,8 @@ pub fn enchant_damage_additive(card: &crate::cards::Card, is_powered: bool) -> i
     // Inky (Blade of Ink shivs): fixed +1, regardless of stacks. v0.107.1
     // `Inky.cs` `EnchantDamageAdditive` returns `DynamicVars.Damage.BaseValue`
     // = `DamageVar(1m)` (was `2m` in v0.103.2) on a powered attack.
-    if card.has_enchantment(EnchantmentId::Inky) {
+    // v0.111.0: Inky has no EnchantDamageAdditive any more (decomp Inky.cs:19)
+    if card.has_enchantment(EnchantmentId::Inky) && version < crate::GameVersion::V0_111_0 {
         total = total.saturating_add(1);
     }
     // TezcatarasEmber (v0.107.1 NEW enchant, `TezcatarasEmber.cs`): a flat
@@ -163,6 +178,38 @@ pub fn enchant_block_additive(card: &crate::cards::Card) -> i32 {
         total = total.saturating_add((card.enchantment(EnchantmentId::Goopy) - 1).max(0));
     }
     total
+}
+
+/// Extra plays the *played card's* enchantment grants (Spiral / Glam).
+///
+/// C# `CardModel.GeneratePlayCount` (v0.107.1 `CardModel.cs:2016-2021`,
+/// v0.111.0 `CardModel.cs:2029-2034`) starts from
+/// `GetEnchantedReplayCount() + 1`, where `GetEnchantedReplayCount` is
+/// `Enchantment?.EnchantPlayCount(BaseReplayCount)` (`CardModel.cs:1130-1133`)
+/// — so the enchantment bonus is folded in for EVERY play (hand play and
+/// auto-play alike, both run `OnPlayWrapper`), before `Hook.ModifyCardPlayCount`.
+/// `Spiral.EnchantPlayCount` adds the fixed `Times` (1) always
+/// (`Spiral.cs:30-33`); `Glam.EnchantPlayCount` adds it only until its
+/// `AfterCardPlayed` latches `UsedThisCombat` (`Glam.cs:34-56`), which the
+/// [`dispatch_after_card_played`] Glam-used bit mirrors.
+///
+/// Canonical core copy; `sts2_content::enchantments::enchant_play_count_bonus`
+/// delegates here. GH #806 (PARITY149: a Silken-Tress Glam SCULPTING_STRIKE
+/// hit once in Rust, twice in C#).
+#[must_use]
+pub fn enchant_play_count_bonus(card: &crate::cards::Card) -> i32 {
+    /// `DynamicVar("Times", 1m)` — the fixed bonus, NOT the enchantment Amount.
+    const TIMES: i32 = 1;
+    let mut bonus = 0;
+    if card.has_enchantment(EnchantmentId::Spiral) {
+        bonus += TIMES;
+    }
+    if card.has_enchantment(EnchantmentId::Glam)
+        && card.combat_var(VarKey::Generic) & GLAM_USED_BIT == 0
+    {
+        bonus += TIMES;
+    }
+    bonus
 }
 
 /// Returns `true` if any card in `pile` has at least one enchantment
@@ -305,7 +352,7 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
     // `RoundNumber == 1`). `round_no()` mirrors `TurnNumber` in the solo
     // engine (no extra-turn mechanic), and it starts at 1, so `> 1` is the
     // faithful "after the first player turn" exclusion.
-    if state.round_no() > 1 {
+    if state.turn_number() > 1 {
         return;
     }
     // Snapshot Imbued uids in current draw order.

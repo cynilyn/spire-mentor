@@ -4,7 +4,17 @@ use super::prelude::*;
 /// Demon Form (Rare, 3 energy, Power). +2 Strength each turn.
 pub(crate) fn play_demon_form(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# DemonForm.cs OnUpgrade bumps Strength 2->3. Bead `sts2-rs-ja5qw`.
-    let amt = if current_upgraded(state) { 3 } else { 2 };
+    // v0.111.0: Strength per turn 2 -> 3, upgrade still +1 (decomp DemonForm.cs:16,31).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        3
+    } else {
+        2
+    };
+    let amt = if current_upgraded(state) {
+        base + 1
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::DemonForm, amt);
     EffectResult::Resolved
 }

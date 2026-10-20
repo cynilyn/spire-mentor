@@ -40,7 +40,9 @@ use std::num::NonZeroU32;
 
 use smallvec::SmallVec;
 
-use sts2_content::monster_dispatch::{build_ai, MonsterSpawnArgs, SpawnPosition};
+use sts2_content::monster_dispatch::{
+    build_ai, build_ai_for_version, MonsterSpawnArgs, SpawnPosition,
+};
 use sts2_content::names::resolve_card_name;
 use sts2_core::cards::{Card, CardId, EnchantmentId, VarKey};
 use sts2_core::hooks::DamageMul;
@@ -244,7 +246,10 @@ pub struct ParsedState {
     /// every enemy intent and every reshuffle it predicts is a guess — and a
     /// guess that misses is not evidence of anything, because the value was
     /// never knowable from the state.
-    pub run_seed: Option<i32>,
+    ///
+    /// A `uint` in v0.107.1, a `ulong` in v0.111.0 (GH #788); validated
+    /// against [`Self::game_version`] by [`parse_state_dict`].
+    pub run_seed: Option<u64>,
     /// Per-stream read counts (`$.rng.counters`), keyed by the same wire
     /// names `state_to_dict` emits. Applied on top of the streams derived
     /// from [`Self::run_seed`], which puts the reconstruction on the exact
@@ -252,6 +257,11 @@ pub struct ParsedState {
     /// a cursor into an unknown stream means nothing.
     pub rng_counters: Vec<(String, u32)>,
     pub ascension: u8,
+    /// Game build the producer simulates (`$.game_version`, GH #787):
+    /// `"v0.111.0"` / `"0.111.0"` / the 0.107.1 forms. Optional; absent ⇒
+    /// [`sts2_core::GameVersion::V0_107_1`], so every existing producer
+    /// keeps its behavior. [`state_to_dict`] emits it only when non-default.
+    pub game_version: sts2_core::GameVersion,
     /// Aggregate of [`ParsedEnemy::intent_damage_known`] across the
     /// encounter (`AND`). `true` only when every enemy's current intent
     /// has trustworthy damage. Surfaced through `PyCombatState` so
@@ -757,15 +767,13 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         // the exact roll the world is about to make; one that doesn't leaves
         // the streams unrelated to the game's, and every intent the state
         // predicts is a guess.
+        // C# `RunRngSet.Seed`: a `uint` in v0.107.1, a `ulong` in v0.111.0
+        // (GH #788). Read as u64 here; the width is checked against the
+        // game build once `$.game_version` is known.
         let run_seed = match extract_optional(&rng_dict, "run_seed") {
-            Some(v) => Some(
-                // C# `RunRngSet.Seed` is a uint; the Rust constructor takes
-                // the same 32 bits as i32.
-                v.as_i64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| schema_err("$.rng.run_seed", "must be a u32"))?
-                    as i32,
-            ),
+            Some(v) => Some(v.as_u64().ok_or_else(|| {
+                schema_err("$.rng.run_seed", "must be a u32 (a u64 for v0.111.0)")
+            })?),
             None => None,
         };
         let mut counters: Vec<(String, u32)> = Vec::new();
@@ -783,6 +791,25 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
     } else {
         (None, 0u8, None, Vec::new())
     };
+
+    let game_version = match extract_optional(d, "game_version") {
+        Some(v) => {
+            let raw = v
+                .as_str()
+                .ok_or_else(|| schema_err("$.game_version", "must be a string"))?;
+            raw.parse::<sts2_core::GameVersion>()
+                .map_err(|e| unsupported("$.game_version", &e.to_string()))?
+        }
+        None => sts2_core::GameVersion::default(),
+    };
+    if let Some(seed) = run_seed {
+        if game_version.normalize_seed(seed) != seed {
+            return Err(schema_err(
+                "$.rng.run_seed",
+                &format!("must be a u32 for {game_version}"),
+            ));
+        }
+    }
 
     let player_val = get_item(d, "$", "player")?;
     let player_dict = as_dict(&player_val, "$.player")?;
@@ -826,6 +853,7 @@ pub fn parse_state_dict<V: WireValue>(d: &V) -> WireResult<ParsedState> {
         run_seed,
         rng_counters,
         ascension,
+        game_version,
         intent_damage_known,
         intent_amounts,
     })
@@ -1850,8 +1878,12 @@ pub fn monster_kind_from_python_name(s: &str) -> Option<MonsterKind> {
 }
 
 pub fn power_kind_from_python_name(s: &str) -> Option<PowerKind> {
+    // The v0.111.0-only powers (GH #794) sit outside `PowerKind::all()`; a name
+    // that only exists in that build can only come from a v0.111.0 state, so
+    // resolving it here leaves every v0.107.1 parse unchanged.
     PowerKind::all()
         .iter()
+        .chain(PowerKind::V0111_ONLY.iter())
         .copied()
         .find(|k| k.python_name() == s)
 }
@@ -1876,8 +1908,13 @@ pub fn card_id_from_python_name(s: &str) -> Option<CardId> {
 }
 
 pub fn potion_kind_from_python_name(s: &str) -> Option<PotionKind> {
+    // v0.111.0: Ambergris (decomp Potions/Ambergris.cs:14) sits outside
+    // `PotionKind::ALL` (the v0.107.1 universe). A name that only exists in
+    // that build can only come from a v0.111.0 state, so resolving it here
+    // leaves every v0.107.1 parse unchanged (same as the v0.111.0 powers).
     PotionKind::ALL
         .iter()
+        .chain(PotionKind::V0111_ONLY.iter())
         .copied()
         .find(|k| k.python_name() == s)
 }
@@ -2929,6 +2966,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // wires (live bridge), the upgraded base stats. Without it a library
     // caller silently reconstructs upgraded cards at unupgraded values.
     sts2_core::register_card_factory(sts2_content::cards::spec_index::card_pod_from_id);
+    sts2_core::register_card_factory_for_version(sts2_content::cards::v0111::card_pod_for);
 
     let mut state = CoreCombatState {
         phase: combat_phase_from_str(&parsed.phase),
@@ -2941,6 +2979,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
                 .wrapping_add(u64::try_from(parsed.turn).unwrap_or(0)) as i32,
         ),
         ascension: parsed.ascension,
+        game_version: parsed.game_version,
         is_elite: parsed.is_elite,
         ..CoreCombatState::default()
     };
@@ -2962,7 +3001,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // root-blindfolded clone whose invariance to this cursor is asserted
     // mechanically (sts2-mcts `root_blindfold` tests).
     if let Some(run_seed) = parsed.run_seed {
-        state.run_rng = sts2_core::run_rng_set::RunRngSet::new(run_seed);
+        state.run_rng = sts2_core::run_rng_set::RunRngSet::new_for(parsed.game_version, run_seed);
         for (name, counter) in &parsed.rng_counters {
             // One shared name→stream table (`RunRngSet::stream_mut`), also
             // used by the run-level live-state import. An unknown stream
@@ -3610,7 +3649,13 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         // read a base magnitude off it.
         let mut ai_at_wire_move = false;
         let ai: Option<MonsterAi> = m.move_state.as_deref().and_then(|ms| {
-            let mut ai = build_ai(m.kind, spawn_args, SpawnPosition::default());
+            let mut ai = build_ai_for_version(
+                m.kind,
+                spawn_args,
+                SpawnPosition::default(),
+                0,
+                parsed.game_version,
+            );
             // Alias table FIRST: entries are per-monster verified mappings,
             // including CORRECTIVE ones where the generic `_MOVE`-strip
             // lands on the wrong state (BygoneEffigy "SLEEP_MOVE" ≠ engine
@@ -4024,6 +4069,7 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::WireCostStable => "wire_cost_stable",
         VarKey::Generic => "generic",
         VarKey::SneckoRollLive => "snecko_roll_live",
+        VarKey::CostReductionUntilPlayed => "cost_reduction_until_played",
     }
 }
 
@@ -4464,6 +4510,19 @@ mod tests {
 
         assert!(relic_kind_from_python_name("FAKE_RELIC_THAT_DOES_NOT_EXIST").is_none());
         assert!(monster_kind_from_python_name("Ghoulrod").is_none());
+    }
+
+    /// v0.111.0: the build-only potion (Ambergris) resolves by name, so a
+    /// v0.111.0 scenario or state can hold it; v0.107.1 names are unchanged.
+    #[test]
+    fn potion_kind_from_python_name_resolves_ambergris_v0111() {
+        assert_eq!(
+            potion_kind_from_python_name("AMBERGRIS"),
+            Some(PotionKind::Ambergris)
+        );
+        for k in PotionKind::ALL {
+            assert_eq!(potion_kind_from_python_name(k.python_name()), Some(k));
+        }
     }
 
     /// Bead `sts2-rs-t8yv`: sts2log fixtures emit the Python pin's

@@ -41,6 +41,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
@@ -130,6 +131,60 @@ internal sealed class SimAdvisor
     private long _generation;
     private string? _inflightRequestId;
     private long _inflightStateId = -1;
+
+    // v5 coach correlation (PROTOCOL.md section 5, `human_action` v5): every
+    // human action names the advice rendered for EXACTLY the position it was
+    // taken in, or null. Three slots, all main-thread:
+    //   _inflight*  : the request on the wire, tagged with the position epoch
+    //                 (combat) or the screen signature it was built for;
+    //   _shown*     : the accepted reply for the CURRENT position -- set in
+    //                 OnAdviceReply, moved out by ScheduleAdvice (the position
+    //                 changed);
+    //   _actedFrom* : the advice for the position the player just LEFT.
+    //                 ScheduleAdvice fires on the first event of a play
+    //                 (actions disabled, the play's first history entries),
+    //                 well before its CardPlayFinishedEntry is reported, so the
+    //                 report reads this slot. Consumed by that report; cleared
+    //                 whenever a new request goes out, because a position that
+    //                 got its own request is not the one the player acted from.
+    // A fast player's second card therefore finds both slots empty and
+    // reports null -- never the first card's advice.
+    private long _positionEpoch;
+    private long _inflightEpoch = -1;
+    private string _inflightSignature = "";
+    private string? _shownRequestId;
+    private long _shownStateId = -1;
+    private bool _shownIsCombat;
+    private bool _shownPeeked;
+    private string? _actedFromRequestId;
+    private long _actedFromStateId = -1;
+    private bool _actedFromIsCombat;
+    private bool _actedFromPeeked;
+
+    /// <summary>
+    /// The advisor's <c>capabilities.coach</c> from its latest reply; 0 until
+    /// one arrives and whenever no advisor is connected. The v5
+    /// <c>human_action</c> kinds an older advisor would mis-handle (end turn,
+    /// non-combat choices) are sent only while this is &gt;= 1.
+    /// </summary>
+    private static int _advisorCoachCapability;
+    public static int AdvisorCoachCapability => Volatile.Read(ref _advisorCoachCapability);
+
+    /// <summary>The human pressed End turn (PlayerCmd.EndTurn prefix, see
+    /// <c>HumanEndTurnPatch</c>); reported once the enemy side actually
+    /// starts, so a backed-out end turn never reports.</summary>
+    public static bool HumanEndTurnPending;
+
+    /// <summary>Set around the mod's OWN PlayerCmd.EndTurn calls (takeover,
+    /// refusal escape hatch, autopilot): those are not the human's.</summary>
+    [ThreadStatic]
+    public static bool SuppressEndTurnReport;
+
+    /// <summary>F5 was pressed for the current position before its advice
+    /// arrived: render the peek on the next accepted reply. Cleared whenever
+    /// the position changes (ScheduleAdvice).</summary>
+    private bool _peekLatched;
+
     private string? _lastBestLabel;
     private int _historySeen;
     private int _loggedFloor = -1;
@@ -258,6 +313,7 @@ internal sealed class SimAdvisor
     private SimAdvisor()
     {
         SimRuntime.Changed += OnRuntimeChanged;
+        BridgeServer.Instance.CoachReceived += OnCoachReceived;
     }
 
     /// <summary>Called from MainFile so the singleton (and its
@@ -276,6 +332,15 @@ internal sealed class SimAdvisor
         RunOnMainThread(() =>
         {
             SimHud.Instance.ClearAdvice();
+            // The torn-down screens must not read as skips, and no advice
+            // from the abandoned branch may be attached to a later action.
+            SimChoiceCapture.Reset();
+            ForgetShownAdvice();
+            HumanEndTurnPending = false;
+            // A rewind abandons the branch the chips graded; the advisor's
+            // withdrawal also reaches pinned ones.
+            SimCoachChip.Instance.ClearUnpinned();
+            SimCoachPanel.Instance.Hide();
             if (SimRuntime.Mode != SimMode.Advisor)
             {
                 return;
@@ -305,6 +370,9 @@ internal sealed class SimAdvisor
             {
                 SetAutoPlay(false);
                 DropInflight();
+                SimChoiceCapture.Reset();
+                ForgetShownAdvice();
+                HumanEndTurnPending = false;
                 SimAdvisorProcess.Stop();
                 SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
                 SimHud.Instance.ClearAdvice();
@@ -324,7 +392,10 @@ internal sealed class SimAdvisor
         CombatManager cm = CombatManager.Instance;
         cm.PlayerActionsDisabledChanged += _ => OnDecisionEdge();
         cm.TurnStarted += _ => OnTurnStarted();
-        cm.CombatEnded += _ => OnCombatEnded();
+        // CombatEnded(CombatRoom) fires with the room's combat state intact
+        // (both game builds), so the round and room type are read from it.
+        cm.CombatEnded += room => OnCombatEnded(room?.CombatState?.RoundNumber ?? 0, room?.RoomType.ToString() ?? "Combat");
+        cm.PlayerUnendedTurn += _ => HumanEndTurnPending = false;
         cm.History.Changed += OnHistoryChanged;
         ActiveScreenContext.Instance.Updated += OnScreenUpdated;
         StartScreenPoll();
@@ -387,7 +458,13 @@ internal sealed class SimAdvisor
             // and then nothing (2026-08-05). The signature is what actually
             // differs (where we stand, what is on offer, what it costs).
             string signature = current?.SignatureOrDefault ?? "";
-            if (ReferenceEquals(screen, _polledScreen) && signature == _polledSignature)
+            bool unchanged = ReferenceEquals(screen, _polledScreen) && signature == _polledSignature;
+            // Every tick, changed or not: a decision that just closed waits a
+            // few ticks for its pick to land in the deck / relics / map.
+            SimChoiceCapture.OnPoll(current, changed: !unchanged);
+            // The recap / autopsy panel lives as long as its screens do.
+            SimCoachPanel.Instance.OnScreen(current?.AdviceFor);
+            if (unchanged)
             {
                 // ... but "unchanged" must not mean "nothing to do". An advice
                 // request issued before the advisor process finished
@@ -440,6 +517,32 @@ internal sealed class SimAdvisor
         {
             return;
         }
+        bool enemySide = false;
+        try
+        {
+            enemySide = CombatManager.Instance.IsEnemyTurnStarted;
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] IsEnemyTurnStarted: {ex.Message}");
+        }
+        if (enemySide)
+        {
+            // The enemy side has started: the human's end turn is now final
+            // (a canBackOut cancel can no longer happen). Report it here, not
+            // in the PlayerCmd.EndTurn prefix.
+            if (HumanEndTurnPending)
+            {
+                HumanEndTurnPending = false;
+                SendEndTurn();
+            }
+        }
+        else
+        {
+            HumanEndTurnPending = false;
+            // The player's turn in a fight: the previous fight's recap is over.
+            SimCoachPanel.Instance.OnCombatTurn();
+        }
         _turnStartHistoryMark = CombatHistoryMark();
         _unsettledRetries = 0;
         try
@@ -464,14 +567,18 @@ internal sealed class SimAdvisor
         ScheduleAdvice();
     }
 
-    private void OnCombatEnded()
+    private void OnCombatEnded(int round, string roomType)
     {
         if (SimRuntime.Mode != SimMode.Advisor)
         {
             return;
         }
+        ReportCombatEnded(round, roomType);
         DropInflight();
         SimHud.Instance.ClearAdvice();
+        HumanEndTurnPending = false;
+        ForgetShownAdvice();
+        SimCoachChip.Instance.ClearUnpinned();
         _historySeen = 0;
         try
         {
@@ -490,6 +597,65 @@ internal sealed class SimAdvisor
         catch (Exception ex)
         {
             Logger.Log($"[SimAdvisor] OnCombatEnded log failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>`combat_ended` to a coach-2 advisor (PROTOCOL.md section 3):
+    /// the advisor answers a won fight with a recap.</summary>
+    private static void ReportCombatEnded(int round, string roomType)
+    {
+        if (AdvisorCoachCapability < SimCoachReports.RequiredCoachCapability ||
+            !BridgeServer.Instance.IsClientConnected)
+        {
+            return;
+        }
+        try
+        {
+            RunState? runState = RunManager.Instance.DebugOnlyGetState();
+            var me = LocalContext.GetMe(runState);
+            var creature = me?.Creature;
+            if (creature == null)
+            {
+                return;
+            }
+            var msg = SimCoachReports.CombatEnded(
+                victory: creature.CurrentHp > 0, round, creature.CurrentHp, creature.MaxHp, roomType);
+            SimStateExtractor.ApplyEnvelope(msg, runState, me);
+            BridgeServer.Instance.SendState(JsonSerializer.Serialize(msg));
+            Logger.Log($"[SimAdvisor] combat_ended sent (round {round}, HP {creature.CurrentHp}/{creature.MaxHp}).");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] combat_ended report failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Advisor-mode `game_over` to a coach-2 advisor, once per run
+    /// (the latch is shared with the autopilot's send): the advisor answers
+    /// a death with the autopsy.</summary>
+    private static void ReportGameOver()
+    {
+        if (AdvisorCoachCapability < SimCoachReports.RequiredCoachCapability ||
+            !BridgeServer.Instance.IsClientConnected)
+        {
+            return;
+        }
+        try
+        {
+            RunState? runState = RunManager.Instance.DebugOnlyGetState();
+            if (!SimCoachReports.TryClaimGameOver(runState))
+            {
+                return;
+            }
+            bool victory = SimGameOverScreenHandler.ReadVictory();
+            var msg = SimCoachReports.GameOver(victory);
+            SimStateExtractor.ApplyEnvelope(msg, runState, LocalContext.GetMe(runState));
+            BridgeServer.Instance.SendState(JsonSerializer.Serialize(msg));
+            Logger.Log($"[SimAdvisor] game_over sent ({(victory ? "victory" : "defeat")}).");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] game_over report failed: {ex.Message}");
         }
     }
 
@@ -576,6 +742,22 @@ internal sealed class SimAdvisor
     {
         _lastBest = null; // board is (about to be) different; stale recommendation must not execute
         _lastScreen = null;
+        // A peek is for one decision only: it hides once that is made.
+        _peekLatched = false;
+        SimHud.Instance.ClearPeek();
+        // The position changed: the advice on screen now belongs to the
+        // position the player LEFT (see the correlation slots above).
+        _positionEpoch++;
+        if (_shownRequestId != null)
+        {
+            _actedFromRequestId = _shownRequestId;
+            _actedFromStateId = _shownStateId;
+            _actedFromIsCombat = _shownIsCombat;
+            _actedFromPeeked = _shownPeeked;
+            _shownRequestId = null;
+            _shownStateId = -1;
+            _shownPeeked = false;
+        }
         long gen = ++_generation;
         try
         {
@@ -847,6 +1029,7 @@ internal sealed class SimAdvisor
             {
                 SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
                 _adviceDeferredNoClient = true;
+                Volatile.Write(ref _advisorCoachCapability, 0);
                 return;
             }
 
@@ -988,6 +1171,7 @@ internal sealed class SimAdvisor
             // the Rust engine emits for a simulated one. Display only; the
             // advisor ignores it.
             state["combat_log"] = SimCombatLog.Drain();
+            state["capabilities"] = ModCapabilities();
 
             DropInflight();
 
@@ -1012,6 +1196,9 @@ internal sealed class SimAdvisor
             _adviceDeferredNoClient = false;
             _inflightRequestId = requestId;
             _inflightStateId = stateId;
+            _inflightEpoch = _positionEpoch;
+            _inflightSignature = "";
+            ClearActedFrom();
             UpdateThinkFps();
             SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
         }
@@ -1043,6 +1230,11 @@ internal sealed class SimAdvisor
             return;
         }
 
+        if (screen.AdviceFor == "game_over")
+        {
+            ReportGameOver();
+        }
+
         if (screen.AdviceFor == "game_over" && _autoPlay)
         {
             // The run is over: there is nothing left to play, and clicking on
@@ -1062,6 +1254,7 @@ internal sealed class SimAdvisor
             if (screen.LocalAdvice != null)
             {
                 SimHud.Instance.ShowAdvice(screen.LocalAdvice, null);
+                RenderLatchedPeek();
             }
             if (_autoPlay && _lastBest != null)
             {
@@ -1074,6 +1267,7 @@ internal sealed class SimAdvisor
         {
             SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.None);
             _adviceDeferredNoClient = true;
+            Volatile.Write(ref _advisorCoachCapability, 0);
             return;
         }
 
@@ -1086,6 +1280,7 @@ internal sealed class SimAdvisor
             // end-of-combat powers) land after its final combat decision, so
             // without this they would sit unsent until the next fight.
             ["combat_log"] = SimCombatLog.Drain(),
+            ["capabilities"] = ModCapabilities(),
         };
 
         DropInflight();
@@ -1112,6 +1307,9 @@ internal sealed class SimAdvisor
         _inflightRequestId = requestId;
         _inflightStateId = stateId;
         _inflightScreen = screen.Screen;
+        _inflightEpoch = _positionEpoch;
+        _inflightSignature = screen.SignatureOrDefault;
+        ClearActedFrom();
         UpdateThinkFps();
         SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Thinking);
     }
@@ -1122,6 +1320,8 @@ internal sealed class SimAdvisor
         _inflightRequestId = null;
         _inflightStateId = -1;
         _inflightScreen = null;
+        _inflightEpoch = -1;
+        _inflightSignature = "";
         UpdateThinkFps();
         if (previous != null)
         {
@@ -1173,6 +1373,9 @@ internal sealed class SimAdvisor
             SimAdvice advice = root.TryGetProperty("advice", out JsonElement adviceEl)
                 ? SimAdvice.Parse(adviceEl)
                 : new SimAdvice();
+            // Every reply speaks for the advisor build that sent it, accepted
+            // or not: absent = an advisor without coach support.
+            Volatile.Write(ref _advisorCoachCapability, CoachCapabilityOf(root));
 
             RunOnMainThread(() =>
             {
@@ -1185,9 +1388,38 @@ internal sealed class SimAdvisor
                     Logger.Log($"[SimAdvisor] Dropping stale advice (request {requestId}, state {stateId}).");
                     return;
                 }
+                // The correlation fix: the state id is retired WITH the request
+                // id (it used to linger and mislabel later human actions).
+                bool isCombat = _inflightScreen == null;
+                GodotObject? forScreen = _inflightScreen;
+                string forSignature = _inflightSignature;
+                // The request's own state id: a reply that omits `state_id`
+                // still names the position it was asked for.
+                long forStateId = stateId >= 0 ? stateId : _inflightStateId;
+                bool samePosition = isCombat
+                    ? _inflightEpoch == _positionEpoch
+                    : ReferenceEquals(forScreen, _polledScreen) && forSignature == _polledSignature;
                 _inflightRequestId = null;
+                _inflightStateId = -1;
                 _inflightScreen = null;
+                _inflightEpoch = -1;
+                _inflightSignature = "";
                 UpdateThinkFps();
+
+                // Only advice for the position still on screen may grade the
+                // next action; a reply that raced a board change renders as
+                // before but is never attached to a human action.
+                if (samePosition && requestId != null)
+                {
+                    _shownRequestId = requestId;
+                    _shownStateId = forStateId;
+                    _shownIsCombat = isCombat;
+                    _shownPeeked = false;
+                    if (!isCombat)
+                    {
+                        SimChoiceCapture.OnAdviceShown(forScreen, forSignature, requestId, forStateId);
+                    }
+                }
 
                 _lastBestLabel = advice.Options.FirstOrDefault(o => o.IsBest)?.Label
                                  ?? advice.Options.FirstOrDefault()?.Label;
@@ -1197,6 +1429,7 @@ internal sealed class SimAdvisor
                 SimHud.Instance.SetAdvisorStatus(SimAdvisorStatus.Connected);
                 RunState? runState = RunManager.Instance.DebugOnlyGetState();
                 SimHud.Instance.ShowAdvice(advice, LocalContext.GetMe(runState));
+                RenderLatchedPeek();
 
                 if (_autoPlay && _lastBest != null)
                 {
@@ -1215,6 +1448,66 @@ internal sealed class SimAdvisor
     // ------------------------------------------------------------------
     // Phase 7: takeover ("AI takes this decision" / "AI plays until I stop")
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // F5 peek (Coach style)
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// F5 in the Coach style (SimActions.Peek gates the style): show the AI's
+    /// pick for the current decision only. With advice for this position in
+    /// hand it renders now; otherwise "thinking…" until the reply lands. The
+    /// decision is then reported with <c>peeked: true</c>. Main thread.
+    /// </summary>
+    public void Peek()
+    {
+        if (!SimRuntime.CoachStyleActive)
+        {
+            return;
+        }
+        // _lastBest is non-null exactly while a fresh recommendation stands
+        // for the current board (every path that schedules a new request
+        // clears it), so it is the "advice is ready" test.
+        if (_lastBest != null && TryRenderPeek())
+        {
+            return;
+        }
+        _peekLatched = true;
+        SimHud.Instance.ShowPeekThinking();
+        Logger.Log("[SimAdvisor] Peek: waiting for the advice for this position.");
+    }
+
+    private void RenderLatchedPeek()
+    {
+        if (!_peekLatched)
+        {
+            return;
+        }
+        _peekLatched = false;
+        if (SimRuntime.CoachStyleActive)
+        {
+            TryRenderPeek();
+        }
+    }
+
+    private bool TryRenderPeek()
+    {
+        if (!SimHud.Instance.ShowPeekNow())
+        {
+            return false;
+        }
+        // The grade of this decision carries "(peeked)".
+        if (_shownRequestId != null)
+        {
+            _shownPeeked = true;
+            if (!_shownIsCombat)
+            {
+                SimChoiceCapture.OnPeekShown();
+            }
+        }
+        Logger.Log($"[SimAdvisor] Peek shown: {_lastBestLabel ?? "?"}");
+        return true;
+    }
 
     /// <summary>F6: execute the current recommendation once. Main thread
     /// (hotkeys arrive via NHotkeyManager's CallDeferred).</summary>
@@ -1317,7 +1610,7 @@ internal sealed class SimAdvisor
                     break;
                 }
                 case "end_turn":
-                    PlayerCmd.EndTurn(player, canBackOut: false);
+                    EndTurnAsAi(player);
                     break;
                 case "potion":
                 {
@@ -1379,7 +1672,7 @@ internal sealed class SimAdvisor
         _refusedInARow = 0;
         try
         {
-            PlayerCmd.EndTurn(player, canBackOut: false);
+            EndTurnAsAi(player);
         }
         catch (Exception ex)
         {
@@ -1649,6 +1942,7 @@ internal sealed class SimAdvisor
                     $"looping event — forced option {alternative} instead of option {index}");
                 _recentScreenChoices.Clear();
                 _lastChoiceKey = "";
+                SimChoiceCapture.MarkAiChoice(current.Screen, current.SignatureOrDefault);
                 if (current.Choose(alternative))
                 {
                     _lastScreen = null;
@@ -1667,6 +1961,8 @@ internal sealed class SimAdvisor
             return;
         }
 
+        // Whatever this decision resolves to is the AI's pick, not the human's.
+        SimChoiceCapture.MarkAiChoice(current.Screen, current.SignatureOrDefault);
         if (!current.Choose(index))
         {
             Logger.Log($"[SimAdvisor] Takeover: could not pick option {index} on {current.ScreenName}.");
@@ -1923,6 +2219,7 @@ internal sealed class SimAdvisor
     private void SendHumanAction(
         string action, string detail, CardPlay? play = null, PotionUsedEntry? drink = null)
     {
+        (string? adviceId, long positionId, bool peeked) = TakeCombatCorrelation();
         var msg = new Dictionary<string, object?>
         {
             ["type"] = "human_action",
@@ -1930,7 +2227,10 @@ internal sealed class SimAdvisor
             ["decision_type"] = "combat_action",
             ["action"] = action,
             ["detail"] = detail,
-            ["advice_request_id"] = _inflightRequestId,
+            // v5: the advice rendered for exactly this position, or null.
+            ["advice_request_id"] = adviceId,
+            ["position_id"] = positionId,
+            ["peeked"] = peeked,
             ["card"] = play?.Card == null
                 ? null
                 : new Dictionary<string, object?>
@@ -1949,6 +2249,11 @@ internal sealed class SimAdvisor
                 : new Dictionary<string, object?> { ["id"] = drink.Potion.Id.Entry },
             ["target_index"] = drink != null ? PotionTargetIndexOf(drink) : TargetIndexOf(play),
         };
+        SendHumanActionMessage(msg);
+    }
+
+    private static void SendHumanActionMessage(Dictionary<string, object?> msg)
+    {
         try
         {
             BridgeServer.Instance.SendState(JsonSerializer.Serialize(msg));
@@ -1957,6 +2262,270 @@ internal sealed class SimAdvisor
         {
             Logger.Log($"[SimAdvisor] Could not send human_action: {ex.Message}");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // v5 coach capture: correlation, end turn, non-combat choices
+    // ------------------------------------------------------------------
+
+    /// <summary>`capabilities` this mod build advertises on every
+    /// advice_request (PROTOCOL.md section 5): coach 2 = chips plus the v5.1
+    /// recap / autopsy records.</summary>
+    private static Dictionary<string, object> ModCapabilities() => new() { ["coach"] = 2 };
+
+    /// <summary>
+    /// An inbound `coach` record (BridgeServer.CoachReceived, socket thread):
+    /// parse here, render on the main thread. A withdrawal hides the chips it
+    /// names; anything else goes through CoachChipText, which returns nothing
+    /// for good turns unless the player asked for a check mark. A turn chip
+    /// that arrives once the NEXT player turn is already under way is late
+    /// and is dropped -- never show a late chip.
+    /// </summary>
+    private void OnCoachReceived(JsonElement record)
+    {
+        System.Text.Json.Nodes.JsonObject? rec;
+        try
+        {
+            rec = System.Text.Json.Nodes.JsonNode.Parse(record.GetRawText()) as System.Text.Json.Nodes.JsonObject;
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] Bad coach record: {ex.Message}");
+            return;
+        }
+        if (rec == null)
+        {
+            return;
+        }
+        RunOnMainThread(() =>
+        {
+            if (SimRuntime.Mode != SimMode.Advisor)
+            {
+                return;
+            }
+            string kind = rec["kind"]?.GetValueKind() == JsonValueKind.String ? rec["kind"]!.GetValue<string>() : "";
+            if (kind == "withdraw")
+            {
+                List<string> ids = rec["ids"] is System.Text.Json.Nodes.JsonArray arr
+                    ? arr.Where(n => n?.GetValueKind() == JsonValueKind.String).Select(n => n!.GetValue<string>()).ToList()
+                    : new List<string>();
+                SimCoachChip.Instance.Withdraw(ids);
+                SimCoachPanel.Instance.Withdraw(ids);
+                return;
+            }
+            if (kind is "recap" or "autopsy")
+            {
+                PanelText? panel = CoachPanelText.Format(rec);
+                if (panel != null)
+                {
+                    Logger.Log($"[SimAdvisor] Coach {kind}: {panel.Title} | {panel.Summary} | {panel.Sections.Count} section(s)");
+                    SimCoachPanel.Instance.Show(panel);
+                }
+                return;
+            }
+            bool inCombat = CombatManager.Instance.IsInProgress;
+            if (kind == "turn" && inCombat && IsLateTurnRecord(rec))
+            {
+                Logger.Log("[SimAdvisor] Coach: turn record arrived after the next turn started; not shown.");
+                return;
+            }
+            ChipText? text = CoachChipText.Format(rec, SpireMentorModConfig.CoachShowGoodTurns);
+            if (text == null)
+            {
+                return;
+            }
+            Logger.Log($"[SimAdvisor] Coach chip: {text.Title} | {string.Join(" | ", text.Lines)}");
+            SimCoachChip.Instance.Show(text, inCombat);
+        });
+    }
+
+    /// <summary>The record grades turn N while the player is already in the
+    /// play phase of a later turn.</summary>
+    private static bool IsLateTurnRecord(System.Text.Json.Nodes.JsonObject rec)
+    {
+        try
+        {
+            if (rec["turn"] is not System.Text.Json.Nodes.JsonValue tv || !tv.TryGetValue(out int turn))
+            {
+                return false;
+            }
+            if (CombatManager.Instance.IsEnemyTurnStarted)
+            {
+                return false;
+            }
+            Player? me = LocalContext.GetMe(RunManager.Instance.DebugOnlyGetState());
+            int now = me?.PlayerCombatState?.TurnNumber ?? 0;
+            return now > turn;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>`capabilities.coach` of a reply (top level, next to `advice`,
+    /// as the advisor sends it; `advice.capabilities` is accepted too), 0 when
+    /// absent or not an integer.</summary>
+    private static int CoachCapabilityOf(JsonElement root)
+    {
+        JsonElement caps = default;
+        bool found = root.TryGetProperty("capabilities", out caps) ||
+                     (root.TryGetProperty("advice", out JsonElement advice) &&
+                      advice.ValueKind == JsonValueKind.Object &&
+                      advice.TryGetProperty("capabilities", out caps));
+        if (found &&
+            caps.ValueKind == JsonValueKind.Object &&
+            caps.TryGetProperty("coach", out JsonElement coach) &&
+            coach.ValueKind == JsonValueKind.Number &&
+            coach.TryGetInt32(out int level))
+        {
+            return Math.Max(0, level);
+        }
+        return 0;
+    }
+
+    private void ClearActedFrom()
+    {
+        _actedFromRequestId = null;
+        _actedFromStateId = -1;
+        _actedFromPeeked = false;
+    }
+
+    private void ForgetShownAdvice()
+    {
+        _shownRequestId = null;
+        _shownStateId = -1;
+        _shownPeeked = false;
+        ClearActedFrom();
+    }
+
+    /// <summary>
+    /// The advice a combat action is graded against: the slot of the position
+    /// the player just left, else the one still on screen (an action reported
+    /// before anything rescheduled), else none. Consumes the left slot, so one
+    /// advice grades one action. <c>position_id</c> is that advice's state id;
+    /// without advice it is a fresh id that matches no advice by construction.
+    /// </summary>
+    private (string? adviceId, long positionId, bool peeked) TakeCombatCorrelation()
+    {
+        string? id = null;
+        long stateId = -1;
+        bool peeked = false;
+        if (_actedFromRequestId != null && _actedFromIsCombat)
+        {
+            id = _actedFromRequestId;
+            stateId = _actedFromStateId;
+            peeked = _actedFromPeeked;
+        }
+        else if (_shownRequestId != null && _shownIsCombat)
+        {
+            id = _shownRequestId;
+            stateId = _shownStateId;
+            peeked = _shownPeeked;
+        }
+        ClearActedFrom();
+        if (id == null || stateId < 0)
+        {
+            return (null, SimProtocolHelpers.NextStateId(), false);
+        }
+        return (id, stateId, peeked);
+    }
+
+    /// <summary>
+    /// PlayerCmd.EndTurn prefix (HumanEndTurnPatch). Only the human's end
+    /// turn counts: the end-turn button's EndPlayerTurnAction is the one
+    /// caller passing canBackOut: true (EndPlayerTurnAction.cs:40, both
+    /// v0.107.1 and v0.111.0); card effects (Void Form), a dead player and
+    /// every mod path pass false, and the mod's own calls also run under
+    /// <see cref="SuppressEndTurnReport"/>. The undo replay re-enqueues
+    /// recorded end turns, so it is excluded too.
+    /// </summary>
+    public static void OnEndTurnRequested(Player player, bool canBackOut)
+    {
+        try
+        {
+            if (SuppressEndTurnReport || !canBackOut || SimCombatUndo.Replaying ||
+                SimRuntime.Mode != SimMode.Advisor || !LocalContext.IsMe(player))
+            {
+                return;
+            }
+            HumanEndTurnPending = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[SimAdvisor] OnEndTurnRequested: {ex.Message}");
+        }
+    }
+
+    /// <summary>Every PlayerCmd.EndTurn the mod itself issues goes through
+    /// here, so the end-turn capture never reports it as the human's.</summary>
+    internal static void EndTurnAsAi(Player player)
+    {
+        bool was = SuppressEndTurnReport;
+        SuppressEndTurnReport = true;
+        try
+        {
+            PlayerCmd.EndTurn(player, canBackOut: false);
+        }
+        finally
+        {
+            SuppressEndTurnReport = was;
+        }
+    }
+
+    /// <summary>The human's end turn, once the enemy side has started. Sent
+    /// only to an advisor that advertised coach support: an older advisor's
+    /// mirror DROPS on any card-less combat action.</summary>
+    private void SendEndTurn()
+    {
+        if (AdvisorCoachCapability < 1 || SimCombatUndo.Replaying)
+        {
+            ClearActedFrom();
+            return;
+        }
+        (string? adviceId, long positionId, bool peeked) = TakeCombatCorrelation();
+        SendHumanActionMessage(new Dictionary<string, object?>
+        {
+            ["type"] = "human_action",
+            ["state_id"] = null,
+            ["decision_type"] = "combat_action",
+            ["action"] = "end_turn",
+            ["detail"] = "end turn",
+            ["advice_request_id"] = adviceId,
+            ["position_id"] = positionId,
+            ["peeked"] = peeked,
+            ["card"] = null,
+            ["potion"] = null,
+            ["target_index"] = null,
+        });
+    }
+
+    /// <summary>
+    /// One non-combat pick (SimChoiceCapture): <paramref name="index"/> in the
+    /// advice's option index space, null for a skip. Gated like the end turn.
+    /// </summary>
+    internal void SendChoice(
+        string decisionType, int? index, string label, string? adviceRequestId, long adviceStateId, bool peeked)
+    {
+        if (SimRuntime.Mode != SimMode.Advisor || AdvisorCoachCapability < 1 || SimCombatUndo.Replaying)
+        {
+            return;
+        }
+        bool hasAdvice = adviceRequestId != null && adviceStateId >= 0;
+        Logger.Log($"[SimAdvisor] Human pick on {decisionType}: {(index?.ToString() ?? "skip")} '{label}'" +
+                   $" (advice {adviceRequestId ?? "none"})");
+        SendHumanActionMessage(new Dictionary<string, object?>
+        {
+            ["type"] = "human_action",
+            ["state_id"] = null,
+            ["decision_type"] = decisionType,
+            ["action"] = index == null ? "skip" : "choose",
+            ["detail"] = label,
+            ["advice_request_id"] = hasAdvice ? adviceRequestId : null,
+            ["position_id"] = hasAdvice ? adviceStateId : SimProtocolHelpers.NextStateId(),
+            ["peeked"] = hasAdvice && peeked,
+            ["choice"] = new Dictionary<string, object?> { ["index"] = index, ["label"] = label },
+        });
     }
 
     /// <summary>The `CardPlay` behind a history entry, when it was a card

@@ -136,7 +136,49 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sts2_client import DEFAULT_GAME_VERSION, SUPPORTED_GAME_VERSIONS, normalize_game_version
+
 logger = logging.getLogger(__name__)
+
+
+class UnsupportedGameVersionError(ValueError):
+    """The live game reports a build this advisor has no engine for (GH #800).
+
+    ``str(exc)`` is written for the player: the mod renders it in the HUD as
+    the advice note, so it names the build and what to do about it.
+    """
+
+    def __init__(self, raw: object) -> None:
+        self.raw = raw
+        super().__init__(
+            f"Spire Mentor's advisor does not support game version {raw!r} "
+            f"(supported: {', '.join(SUPPORTED_GAME_VERSIONS)}). Update the advisor, "
+            "or switch the game to a supported build in Steam (Properties > Betas)."
+        )
+
+
+def envelope_game_version(msg: dict[str, Any]) -> str:
+    """The game build a bridge message was produced by, normalized (``"v0.111.0"``).
+
+    Read from the envelope's ``game_version`` (``SimStateExtractor.ApplyEnvelope``,
+    PROTOCOL.md section 1). Absent, ``None`` or blank -- every mod build before
+    the field -- means :data:`sts2_client.DEFAULT_GAME_VERSION` (v0.107.1), so an
+    old mod gets exactly the engine it always got.
+
+    Raises:
+        UnsupportedGameVersionError: a build outside
+            :data:`sts2_client.SUPPORTED_GAME_VERSIONS`, or a non-string value.
+    """
+    raw = msg.get("game_version")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_GAME_VERSION
+    if not isinstance(raw, str):
+        raise UnsupportedGameVersionError(raw)
+    try:
+        return normalize_game_version(raw)
+    except ValueError:
+        raise UnsupportedGameVersionError(raw) from None
+
 
 #: Bridge ``run_state.character`` (SCREAMING_CASE) -> the Title-Case
 #: literal :func:`sts2_hint.adapter.translate` accepts as its
@@ -674,6 +716,14 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
     osty = _translate_osty(state.get("pets") or [], run_state.get("character"))
     if osty is not None:
         out["osty"] = osty
+
+    # The game build the board comes from (GH #800). `sts2_hint.adapter.translate`
+    # forwards it to the wire, where `state_from_dict` builds the engine for that
+    # build. Emitted only for a non-default build, so a v0.107.1 board (and any
+    # board from a mod predating the field) yields the dict it always did.
+    game_version = envelope_game_version(state)
+    if game_version != DEFAULT_GAME_VERSION:
+        out["game_version"] = game_version
 
     return out
 

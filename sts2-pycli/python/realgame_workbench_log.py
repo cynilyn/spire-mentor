@@ -30,15 +30,45 @@ Mapping notes
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
-from typing import Any
+import os
+import re
+import threading
+from collections.abc import Callable
+from typing import Any, cast
 
 from game_log import GameLogger
 from realgame_adapter import character_display_name, to_headless_combat_play
 
 logger = logging.getLogger(__name__)
+
+
+def _locked[F: Callable[..., Any]](fn: F) -> F:
+    """Serialize a logger entry point: the coach's grader thread writes
+    ``coach`` records while the advisor loop writes everything else."""
+
+    @functools.wraps(fn)
+    def wrapper(self: WorkbenchRunLogger, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    return cast("F", wrapper)
+
+
+def run_log_name(path: str | None) -> str | None:
+    """A run log's name as the control plane's ``GET /log`` serves it.
+
+    The bare filename with anything outside ``[A-Za-z0-9._-]`` replaced: the
+    bundled page's run store keys by it (``engineRoutes.ts`` RUN_FILENAME),
+    and coach records carry it so the mod can link a decision to its file.
+    """
+    if not path:
+        return None
+    return re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(path))
+
 
 #: Envelope fields that change on every message even when the board did not.
 _VOLATILE_KEYS = ("state_id", "request_id", "mod_version", "type", "advice_for")
@@ -319,10 +349,29 @@ class WorkbenchRunLogger:
         self._run_key: tuple[str, str] | None = None
         self._last_sig: str | None = None
         self._pending_advice_sig: str | None = None
+        #: The most recent logged decision state (headless dialect), which a
+        #: human action's machine form is resolved against.
+        self._last_state: dict[str, Any] | None = None
+        #: ``state`` lines written to the open file: the next one's replay
+        #: step index (``TimelineStore`` / ``runlog.rs`` give each state line
+        #: one step, in file order).
+        self._state_count = 0
+        #: The log :meth:`close` last closed: still named by :attr:`log_name`,
+        #: and the death autopsy (built after the run end closed it) is
+        #: appended to it.
+        self._closed_log: GameLogger | None = None
+        self._lock = threading.RLock()
 
     @property
     def path(self) -> str | None:
         return self._log.path if self._log else None
+
+    @property
+    def log_name(self) -> str | None:
+        """The open run log's name as ``GET /log`` serves it, else the name of
+        the file closed last (:func:`run_log_name`)."""
+        closed = self._closed_log.path if self._closed_log is not None else None
+        return run_log_name(self.path or closed)
 
     # -- lifecycle -----------------------------------------------------
 
@@ -354,6 +403,7 @@ class WorkbenchRunLogger:
             self._log.log_meta_extra({"source": "realgame_advisor", "live": True})
             self._run_key = key
             self._last_sig = None
+            self._state_count = 0
             logger.info("workbench run log: %s", self._log.path)
         except Exception as exc:
             logger.warning("workbench log open failed: %s", exc)
@@ -362,6 +412,7 @@ class WorkbenchRunLogger:
 
     def close(self) -> None:
         if self._log is not None:
+            self._closed_log = self._log
             try:
                 self._log.close()
             except Exception:
@@ -369,19 +420,26 @@ class WorkbenchRunLogger:
         self._log = None
         self._run_key = None
         self._last_sig = None
+        self._last_state = None
+        self._state_count = 0
 
     # -- events --------------------------------------------------------
 
-    def log_decision(self, msg: dict[str, Any], advice_for: str) -> bool:
-        """Append the decision's ``state`` record. Returns True if a new step
-        was written (False = duplicate board or logging disabled)."""
+    @_locked
+    def log_decision(self, msg: dict[str, Any], advice_for: str) -> int | None:
+        """Append the decision's ``state`` record.
+
+        Returns the new step's replay index -- the index the workbench's replay
+        view gives this ``state`` line -- or ``None`` when nothing was written
+        (duplicate board, unknown surface, or logging disabled).
+        """
         try:
             log = self._ensure_open(msg)
             if log is None:
-                return False
+                return None
             sig = self._signature(msg)
             if sig == self._last_sig:
-                return False
+                return None
             if advice_for == "combat_action":
                 state = to_headless_combat_play({**msg, "type": "combat_action"})
                 state["floor"] = msg.get("floor")
@@ -391,7 +449,7 @@ class WorkbenchRunLogger:
             else:
                 builder = _BUILDERS.get(advice_for)
                 if builder is None:
-                    return False
+                    return None
                 state = builder(msg)
             # The game's own combat-log rows for this decision, as the mod sent
             # them (`SimCombatLog.Drain()`). Stored RAW — game ids, no display
@@ -408,11 +466,14 @@ class WorkbenchRunLogger:
                 state["character_id"] = character
             log.log_state(state)
             self._last_sig = sig
-            return True
+            self._last_state = state
+            self._state_count += 1
+            return self._state_count - 1
         except Exception as exc:
             logger.warning("workbench log_decision failed: %s", exc)
-            return False
+            return None
 
+    @_locked
     def log_advice(
         self,
         msg: dict[str, Any],
@@ -441,8 +502,13 @@ class WorkbenchRunLogger:
         except Exception as exc:
             logger.warning("workbench log_advice failed: %s", exc)
 
+    @_locked
     def log_human_action(self, msg: dict[str, Any]) -> None:
-        """Append the human's move as the current step's ``action`` record."""
+        """Append the human's move as the current step's ``action`` record.
+
+        ``args`` is the move's machine form (:func:`human_action_args`), so the
+        log can be graded and replayed, not just read.
+        """
         try:
             if self._log is None:
                 return
@@ -451,14 +517,45 @@ class WorkbenchRunLogger:
                     "cmd": "action",
                     "action": msg.get("action") or "human",
                     "label": msg.get("detail") or msg.get("action") or "?",
-                    "args": {},
+                    "args": human_action_args(msg, self._last_state),
                     "decision_type": msg.get("decision_type"),
                     "advice_request_id": msg.get("advice_request_id"),
+                    "position_id": msg.get("position_id"),
+                    "peeked": bool(msg.get("peeked")),
                 }
             )
         except Exception as exc:
             logger.warning("workbench log_human_action failed: %s", exc)
 
+    @_locked
+    def log_coach(self, record: dict[str, Any]) -> None:
+        """Append one coach record (a graded turn / choice, or a withdrawal).
+
+        Rides as its own ``type: "coach"`` line, so a reader that predates it
+        ignores it; the follow-mode workbench renders it.
+
+        The death autopsy (and a withdrawal racing it) is built after the run
+        end closed the file: those go into the file closed last, re-opened
+        for the one line.
+        """
+        try:
+            if self._log is None:
+                closed = self._closed_log
+                if (
+                    closed is not None
+                    and record.get("kind") in ("autopsy", "withdraw")
+                    and closed.reopen()
+                ):
+                    try:
+                        closed.log_coach(record)
+                    finally:
+                        closed.close()
+                return
+            self._log.log_coach(record)
+        except Exception as exc:
+            logger.warning("workbench log_coach failed: %s", exc)
+
+    @_locked
     def log_run_end(self, msg: dict[str, Any]) -> None:
         """Terminal ``game_over``/``run_complete``: final state + summary."""
         try:
@@ -588,6 +685,56 @@ def _root_outcomes(advice: dict[str, Any]) -> list[dict[str, Any]]:
                 "losses": o.get("losses", 0),
                 "ties": o.get("ties", 0),
                 "is_best": bool(o.get("is_best")),
+                # The search's own numbers, so a reader grades with what the
+                # advisor saw rather than re-deriving wins / visits.
+                "win_prob": o.get("p_win"),
+                "mean_final_hp": o.get("mean_final_hp"),
+                "hp_n": o.get("hp_n", 0),
             }
         )
     return rows
+
+
+def _norm_id(raw: Any) -> str:
+    return str(raw or "").strip().upper()
+
+
+def human_action_args(msg: dict[str, Any], state: dict[str, Any] | None) -> dict[str, Any]:
+    """The native action dict a ``human_action`` stands for, or ``{}``.
+
+    Combat moves come out in the engine's frame against ``state`` (the logged
+    headless decision state): a card is found in its hand by IDENTITY (id +
+    upgraded), the same rule the advisor mirror follows
+    (``realgame_advisor_mirror.on_world_action``), and a potion's ``slot`` is
+    its position among the HELD potions (the engine keeps the belt dense).
+    Anything that cannot be resolved logs ``{}`` -- never a guessed index.
+    Non-combat choices log ``{"index": i | None}`` (``None`` = skip), in the
+    advice's own option index space.
+    """
+    if msg.get("decision_type") != "combat_action":
+        choice = msg.get("choice")
+        if isinstance(choice, dict):
+            index = choice.get("index")
+            return {"index": int(index) if isinstance(index, int) else None}
+        return {}
+    action = msg.get("action")
+    target = msg.get("target_index")
+    target = int(target) if isinstance(target, int) else None
+    if action == "end_turn":
+        return {"action": "end_turn"}
+    state = state or {}
+    card = msg.get("card")
+    if isinstance(card, dict) and card.get("id"):
+        want = (_norm_id(card.get("id")), bool(card.get("upgraded")))
+        for i, c in enumerate(state.get("hand") or []):
+            if isinstance(c, dict) and (_norm_id(c.get("id")), bool(c.get("upgraded"))) == want:
+                return {"action": "play", "card_index": i, "target_index": target}
+        return {}
+    drink = msg.get("potion")
+    if isinstance(drink, dict) and drink.get("id"):
+        belt = (state.get("player") or {}).get("potions") or state.get("potions") or []
+        held = [p for p in belt if isinstance(p, dict) and not p.get("empty") and p.get("id")]
+        for slot, p in enumerate(held):
+            if _norm_id(p.get("id")) == _norm_id(drink.get("id")):
+                return {"action": "potion", "slot": slot, "target_index": target}
+    return {}

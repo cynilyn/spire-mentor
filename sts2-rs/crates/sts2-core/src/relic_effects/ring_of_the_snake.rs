@@ -8,7 +8,7 @@ pub(crate) fn on_modify_hand_draw_ring_of_the_snake(state: &CombatState, current
     if !player_owns_relic(state, crate::RelicKind::RingOfTheSnake) {
         return current_draw;
     }
-    if state.round_no() == 1 {
+    if state.turn_number() == 1 {
         current_draw + 2
     } else {
         current_draw

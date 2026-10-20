@@ -50,10 +50,11 @@ use sts2_core::relic_effects::{
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
-    register_after_obtained, register_modify_card_being_added_to_deck,
-    register_modify_card_reward_options_late, register_modify_merchant_card_creation_results,
-    register_modify_rest_site_options, register_modify_rewards,
-    register_should_force_potion_reward, AfterObtainedRunFn, ModifyCardBeingAddedToDeckRunFn,
+    register_after_obtained, register_before_combat_reward_offered,
+    register_modify_card_being_added_to_deck, register_modify_card_reward_options_late,
+    register_modify_merchant_card_creation_results, register_modify_rest_site_options,
+    register_modify_rewards, register_should_force_potion_reward, AfterObtainedRunFn,
+    BeforeCombatRewardOfferedRunFn, CombatRewardsSet, ModifyCardBeingAddedToDeckRunFn,
     ModifyCardRewardOptionsLateRunFn, ModifyMerchantCardCreationResultsRunFn,
     ModifyRestSiteOptionsRunFn, ModifyRewardsRunFn, ShouldForcePotionRewardRunFn,
 };
@@ -142,6 +143,13 @@ pub fn install_pool() {
     // `on_trigger_mango` handler stays `Resolved`-only; this is the
     // run-state side that actually mutates the player's max HP.
     register_after_obtained(RelicId::Mango, listener_mango as AfterObtainedRunFn);
+    // v0.111.0: LastingCandy counts combat reward sets holding a card
+    // reward (decomp LastingCandy.cs:153-170). The dispatch itself is a
+    // no-op in v0.107.1, which counts every combat end instead.
+    register_before_combat_reward_offered(
+        RelicId::LastingCandy,
+        listener_lasting_candy_reward_offered as BeforeCombatRewardOfferedRunFn,
+    );
     // Bead `sts2-rs-tyqo`: real `after_obtained` listener for OldCoin's
     // `GOLD = 300` (Python `rare.py::OldCoin.GOLD`). Same pattern as
     // Mango above — the AST factory line was metadata-only.
@@ -885,8 +893,30 @@ macro_rules! rare_factory {
 // `_combats_seen` bump (`relic_effects::lasting_candy`) is `Noop` here;
 // the reward arm fires inline in
 // `spec_index::append_lasting_candy_power_reward` at the C# mid-hook
-// site, so no separate run-state listener registration is needed.
+// site. v0.111.0 counts card-bearing combat reward sets instead, through
+// `listener_lasting_candy_reward_offered` below.
 rare_factory!(pub lasting_candy, LastingCandy, "LASTING_CANDY", RelicEffect::Noop);
+
+/// v0.111.0 `LastingCandy.BeforeCombatRewardOffered` (decomp
+/// LastingCandy.cs:153-170):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The hook fires after the set is populated, so the reward this set's card
+/// roll saw was judged on the count BEFORE this bump. `CombatRewardsSeen`
+/// rides `rs.relic_counters[LastingCandy]`, the slot the v0.107.1 combat-side
+/// `CombatsSeen` bump (inert in v0.111.0) uses.
+fn listener_lasting_candy_reward_offered(
+    rs: &mut RunState,
+    rewards: &CombatRewardsSet,
+) -> EffectResult {
+    if !rs.owns_active_relic(RelicId::LastingCandy) || !rewards.has_card_reward() {
+        return EffectResult::NotImplemented;
+    }
+    let seen = rs.relic_counters.entry(RelicId::LastingCandy).or_insert(0);
+    *seen = seen.saturating_add(1);
+    EffectResult::Resolved
+}
 // LizardTail — one-shot revive (`_was_used` flag). Stateful;
 // `HEAL_PCT = 50` pinned via [`LIZARD_TAIL_HEAL_PCT`]. Stays `Noop`.
 rare_factory!(pub lizard_tail, LizardTail, "LIZARD_TAIL", RelicEffect::Noop);

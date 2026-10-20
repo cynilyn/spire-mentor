@@ -145,7 +145,7 @@ impl PyRunManager {
 #[pymethods]
 impl PyRunManager {
     #[new]
-    #[pyo3(signature = (seed = 0, character = "Ironclad", deck = None, max_hp = None, string_seed = None, ascension_level = 0, neow_start = false, interactive_card_removal = false, direct_event_relic_grant = false, interactive_card_upgrade = false, interactive_card_transform = false, interactive_potion_swap = false, act1 = "overgrowth"))]
+    #[pyo3(signature = (seed = 0, character = "Ironclad", deck = None, max_hp = None, string_seed = None, ascension_level = 0, neow_start = false, interactive_card_removal = false, direct_event_relic_grant = false, interactive_card_upgrade = false, interactive_card_transform = false, interactive_potion_swap = false, act1 = "overgrowth", game_version = None))]
     // A PyO3 constructor mirroring the optional-kwarg surface; the arg list
     // tracks the run's configurable knobs (seed forms, deck/hp overrides,
     // neow-start, C#-faithful UI toggles) rather than a bundled options struct.
@@ -167,8 +167,10 @@ impl PyRunManager {
         interactive_card_transform: bool,
         interactive_potion_swap: bool,
         act1: &str,
+        game_version: Option<&str>,
     ) -> PyResult<Self> {
         let cid = character_from_str(character)?;
+        let game_version = crate::parse_game_version(game_version)?;
         // Bead `sts2-rs-livck`: Ironclad / Silent / Necrobinder / Regent
         // / Defect now route through the character-parameterised
         // factories in `sts2-content::run_callbacks`. Defect's
@@ -180,13 +182,16 @@ impl PyRunManager {
         // the C#-game-style 10-char alphanumeric seed (e.g. "3ACCFREXKR")
         // as emitted by scraped .run files. We canonicalise + hash to the
         // same i32 the C# game uses, ignoring any explicit `seed` arg.
-        let effective_seed = match string_seed {
-            Some(s) => {
-                let canonical = sts2_core::canonicalize_seed(s);
-                sts2_core::deterministic_hash_code(&canonical)
-            }
-            None => seed,
+        //
+        // GH #788: the hash is the game build's `RunRngSet` rule — the old
+        // 32-bit hash in v0.107.1, XxHash64 in v0.111.0 (whose 64-bit master
+        // is applied below via `with_run_seed`; `effective_seed` is its i32
+        // view). An integer `seed` is a `uint` master in both builds.
+        let master_seed: u64 = match string_seed {
+            Some(s) => game_version.run_seed_hash(&sts2_core::canonicalize_seed(s)),
+            None => u64::from(seed as u32),
         };
+        let effective_seed = master_seed as i32;
         let inner = match deck {
             None => {
                 // When `ascension_level > 0`, route through the ascension
@@ -233,6 +238,12 @@ impl PyRunManager {
                 new_ironclad_run_manager_with_deck_and_hp(effective_seed, cards, max_hp)
             }
         };
+        // GH #787: the game build, threaded like ascension. Must precede
+        // Neow-start / act-1 selection / run setup — everything the run
+        // rolls from here on may depend on it. A no-op at the default.
+        let inner = inner
+            .with_game_version(game_version)
+            .with_run_seed(master_seed);
         // Bead `sts2-rs-g24zv`: opt-in Neow-start. When `neow_start=True`,
         // the run lands in `Phase::Event` with `current_event=Neow` and
         // the 3-relic offers cached on `run_state.neow_offers`. Required
@@ -307,6 +318,13 @@ impl PyRunManager {
         self.seed
     }
 
+    /// The game build this run simulates, as `"v0.107.1"` / `"v0.111.0"`
+    /// (GH #787).
+    #[getter]
+    fn game_version(&self) -> String {
+        self.inner.game_version.to_string()
+    }
+
     /// The run's own hashed master seed, as `u32` — the value every RNG
     /// stream salts from, and the one the wire spells `$.rng.run_seed`
     /// (C# `RunRngSet.Seed` is a uint).
@@ -317,7 +335,7 @@ impl PyRunManager {
     /// rather than re-deriving it from the text seed — canonicalisation alone
     /// is enough to make a second derivation disagree.
     #[getter]
-    fn run_seed(&self) -> u32 {
+    fn run_seed(&self) -> u64 {
         emit_rm::run_seed(&self.inner)
     }
 
@@ -621,7 +639,7 @@ impl PyRunManager {
     /// not belong to this run.
     fn debug_set_rng_counters(
         &mut self,
-        run_seed: i64,
+        run_seed: u64,
         counters: &Bound<'_, PyDict>,
     ) -> PyResult<Vec<String>> {
         if counters.is_empty() {
@@ -631,9 +649,10 @@ impl PyRunManager {
                  more lineage than it restores. Pass the whole block or none.",
             ));
         }
-        let ours = i64::from(u32::from_ne_bytes(
-            self.inner.run_state.rng.seed.to_ne_bytes(),
-        ));
+        // `RunRngSet.Seed`: ≤ u32::MAX in v0.107.1, a full u64 in v0.111.0
+        // (GH #788). The caller passes the unsigned view (a negative 32-bit
+        // seed is normalised by `state_import._rng_block`).
+        let ours = self.inner.run_state.rng.seed;
         if run_seed != ours {
             return Err(PyValueError::new_err(format!(
                 "debug_set_rng_counters: run_seed {run_seed} is not this run's \
@@ -1166,10 +1185,7 @@ impl PyRunManager {
     /// Returns the bound event's Python class name (e.g. "LostWisp"),
     /// or `None` when no event is active and none could be picked.
     fn materialize_event(&mut self) -> Option<String> {
-        if self.inner.run_state.current_event.is_none() {
-            let id = sts2_content::events::dispatch::pick_event(&mut self.inner.run_state, None)?;
-            self.inner.run_state.enter_event_room(id);
-        }
+        sts2_content::events::dispatch::bind_pending_event_callback(&mut self.inner.run_state);
         self.inner
             .run_state
             .current_event
@@ -1811,9 +1827,13 @@ impl PyRunManager {
     /// rollouts: clone the run, reseed, then play the rest of the act out, so
     /// each rollout samples a different plausible future from the same
     /// decision point. Mirrors the in-test `run_state.rng = RunRngSet::new(s)`
-    /// idiom (a documented, safe whole-set swap).
+    /// idiom (a documented, safe whole-set swap), but derives the streams in
+    /// the run's own game build's arithmetic (`RunRngSet::new_for`), so a
+    /// v0.111.0 rollout samples v0.111.0-shaped futures. On v0.107.1 this is
+    /// exactly `RunRngSet::new(seed)`.
     fn reseed_run(&mut self, seed: i32) {
-        self.inner.run_state.rng = sts2_core::RunRngSet::new(seed);
+        self.inner.run_state.rng =
+            sts2_core::RunRngSet::new_for(self.inner.game_version, u64::from(seed as u32));
     }
 
     fn __repr__(&self) -> String {
@@ -1827,5 +1847,45 @@ impl PyRunManager {
             self.inner.run_state.gold,
             self.inner.run_state.act_index,
         )
+    }
+}
+
+#[cfg(test)]
+mod reseed_tests {
+    use super::*;
+    use sts2_core::{GameVersion, RunRngSet};
+
+    fn rm_on(version: GameVersion) -> PyRunManager {
+        PyRunManager {
+            inner: new_run_manager_for_character(7, CharacterId::Ironclad)
+                .with_game_version(version)
+                .with_run_seed(7),
+            seed: 7,
+            record_card_plays: false,
+            record_combat_log: false,
+        }
+    }
+
+    /// `reseed_run` rebuilds the streams in the run's own build arithmetic:
+    /// unchanged (`RunRngSet::new`) on v0.107.1, `new_for(V0_111_0, ..)` on
+    /// v0.111.0, which is a different stream set for the same seed.
+    #[test]
+    fn reseed_run_follows_the_run_game_version() {
+        let mut old = rm_on(GameVersion::V0_107_1);
+        old.reseed_run(12_345);
+        assert_eq!(old.inner.run_state.rng, RunRngSet::new(12_345));
+
+        let mut new = rm_on(GameVersion::V0_111_0);
+        new.reseed_run(12_345);
+        assert_eq!(
+            new.inner.run_state.rng,
+            RunRngSet::new_for(GameVersion::V0_111_0, 12_345)
+        );
+        assert_ne!(new.inner.run_state.rng, RunRngSet::new(12_345));
+
+        // A negative i32 seed keeps its u32 bit pattern, as `new` does.
+        let mut neg = rm_on(GameVersion::V0_107_1);
+        neg.reseed_run(-3);
+        assert_eq!(neg.inner.run_state.rng, RunRngSet::new(-3));
     }
 }

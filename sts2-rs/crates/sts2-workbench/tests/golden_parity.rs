@@ -414,9 +414,35 @@ fn scenario_dirs() -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.join("requests.jsonl").is_file())
+        .filter(|p| build_bundle_present(p))
         .collect();
     dirs.sort();
     dirs
+}
+
+/// False for a scenario played in a game build whose display bundle this
+/// checkout lacks (the public snapshot ships only the default build's): its
+/// responses would render loc keys, so it cannot match its recording (#855).
+fn build_bundle_present(dir: &Path) -> bool {
+    let first = fs::read_to_string(dir.join("requests.jsonl"))
+        .ok()
+        .and_then(|t| t.lines().next().map(str::to_string))
+        .and_then(|l| serde_json::from_str::<Value>(&l).ok());
+    let version = first
+        .as_ref()
+        .and_then(|r| r["body"]["game_version"].as_str())
+        .unwrap_or_default();
+    let present = match version {
+        "v0.111.0" => cfg!(workbench_game_data_v0_111_0),
+        _ => true,
+    };
+    if !present {
+        eprintln!(
+            "skip {}: no {version} workbench bundle in this checkout",
+            dir.display()
+        );
+    }
+    present
 }
 
 #[test]

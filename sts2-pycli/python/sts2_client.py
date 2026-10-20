@@ -19,10 +19,151 @@ from collections.abc import Iterable
 from typing import Any
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HEADLESS_BIN = os.path.join(
-    REPO_ROOT, "src", "Sts2Headless", "bin", "Debug", "net9.0", "Sts2Headless"
-)
 PROJECT = os.path.join(REPO_ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Game version (GH #789). The C# oracle is built once per supported game build
+# (`just build-cs <ver>`): DLLs in `lib/<ver>/`, binary in `bin/<ver>/…`.
+# `STS2_GAME_VERSION` picks which one this process drives; it is resolved once
+# at import (`GAME_VERSION`, `HEADLESS_BIN`, `LIB_DIR`) and can be moved for the
+# whole process with :func:`set_game_version` (the `--game-version` CLI flags
+# and the pytest option do that, before any `Game` is spawned).
+# ──────────────────────────────────────────────────────────────────────────────
+
+#: The default build: stable Steam. Moves when the beta goes stable.
+DEFAULT_GAME_VERSION = "v0.107.1"
+#: Every build the oracle can be compiled for (mirrors the csproj check).
+SUPPORTED_GAME_VERSIONS: tuple[str, ...] = ("v0.107.1", "v0.111.0")
+GAME_VERSION_ENV = "STS2_GAME_VERSION"
+
+
+def normalize_game_version(version: str) -> str:
+    """``"0.111.0"`` / ``"v0.111.0"`` → ``"v0.111.0"``; rejects unsupported builds."""
+    v = version.strip()
+    if v and not v.startswith("v"):
+        v = "v" + v
+    if v not in SUPPORTED_GAME_VERSIONS:
+        raise ValueError(
+            f"unsupported game version {version!r} (supported: {', '.join(SUPPORTED_GAME_VERSIONS)})"
+        )
+    return v
+
+
+def resolve_game_version() -> str:
+    """The version ``STS2_GAME_VERSION`` names, or :data:`DEFAULT_GAME_VERSION`."""
+    raw = os.environ.get(GAME_VERSION_ENV, "").strip()
+    return normalize_game_version(raw) if raw else DEFAULT_GAME_VERSION
+
+
+def headless_bin(version: str | None = None) -> str:
+    """The built apphost for ``version`` (``bin/<ver>/Debug/net9.0/Sts2Headless``)."""
+    ver = normalize_game_version(version) if version else GAME_VERSION
+    return os.path.join(
+        REPO_ROOT, "src", "Sts2Headless", "bin", ver, "Debug", "net9.0", "Sts2Headless"
+    )
+
+
+_LEGACY_LIB_WARNED = False
+
+
+def lib_dir(version: str | None = None) -> str:
+    """The game-DLL dir for ``version``: ``lib/<ver>/``.
+
+    Compatibility fallback (pre-#789 layout): when ``lib/<ver>/`` has no
+    ``sts2.dll`` but a flat ``lib/sts2.dll`` exists and the version is
+    v0.107.1 — the only build that layout ever held — the flat ``lib/`` is
+    returned with a :class:`DeprecationWarning`. The C# side applies the same
+    fallback (``HeadlessPaths.LibDir`` / the csproj).
+    """
+    global _LEGACY_LIB_WARNED
+    ver = normalize_game_version(version) if version else GAME_VERSION
+    base = os.path.join(REPO_ROOT, "lib")
+    versioned = os.path.join(base, ver)
+    if (
+        ver == DEFAULT_GAME_VERSION
+        and not os.path.isfile(os.path.join(versioned, "sts2.dll"))
+        and os.path.isfile(os.path.join(base, "sts2.dll"))
+    ):
+        if not _LEGACY_LIB_WARNED:
+            _LEGACY_LIB_WARNED = True
+            import warnings
+
+            warnings.warn(
+                f"using the legacy flat game-DLL layout {base}; move the DLLs to "
+                f"lib/{ver}/ (GH #789)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return base
+    return versioned
+
+
+GAME_VERSION = resolve_game_version()
+HEADLESS_BIN = headless_bin()
+
+
+def set_game_version(version: str) -> str:
+    """Point this process (and every child it spawns) at another game build.
+
+    Sets ``STS2_GAME_VERSION`` and re-resolves :data:`GAME_VERSION`,
+    :data:`HEADLESS_BIN` and :data:`LIB_DIR`. Call it before the first
+    :class:`Game` is spawned. Returns the normalized version.
+    """
+    global GAME_VERSION, HEADLESS_BIN, LIB_DIR
+    ver = normalize_game_version(version)
+    os.environ[GAME_VERSION_ENV] = ver
+    GAME_VERSION = ver
+    HEADLESS_BIN = headless_bin(ver)
+    LIB_DIR = lib_dir(ver)
+    return ver
+
+
+def add_game_version_arg(parser: Any) -> None:
+    """Add the shared ``--game-version`` option to an ``argparse`` parser.
+
+    Pair with :func:`apply_game_version_arg` right after ``parse_args``.
+    """
+    parser.add_argument(
+        "--game-version",
+        default=None,
+        metavar="VERSION",
+        help=(
+            "game build the C# oracle (and, where the installed sts2_rs supports "
+            f"it, the Rust engine) simulates: {', '.join(SUPPORTED_GAME_VERSIONS)}. "
+            f"Default: ${GAME_VERSION_ENV} or {DEFAULT_GAME_VERSION}. Sets "
+            f"{GAME_VERSION_ENV} for every worker and child process; needs "
+            "`just build-cs <version>`."
+        ),
+    )
+
+
+def apply_game_version_arg(args: Any) -> str:
+    """Apply a parsed ``--game-version`` (if given); returns the active version."""
+    requested = getattr(args, "game_version", None)
+    if requested:
+        try:
+            return set_game_version(requested)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    return GAME_VERSION
+
+
+def rs_engine_call(fn: Any, /, *args: Any, version: str | None = None, **kwargs: Any) -> Any:
+    """Call an ``sts2_rs`` engine entry point for the selected game build.
+
+    Always passes ``game_version=<ver>`` (``version`` or the selected
+    :data:`GAME_VERSION`). Every ``sts2_rs`` entry point routed through here
+    (``RunManager``, ``build_scenario_state``, ``roll_acts``) takes the kwarg
+    since #787/#788, and passing the default ``"v0.107.1"`` explicitly is the
+    same as omitting it, so a v0.107.1 call simulates exactly what it did
+    before. There is deliberately no fallback for a wheel that rejects the
+    kwarg (the pre-#803 shim): silently simulating v0.107.1 against a v0.111.0
+    oracle turned every divergence into version skew. A stale wheel now fails
+    loudly with the ``TypeError``.
+    """
+    ver = normalize_game_version(version) if version else GAME_VERSION
+    return fn(*args, game_version=ver, **kwargs)
+
 
 # A drained stderr line that means the WORLD threw, not that it logged. The C#
 # side routes swallowed task exceptions through `TaskHelper.LogTaskExceptions`
@@ -75,30 +216,50 @@ _GAME_DIR_CANDIDATES = (
 )
 
 
-LIB_DIR = os.path.join(REPO_ROOT, "lib")
+LIB_DIR = lib_dir()
 
 
 class OracleUnavailable(RuntimeError):
     """The C# oracle cannot run here: no game assembly to link against."""
 
 
-def oracle_available() -> bool:
+def oracle_available(version: str | None = None) -> bool:
     """Whether the game assembly the headless harness links against is present.
 
-    ``lib/sts2.dll`` is produced by ``setup.sh`` from the player's own game
-    install (``just import-game``) and is never published; ``STS2_GAME_DIR``
-    (or a default Steam location) is the runtime fallback the C# side uses.
-    A git-LFS pointer file does not count.
+    ``lib/<ver>/sts2.dll`` (``ver`` defaults to the selected
+    :data:`GAME_VERSION`) is produced by ``scripts/setup_oracle.py`` from the
+    player's own game install (``just import-game``) and is never published.
+    For the default build, ``STS2_GAME_DIR`` (or a default Steam location) is
+    the runtime fallback the C# side uses; another build needs its own
+    ``lib/<ver>/`` — a Steam install holds whichever build Steam last updated
+    to, so it cannot stand in for a pinned one. A git-LFS pointer file does
+    not count.
     """
-    dll = os.path.join(LIB_DIR, "sts2.dll")
+    ver = normalize_game_version(version) if version else GAME_VERSION
+    dll = os.path.join(lib_dir(ver), "sts2.dll")
     if os.path.isfile(dll):
         try:
             with open(dll, "rb") as fh:
                 return not fh.read(24).startswith(b"version https://git-lfs")
         except OSError:
             return False
+    if ver != DEFAULT_GAME_VERSION:
+        return False
     game_dir = _resolve_game_dir()
     return bool(game_dir) and os.path.isfile(os.path.join(game_dir, "sts2.dll"))
+
+
+def oracle_built(version: str | None = None) -> bool:
+    """Whether the headless binary for ``version`` has been built (``just build-cs <ver>``).
+
+    ``STS2_HEADLESS_BIN`` (an explicit diagnostic build) counts as built for
+    the selected version. Checks the managed ``Sts2Headless.dll`` rather than
+    the apphost, which is ``Sts2Headless.exe`` on Windows.
+    """
+    ver = normalize_game_version(version) if version else GAME_VERSION
+    if ver == GAME_VERSION and os.environ.get("STS2_HEADLESS_BIN"):
+        return True
+    return os.path.isfile(os.path.join(os.path.dirname(headless_bin(ver)), "Sts2Headless.dll"))
 
 
 def _resolve_game_dir() -> str | None:
@@ -126,14 +287,31 @@ def _resolve_dotnet() -> str:
 
 def _spawn_cmd() -> list[str]:
     # `STS2_HEADLESS_BIN` lets a diagnostic build (`dotnet build -o <dir>`) be
-    # driven without overwriting `bin/Debug/net9.0/`, so an instrumented binary
-    # can be exercised while a long sweep is still running against the normal one.
+    # driven without overwriting `bin/<ver>/Debug/net9.0/`, so an instrumented
+    # binary can be exercised while a long sweep is still running against the
+    # normal one.
     override = os.environ.get("STS2_HEADLESS_BIN")
     if override:
         return [override]
     if os.path.isfile(HEADLESS_BIN) and os.access(HEADLESS_BIN, os.X_OK):
         return [HEADLESS_BIN]
-    return [_resolve_dotnet(), "run", "--no-build", "--project", PROJECT]
+    return [
+        _resolve_dotnet(),
+        "run",
+        "--no-build",
+        "--project",
+        PROJECT,
+        f"--property:GameVersion={GAME_VERSION}",
+    ]
+
+
+def headless_cmd() -> list[str]:
+    """The argv that spawns the selected game build's headless oracle.
+
+    ``STS2_HEADLESS_BIN`` if set, else the built ``bin/<ver>/`` apphost, else
+    ``dotnet run --no-build`` with ``--property:GameVersion=<ver>``.
+    """
+    return _spawn_cmd()
 
 
 def headless_available() -> bool:
@@ -271,11 +449,15 @@ class Game:
         """
         if not oracle_available():
             raise OracleUnavailable(
-                "no game assembly: lib/sts2.dll is missing and STS2_GAME_DIR is unset — "
-                "run `just import-game` (see docs/bring-your-own-game.md)"
+                f"no game assembly for {GAME_VERSION}: lib/{GAME_VERSION}/sts2.dll is missing"
+                + (" and STS2_GAME_DIR is unset" if GAME_VERSION == DEFAULT_GAME_VERSION else "")
+                + " — run `just import-game` (see docs/bring-your-own-game.md)"
             )
         env = os.environ.copy()
-        game_dir = _resolve_game_dir()
+        env[GAME_VERSION_ENV] = GAME_VERSION
+        # The Steam-install fallback only for the default build: an auto-detected
+        # install holds whatever build Steam last updated to.
+        game_dir = _resolve_game_dir() if GAME_VERSION == DEFAULT_GAME_VERSION else None
         if game_dir:
             env["STS2_GAME_DIR"] = game_dir
         self.proc = subprocess.Popen(
@@ -338,6 +520,16 @@ class Game:
         ready = self._read()
         if ready.get("type") != "ready":
             raise RuntimeError(f"Expected ready, got: {ready}")
+        # Builds before GH #789 do not report a version; they are all v0.107.1.
+        built_for = ready.get("game_version", DEFAULT_GAME_VERSION)
+        if built_for != GAME_VERSION:
+            self.close()
+            raise RuntimeError(
+                f"the headless oracle was built for {built_for} but {GAME_VERSION} was "
+                f"selected ({GAME_VERSION_ENV}); build it with `just build-cs {GAME_VERSION}`"
+            )
+        #: The game build the running oracle links against.
+        self.game_version: str = built_for
 
     # ── Observability ────────────────────────────────────────────────────────
 

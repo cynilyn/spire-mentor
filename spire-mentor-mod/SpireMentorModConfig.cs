@@ -55,6 +55,11 @@ public sealed class SpireMentorModConfig : SimpleModConfig
             {
                 MainFile.StopAutopilot();
             }
+            if (value && SimRuntime.Mode != SimMode.Advisor)
+            {
+                SimRuntime.SetModeAndStyle(SimMode.Advisor, DefaultAdviceStyle);
+                return;
+            }
             SimRuntime.Mode = value ? SimMode.Advisor : SimMode.Off;
         }
     }
@@ -100,6 +105,22 @@ public sealed class SpireMentorModConfig : SimpleModConfig
     /// their own startup paths, and the bundled advisor cannot start
     /// elsewhere.</summary>
     public static bool CoachOnAtLaunch { get; set; } = true;
+
+    /// <summary>
+    /// Persisted backing for <see cref="DefaultAdviceStyle"/>: true = Coach
+    /// (nothing before you act), false = Hints. A tickbox because that is the
+    /// control kind this page builds; the style is what the code reads.
+    /// </summary>
+    public static bool StartInCoachStyle { get; set; } = CoachStyle.CoachByDefault;
+
+    /// <summary>The style the coach turns on in at launch (and from the
+    /// settings tickbox). Default for a fresh config: Coach.</summary>
+    [ConfigIgnore]
+    public static AdviceStyle DefaultAdviceStyle => CoachStyle.FromDefaultFlag(StartInCoachStyle);
+
+    /// <summary>The coach chip also confirms good turns and agreed choices
+    /// with a small ✓ (default off: silence on good play).</summary>
+    public static bool CoachShowGoodTurns { get; set; } = false;
 
     /// <summary>Toolbar strip expanded/collapsed (SimToolbar pill).</summary>
     public static bool ToolbarExpanded { get; set; } = true;
@@ -156,12 +177,18 @@ public sealed class SpireMentorModConfig : SimpleModConfig
         // The page opens on a mod that, by design, is doing nothing yet. Say
         // what turning it on gets you before offering the switch.
         AddNote(optionContainer,
-            "The AI coach rates your options while you play: a score on each card, a ranked\n" +
-            "list of moves, a win-chance bar, and the route it likes on the map. It switches\n" +
-            "on when the game starts (untick that below if you would rather press F8), and it\n" +
-            "never plays for you unless you ask it to (F7).");
+            "The AI coach has two styles. Hints shows its opinion while you decide: a score on\n" +
+            "each card, a ranked list of moves, a win-chance bar and the route it likes on the\n" +
+            "map. Coach shows nothing before you act -- press F5 to peek at its next pick -- and\n" +
+            "afterwards a small note says where your turn or choice differed from its own.\n" +
+            "F8 turns it on / off; the toolbar's Hints / Coach button switches style.\n" +
+            "It switches on when the game starts (untick\n" +
+            "that below if you would rather press F8), and it never plays for you unless you\n" +
+            "ask it to (F7).");
         AddRow(optionContainer, "Advisor mode (AI coach)", nameof(AdvisorMode), CreateRawTickboxControl);
         AddRow(optionContainer, "Turn the coach on when the game starts", nameof(CoachOnAtLaunch), CreateRawTickboxControl);
+        AddRow(optionContainer, "Start in Coach style (untick: Hints)", nameof(StartInCoachStyle), CreateRawTickboxControl);
+        AddRow(optionContainer, "Coach: also mark good turns with ✓", nameof(CoachShowGoodTurns), CreateRawTickboxControl);
         AddRow(optionContainer, "Game speed", nameof(GameSpeed), CreateRawSliderControl);
 
         optionContainer.AddChild(CreateSectionHeader("HUD"));
@@ -181,7 +208,8 @@ public sealed class SpireMentorModConfig : SimpleModConfig
         // player would look. F1 shows the same list in-game.
         optionContainer.AddChild(CreateSectionHeader("Keys (press F1 in game for this list)"));
         AddNote(optionContainer,
-            "F8   AI coach on / off (from autopilot: take the controls back)\n" +
+            "F8   AI on / off (from autopilot: take the controls back)\n" +
+            "F5   Coach style: peek at the AI's next pick\n" +
             "F6   let the AI take just this one decision\n" +
             "F7   let the AI keep playing until you stop it\n" +
             "F4   show / hide the HUD          F3   action log\n" +
@@ -215,6 +243,8 @@ public sealed class SpireMentorModConfig : SimpleModConfig
         {
             cfg.AddLiveRow(container, "AI coach (advisor mode)", nameof(AdvisorMode), cfg.CreateRawTickboxControl);
             cfg.AddLiveRow(container, "Coach on when the game starts", nameof(CoachOnAtLaunch), cfg.CreateRawTickboxControl);
+            cfg.AddLiveRow(container, "Start in Coach style (untick: Hints)", nameof(StartInCoachStyle), cfg.CreateRawTickboxControl);
+            cfg.AddLiveRow(container, "Coach: also mark good turns with ✓", nameof(CoachShowGoodTurns), cfg.CreateRawTickboxControl);
             cfg.AddLiveRow(container, "Game speed", nameof(GameSpeed), cfg.CreateRawSliderControl);
             cfg.AddLiveRow(container, "Show HUD", nameof(ShowHud), cfg.CreateRawTickboxControl);
             cfg.AddLiveRow(container, "Show ranked moves", nameof(ShowRankedList), cfg.CreateRawTickboxControl);

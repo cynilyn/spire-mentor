@@ -683,6 +683,20 @@ pub fn trigger_first_orb_passive(state: &mut CombatState) {
     let Some(idx) = state.player.orbs.slots.iter().position(|o| !o.is_empty()) else {
         return;
     };
+    trigger_orb_passive_at(state, idx);
+}
+
+/// Fire the passive of the orb in slot `idx` exactly once — C#
+/// `OrbModel.Passive` for one orb, Plasma's `+1 energy` included. The orb is
+/// read fresh from the slot, so a second call sees the first call's Dark
+/// accumulation / Glass decay. An empty slot is a no-op.
+///
+/// [`trigger_first_orb_passive`] is this on the front-most filled slot.
+pub fn trigger_orb_passive_at(state: &mut CombatState, idx: usize) {
+    match state.player.orbs.slots.get(idx) {
+        Some(o) if !o.is_empty() => {}
+        _ => return,
+    }
     let focus = focus_bonus(state);
     let orb = state.player.orbs.slots[idx];
     let _trace = crate::damage_trace::push_source(orb_trace_label(orb, "passive"));

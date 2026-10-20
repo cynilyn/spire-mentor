@@ -18,7 +18,17 @@ use super::prelude::*;
 /// every subsequent play (Silent parity: a second play landed `TRACKING 4`
 /// instead of C#'s `3`). Same legacy-vs-mirror split documented for
 /// `existing_power_uid_unioned`. Bead `sts2-rs-trackmerge`.
+///
+/// v0.111.0 (`Tracking.cs:23`, GH #793): always
+/// `PowerCmd.Apply<TrackingPower>(…, 50m, …)` — the power became a
+/// `1 + Amount/100` multiplier on powered attacks against Weak targets
+/// (`TrackingPower.cs`, S8b #794 owns the power side).
 pub(crate) fn play_tracking(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: a flat TrackingPower 50 (decomp Tracking.cs:23).
+        apply_power_to_player(state, PowerKind::Tracking, 50);
+        return EffectResult::Resolved;
+    }
     let already_has_tracking = state.player_power_amount(PowerKind::Tracking) > 0;
     let amount = if already_has_tracking { 1 } else { 2 };
     apply_power_to_player(state, PowerKind::Tracking, amount);

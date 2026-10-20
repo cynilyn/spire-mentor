@@ -9,7 +9,7 @@
 #             so -o does not copy them), and bin/cs.MD5
 #   pycli/    python/sts2_client.py + lib/ (the game's assemblies), the --pycli tree of the harnesses
 # Env: GAME_DIR (the game's assemblies, sts2.dll and its dependencies; default
-#   $REPO/sts2-pycli/lib, filled by `just import-game`), CS_REF (default 6d1918237;
+#   $REPO/sts2-pycli/lib/v0.107.1, filled by `just import-game`), CS_REF (default 6d1918237;
 #   the published binary was built from 37693f17f, whose sts2-pycli/src and
 #   sts2_client.py are identical), DOTNET (default: dotnet on PATH; a .NET 9 SDK).
 # The published run used sts2.dll md5 282bfb4ccec5b17c51dea6b37ccb4791 (game build v0.107.1).
@@ -17,7 +17,9 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/../env.sh"   # REPO, BENCH_DIR, SB
 B=$BENCH_DIR/csharp
-GAME_DIR=${GAME_DIR:-$REPO/sts2-pycli/lib}
+# The pinned bench ran v0.107.1; DLLs live in lib/<version>/ since GH #789 (flat lib/ before).
+GAME_DIR=${GAME_DIR:-$REPO/sts2-pycli/lib/v0.107.1}
+[ -f "$GAME_DIR/sts2.dll" ] || [ ! -f "$REPO/sts2-pycli/lib/sts2.dll" ] || GAME_DIR=$REPO/sts2-pycli/lib
 CS_REF=${CS_REF:-6d1918237}
 DOTNET=${DOTNET:-dotnet}
 

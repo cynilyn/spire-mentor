@@ -415,11 +415,33 @@ impl CardRarityOdds {
         rng: &mut crate::dotnet_rng::Rng,
         context: RarityContext,
     ) -> RewardRarity {
+        self.roll_with_base_odds_with_dotnet_for(crate::GameVersion::V0_107_1, rng, context)
+    }
+
+    /// [`Self::roll_with_base_odds_with_dotnet`] for game build `version`
+    /// (GH #792). v0.111.0 made the uncommon threshold cumulative
+    /// (`CardRarityOdds.RollWithBaseOdds`, decomp `CardRarityOdds.cs:122-129`):
+    ///
+    /// [decompiled C# omitted — see the cited path]
+    ///
+    /// The draw is unchanged (one `NextFloat`); only the Uncommon band
+    /// widens from `[rare, uncommon)` to `[rare, rare + uncommon)`.
+    pub fn roll_with_base_odds_with_dotnet_for(
+        &self,
+        version: crate::GameVersion,
+        rng: &mut crate::dotnet_rng::Rng,
+        context: RarityContext,
+    ) -> RewardRarity {
         let odds = self.odds_for(context);
         let roll_val = rng.next_float(1.0);
+        let uncommon_threshold = match version {
+            crate::GameVersion::V0_107_1 => odds.uncommon,
+            // v0.111.0: cumulative `rare + uncommon` (decomp CardRarityOdds.cs:129).
+            crate::GameVersion::V0_111_0 => odds.uncommon + odds.rare,
+        };
         let result = if roll_val < odds.rare {
             RewardRarity::Rare
-        } else if roll_val < odds.uncommon {
+        } else if roll_val < uncommon_threshold {
             RewardRarity::Uncommon
         } else {
             RewardRarity::Common
@@ -965,5 +987,54 @@ mod tests {
             "current_value stays in a sane band after 200 combats, got {}",
             o.current_value
         );
+    }
+
+    // ── v0.111.0 (GH #792) ───────────────────────────────────────────
+
+    /// v0.107.1 `RollWithBaseOdds` compared the roll against the BARE
+    /// uncommon odds; v0.111.0 against `rare + uncommon`
+    /// (`CardRarityOdds.cs:129`). Same single `NextFloat` either way.
+    #[test]
+    fn roll_with_base_odds_uncommon_threshold_is_cumulative_v0111() {
+        use crate::GameVersion;
+        let odds = CardRarityOdds::new(0);
+        let base = odds.odds_for(RarityContext::Regular);
+        let (mut differ, mut n_uncommon_107, mut n_uncommon_111) = (0, 0, 0);
+        for seed in 0..4000 {
+            let mut rng107 = crate::dotnet_rng::Rng::new(seed);
+            let mut rng111 = crate::dotnet_rng::Rng::new(seed);
+            let mut probe = crate::dotnet_rng::Rng::new(seed);
+            let draw = probe.next_float(1.0);
+            let r107 = odds.roll_with_base_odds_with_dotnet_for(
+                GameVersion::V0_107_1,
+                &mut rng107,
+                RarityContext::Regular,
+            );
+            let r111 = odds.roll_with_base_odds_with_dotnet_for(
+                GameVersion::V0_111_0,
+                &mut rng111,
+                RarityContext::Regular,
+            );
+            assert_eq!(rng107, rng111, "one NextFloat in both builds");
+            let want111 = if draw < base.rare {
+                RewardRarity::Rare
+            } else if draw < base.rare + base.uncommon {
+                RewardRarity::Uncommon
+            } else {
+                RewardRarity::Common
+            };
+            assert_eq!(r111, want111, "seed {seed} draw {draw}");
+            // The default entry point is the v0.107.1 rule.
+            let mut rng_default = crate::dotnet_rng::Rng::new(seed);
+            assert_eq!(
+                odds.roll_with_base_odds_with_dotnet(&mut rng_default, RarityContext::Regular),
+                r107
+            );
+            differ += usize::from(r107 != r111);
+            n_uncommon_107 += usize::from(r107 == RewardRarity::Uncommon);
+            n_uncommon_111 += usize::from(r111 == RewardRarity::Uncommon);
+        }
+        assert!(differ > 0, "the widened band must change some rolls");
+        assert!(n_uncommon_111 > n_uncommon_107);
     }
 }

@@ -1192,6 +1192,48 @@ pub enum CardId {
     Wither,
     /// `CardId.GENERIC` in Python.
     Generic,
+    // ── v0.111.0-only (GH #792). Not in [`CardId::all`], which stays the
+    // v0.107.1 universe (ranker card table, PPO vocab, random samplers read
+    // it); see [`CardId::V0111_ONLY`] / [`CardId::all_for`].
+    /// v0.111.0 Quest card (`Cards/Dowsing.cs`), granted by the DowsingRod
+    /// Neow relic. Unplayable; transforms into Abundance after 5 `?` rooms.
+    Dowsing,
+    /// v0.111.0 Ancient Skill (`Cards/Abundance.cs`): the Dowsing quest reward. GH #793.
+    Abundance,
+    /// v0.111.0 MP-only Silent Skill (`Cards/BladeSymphony.cs`). GH #793.
+    BladeSymphony,
+    /// v0.111.0 MP-only Ironclad Skill (`Cards/Blaze.cs`). GH #793.
+    Blaze,
+    /// v0.111.0 MP-only Necrobinder Power (`Cards/Cacophony.cs`); `_CARD` disambiguates it from `CacophonyPower`. GH #793.
+    CacophonyCard,
+    /// v0.111.0 MP-only Silent Skill (`Cards/Concoct.cs`); `_CARD` disambiguates it from `ConcoctPower`. GH #793.
+    ConcoctCard,
+    /// v0.111.0 MP-only Regent Skill (`Cards/Constellation.cs`). GH #793.
+    Constellation,
+    /// v0.111.0 MP-only Silent Skill (`Cards/Fade.cs`); `_CARD` disambiguates it from `FadePower`. GH #793.
+    FadeCard,
+    /// v0.111.0 MP-only Defect Skill (`Cards/Hibernate.cs`); `_CARD` disambiguates it from `HibernatePower`. GH #793.
+    HibernateCard,
+    /// v0.111.0 MP-only Defect Skill (`Cards/ImitationLearning.cs`); `_CARD` disambiguates it from `ImitationLearningPower`. GH #793.
+    ImitationLearningCard,
+    /// v0.111.0 MP-only Ironclad Attack (`Cards/Midnight.cs`). GH #793.
+    Midnight,
+    /// v0.111.0 MP-only Defect Power (`Cards/OneForAll.cs`); `_CARD` disambiguates it from `OneForAllPower`. GH #793.
+    OneForAllCard,
+    /// v0.111.0 MP-only Ironclad Attack (`Cards/Outrage.cs`). GH #793.
+    Outrage,
+    /// v0.111.0 MP-only Regent Skill (`Cards/Plot.cs`). GH #793.
+    Plot,
+    /// v0.111.0 Silent Uncommon Skill (`Cards/Sidestep.cs`); takes Scare's Silent pool slot. GH #793.
+    Sidestep,
+    /// v0.111.0 MP-only Necrobinder Power (`Cards/Soulbound.cs`); `_CARD` disambiguates it from `SoulboundPower`. GH #793.
+    SoulboundCard,
+    /// v0.111.0 MP-only Colorless Attack (`Cards/TheBall.cs`). GH #793.
+    TheBall,
+    /// v0.111.0 MP-only Regent Skill (`Cards/Tutor.cs`). GH #793.
+    Tutor,
+    /// v0.111.0 MP-only Necrobinder Skill (`Cards/Underworld.cs`); `_CARD` disambiguates it from `UnderworldPower`. GH #793.
+    UnderworldCard,
 }
 
 impl CardId {
@@ -1779,6 +1821,25 @@ impl CardId {
             Self::SpoilsMap => "SPOILS_MAP",
             Self::Wither => "WITHER",
             Self::Generic => "GENERIC",
+            Self::Dowsing => "DOWSING",
+            Self::Abundance => "ABUNDANCE",
+            Self::BladeSymphony => "BLADE_SYMPHONY",
+            Self::Blaze => "BLAZE",
+            Self::CacophonyCard => "CACOPHONY_CARD",
+            Self::ConcoctCard => "CONCOCT_CARD",
+            Self::Constellation => "CONSTELLATION",
+            Self::FadeCard => "FADE_CARD",
+            Self::HibernateCard => "HIBERNATE_CARD",
+            Self::ImitationLearningCard => "IMITATION_LEARNING_CARD",
+            Self::Midnight => "MIDNIGHT",
+            Self::OneForAllCard => "ONE_FOR_ALL_CARD",
+            Self::Outrage => "OUTRAGE",
+            Self::Plot => "PLOT",
+            Self::Sidestep => "SIDESTEP",
+            Self::SoulboundCard => "SOULBOUND_CARD",
+            Self::TheBall => "THE_BALL",
+            Self::Tutor => "TUTOR",
+            Self::UnderworldCard => "UNDERWORLD_CARD",
         }
     }
 
@@ -2367,5 +2428,66 @@ impl CardId {
             Self::Wither,
             Self::Generic,
         ]
+    }
+
+    /// Cards that exist only in game build v0.111.0 (GH #792).
+    pub const V0111_ONLY: [CardId; 19] = [
+        Self::Dowsing,
+        Self::Abundance,
+        Self::BladeSymphony,
+        Self::Blaze,
+        Self::CacophonyCard,
+        Self::ConcoctCard,
+        Self::Constellation,
+        Self::FadeCard,
+        Self::HibernateCard,
+        Self::ImitationLearningCard,
+        Self::Midnight,
+        Self::OneForAllCard,
+        Self::Outrage,
+        Self::Plot,
+        Self::Sidestep,
+        Self::SoulboundCard,
+        Self::TheBall,
+        Self::Tutor,
+        Self::UnderworldCard,
+    ];
+
+    /// The build a card first exists in.
+    #[must_use]
+    pub const fn introduced_in(self) -> crate::GameVersion {
+        match self {
+            Self::Dowsing
+            | Self::Abundance
+            | Self::BladeSymphony
+            | Self::Blaze
+            | Self::CacophonyCard
+            | Self::ConcoctCard
+            | Self::Constellation
+            | Self::FadeCard
+            | Self::HibernateCard
+            | Self::ImitationLearningCard
+            | Self::Midnight
+            | Self::OneForAllCard
+            | Self::Outrage
+            | Self::Plot
+            | Self::Sidestep
+            | Self::SoulboundCard
+            | Self::TheBall
+            | Self::Tutor
+            | Self::UnderworldCard => crate::GameVersion::V0_111_0,
+            _ => crate::GameVersion::V0_107_1,
+        }
+    }
+
+    /// Every card of game build `version`: [`Self::all`] (the v0.107.1
+    /// universe, unchanged) plus, from v0.111.0 on, [`Self::V0111_ONLY`].
+    #[must_use]
+    pub fn all_for(version: crate::GameVersion) -> Vec<CardId> {
+        let mut v = Self::all().to_vec();
+        if version >= crate::GameVersion::V0_111_0 {
+            v.extend_from_slice(&Self::V0111_ONLY);
+        }
+        v
     }
 }

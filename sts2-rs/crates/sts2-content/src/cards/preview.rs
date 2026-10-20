@@ -197,7 +197,13 @@ pub fn calculated_value(
         ),
         CardId::ExpectAFight => (
             crate::cards::ironclad::expect_a_fight::preview_expect_a_fight,
-            ValueKind::Count,
+            // v0.111.0: the placeholder became a `CalculatedBlockVar`
+            // (decomp ExpectAFight.cs:23); v0.107.1 counted Energy.
+            if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+                ValueKind::Block
+            } else {
+                ValueKind::Count
+            },
         ),
         CardId::Finisher => (
             crate::cards::silent::finisher::preview_finisher,

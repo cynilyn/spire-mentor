@@ -210,6 +210,68 @@ fn play_shiv_inky_adds_damage_and_weak() {
     assert_eq!(enemy_weak(&inky), Some(1), "Inky Shiv applies 1 Weak");
 }
 
+/// v0.111.0 `Inky.cs:19`: the enchantment keeps only `PowerVar<WeakPower>(1m)`
+/// — no `EnchantDamageAdditive` — so an Inky Shiv deals its plain 4 and still
+/// applies 1 Weak. The damage path reads `state.game_version`
+/// (`enchantment_hooks::enchant_damage_additive_for` in `hooks::modify_damage`).
+#[test]
+fn play_shiv_inky_adds_only_weak_v0111() {
+    use std::num::NonZeroU32;
+    use sts2_core::cards::{Card, CardType, EnchantmentId, TargetType};
+    use sts2_core::{Creature, GameVersion, IntentHistory, MonsterId, MonsterKind, PowerKind};
+    install_pool();
+
+    let mut state = CombatState {
+        game_version: GameVersion::V0_111_0,
+        ..CombatState::default()
+    };
+    let enemy_id = NonZeroU32::new(1).expect("nz");
+    state.creatures.push(Creature {
+        id: enemy_id,
+        current_hp: 100,
+        max_hp: 100,
+        block: 0,
+        powers: smallvec::SmallVec::new(),
+        species: Some(MonsterKind::Nibbit),
+        intent: None,
+        intent_history: IntentHistory::default(),
+        monster_id: MonsterId("Nibbit"),
+        ai: None,
+    });
+    let euid = CreatureUid(enemy_id);
+    state.enemy_uids.push(euid);
+    let card_uid = NonZeroU32::new(1).expect("nz");
+    let mut card = Card {
+        uid: CardUid(card_uid),
+        card_id: CardId::Shiv,
+        cost: 0,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        upgraded: false,
+        base_damage: 4,
+        base_block: 0,
+        ..Card::pod_defaults()
+    };
+    card.set_enchantment(EnchantmentId::Inky, 1);
+    state.cards.push(card);
+    state.player.play.push(CardUid(card_uid));
+    let f = lookup(CardId::Shiv).expect("registered");
+    f(&mut state, Some(euid));
+
+    assert_eq!(
+        state.creatures[0].current_hp, 96,
+        "v0.111.0 Inky Shiv deals the plain 4 (100 - 4)"
+    );
+    let weak = state.creatures[0].powers.iter().find_map(|pu| {
+        state
+            .powers
+            .iter()
+            .find(|p| p.id == pu.0 && p.kind == PowerKind::Weak)
+            .map(|p| p.amount)
+    });
+    assert_eq!(weak, Some(1), "Inky still applies 1 Weak");
+}
+
 /// GH #335: an untargeted Shiv whose FanOfKnives has lapsed between the moment
 /// the untargeted action was surfaced and the moment the effect runs must NOT
 /// abort the process. `play_shiv` used to `expect("Shiv: Enemy-targeted")`

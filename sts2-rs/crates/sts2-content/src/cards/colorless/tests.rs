@@ -389,6 +389,34 @@ fn entropy_transforms_token_original_into_colorless_not_status() {
     );
 }
 
+/// v0.111.0: TheBall sits in `ColorlessCardPool` (ColorlessCardPool.cs:85),
+/// so a Silent player's Entropy transforms a hand TheBall off the colorless
+/// pool, not the Silent one (fuzz seed 384, `CEREMONIAL_BEAST_BOSS`: C# rolled
+/// PREP_TIME where Rust rolled KNIFE_TRAP).
+#[test]
+fn entropy_transforms_the_ball_off_the_colorless_pool_v0111() {
+    use super::helpers::{
+        colorless_combat_generatable_card_ids, transform_card_to_random_for_hook,
+    };
+    let (mut state, _euid) = fresh_state(CardId::TheBall, 10, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    state.player.character = Some(sts2_core::potions::CharacterId::Silent);
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+    let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("transforms");
+    let new_id = state
+        .cards
+        .iter()
+        .find(|c| c.uid == new_uid)
+        .unwrap()
+        .card_id;
+    assert!(
+        colorless_combat_generatable_card_ids().contains(&new_id),
+        "TheBall must transform into a colorless card, got {new_id:?}",
+    );
+}
+
 /// Bead `sts2-rs-isooo` (cross-character pool fix): a transform-to-random
 /// hook keys the replacement pool on the ORIGINAL card's own colour pool
 /// (C# `CardFactory.GetDefaultTransformationOptions` → `original.Pool`),
@@ -4377,6 +4405,43 @@ fn play_hidden_gem_upgraded_increments_replay_count_by_three() {
         state.cards[idx].base_replay_count,
         super::HIDDEN_GEM_REPLAY_UPGRADED,
         "HiddenGem+ must add HIDDEN_GEM_REPLAY_UPGRADED (=3)"
+    );
+}
+
+/// HiddenGem with only a playable Status (FranticEscape) in the draw pile.
+/// Returns that card's `base_replay_count` after the play.
+fn hidden_gem_on_lone_frantic_escape(version: sts2_core::GameVersion) -> i32 {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::HiddenGem, 0, 0);
+    state.game_version = version;
+    let spec = crate::cards::status_specs_generated::frantic_escape();
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let uid = CardUid::new(raw).expect("nz");
+    let mut card = card_from_spec(&spec);
+    card.uid = uid;
+    state.cards.push(card);
+    state.player.draw.push(uid);
+    let f = lookup(CardId::HiddenGem).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    state.cards[uid.0.get() as usize - 1].base_replay_count
+}
+
+/// v0.107.1 Rust drops Status cards from the fallback pool.
+#[test]
+fn hidden_gem_fallback_skips_status_v0107() {
+    assert_eq!(
+        hidden_gem_on_lone_frantic_escape(sts2_core::GameVersion::V0_107_1),
+        0
+    );
+}
+
+/// v0.111.0: the fallback excludes only Curse/Quest (`type - 5 <= 1`,
+/// HiddenGem.cs:41; Status is 4), so the lone FranticEscape gets the Replay.
+#[test]
+fn hidden_gem_fallback_keeps_playable_status_v0111() {
+    assert_eq!(
+        hidden_gem_on_lone_frantic_escape(sts2_core::GameVersion::V0_111_0),
+        super::HIDDEN_GEM_REPLAY
     );
 }
 

@@ -15,7 +15,7 @@ pub(crate) fn drink_cunning_potion(state: &mut CombatState, _target: Option<u8>)
         let uid = spawn_shiv(state, PileKind::Hand);
         let idx = uid.0.get() as usize - 1;
         if let Some(card) = state.cards.get_mut(idx) {
-            let _ = card.upgrade();
+            let _ = card.upgrade_for(state.game_version);
         }
     }
     EffectResult::Resolved

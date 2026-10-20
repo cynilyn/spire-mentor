@@ -60,17 +60,25 @@ def _entry(card: dict) -> dict[str, str]:
     }
 
 
+def _version_key(name: str) -> tuple[int, ...]:
+    return tuple(int(n) for n in _VER_NUMS.findall(name))
+
+
 def _manifests(wiki_data: Path) -> list[Path]:
-    """Every ``<ver>/cards.json`` under ``wiki_data``, engine-pinned build LAST.
+    """Every ``<ver>/cards.json`` up to the engine-pinned build, pinned LAST.
 
     Callers merge in this order, so the pinned build overwrites whatever the
     older ones said and the older ones survive only where it is silent.
+    Builds NEWER than the pinned one are skipped: their cards do not exist in
+    the engine yet (``data/v0.111.0`` is the beta port, GH #786), and merging
+    them would describe cards the catalog cannot show. When the pinned build
+    has no manifest on disk every build is used, as before.
     """
-    found = sorted(
-        wiki_data.glob("*/cards.json"),
-        key=lambda p: tuple(int(n) for n in _VER_NUMS.findall(p.parent.name)),
-    )
+    found = sorted(wiki_data.glob("*/cards.json"), key=lambda p: _version_key(p.parent.name))
     pinned = [p for p in found if p.parent.name == _ENGINE_WIKI_VERSION]
+    if pinned:
+        ceiling = _version_key(_ENGINE_WIKI_VERSION)
+        found = [p for p in found if _version_key(p.parent.name) <= ceiling]
     return [p for p in found if p not in pinned] + pinned
 
 

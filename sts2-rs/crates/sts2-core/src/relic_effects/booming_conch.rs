@@ -15,7 +15,7 @@ pub(crate) fn on_modify_hand_draw_booming_conch(state: &CombatState, current_dra
     if !player_owns_relic(state, crate::RelicKind::BoomingConch) {
         return current_draw;
     }
-    if state.round_no() != 1 || !state.is_elite {
+    if state.turn_number() != 1 || !state.is_elite {
         return current_draw;
     }
     // Pin: `shop_event.py::BoomingConch.EXTRA_DRAW = 2`.
@@ -28,14 +28,14 @@ pub(crate) fn on_modify_hand_draw_booming_conch(state: &CombatState, current_dra
 ///
 /// C# `MegaCrit.Sts2.Core.Models.Relics/BoomingConch.cs:46-56`:
 /// [decompiled C# omitted — see the cited path]
-/// `state.round_no() == 1` is the first player turn (the round counter is
+/// `state.turn_number() == 1` is the first player turn (the round counter is
 /// 1-indexed and never 0), matching `TurnNumber <= 1`; `state.is_elite`
 /// mirrors `CurrentRoom.RoomType == Elite`.
 pub(crate) fn on_after_side_turn_start_booming_conch(
     state: &mut CombatState,
     side: Side,
 ) -> EffectResult {
-    if side != Side::Player || state.round_no() != 1 || !state.is_elite {
+    if side != Side::Player || state.turn_number() != 1 || !state.is_elite {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::BoomingConch) {

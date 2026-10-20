@@ -580,6 +580,38 @@ pub const COLORLESS_SPECS: &[fn() -> CardSpec] = &[
     crate::cards::colorless::volley::spec,
 ];
 
+/// Cards that exist only in game build v0.111.0 (GH #792). Kept OUT of every
+/// pool slice above so no v0.107.1 pool, sampler or count sees them; only
+/// the by-id lookups ([`card_pod_from_id`], [`spec_for_card_id`],
+/// [`rarity_for_card_id`], [`card_rarity_rank_csharp`]) scan it, after the
+/// v0.107.1 slices. Pool membership for a v0.111.0 run is S8a's (#793).
+pub const V0111_ONLY_SPECS: &[fn() -> CardSpec] = &[
+    st::dowsing,
+    // S8a2 (#793): the 18 other cards v0.111.0 adds. Sidestep is the only one
+    // a v0.111.0 character pool offers in single-player (it takes Scare's
+    // Silent slot via `v0111::pool_spec` / `specs_in`); Abundance is
+    // reached through the Dowsing quest; the rest are
+    // `CardMultiplayerConstraint.MultiplayerOnly`.
+    crate::cards::colorless::abundance::spec,
+    crate::cards::silent::blade_symphony::spec,
+    crate::cards::ironclad::blaze::spec,
+    crate::cards::necrobinder::cacophony_card::spec,
+    crate::cards::silent::concoct_card::spec,
+    crate::cards::regent::constellation::spec,
+    crate::cards::silent::fade_card::spec,
+    crate::cards::defect::hibernate_card::spec,
+    crate::cards::defect::imitation_learning_card::spec,
+    crate::cards::ironclad::midnight::spec,
+    crate::cards::defect::one_for_all_card::spec,
+    crate::cards::ironclad::outrage::spec,
+    crate::cards::regent::plot::spec,
+    crate::cards::silent::sidestep::spec,
+    crate::cards::necrobinder::soulbound_card::spec,
+    crate::cards::colorless::the_ball::spec,
+    crate::cards::regent::tutor::spec,
+    crate::cards::necrobinder::underworld_card::spec,
+];
+
 /// Auto-listed status card factories (75 entries).
 pub const STATUS_SPECS: &[fn() -> CardSpec] = &[
     st::wound,
@@ -755,6 +787,21 @@ fn unlocked_specs(
     leaked
 }
 
+/// The specs of `slice` as game build `version` sees them (GH #793):
+/// v0.111.0 rarities / costs / keywords via [`super::v0111::spec_for`], with
+/// the cards that build deleted replaced by the card that took their pool
+/// slot ([`super::v0111::pool_spec`]: Scare -> Sidestep).
+/// Slice order is kept, so a `NextItem` index over the result still matches
+/// C#'s pool order. For v0.107.1 it yields exactly `slice.iter().map(|f| f())`.
+pub(crate) fn specs_in(
+    slice: &'static [fn() -> CardSpec],
+    version: sts2_core::GameVersion,
+) -> impl Iterator<Item = CardSpec> {
+    slice
+        .iter()
+        .map(move |f| super::v0111::pool_spec(*f, version))
+}
+
 /// Sample one [`CardId`] from the union of per-character slice(s)
 /// matching `predicate`. `character = Some(c)` filters to one slice;
 /// `None` unions every character slice. Returns `None` when no spec
@@ -782,8 +829,7 @@ where
     };
     let mut matching: Vec<CardId> = Vec::new();
     for slice in slices {
-        for factory in *slice {
-            let spec = factory();
+        for spec in specs_in(slice, rs.game_version) {
             // C# `CardFactory.CreateForReward` runs the pool through
             // `FilterForPlayerCount`, which drops `MultiplayerOnly` cards in
             // single-player. The dotnet RNG scales one sample by the LIST
@@ -860,7 +906,7 @@ pub fn roll_transform_replacement_basic(
     character: CharacterId,
     original_id: CardId,
 ) -> Option<CardId> {
-    let pool = transform_replacement_pool(character, original_id);
+    let pool = transform_replacement_pool(character, original_id, rs.game_version);
     if pool.is_empty() {
         return None;
     }
@@ -883,7 +929,7 @@ pub fn roll_transform_replacement_basic_niche(
     character: CharacterId,
     original_id: CardId,
 ) -> Option<CardId> {
-    let pool = transform_replacement_pool(character, original_id);
+    let pool = transform_replacement_pool(character, original_id, rs.game_version);
     if pool.is_empty() {
         return None;
     }
@@ -910,11 +956,11 @@ pub fn roll_transform_replacement_event_stream(
     stream_name: &str,
     skip_reads: u32,
 ) -> Option<CardId> {
-    let pool = transform_replacement_pool(character, original_id);
+    let pool = transform_replacement_pool(character, original_id, rs.game_version);
     if pool.is_empty() {
         return None;
     }
-    let mut rng = sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed, stream_name);
+    let mut rng = rs.rng.named(stream_name);
     for _ in 0..skip_reads {
         // One small-range NextInt = one underlying sample, regardless of
         // bounds — burn exactly what the entry-time rolls consumed.
@@ -979,15 +1025,18 @@ fn roll_filtered_character_reward_id(
 ) -> Option<CardId> {
     use sts2_core::card_rewards::RarityContext;
     let character = rs.character_id;
-    let mut rarity = rs
-        .card_rarity_odds
-        .roll_with_base_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Regular);
+    let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
+        rs.game_version,
+        &mut rs.rng.rewards,
+        RarityContext::Regular,
+    );
     let candidates: Vec<CardId> = loop {
-        let c = eligible_ids_for_rarity_filtered(
+        let c = eligible_ids_for_rarity_filtered_in(
             &[character],
             false,
             reward_rarity_to_card_rarity(rarity),
             predicate,
+            rs.game_version,
         );
         if !c.is_empty() {
             break c;
@@ -1146,7 +1195,7 @@ pub fn roll_gorge_common_cards(rs: &mut RunState, count: usize) -> Vec<sts2_core
     // C# `GetPossibleCards(player)` (Common-filtered char pool), in
     // `GenerateAllCards` order — the same pool `eligible_ids_for_rarity`
     // serves the (parity-clean) regular reward path.
-    let pool = eligible_ids_for_rarity(&[character], false, CardRarity::Common);
+    let pool = eligible_ids_for_rarity_in(&[character], false, CardRarity::Common, rs.game_version);
     let mut chosen_ids: Vec<CardId> = Vec::new();
     let mut out: Vec<sts2_core::cards::Card> = Vec::new();
     for _ in 0..count {
@@ -1165,7 +1214,104 @@ pub fn roll_gorge_common_cards(rs: &mut RunState, count: usize) -> Vec<sts2_core
             .next_int_exclusive(0, candidates.len() as i32) as usize;
         let id = candidates[idx];
         chosen_ids.push(id);
-        if let Some(card) = card_pod_from_id(id, false) {
+        if let Some(card) = super::v0111::card_pod_for(id, false, rs.game_version) {
+            out.push(card);
+        }
+    }
+    out
+}
+
+/// Populate a single-rarity, uniform-odds `CardReward` — C#
+/// `CardReward.Populate` → `CardFactory.CreateForReward(owner, count,
+/// new CardCreationOptions([pool], CardCreationSource.Other,
+/// CardRarityOddsType.Uniform, c => c.Rarity == rarity))`
+/// (`CardFactory.cs:88-107,171-199`). The two callers:
+///
+/// * `ColorfulPhilosophers.OfferRewards` (`ColorfulPhilosophers.cs:55-67`):
+///   another character's pool, `.WithFlags(NoRarityModification |
+///   NoCardPoolModifications)`, on `PlayerRng.Rewards` — pass
+///   `allow_card_pool_modifications = false`, `rng_override = None`.
+/// * `CrystalSphereCardReward.ToReward` (`CrystalSphereCardReward.cs:47-51`):
+///   the owner's pool `.WithRngOverride(rng)` on the event Rng — pass
+///   `allow_card_pool_modifications = true` and the event stream.
+///
+/// Per card, on the one stream: **no rarity roll** (Uniform odds skip
+/// `RollForRarity`), one `NextItem` over the rarity-filtered pool minus the
+/// already-picked blacklist, then one upgrade `NextFloat` (the options carry
+/// no `NoUpgradeRoll`, so `RollForUpgrade` is always consumed; act-scaled odds,
+/// never for Rare). `Hook.ModifyCardRewardCreationOptions` is folded once
+/// unless `NoCardPoolModifications` is set (the only shipped listener is
+/// DingyRug, which honours that flag). The returned PODs still need the
+/// card-reward slate hooks (`RunState::offer_card_slate(.., true)`), the
+/// `IsCardReward` leg the constructor stamps (`CardReward.cs:89`).
+pub fn roll_uniform_rarity_reward_cards(
+    rs: &mut RunState,
+    pool: CharacterId,
+    rarity: CardRarity,
+    count: usize,
+    allow_card_pool_modifications: bool,
+    rng_override: Option<&mut sts2_core::dotnet_rng::Rng>,
+) -> Vec<sts2_core::cards::Card> {
+    use sts2_core::card_rewards::{
+        combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RewardRarity,
+    };
+    let version = rs.game_version;
+    let mut opts = sts2_core::runstate::CardRewardGenerationOptions {
+        context: "uniform",
+        num_cards: u8::try_from(count).unwrap_or(u8::MAX),
+        character_ids: vec![pool],
+        use_default_character_pool: false,
+        card_creation_source: "other",
+        allow_card_pool_modifications,
+        allow_rarity_modifications: allow_card_pool_modifications,
+        ..sts2_core::runstate::CardRewardGenerationOptions::default()
+    };
+    if allow_card_pool_modifications {
+        opts = rs.modify_card_reward_creation_options(opts);
+    }
+    let pool_ids: Vec<CardId> = if opts.has_custom_card_pool {
+        opts.custom_card_ids
+            .iter()
+            .copied()
+            .filter(|&id| rarity_for_card_id_in(id, version) == Some(rarity))
+            .collect()
+    } else {
+        eligible_ids_for_rarity_in(&opts.character_ids, opts.include_colorless, rarity, version)
+    };
+    let upgrade_rarity = match rarity {
+        CardRarity::Rare => RewardRarity::Rare,
+        CardRarity::Uncommon => RewardRarity::Uncommon,
+        _ => RewardRarity::Common,
+    };
+    let act_index = rs.act_index.saturating_sub(1);
+    let ascension_level = rs.card_rarity_odds.ascension_level;
+    let upgrade_base = combat_card_upgrade_base_chance();
+    let rng: &mut sts2_core::dotnet_rng::Rng = match rng_override {
+        Some(r) => r,
+        None => &mut rs.rng.rewards,
+    };
+    let mut chosen: Vec<CardId> = Vec::new();
+    let mut out: Vec<sts2_core::cards::Card> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let candidates: Vec<CardId> = pool_ids
+            .iter()
+            .copied()
+            .filter(|id| !chosen.contains(id))
+            .collect();
+        if candidates.is_empty() {
+            break;
+        }
+        let pick = candidates[rng.next_int_exclusive(0, candidates.len() as i32) as usize];
+        chosen.push(pick);
+        let upgraded = opts.roll_upgrade
+            && roll_for_upgrade_with_dotnet(
+                rng,
+                upgrade_rarity,
+                act_index,
+                ascension_level,
+                upgrade_base,
+            );
+        if let Some(card) = super::v0111::card_pod_for(pick, upgraded, version) {
             out.push(card);
         }
     }
@@ -1195,9 +1341,11 @@ fn roll_reward_options_base_odds(
     let upgrade_base = combat_card_upgrade_base_chance();
     let mut chosen: Vec<CardId> = Vec::new();
     for _ in 0..count {
-        let mut rarity = rs
-            .card_rarity_odds
-            .roll_with_base_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Regular);
+        let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
+            rs.game_version,
+            &mut rs.rng.rewards,
+            RarityContext::Regular,
+        );
         // C# `RollForRarity` escalates a rolled rarity absent from the
         // post-blacklist pool to the next-highest until allowed
         // (`GetNextHighestRarity`; Common → Uncommon → Rare). The shipped
@@ -1205,10 +1353,11 @@ fn roll_reward_options_base_odds(
         // fires in practice.
         let mut candidates: Vec<CardId>;
         loop {
-            candidates = eligible_ids_for_rarity(
+            candidates = eligible_ids_for_rarity_in(
                 character_ids,
                 include_colorless,
                 reward_rarity_to_card_rarity(rarity),
+                rs.game_version,
             );
             candidates.retain(|id| !chosen.contains(id));
             if !candidates.is_empty() {
@@ -1260,16 +1409,20 @@ fn roll_reward_options_base_odds(
 ///
 /// `character` is the run character and is used only as the fallback when the
 /// original id has no registered spec (defensive; not reached at this pin).
-fn transform_replacement_pool(_character: CharacterId, original_id: CardId) -> Vec<CardId> {
+fn transform_replacement_pool(
+    _character: CharacterId,
+    original_id: CardId,
+    version: sts2_core::GameVersion,
+) -> Vec<CardId> {
     // Resolve the original card's own pool, mirroring C# `original.Pool`
     // (CardModel.cs:273-281) + the Event/Ancient/Token/Quest → ColorlessCardPool
     // override (CardFactory.cs:126-131).
-    let original_rarity = rarity_for_card_id(original_id);
+    let original_rarity = rarity_for_card_id_in(original_id, version);
     let forces_colorless = matches!(
         original_rarity,
         Some(CardRarity::Event | CardRarity::Ancient | CardRarity::Token | CardRarity::Quest)
     );
-    let pool_slice: &[fn() -> CardSpec] = if forces_colorless {
+    let pool_slice: &'static [fn() -> CardSpec] = if forces_colorless {
         COLORLESS_SPECS
     } else {
         // `original.Pool`: the colour pool that OWNS the card, independent of
@@ -1280,9 +1433,7 @@ fn transform_replacement_pool(_character: CharacterId, original_id: CardId) -> V
             None => COLORLESS_SPECS,
         }
     };
-    pool_slice
-        .iter()
-        .map(|f| f())
+    specs_in(pool_slice, version)
         .filter(|s| {
             matches!(
                 s.rarity,
@@ -1395,13 +1546,13 @@ pub fn sample_distinct_character_cards(
 
 fn sample_distinct_from_specs(
     rs: &mut RunState,
-    specs: &[fn() -> super::types::CardSpec],
+    specs: &'static [fn() -> super::types::CardSpec],
     n: usize,
 ) -> Vec<CardId> {
     if n == 0 || specs.is_empty() {
         return Vec::new();
     }
-    let mut pool: Vec<CardId> = specs.iter().map(|f| f().id).collect();
+    let mut pool: Vec<CardId> = specs_in(specs, rs.game_version).map(|s| s.id).collect();
     let take = n.min(pool.len());
     // Bead `sts2-rs-hm2eb` (943w7 Stage 3): draw from the dotnet
     // `RunRngSet` reward stream, not the legacy Xoshiro `rewards_rng()`.
@@ -1450,12 +1601,8 @@ pub fn sample_distinct_cards_of_rarity(
     // GlimpseBeyond/BeaconOfHope/HammerTime/Ignition) — matching the filter the
     // sibling pool builders [`eligible_ids_for_rarity`] /
     // [`generate_scroll_box_bundles`] already apply.
-    let mut pool: Vec<CardId> = specs_for_character(character)
-        .iter()
-        .filter_map(|f| {
-            let s = f();
-            (s.rarity == rarity && !is_multiplayer_only(s.id)).then_some(s.id)
-        })
+    let mut pool: Vec<CardId> = specs_in(specs_for_character(character), rs.game_version)
+        .filter_map(|s| (s.rarity == rarity && !is_multiplayer_only(s.id)).then_some(s.id))
         .collect();
     let take = n.min(pool.len());
     let rng = &mut rs.rng.rewards;
@@ -1534,16 +1681,35 @@ pub fn is_multiplayer_only(id: CardId) -> bool {
             | CardId::SneakyCard
             | CardId::TagTeam
             | CardId::TankCard
+            // v0.111.0-only MP cards (GH #793).
+            | CardId::BladeSymphony
+            | CardId::Blaze
+            | CardId::CacophonyCard
+            | CardId::ConcoctCard
+            | CardId::Constellation
+            | CardId::FadeCard
+            | CardId::HibernateCard
+            | CardId::ImitationLearningCard
+            | CardId::Midnight
+            | CardId::OneForAllCard
+            | CardId::Outrage
+            | CardId::Plot
+            | CardId::SoulboundCard
+            | CardId::TheBall
+            | CardId::Tutor
+            | CardId::UnderworldCard
     )
 }
 
 #[must_use]
 pub fn generate_scroll_box_bundles(rs: &mut RunState, character: CharacterId) -> Vec<Vec<CardId>> {
-    fn pool_of(character: CharacterId, rarity: CardRarity) -> Vec<CardId> {
-        specs_for_character(character)
-            .iter()
-            .filter_map(|f| {
-                let s = f();
+    fn pool_of(
+        character: CharacterId,
+        rarity: CardRarity,
+        version: sts2_core::GameVersion,
+    ) -> Vec<CardId> {
+        specs_in(specs_for_character(character), version)
+            .filter_map(|s| {
                 // Single-player reward pools exclude `MultiplayerOnly` cards
                 // (C# `CardFactory.FilterForPlayerCount` / the possible-cards
                 // filter). The Rust port otherwise leaves these in the pool
@@ -1555,8 +1721,8 @@ pub fn generate_scroll_box_bundles(rs: &mut RunState, character: CharacterId) ->
             })
             .collect()
     }
-    let commons = pool_of(character, CardRarity::Common);
-    let uncommons = pool_of(character, CardRarity::Uncommon);
+    let commons = pool_of(character, CardRarity::Common, rs.game_version);
+    let uncommons = pool_of(character, CardRarity::Uncommon, rs.game_version);
     // C# `flag = player.Character is Defect` gates the per-bundle Claw roll
     // (`ScrollBoxes.cs:53,65`). For Defect the `rewards.NextInt(100)` is
     // evaluated every bundle iteration (short-circuit means non-Defect skips
@@ -1624,7 +1790,7 @@ pub fn card_pod_from_id(card_id: CardId, upgraded: bool) -> Option<sts2_core::ca
     use std::sync::OnceLock;
     static BASE_POD_INDEX: OnceLock<BTreeMap<CardId, sts2_core::cards::Card>> = OnceLock::new();
     let index = BASE_POD_INDEX.get_or_init(|| {
-        let all_slices: [&[fn() -> super::types::CardSpec]; 7] = [
+        let all_slices: [&[fn() -> super::types::CardSpec]; 8] = [
             IRONCLAD_SPECS,
             SILENT_SPECS,
             DEFECT_SPECS,
@@ -1632,6 +1798,7 @@ pub fn card_pod_from_id(card_id: CardId, upgraded: bool) -> Option<sts2_core::ca
             NECROBINDER_SPECS,
             COLORLESS_SPECS,
             STATUS_SPECS,
+            V0111_ONLY_SPECS,
         ];
         let mut map = BTreeMap::new();
         for slice in all_slices {
@@ -1699,8 +1866,15 @@ pub fn card_csharp_entry(card_id: CardId) -> String {
 
 #[must_use]
 pub fn card_rarity_rank_csharp(card_id: CardId) -> u8 {
+    card_rarity_rank_csharp_in(card_id, sts2_core::GameVersion::V0_107_1)
+}
+
+/// [`card_rarity_rank_csharp`] in game build `version` (GH #793): the rank of
+/// that build's rarity (v0.111.0 Taunt ranks Common, Dominate Rare, …).
+#[must_use]
+pub fn card_rarity_rank_csharp_in(card_id: CardId, version: sts2_core::GameVersion) -> u8 {
     use super::types::CardRarity as CR;
-    let all_slices: [&[fn() -> super::types::CardSpec]; 7] = [
+    let all_slices: [&[fn() -> super::types::CardSpec]; 8] = [
         IRONCLAD_SPECS,
         SILENT_SPECS,
         DEFECT_SPECS,
@@ -1708,12 +1882,13 @@ pub fn card_rarity_rank_csharp(card_id: CardId) -> u8 {
         NECROBINDER_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        V0111_ONLY_SPECS,
     ];
     for slice in all_slices {
         for factory in slice {
             let spec = factory();
             if spec.id == card_id {
-                return match spec.rarity {
+                return match super::v0111::spec_for(spec, version).rarity {
                     CR::Basic => 1,
                     CR::Common => 2,
                     CR::Uncommon => 3,
@@ -1737,7 +1912,7 @@ pub fn card_rarity_rank_csharp(card_id: CardId) -> u8 {
 /// do NOT call it per-card in a combat inner loop.
 #[must_use]
 pub fn spec_for_card_id(card_id: CardId) -> Option<super::types::CardSpec> {
-    let all_slices: [&[fn() -> super::types::CardSpec]; 7] = [
+    let all_slices: [&[fn() -> super::types::CardSpec]; 8] = [
         IRONCLAD_SPECS,
         SILENT_SPECS,
         DEFECT_SPECS,
@@ -1745,6 +1920,7 @@ pub fn spec_for_card_id(card_id: CardId) -> Option<super::types::CardSpec> {
         NECROBINDER_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        V0111_ONLY_SPECS,
     ];
     for slice in all_slices {
         for factory in slice {
@@ -1814,6 +1990,18 @@ pub fn card_is_removable_csharp(card_id: CardId) -> bool {
 /// (via the registered card factory) at runtime. Bead `sts2-rs-vd6pf`.
 pub fn apply_spec_upgrade(card: &mut sts2_core::cards::Card) {
     if let Some(delta) = super::card_upgrades_generated::upgrade_delta(card.card_id) {
+        apply_upgrade_delta(card, delta);
+    }
+}
+
+/// Write one [`super::types::CardUpgradeDelta`]'s absolute upgraded values
+/// onto `card` — the body of [`apply_spec_upgrade`], shared with the
+/// game-build-aware [`super::v0111::card_pod_for`] (GH #793).
+pub(crate) fn apply_upgrade_delta(
+    card: &mut sts2_core::cards::Card,
+    delta: super::types::CardUpgradeDelta,
+) {
+    {
         if let Some(c) = delta.cost {
             card.cost = c;
         }
@@ -1842,7 +2030,9 @@ pub fn apply_spec_upgrade(card: &mut sts2_core::cards::Card) {
 /// (UNPLAYABLE / ETHEREAL / RETAIN / EXHAUST / INNATE) are carried;
 /// deck-management flags (NON_REMOVABLE / NON_UPGRADEABLE) never change on
 /// upgrade and have no per-instance consumer. Bead `sts2-rs-59atd`.
-fn keyword_override_from(kw: super::types::CardKeywords) -> sts2_core::cards::KeywordOverride {
+pub(crate) fn keyword_override_from(
+    kw: super::types::CardKeywords,
+) -> sts2_core::cards::KeywordOverride {
     use super::types::CardKeywords as CK;
     use sts2_core::cards::KeywordOverride as KO;
     let mut out = KO::NONE;
@@ -1870,8 +2060,21 @@ fn keyword_override_from(kw: super::types::CardKeywords) -> sts2_core::cards::Ke
 /// character). Used by [`roll_card_reward_cards`] to filter
 /// `opts.custom_card_ids` by rolled rarity.
 #[must_use]
+pub fn rarity_for_card_id_in(
+    card_id: CardId,
+    version: sts2_core::GameVersion,
+) -> Option<CardRarity> {
+    if !super::v0111::is_v0111(version) {
+        return rarity_for_card_id(card_id);
+    }
+    spec_for_card_id(card_id).map(|s| super::v0111::spec_for(s, version).rarity)
+}
+
+/// [`rarity_for_card_id`] (the v0.107.1 rarity); see
+/// [`rarity_for_card_id_in`] for a game build's rarity (GH #793).
+#[must_use]
 pub fn rarity_for_card_id(card_id: CardId) -> Option<CardRarity> {
-    let all_slices: [&[fn() -> super::types::CardSpec]; 7] = [
+    let all_slices: [&[fn() -> super::types::CardSpec]; 8] = [
         IRONCLAD_SPECS,
         SILENT_SPECS,
         DEFECT_SPECS,
@@ -1879,6 +2082,7 @@ pub fn rarity_for_card_id(card_id: CardId) -> Option<CardRarity> {
         NECROBINDER_SPECS,
         COLORLESS_SPECS,
         STATUS_SPECS,
+        V0111_ONLY_SPECS,
     ];
     for slice in all_slices {
         for factory in slice {
@@ -1918,7 +2122,28 @@ pub fn character_for_card_id(card_id: CardId) -> Option<CharacterId> {
             }
         }
     }
-    None
+    v0111_card_character(card_id)
+}
+
+/// The character pool that lists a v0.111.0-only card (GH #793, the v0.111.0
+/// `Models.CardPools/*CardPool.cs`). These ids are kept out of the v0.107.1
+/// slices above, so [`character_for_card_id`] resolves them here; they exist
+/// in no v0.107.1 state, so this cannot move a v0.107.1 lookup.
+const fn v0111_card_character(card_id: CardId) -> Option<CharacterId> {
+    match card_id {
+        CardId::Blaze | CardId::Midnight | CardId::Outrage => Some(CharacterId::Ironclad),
+        CardId::BladeSymphony | CardId::ConcoctCard | CardId::FadeCard | CardId::Sidestep => {
+            Some(CharacterId::Silent)
+        }
+        CardId::HibernateCard | CardId::ImitationLearningCard | CardId::OneForAllCard => {
+            Some(CharacterId::Defect)
+        }
+        CardId::CacophonyCard | CardId::SoulboundCard | CardId::UnderworldCard => {
+            Some(CharacterId::Necrobinder)
+        }
+        CardId::Constellation | CardId::Plot | CardId::Tutor => Some(CharacterId::Regent),
+        _ => None,
+    }
 }
 
 /// Map a [`sts2_core::card_rewards::RewardRarity`] onto the
@@ -1938,15 +2163,31 @@ const fn reward_rarity_to_card_rarity(r: sts2_core::card_rewards::RewardRarity) 
 /// whose [`CardSpec`] matches `rarity`. The walk is deterministic in
 /// slice order so the sampler downstream is reproducible under a
 /// seeded RNG.
+#[cfg(test)]
 fn eligible_ids_for_rarity(
     character_ids: &[CharacterId],
     include_colorless: bool,
     rarity: CardRarity,
 ) -> Vec<CardId> {
+    eligible_ids_for_rarity_in(
+        character_ids,
+        include_colorless,
+        rarity,
+        sts2_core::GameVersion::V0_107_1,
+    )
+}
+
+/// [`eligible_ids_for_rarity`] in game build `version` (GH #793): the
+/// build's rarities, minus the cards it deleted, in pool order.
+fn eligible_ids_for_rarity_in(
+    character_ids: &[CharacterId],
+    include_colorless: bool,
+    rarity: CardRarity,
+    version: sts2_core::GameVersion,
+) -> Vec<CardId> {
     let mut out: Vec<CardId> = Vec::new();
     for c in character_ids {
-        for factory in specs_for_character(*c) {
-            let spec = factory();
+        for spec in specs_in(specs_for_character(*c), version) {
             // Single-player reward pools exclude `MultiplayerOnly` cards
             // (C# `CardFactory.FilterForPlayerCount` drops them when
             // `Players.Count == 1`). The Rust port dropped the
@@ -1961,8 +2202,7 @@ fn eligible_ids_for_rarity(
         }
     }
     if include_colorless {
-        for factory in COLORLESS_SPECS {
-            let spec = factory();
+        for spec in specs_in(COLORLESS_SPECS, version) {
             if spec.rarity == rarity && !is_multiplayer_only(spec.id) {
                 out.push(spec.id);
             }
@@ -1975,24 +2215,40 @@ fn eligible_ids_for_rarity(
 /// C# `CardCreationOptions.CardPoolFilter`). Pool order is preserved, so a
 /// `NextItem` index over the result matches C#'s
 /// `GetPossibleCards(player).Where(rarity).Where(predicate)`.
+#[cfg(test)]
 fn eligible_ids_for_rarity_filtered(
     character_ids: &[CharacterId],
     include_colorless: bool,
     rarity: CardRarity,
     predicate: fn(&CardSpec) -> bool,
 ) -> Vec<CardId> {
+    eligible_ids_for_rarity_filtered_in(
+        character_ids,
+        include_colorless,
+        rarity,
+        predicate,
+        sts2_core::GameVersion::V0_107_1,
+    )
+}
+
+/// [`eligible_ids_for_rarity_filtered`] in game build `version` (GH #793).
+fn eligible_ids_for_rarity_filtered_in(
+    character_ids: &[CharacterId],
+    include_colorless: bool,
+    rarity: CardRarity,
+    predicate: fn(&CardSpec) -> bool,
+    version: sts2_core::GameVersion,
+) -> Vec<CardId> {
     let mut out: Vec<CardId> = Vec::new();
     for c in character_ids {
-        for factory in specs_for_character(*c) {
-            let spec = factory();
+        for spec in specs_in(specs_for_character(*c), version) {
             if spec.rarity == rarity && !is_multiplayer_only(spec.id) && predicate(&spec) {
                 out.push(spec.id);
             }
         }
     }
     if include_colorless {
-        for factory in COLORLESS_SPECS {
-            let spec = factory();
+        for spec in specs_in(COLORLESS_SPECS, version) {
             if spec.rarity == rarity && !is_multiplayer_only(spec.id) && predicate(&spec) {
                 out.push(spec.id);
             }
@@ -2100,6 +2356,7 @@ pub fn roll_card_reward_cards(
     // `[rarity*, upgrade*, pick*]` vs C# `[rarity,pick,upgrade]` per card)
     // and yielded zero overlap with the C#-recorded reward cards at the
     // same seed/floor/deck — breaking same-seed deck-parity replay.
+    let version = rs.game_version;
     for _ in 0..num_cards {
         // 1. Rarity (consumes Rewards; updates the pity counter).
         let rarity = rs
@@ -2111,10 +2368,10 @@ pub fn roll_card_reward_cards(
             custom_ids
                 .iter()
                 .copied()
-                .filter(|&id| rarity_for_card_id(id) == Some(cr))
+                .filter(|&id| rarity_for_card_id_in(id, version) == Some(cr))
                 .collect()
         } else {
-            eligible_ids_for_rarity(&character_ids, include_colorless, cr)
+            eligible_ids_for_rarity_in(&character_ids, include_colorless, cr, version)
         };
         candidates.retain(|id| !chosen_ids.contains(id));
         if candidates.is_empty() {
@@ -2135,7 +2392,7 @@ pub fn roll_card_reward_cards(
                 ascension_level,
                 upgrade_base,
             );
-        if let Some(card) = card_pod_from_id(pick, upgraded) {
+        if let Some(card) = super::v0111::card_pod_for(pick, upgraded, version) {
             cards.push(card);
         }
     }
@@ -2150,16 +2407,36 @@ pub fn roll_card_reward_cards(
     // flag, which only live here in `opts`, so it is folded inline at the
     // exact C# hook site rather than via the context-less `Vec<Card>`
     // channel used by `_late`.
-    append_lasting_candy_power_reward(
-        rs,
-        &mut cards,
-        &character_ids,
-        include_colorless,
-        context,
-        act_index,
-        ascension_level,
-        upgrade_base,
-    );
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // The FOLDED options: C#'s `CardCreationOptions` mutators change the
+        // instance in place (see `LastingCandyPool`).
+        let pool = LastingCandyPool {
+            character_ids: character_ids.clone(),
+            include_colorless,
+            custom_ids: has_custom.then(|| custom_ids.clone()),
+            is_from_combat: opts.is_from_combat,
+        };
+        append_lasting_candy_power_reward_v0111(
+            rs,
+            &mut cards,
+            &pool,
+            context,
+            act_index,
+            ascension_level,
+            upgrade_base,
+        );
+    } else {
+        append_lasting_candy_power_reward(
+            rs,
+            &mut cards,
+            &character_ids,
+            include_colorless,
+            context,
+            act_index,
+            ascension_level,
+            upgrade_base,
+        );
+    }
 
     let _ = sts2_core::run_effects::dispatch_modify_card_reward_options_late(rs, &mut cards);
     cards
@@ -2231,11 +2508,15 @@ fn append_lasting_candy_power_reward(
     let already_offered: std::collections::BTreeSet<CardId> =
         cards.iter().map(|c| c.card_id).collect();
 
+    let version = rs.game_version;
     let power_pool_for_rarity = |rarity: CardRarity, dedup: bool| -> Vec<CardId> {
-        let mut v =
-            eligible_ids_for_rarity_filtered(character_ids, include_colorless, rarity, |s| {
-                s.card_type == CardType::Power
-            });
+        let mut v = eligible_ids_for_rarity_filtered_in(
+            character_ids,
+            include_colorless,
+            rarity,
+            |s| s.card_type == CardType::Power,
+            version,
+        );
         if dedup {
             v.retain(|id| !already_offered.contains(id));
         }
@@ -2262,9 +2543,11 @@ fn append_lasting_candy_power_reward(
     // 1. Base-odds rarity roll (`Source = Other` ⇒ `RollWithBaseOdds`,
     //    no pity read/update), then escalate to the next-highest rarity
     //    while the current one has no candidates.
-    let mut rarity = rs
-        .card_rarity_odds
-        .roll_with_base_odds_with_dotnet(&mut rs.rng.rewards, context);
+    let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
+        rs.game_version,
+        &mut rs.rng.rewards,
+        context,
+    );
     let candidates: Vec<CardId> = loop {
         let c = power_pool_for_rarity(reward_rarity_to_card_rarity(rarity), dedup);
         if !c.is_empty() {
@@ -2295,7 +2578,158 @@ fn append_lasting_candy_power_reward(
         upgrade_base,
     );
 
-    if let Some(card) = card_pod_from_id(pick, upgraded) {
+    if let Some(card) = super::v0111::card_pod_for(pick, upgraded, version) {
+        cards.push(card);
+    }
+}
+
+/// The card reward's creation options as v0.111.0 LastingCandy reads them
+/// (`creationOptions2.CardPools` / `.Flags`): the options AFTER the
+/// `ModifyCardRewardCreationOptions` fold. `CardFactory.CreateForReward`
+/// reassigns `options = Hook.ModifyCardRewardCreationOptions(...)`
+/// (CardFactory.cs:218), but every mutator returns the SAME instance it
+/// changed in place (`WithCardPools` / `WithFlags` / ...,
+/// Runs/CardCreationOptions.cs:145-151, :186-190, :243; DingyRug.cs:27 and
+/// PrismaticGem widen the pools that way), and CardReward.cs:115/149/159
+/// hands that one instance on to `TryModifyCardRewardOptions`. So
+/// LastingCandy's Power pool includes DingyRug's colorless Powers and
+/// PrismaticGem's other-character Powers. (v0.107.1 behaves the same —
+/// `WithCardPools` mutates in place there too, CardCreationOptions.cs:202-208 —
+/// which is what [`append_lasting_candy_power_reward`] already reads.)
+///
+/// Rust folds DingyRug's widening into an explicit custom pool
+/// (`has_custom_card_pool` + `custom_card_ids` = the character pool then the
+/// colorless pool, `relics::shop_event::listener_dingy_rug`), so the folded
+/// options are carried whole: a custom pool when set, else the character /
+/// colorless slices.
+struct LastingCandyPool {
+    character_ids: Vec<CharacterId>,
+    include_colorless: bool,
+    custom_ids: Option<Vec<CardId>>,
+    is_from_combat: bool,
+}
+
+/// v0.111.0 `LastingCandy.TryModifyCardRewardOptions` (decomp
+/// LastingCandy.cs:102-151). Versus v0.107.1
+/// ([`append_lasting_candy_power_reward`]):
+///
+/// - fires on ODD counts, `CombatRewardsSeen > 0 && % 2 == 1` (:74-76). The
+///   count is the number of combat reward sets with a `CardReward` seen so
+///   far, bumped by `BeforeCombatRewardOffered` AFTER the set is populated
+///   (`relics::rare::listener_lasting_candy_reward_offered`), so the 2nd,
+///   4th, ... card-bearing set triggers;
+/// - only for a card reward flagged `IsCardReward` and `IsFromCombat`
+///   (:118-125): the combat room's own reward, not PrayerWheel-style extras;
+/// - the Power candidates come from the reward's pools through a filter
+///   (`new CardCreationOptions(creationOptions2.CardPools, Other, RarityOdds,
+///   filter)`, :138-142) — the pools as PrismaticGem / DingyRug already
+///   widened them in place ([`LastingCandyPool`]); `NoCardPoolModifications`
+///   only keeps the hooks from widening the nested roll a second time.
+///
+/// The roll itself is unchanged: base-odds rarity over the rarities present,
+/// escalating while empty, `NextItem`, then the upgrade roll — three
+/// `PlayerRng.Rewards` reads when it fires.
+fn append_lasting_candy_power_reward_v0111(
+    rs: &mut RunState,
+    cards: &mut Vec<sts2_core::cards::Card>,
+    pool: &LastingCandyPool,
+    context: sts2_core::card_rewards::RarityContext,
+    act_index: u8,
+    ascension_level: u8,
+    upgrade_base: f64,
+) {
+    use sts2_core::card_rewards::roll_for_upgrade_with_dotnet;
+
+    if !pool.is_from_combat || !rs.owns_active_relic(sts2_core::RelicId::LastingCandy) {
+        return;
+    }
+    let seen = rs
+        .relic_counters
+        .get(&sts2_core::RelicId::LastingCandy)
+        .copied()
+        .unwrap_or(0);
+    if seen <= 0 || seen % 2 != 1 {
+        return;
+    }
+
+    let already_offered: std::collections::BTreeSet<CardId> =
+        cards.iter().map(|c| c.card_id).collect();
+    let version = rs.game_version;
+    let power_pool_for_rarity = |rarity: CardRarity, dedup: bool| -> Vec<CardId> {
+        let mut v = match &pool.custom_ids {
+            // The custom pool in its own order, through the same rarity /
+            // Power / `FilterForPlayerCount` filters, at the build's specs.
+            Some(ids) => ids
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    spec_for_card_id(id)
+                        .map(|s| super::v0111::spec_for(s, version))
+                        .is_some_and(|s| {
+                            s.rarity == rarity
+                                && s.card_type == CardType::Power
+                                && !is_multiplayer_only(s.id)
+                        })
+                })
+                .collect(),
+            None => eligible_ids_for_rarity_filtered_in(
+                &pool.character_ids,
+                pool.include_colorless,
+                rarity,
+                |s| s.card_type == CardType::Power,
+                version,
+            ),
+        };
+        if dedup {
+            v.retain(|id| !already_offered.contains(id));
+        }
+        v
+    };
+    let rarities = [CardRarity::Common, CardRarity::Uncommon, CardRarity::Rare];
+    // `allowDupes` only when no un-offered Power exists at all (:126-133).
+    let dedup = rarities
+        .iter()
+        .any(|&r| !power_pool_for_rarity(r, true).is_empty());
+    if !rarities
+        .iter()
+        .any(|&r| !power_pool_for_rarity(r, dedup).is_empty())
+    {
+        return;
+    }
+
+    // `GetNextAllowedRarity` walks `GetNextHighestRarityWithWrapping`
+    // (Common -> Uncommon -> Rare -> Common, CardRarityExtensions.cs:14-30)
+    // until a rarity with candidates; one exists, checked above.
+    let mut rarity = rs.card_rarity_odds.roll_with_base_odds_with_dotnet_for(
+        rs.game_version,
+        &mut rs.rng.rewards,
+        context,
+    );
+    let mut candidates = Vec::new();
+    for _ in 0..rarities.len() {
+        candidates = power_pool_for_rarity(reward_rarity_to_card_rarity(rarity), dedup);
+        if !candidates.is_empty() {
+            break;
+        }
+        rarity = next_highest_reward_rarity(rarity)
+            .unwrap_or(sts2_core::card_rewards::RewardRarity::Common);
+    }
+    if candidates.is_empty() {
+        return;
+    }
+    let idx = rs
+        .rng
+        .rewards
+        .next_int_exclusive(0, candidates.len() as i32) as usize;
+    let pick = candidates[idx];
+    let upgraded = roll_for_upgrade_with_dotnet(
+        &mut rs.rng.rewards,
+        rarity,
+        act_index,
+        ascension_level,
+        upgrade_base,
+    );
+    if let Some(card) = super::v0111::card_pod_for(pick, upgraded, rs.game_version) {
         cards.push(card);
     }
 }
@@ -2322,16 +2756,32 @@ const fn next_highest_reward_rarity(
 /// already-chosen), the `source.Where(c.Rarity == r && c.Type == type)`
 /// list that `CardFactory.CreateForMerchant` indexes with
 /// `Shops.NextItem`.
+#[cfg(test)]
 fn merchant_character_candidates(
     character: CharacterId,
     rarity: sts2_core::card_rewards::RewardRarity,
     want_type: CardType,
     chosen: &std::collections::BTreeSet<CardId>,
 ) -> Vec<CardId> {
+    merchant_character_candidates_in(
+        character,
+        rarity,
+        want_type,
+        chosen,
+        sts2_core::GameVersion::V0_107_1,
+    )
+}
+
+/// [`merchant_character_candidates`] in game build `version` (GH #793).
+fn merchant_character_candidates_in(
+    character: CharacterId,
+    rarity: sts2_core::card_rewards::RewardRarity,
+    want_type: CardType,
+    chosen: &std::collections::BTreeSet<CardId>,
+    version: sts2_core::GameVersion,
+) -> Vec<CardId> {
     let cr = reward_rarity_to_card_rarity(rarity);
-    specs_for_character(character)
-        .iter()
-        .map(|f| f())
+    specs_in(specs_for_character(character), version)
         .filter(|s| {
             s.rarity == cr
                 && s.card_type == want_type
@@ -2394,12 +2844,15 @@ fn merchant_roll_character_card_slot(
     let mut rarity = rs
         .card_rarity_odds
         .roll_without_changing_odds_with_dotnet(&mut rs.rng.rewards, RarityContext::Shop);
-    let mut candidates = merchant_character_candidates(character, rarity, want_type, chosen);
+    let version = rs.game_version;
+    let mut candidates =
+        merchant_character_candidates_in(character, rarity, want_type, chosen, version);
     while candidates.is_empty() {
         match next_highest_reward_rarity(rarity) {
             Some(next) => {
                 rarity = next;
-                candidates = merchant_character_candidates(character, rarity, want_type, chosen);
+                candidates =
+                    merchant_character_candidates_in(character, rarity, want_type, chosen, version);
             }
             None => break,
         }
@@ -2419,7 +2872,7 @@ fn merchant_roll_character_card_slot(
     };
     let card = pick.and_then(|id| {
         chosen.insert(id);
-        card_pod_from_id(id, false)
+        super::v0111::card_pod_for(id, false, version)
     });
     ShopCardEntry {
         rarity,
@@ -2443,9 +2896,8 @@ fn merchant_roll_colorless_card_slot(
 ) -> sts2_core::shop::ShopCardEntry {
     use sts2_core::shop::{card_price, ShopCardEntry};
     let cr = reward_rarity_to_card_rarity(rarity);
-    let candidates: Vec<CardId> = COLORLESS_SPECS
-        .iter()
-        .map(|f| f())
+    let version = rs.game_version;
+    let candidates: Vec<CardId> = specs_in(COLORLESS_SPECS, version)
         .filter(|s| s.rarity == cr && !is_multiplayer_only(s.id) && !chosen.contains(&s.id))
         .map(|s| s.id)
         .collect();
@@ -2459,7 +2911,7 @@ fn merchant_roll_colorless_card_slot(
     let price = card_price(rarity, &mut rs.rng.shops, true, false);
     let card = pick.and_then(|id| {
         chosen.insert(id);
-        card_pod_from_id(id, false)
+        super::v0111::card_pod_for(id, false, version)
     });
     ShopCardEntry {
         rarity,
@@ -3650,7 +4102,11 @@ mod tests {
         // Use a Necrobinder common as the original; LegionOfBone is the
         // character's MP-only uncommon (must be excluded).
         let original = CardId::StrikeNecrobinder;
-        let pool = transform_replacement_pool(CharacterId::Necrobinder, original);
+        let pool = transform_replacement_pool(
+            CharacterId::Necrobinder,
+            original,
+            sts2_core::GameVersion::V0_107_1,
+        );
         assert!(!pool.is_empty(), "Necrobinder transform pool is non-empty");
         for &id in &pool {
             assert!(

@@ -12,7 +12,17 @@ pub(crate) fn play_null(state: &mut CombatState, target: Option<CreatureUid>) ->
     let _ = deal_damage_player_to_enemy(state, t, base);
     // C# Null.cs OnUpgrade bumps Weak 2->3 (Damage +3 via current_card_damage).
     // Bead `sts2-rs-jhe92`.
-    let weak = if current_card_upgraded(state) { 3 } else { 2 };
+    // v0.111.0: Weak 2 -> 1, upgrade still +1 (decomp Null.cs:27,48).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        1
+    } else {
+        2
+    };
+    let weak = if current_card_upgraded(state) {
+        base + 1
+    } else {
+        base
+    };
     apply_power_to_enemy(state, t, PowerKind::Weak, weak);
     orbs::channel_orb(state, Orb::dark());
     EffectResult::Resolved

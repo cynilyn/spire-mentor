@@ -60,6 +60,9 @@ class RunIdentity:
     backend: str
     act1: str = saves.DEFAULT_ACT1
     run_mode: bool | None = None
+    # The game build the run simulates (GH #801). Sources that predate the
+    # field carry none and were all played on the default build.
+    game_version: str = saves.DEFAULT_GAME_VERSION
 
     @classmethod
     def from_save(cls, payload: dict[str, Any]) -> RunIdentity:
@@ -71,6 +74,7 @@ class RunIdentity:
             backend=payload.get("backend", saves.DEFAULT_BACKEND),
             act1=payload.get("act1", saves.DEFAULT_ACT1),
             run_mode=payload.get("run_mode", saves.UNKNOWN_RUN_MODE),
+            game_version=payload.get("game_version") or saves.DEFAULT_GAME_VERSION,
         )
 
     @classmethod
@@ -84,6 +88,7 @@ class RunIdentity:
             backend=ident["backend"],
             act1=ident["act1"],
             run_mode=ident["run_mode"],
+            game_version=ident.get("game_version") or saves.DEFAULT_GAME_VERSION,
         )
 
     def restore_attempts(self) -> list[bool]:
@@ -140,17 +145,41 @@ class LiveRuns:
 
     Bound once per app to where run logs go and the card loc map every session
     needs; each method takes the client session whose slot it fills.
+
+    ``loc`` is the default build's map. ``loc_for`` (optional) returns the map
+    for any supported build (GH #801) — a v0.111.0 run labels its log with its
+    own card names; without it every build shares ``loc``.
     """
 
-    def __init__(self, logs_dir: str | Path, loc: dict[str, str] | None) -> None:
+    def __init__(
+        self,
+        logs_dir: str | Path,
+        loc: dict[str, str] | None,
+        loc_for: Callable[[str], dict[str, str]] | None = None,
+    ) -> None:
         self._logs_dir = str(logs_dir)
         self._loc = loc
+        self._loc_for = loc_for
+
+    def loc(self, game_version: str = saves.DEFAULT_GAME_VERSION) -> dict[str, str] | None:
+        """The card loc map for *game_version*."""
+        if self._loc_for is None or game_version == saves.DEFAULT_GAME_VERSION:
+            return self._loc
+        return self._loc_for(game_version)
 
     # -- the slot ------------------------------------------------------------
-    def new_session(self, backend: str) -> BranchingLiveSession:
-        """An unstarted session on *backend*; 400 for an unknown engine."""
+    def new_session(
+        self, backend: str, game_version: str = saves.DEFAULT_GAME_VERSION
+    ) -> BranchingLiveSession:
+        """An unstarted session on *backend*; 400 for an unknown engine or a
+        build the engine cannot run."""
         try:
-            return BranchingLiveSession(logs_dir=self._logs_dir, backend=backend, loc=self._loc)
+            return BranchingLiveSession(
+                logs_dir=self._logs_dir,
+                backend=backend,
+                loc=self.loc(game_version),
+                game_version=game_version,
+            )
         except ValueError as exc:
             raise RestoreError(str(exc), status=400) from exc
 
@@ -183,9 +212,10 @@ class LiveRuns:
         ascension: int,
         act1: str,
         backend: str,
+        game_version: str = saves.DEFAULT_GAME_VERSION,
     ) -> dict[str, Any]:
         """A fresh interactive run, replacing any current one."""
-        sess = self.new_session(backend)
+        sess = self.new_session(backend, game_version)
 
         def build() -> tuple[BranchingLiveSession, dict[str, Any]]:
             try:
@@ -217,11 +247,12 @@ class LiveRuns:
         sims: int,
         boss_sims: int,
         threads: int,
+        game_version: str = saves.DEFAULT_GAME_VERSION,
     ) -> dict[str, Any]:
         """A run that reproduces the offline benchmark move-for-move (rust
         backend, integer seed), replacing any current one. 400 on a bad seed
         or config."""
-        sess = self.new_session("rust")
+        sess = self.new_session("rust", game_version)
 
         def build() -> tuple[BranchingLiveSession, dict[str, Any]]:
             try:
@@ -252,7 +283,12 @@ class LiveRuns:
         restore is not a run and leaves no log); the 409 names each one."""
         failures: list[str] = []
         for run_mode in ident.restore_attempts():
-            sess = self.new_session(ident.backend)
+            try:
+                sess = self.new_session(ident.backend, ident.game_version)
+            except RestoreError as exc:
+                # An unknown build (a save from a newer workbench) or a build
+                # the recording engine cannot run: no attempt can succeed.
+                raise RestoreError(str(exc)) from exc
             try:
                 state = sess.load_line(
                     ident.character,

@@ -156,10 +156,17 @@ regression-test: build-cs
 
 ## C# Build
 
-# Build the C# headless runner
-build-cs:
-    @echo "🔨 Building C# project..."
-    {{dotnet}} build {{cs_project}}
+# Build the C# headless runner for one game build (GH #789): lib/<ver>/ ->
+# src/Sts2Headless/bin/<ver>/. The tests and tools pick a build with
+# STS2_GAME_VERSION (default v0.107.1); pytest also takes --game-version.
+build-cs ver="v0.107.1":
+    @echo "🔨 Building C# project for {{ver}}..."
+    {{dotnet}} build {{cs_project}} -p:GameVersion={{ver}}
+
+# Build the C# headless runner for every supported game build
+build-cs-all:
+    @just build-cs v0.107.1
+    @just build-cs v0.111.0
 
 # Build the self-contained SimAdvisor.exe (GH #380; Windows only).
 # Dedicated .venv-advisor (no torch), PyInstaller onedir -> dist/SimAdvisor/.
@@ -420,7 +427,10 @@ deps:
 # The Rust `sts2-workbench` crate `include_str!`s a committed data bundle
 # (localization_eng copies + trimmed wiki manifests + art manifest) under
 # ../sts2-rs/crates/sts2-workbench/data/. The bundler is stdlib-only and needs
-# the sibling sts2-wiki checkout (data/v0.107.1 + site/public/images).
+# the sibling sts2-wiki checkout (data/v0.107.1 + site/public/images). One
+# bundle per game build (GH #801): the default v0.107.1 in data/game/, every
+# other build whose sources exist (localization_eng_<ver>/ + wiki data/<ver>/)
+# in data/game/<ver>/ — both recipes below build/check all of them.
 
 # Regenerate the sts2-workbench data bundle
 workbench-data:

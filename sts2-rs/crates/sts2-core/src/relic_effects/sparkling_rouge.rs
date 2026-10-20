@@ -5,7 +5,7 @@ pub(crate) fn on_after_block_cleared_sparkling_rouge(
     state: &mut CombatState,
     _ctx: &crate::hooks::BlockClearedCtx,
 ) -> EffectResult {
-    if state.side != Side::Player || state.round_no() != SPARKLING_ROUGE_ROUND {
+    if state.side != Side::Player || state.turn_number() != SPARKLING_ROUGE_ROUND {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::SparklingRouge) {

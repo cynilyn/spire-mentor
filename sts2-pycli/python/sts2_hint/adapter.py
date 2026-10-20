@@ -1239,7 +1239,32 @@ def translate(
         "pending_choice": None,
         "pending_play": None,
     }
+    # The game build the board belongs to (GH #800; the live adapter
+    # `realgame_adapter.to_headless_combat_play` sets it from the mod's
+    # envelope). `state_from_dict` builds the engine for `$.game_version` and
+    # defaults to v0.107.1 without it, so it is forwarded only for another
+    # build: every v0.107.1 board yields the wire it always did, and the wire
+    # agrees with `state_to_dict`, which also omits the default.
+    game_version = _wire_game_version(state)
+    if game_version is not None:
+        out["game_version"] = game_version
     return out
+
+
+def _wire_game_version(state: dict[str, Any]) -> str | None:
+    """``$.game_version`` for the wire: the normalized build, or None for the default."""
+    raw = state.get("game_version")
+    if raw is None:
+        return None
+    from sts2_client import DEFAULT_GAME_VERSION, normalize_game_version
+
+    if not isinstance(raw, str):
+        raise UnsupportedStateError(f"$.game_version: must be a string, got {raw!r}")
+    try:
+        ver = normalize_game_version(raw)
+    except ValueError as exc:
+        raise UnsupportedStateError(f"$.game_version: {exc}") from None
+    return None if ver == DEFAULT_GAME_VERSION else ver
 
 
 def _rng_block(state: dict[str, Any], seed: int, ascension: int) -> dict[str, Any]:

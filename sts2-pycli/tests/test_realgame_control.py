@@ -528,3 +528,24 @@ class TestLiveLog:
         log.write_text("{}\n")
         control.set_log_path(str(log))
         assert json.loads(_fetch(control, "/log?stat=1")[2])["name"] == "run_with_space.jsonl"
+
+    def test_closed_log_still_served(self, plane, tmp_path: Path) -> None:
+        # The autopsy's links arrive right after game_over closed the file:
+        # the finished log stays served until the next run opens its own.
+        from realgame_advisor import publish_log_path
+        from realgame_workbench_log import WorkbenchRunLogger
+
+        control, _, _ = plane
+        env = {"seed": "S1", "floor": 1, "run_state": {"character": "IRONCLAD"}}
+        wlog = WorkbenchRunLogger(str(tmp_path))
+        wlog.log_decision({**env, "options": []}, "event")
+        publish_log_path(control, wlog)
+        first = wlog.path
+        wlog.log_run_end({"type": "game_over", "victory": False, **env})
+        publish_log_path(control, wlog)
+        code, _, body = _fetch(control, "/log")
+        assert code == 200 and json.loads(body)["name"] == Path(first or "").name
+        wlog.log_decision({**env, "seed": "S2", "options": []}, "event")
+        publish_log_path(control, wlog)
+        assert wlog.path != first
+        assert json.loads(_fetch(control, "/log?stat=1")[2])["name"] == Path(wlog.path or "").name

@@ -383,6 +383,7 @@ pub fn build_ironclad_state_with_deck(
         is_over: false,
         player_won: false,
         ascension: 0,
+        game_version: sts2_core::GameVersion::V0_107_1,
         master_deck: Vec::new(),
         last_added_card: None,
         is_elite,

@@ -98,9 +98,10 @@ pub(crate) fn play_seeker_strike(
         // C# `orderby c.Rarity, c.Id` — `Id` is the `ModelId`, ordinal-compared
         // by its PascalCase `Entry`. python-name underscores/`_CARD` suffix
         // break that ordinal order, so key on the reconstructed C# Entry.
-        crate::cards::spec_index::card_rarity_rank_csharp(ca.card_id)
-            .cmp(&crate::cards::spec_index::card_rarity_rank_csharp(
+        crate::cards::spec_index::card_rarity_rank_csharp_in(ca.card_id, state.game_version)
+            .cmp(&crate::cards::spec_index::card_rarity_rank_csharp_in(
                 cb.card_id,
+                state.game_version,
             ))
             .then_with(|| {
                 crate::cards::spec_index::card_csharp_entry(ca.card_id)

@@ -494,7 +494,9 @@ impl Cell {
         }
         let (enc_id, monsters) = parse_encounter(&self.encounter);
         let ascension = u8::try_from(self.ascension.clamp(0, 255)).unwrap_or(0);
-        sts2_wire::scenario::build_scenario_state(
+        sts2_wire::scenario::build_scenario_state_for_version(
+            // SimLab has no session: positions are the default build's.
+            sts2_core::GameVersion::default(),
             u64::from(seed),
             "Ironclad",
             &self.deck_cards,

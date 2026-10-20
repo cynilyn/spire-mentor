@@ -90,7 +90,8 @@ fn character_display_name(character_id: &str) -> Option<&'static str> {
 /// in the wire's own order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RngBlock {
-    pub run_seed: i64,
+    /// `RunRngSet.Seed`: a `uint` in v0.107.1, a `ulong` in v0.111.0.
+    pub run_seed: u64,
     pub counters: Vec<(String, i64)>,
 }
 
@@ -469,7 +470,13 @@ fn ids_from_wire(
 fn rng_block(msg: &Map<String, Value>) -> Option<RngBlock> {
     let raw = msg.get("rng")?.as_object()?;
     let run_seed = match raw.get("run_seed") {
-        Some(Value::Number(n)) if n.is_i64() || n.is_u64() => n.as_i64()?,
+        // A v0.111.0 master seed is a full `ulong` (GH #788). A negative
+        // integer is a 32-bit seed written signed: its `uint` view.
+        #[allow(clippy::cast_sign_loss)]
+        Some(Value::Number(n)) if n.is_u64() || n.is_i64() => match n.as_u64() {
+            Some(u) => u,
+            None => u64::from(n.as_i64()? as u32),
+        },
         _ => return None,
     };
     let counters_obj = raw.get("counters")?.as_object()?;

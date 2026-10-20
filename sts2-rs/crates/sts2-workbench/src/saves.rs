@@ -1,7 +1,7 @@
 //! Named saves — the payload shape of `sts2-pycli/python/workbench/saves.py`.
 //!
 //! A save captures the **active line** of a session: the run identity
-//! `(character, seed, ascension, act1, backend, run_mode)` plus the ordered
+//! `(character, seed, ascension, act1, backend, run_mode, game_version)` plus the ordered
 //! `(action, args)` pairs from the root to the active leaf. Loading replays
 //! that line, so a save is only valid against the engine that recorded it.
 //!
@@ -9,6 +9,7 @@
 //! only builds and reads the JSON.
 
 use serde_json::{json, Map, Value};
+use sts2_core::GameVersion;
 
 use crate::session::Progress;
 
@@ -58,11 +59,12 @@ pub fn build_save(
     backend: &str,
     run_mode: bool,
     act1: &str,
+    game_version: GameVersion,
     progress: &Progress,
     line: &[Value],
     node_values: &[Option<f64>],
 ) -> Value {
-    json!({
+    let mut out = json!({
         "schema_version": SCHEMA_VERSION,
         "name": name,
         "saved_at": saved_at,
@@ -76,7 +78,13 @@ pub fn build_save(
         "step_count": line.len(),
         "line": line,
         "node_values": node_values,
-    })
+    });
+    // GH #801: written only for a non-default build (a v0.107.1 save keeps
+    // its bytes); `RunIdentity::from_save` reads absence as v0.107.1.
+    if !game_version.is_default() {
+        out["game_version"] = json!(game_version.as_str());
+    }
+    out
 }
 
 /// `_header`: the list-view metadata (no `line` / `node_values`).
@@ -110,6 +118,10 @@ pub struct RunIdentity {
     pub act1: String,
     /// `None` when the save predates the field (the loader must probe).
     pub run_mode: Option<bool>,
+    /// The game build the line was recorded in; v0.107.1 when the save
+    /// carries no `game_version` (GH #801). An unknown value also reads as
+    /// the default here — `Workbench::restore_save` rejects it first.
+    pub game_version: GameVersion,
 }
 
 impl RunIdentity {
@@ -135,6 +147,7 @@ impl RunIdentity {
             backend: s("backend", DEFAULT_BACKEND),
             act1: s("act1", DEFAULT_ACT1),
             run_mode: payload.get("run_mode").and_then(Value::as_bool),
+            game_version: crate::session::game_version_of(payload).unwrap_or_default(),
         }
     }
 
@@ -180,5 +193,42 @@ mod tests {
             &json!({"character": "Silent", "seed": "ABC", "ascension": 0, "run_mode": false}),
         );
         assert_eq!(ident.restore_attempts(), vec![false]);
+        assert_eq!(ident.game_version, GameVersion::V0_107_1);
+        let ident = RunIdentity::from_save(&json!({"seed": "ABC", "game_version": "v0.111.0"}));
+        assert_eq!(ident.game_version, GameVersion::V0_111_0);
+    }
+
+    #[test]
+    fn build_save_names_only_a_non_default_build() {
+        let progress = Progress {
+            act: json!(1),
+            floor: json!(0),
+            hp: json!(80),
+            max_hp: json!(80),
+        };
+        let args = |v| {
+            build_save(
+                "n",
+                "t",
+                "Ironclad",
+                "ABC",
+                0,
+                "rust",
+                false,
+                "roll",
+                v,
+                &progress,
+                &[],
+                &[],
+            )
+        };
+        let old = args(GameVersion::V0_107_1);
+        assert!(old.get("game_version").is_none(), "{old}");
+        let new = args(GameVersion::V0_111_0);
+        assert_eq!(new["game_version"], "v0.111.0");
+        assert_eq!(
+            RunIdentity::from_save(&new).game_version,
+            GameVersion::V0_111_0
+        );
     }
 }

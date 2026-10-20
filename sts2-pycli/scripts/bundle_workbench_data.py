@@ -16,8 +16,24 @@ loaders read).
 Regenerate with ``just workbench-data``; ``just check-workbench-data`` fails
 on drift between the sources and the committed bundle.
 
+**One bundle per game build (GH #801).** The default build (v0.107.1) is
+written to ``data/game/`` exactly as before; every other supported build gets a
+full sibling set under ``data/game/<ver>/`` (``data/game/v0.111.0/``), built
+from that build's vendored loc dir (``localization_eng_<ver>/``) and wiki
+aggregates (``sts2-wiki/data/<ver>/``). The art tree is shared — the wiki
+serves ONE extracted art set — so a card new in a later build has no art of its
+own and the resolver falls back to the placeholder; the per-version asset
+manifest records exactly what the art store holds. ``card_db.json`` (the deck
+analyzer's stats) is likewise a single table, copied into each set.
+
 Usage:
-    python scripts/bundle_workbench_data.py [-o OUT_DIR]
+    python scripts/bundle_workbench_data.py [-o OUT_DIR] [--version VER]
+
+With no ``--version`` every build is written (what ``just workbench-data``
+and ``just check-workbench-data`` do) — the default build always, every other
+build when its sources (``localization_eng_<ver>/`` + ``sts2-wiki/data/<ver>/``)
+are on disk, so a checkout that imported only the default build still bundles.
+``--version`` writes just that one build and requires its sources.
 
 Stdlib only — it is a build step, not part of the package.
 """
@@ -35,11 +51,12 @@ _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 _MONO_ROOT = _REPO_ROOT.parent
 
-# Keep in lockstep with ``workbench.localization._ENGINE_WIKI_VERSION``.
+# Keep in lockstep with ``workbench.localization.DEFAULT_GAME_VERSION`` /
+# ``SUPPORTED_GAME_VERSIONS`` (and the Rust ``sts2_core::GameVersion``).
 _ENGINE_WIKI_VERSION = "v0.107.1"
+_VERSIONS = ("v0.107.1", "v0.111.0")
 
-_LOC_DIR = _REPO_ROOT / "localization_eng"
-_WIKI_DATA = _MONO_ROOT / "sts2-wiki" / "data" / _ENGINE_WIKI_VERSION
+_WIKI_ROOT = _MONO_ROOT / "sts2-wiki" / "data"
 _IMAGES = _MONO_ROOT / "sts2-wiki" / "site" / "public" / "images"
 _AUDIO = _MONO_ROOT / "sts2-wiki" / "site" / "public" / "audio"
 _DEFAULT_OUT = _MONO_ROOT / "sts2-rs" / "crates" / "sts2-workbench" / "data"
@@ -162,7 +179,22 @@ def _trim_monster(row: dict[str, Any]) -> dict[str, Any] | None:
     return out
 
 
-def _owned_items(kind: str) -> list[dict[str, str]]:
+def _loc_dir(version: str) -> Path:
+    """``localization_eng/`` for the default build, ``localization_eng_<ver>/`` else.
+
+    Mirrors ``workbench.localization.loc_dir_for``."""
+    if version == _ENGINE_WIKI_VERSION:
+        return _REPO_ROOT / "localization_eng"
+    return _REPO_ROOT / f"localization_eng_{version}"
+
+
+def _game_out(out_dir: Path, version: str) -> Path:
+    """``<out>/game`` for the default build, ``<out>/game/<ver>`` else."""
+    game = out_dir / "game"
+    return game if version == _ENGINE_WIKI_VERSION else game / version
+
+
+def _owned_items(wiki_data: Path, kind: str) -> list[dict[str, str]]:
     """``{class_name, description}`` per relic / potion, by class name.
 
     Read from the regex-extracted aggregate (``relics.json`` / ``potions.json``,
@@ -172,7 +204,7 @@ def _owned_items(kind: str) -> list[dict[str, str]]:
     the per-item loader used, so the Rust ``load_owned_localization`` twin
     keeps its first-wins semantics.
     """
-    rows: Any = json.loads((_WIKI_DATA / f"{kind}.json").read_text(encoding="utf-8"))
+    rows: Any = json.loads((wiki_data / f"{kind}.json").read_text(encoding="utf-8"))
     if not isinstance(rows, list):
         raise SystemExit(f"{kind}.json: expected a list")
     out = []
@@ -196,46 +228,86 @@ def _check_loc_file(path: Path) -> None:
         raise SystemExit(f"{path}: non-string localization values: {sorted(bad)[:5]}")
 
 
-def build(out_dir: Path) -> dict[str, int]:
-    """Write every bundle file under ``out_dir``; return ``{name: bytes}``."""
+def _has_sources(version: str) -> bool:
+    return _loc_dir(version).is_dir() and (_WIKI_ROOT / version / "cards.json").is_file()
+
+
+def build(out_dir: Path, versions: tuple[str, ...] | None = None) -> dict[str, int]:
+    """Write the bundle of ``versions`` under ``out_dir``; return ``{name: bytes}``.
+
+    ``None`` = the default build plus every other build whose sources exist.
+    """
+    if versions is None:
+        versions = tuple(v for v in _VERSIONS if v == _ENGINE_WIKI_VERSION or _has_sources(v))
+        for v in _VERSIONS:
+            if v not in versions:
+                print(
+                    f"note: skipping {v} (no localization_eng_{v}/ or wiki data/{v}/)",
+                    file=sys.stderr,
+                )
+    sizes: dict[str, int] = {}
+    for version in versions:
+        sizes.update(_build_version(out_dir, version))
+    return sizes
+
+
+def _build_version(out_dir: Path, version: str) -> dict[str, int]:
+    """Write one build's bundle (``game/`` or ``game/<ver>/``)."""
     sys.path.insert(0, str(_HERE))
     from build_asset_manifest import build_manifest
 
-    for required in (_LOC_DIR, _WIKI_DATA, _IMAGES):
+    if version not in _VERSIONS:
+        raise SystemExit(
+            f"error: unsupported version {version!r}; supported: {', '.join(_VERSIONS)}"
+        )
+    loc_dir = _loc_dir(version)
+    wiki_data = _WIKI_ROOT / version
+    for required in (loc_dir, wiki_data, _IMAGES):
         if not required.exists():
             raise SystemExit(f"error: source not found: {required}")
 
     # Game-derived files go under ``game/`` (never published; ``build.rs``
     # stubs them when absent); only the curated ``card_tags.json`` sits at the
-    # top level and is committed everywhere.
-    game_out = out_dir / "game"
+    # top level and is committed everywhere (shared by every build).
+    game_out = _game_out(out_dir, version)
     loc_out = game_out / "localization_eng"
     loc_out.mkdir(parents=True, exist_ok=True)
     sizes: dict[str, int] = {}
 
+    def rel(path: Path) -> str:
+        return str(path.relative_to(out_dir))
+
     for name in _LOC_FILES:
-        src = _LOC_DIR / name
+        src = loc_dir / name
         if name.endswith(".json"):
             _check_loc_file(src)
         dst = loc_out / name
         shutil.copyfile(src, dst)
-        sizes[f"game/localization_eng/{name}"] = dst.stat().st_size
+        sizes[rel(dst)] = dst.stat().st_size
+    # The vendored BUILD.txt names the build its tables came from; a bundle
+    # labelled with the wrong build would silently describe other rules.
+    build_line = (loc_out / "BUILD.txt").read_text(encoding="utf-8").splitlines()[:1]
+    if build_line != [version]:
+        raise SystemExit(f"error: {loc_dir}/BUILD.txt says {build_line}, expected {version}")
 
-    cards: Any = json.loads((_WIKI_DATA / "cards.json").read_text(encoding="utf-8"))
+    cards: Any = json.loads((wiki_data / "cards.json").read_text(encoding="utf-8"))
     if isinstance(cards, dict):
         cards = cards.get("cards", [])
     trimmed_cards = [t for t in (_trim_card(c) for c in cards or []) if t is not None]
 
-    monsters: Any = json.loads((_WIKI_DATA / "monsters.json").read_text(encoding="utf-8"))
+    monsters: Any = json.loads((wiki_data / "monsters.json").read_text(encoding="utf-8"))
     if not isinstance(monsters, list):
         raise SystemExit("monsters.json: expected a list")
     trimmed_monsters = [
         t for t in (_trim_monster(r) for r in monsters if isinstance(r, dict)) if t is not None
     ]
 
-    owned = _owned_items("relics") + _owned_items("potions")
+    owned = _owned_items(wiki_data, "relics") + _owned_items(wiki_data, "potions")
 
-    manifest = build_manifest(_IMAGES, _AUDIO)
+    # The default build never sees an overlay; a later build lists its own
+    # (GH #801), so its resolver finds the art that build added.
+    overlays = () if version == _ENGINE_WIKI_VERSION else (version,)
+    manifest = build_manifest(_IMAGES, _AUDIO, overlays=overlays)
 
     scales_src = _IMAGES / "creature_scales.json"
     if not scales_src.is_file():
@@ -244,12 +316,15 @@ def build(out_dir: Path) -> dict[str, int]:
 
     # The deck analyzer's two tables (`workbench/deck_analysis.py`), copied
     # as-is: the Rust twin reads the same keys off the same JSON.
-    for name, dst_dir in (("card_db.json", game_out), ("card_tags.json", out_dir)):
+    tables = [("card_db.json", game_out)]
+    if version == _ENGINE_WIKI_VERSION:
+        tables.append(("card_tags.json", out_dir))
+    for name, dst_dir in tables:
         src = _REPO_ROOT / "python" / "workbench" / "data" / name
         if not src.is_file():
             raise SystemExit(f"error: {src} not found")
         shutil.copyfile(src, dst_dir / name)
-        sizes[str((dst_dir / name).relative_to(out_dir))] = (dst_dir / name).stat().st_size
+        sizes[rel(dst_dir / name)] = (dst_dir / name).stat().st_size
 
     for name, obj in (
         ("wiki_cards.json", trimmed_cards),
@@ -260,7 +335,7 @@ def build(out_dir: Path) -> dict[str, int]:
     ):
         path = game_out / name
         path.write_text(_dumps(obj), encoding="utf-8")
-        sizes[f"game/{name}"] = path.stat().st_size
+        sizes[rel(path)] = path.stat().st_size
     return sizes
 
 
@@ -272,8 +347,14 @@ def main(argv: list[str] | None = None) -> int:
         default=str(_DEFAULT_OUT),
         help="Output directory (default: sts2-rs/crates/sts2-workbench/data).",
     )
+    parser.add_argument(
+        "--version",
+        choices=_VERSIONS,
+        default=None,
+        help="Write only this game build's bundle (default: every build).",
+    )
     args = parser.parse_args(argv)
-    sizes = build(Path(args.out_dir))
+    sizes = build(Path(args.out_dir), (args.version,) if args.version else None)
     total = 0
     for name, size in sorted(sizes.items()):
         print(f"{size:>8}  {name}")

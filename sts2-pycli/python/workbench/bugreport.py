@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-ENGINE_BUILD = "v0.107.1"  # the decompiled engine the workbench display targets
+ENGINE_BUILD = "v0.107.1"  # the default build; a dump reports its session's own
 
 
 def _git_commit() -> str:
@@ -65,6 +65,9 @@ def build_dump(
             "ascension": live.ascension,
             "backend": live.backend,
         }
+        engine_build = getattr(live, "game_version", None)
+        if not isinstance(engine_build, str) or not engine_build:
+            engine_build = ENGINE_BUILD
         repro = {"timeline": live.timeline()}
         state = {"game_state": live.state(), "map": live.map()}
     elif mode == "replay":
@@ -78,6 +81,9 @@ def build_dump(
             "ascension": None,
             "backend": None,
         }
+        ident = store.run_identity() if hasattr(store, "run_identity") else None
+        engine_build = ident.get("game_version") if isinstance(ident, dict) else None
+        engine_build = engine_build or ENGINE_BUILD
         # A run that ENDED reopens in this replay viewer (the live engine is
         # released on quit), so this is the path a *post-session* bug report
         # takes — it must still carry the rendered state at the viewed step, not
@@ -95,7 +101,9 @@ def build_dump(
     else:
         raise ValueError(f"unknown mode: {mode}")
 
-    meta["engine_build"] = ENGINE_BUILD
+    # The build the captured run simulates (GH #801) — the session's, not the
+    # process default; a replay of a log that predates the field is v0.107.1.
+    meta["engine_build"] = engine_build
     meta["workbench_commit"] = WORKBENCH_COMMIT
     return {
         "schema_version": 1,

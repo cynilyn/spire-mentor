@@ -192,9 +192,16 @@ class AssetResolver:
     Build a manifest with ``scripts/build_asset_manifest.py``.
     """
 
-    def __init__(self, root: str | Path, *, manifest: set[str] | None = None) -> None:
+    def __init__(
+        self, root: str | Path, *, manifest: set[str] | None = None, overlay: str | None = None
+    ) -> None:
         self.root = Path(root)
         self._manifest = manifest
+        # A game build's art overlay folder (``v0.111.0``), tried before the
+        # shared tree on every lookup: the art that build added or redrew
+        # (GH #801). None for the default build. Twin of the Rust
+        # ``AssetResolver::with_overlay``.
+        self._overlay = overlay
         # Per-creature authored scene scale + Bounds box (combat proportions).
         # Keyed by creature_visuals slug ("ironclad", "nibbit", ...). Empty when
         # the manifest is absent — combatants then size by their fallback height.
@@ -207,6 +214,13 @@ class AssetResolver:
                 self._scales = {}
 
     def _rel_if_exists(self, rel: str) -> str | None:
+        if self._overlay is not None:
+            own = self._exists(f"{self._overlay}/{rel}")
+            if own is not None:
+                return own
+        return self._exists(rel)
+
+    def _exists(self, rel: str) -> str | None:
         if self._manifest is not None:
             return rel if rel in self._manifest else None
         return rel if (self.root / rel).is_file() else None

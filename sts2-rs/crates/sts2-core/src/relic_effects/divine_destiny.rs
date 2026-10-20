@@ -11,15 +11,29 @@ pub(crate) fn on_after_side_turn_start_divine_destiny(
     state: &mut CombatState,
     side: Side,
 ) -> EffectResult {
-    if side != Side::Player || state.round_no() != 1 {
+    if side != Side::Player || state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::DivineDestiny) {
         return EffectResult::NotImplemented;
     }
-    state.player.stars = state.player.stars.saturating_add(6);
-    state.player.stars_gained_this_turn = state.player.stars_gained_this_turn.saturating_add(6);
+    let stars = divine_destiny_stars(state.game_version);
+    state.player.stars = state.player.stars.saturating_add(stars);
+    state.player.stars_gained_this_turn = state
+        .player
+        .stars_gained_this_turn
+        .saturating_add(stars.unsigned_abs().into());
     EffectResult::Resolved
+}
+
+/// `DivineDestiny`'s `StarsVar` for the build.
+///
+/// v0.111.0: `StarsVar(6)` -> `StarsVar(7)` (decomp DivineDestiny.cs:16).
+pub(crate) const fn divine_destiny_stars(version: crate::GameVersion) -> i8 {
+    match version {
+        crate::GameVersion::V0_107_1 => 6,
+        crate::GameVersion::V0_111_0 => 7,
+    }
 }
 
 pub(crate) fn install() {

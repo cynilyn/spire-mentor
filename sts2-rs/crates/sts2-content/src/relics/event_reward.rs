@@ -130,12 +130,12 @@ use sts2_core::relic_effects::{
     register_before_turn_end, register_modify_damage_additive, register_modify_hp_lost,
     register_on_card_added_to_deck, register_owned_after_card_exhausted,
     register_owned_after_combat_victory, register_owned_after_energy_reset,
-    register_owned_before_play_phase_start, register_owned_modify_hand_draw, AfterCardExhaustedFn,
-    AfterCardPlayedFn, AfterCombatVictoryFn, AfterDamageGivenFn, AfterEnergyResetFn,
-    AfterPlayerTurnStartFn, AfterSideTurnStartFn, BeforeCombatStartFn, BeforePlayPhaseStartFn,
-    BeforeSideTurnStartFn, BeforeTurnEndFn, CardAddedCtx, CardEventCtx, DamageGivenCtx,
-    ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyHandDrawFn, ModifyHpLostCtx, ModifyHpLostFn,
-    OnCardAddedToDeckFn,
+    register_owned_before_hand_draw, register_owned_before_play_phase_start,
+    register_owned_modify_hand_draw, AfterCardExhaustedFn, AfterCardPlayedFn, AfterCombatVictoryFn,
+    AfterDamageGivenFn, AfterEnergyResetFn, AfterPlayerTurnStartFn, AfterSideTurnStartFn,
+    BeforeCombatStartFn, BeforeHandDrawFn, BeforePlayPhaseStartFn, BeforeSideTurnStartFn,
+    BeforeTurnEndFn, CardAddedCtx, CardEventCtx, DamageGivenCtx, ModifyDamageAdditiveFn,
+    ModifyDamageCtx, ModifyHandDrawFn, ModifyHpLostCtx, ModifyHpLostFn, OnCardAddedToDeckFn,
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
@@ -325,6 +325,14 @@ fn install_listeners() {
     // `_combats_left` counter (init 1). C# `BoneTea.cs::AfterSideTurnStart`
     // gates on `!IsUsedUp && side == Owner.Side && RoundNumber <= 1`.
     register_after_side_turn_start(RelicId::BoneTea, listener_bone_tea as AfterSideTurnStartFn);
+    // v0.111.0: BoneTea moved to `AfterPlayerTurnStart` (decomp
+    // BoneTea.cs:50), which fires inside `SetupPlayerTurn` before the
+    // outer `AfterSideTurnStart` walk (so e.g. FencingManual's forged blade
+    // is never upgraded). Each listener is inert in the other build.
+    register_after_player_turn_start(
+        RelicId::BoneTea,
+        listener_bone_tea_player_turn_start as AfterPlayerTurnStartFn,
+    );
 
     // FakeVenerableTeaSet (sts2-rs-aqals) — rest-site latch
     // (`after_room_entered`, RunState) + first-energy-reset consume
@@ -586,6 +594,14 @@ fn install_listeners() {
         RelicKind::PollinousCore,
         listener_pollinous_core_modify_hand_draw as ModifyHandDrawFn,
     );
+    // v0.111.0: the count moved to `BeforeHandDraw` (decomp
+    // PollinousCore.cs:88). Inert in v0.107.1, as the side-turn tick above
+    // is in v0.111.0.
+    register_owned_before_hand_draw(
+        RelicId::PollinousCore,
+        RelicKind::PollinousCore,
+        listener_pollinous_core_before_hand_draw as BeforeHandDrawFn,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +854,26 @@ fn listener_bone_tea(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    // v0.111.0 runs on `AfterPlayerTurnStart` instead (see below).
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    bone_tea_upgrade_hand(state)
+}
+
+/// v0.111.0 `BoneTea.AfterPlayerTurnStart` (decomp BoneTea.cs:50-66): the
+/// same round-1 hand upgrade, on the player-turn-start hook.
+fn listener_bone_tea_player_turn_start(state: &mut CombatState) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    bone_tea_upgrade_hand(state)
+}
+
+/// BoneTea's body: on round 1, while `CombatsLeft > 0`, upgrade the hand and
+/// spend one combat.
+fn bone_tea_upgrade_hand(state: &mut CombatState) -> EffectResult {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     let Some(idx) = state
@@ -979,7 +1014,7 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     if !player_owns(state, RelicKind::HistoryCourse) {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() <= 1 {
+    if state.turn_number() <= 1 {
         return EffectResult::NotImplemented;
     }
     let Some((card_id, upgraded, src_uid)) = state.combat_log.prev_round_last_attack_skill_played
@@ -1012,7 +1047,17 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // target otherwise. The prior port picked the first alive enemy
     // deterministically, which both mis-targeted multi-enemy boards and
     // skipped the RNG read — desyncing every later combat roll.
-    let dupe_target_type = dupe.target_type;
+    // v0.111.0: `AutoPlay` reads the card's live `TargetType` (decomp
+    // CardCmd.cs:74), and a Shiv under FanOfKnives is `AllEnemies`
+    // (Shiv.cs:23-32), so its dupe rolls no `CombatTargets` target. Reading
+    // the POD's `Enemy` spent a combat_targets draw C# never makes (Silent mid
+    // seed 1472, SEAPUNK_WEAK). v0.107.1 C# is the same; left alone there for
+    // bit-identity.
+    let dupe_target_type = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        sts2_core::cards::effective_target_type(state, &dupe)
+    } else {
+        dupe.target_type
+    };
     // Captured before the dupe is moved into `state.cards` — needed to build
     // the `after_card_played` contexts below (bead `sts2-rs-50un1` follow-up).
     let dupe_card_type = dupe.card_type;
@@ -1178,6 +1223,9 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
         dupe_resolved_cost,
         dupe_is_ethereal,
     );
+    // v0.111.0: Juggling counts / clones in `BeforeCardPlayed` (decomp
+    // JugglingPower.cs:36). No-op before v0.111.0.
+    sts2_core::hooks::juggling_before_card_played_v0111(state, new_uid, dupe_card_type);
     // C# moves an `AnyEnemy` card with no resolvable target to its result
     // pile WITHOUT playing — skip the on-play dispatch when nothing's alive.
     let skip_dispatch =
@@ -1219,7 +1267,8 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
         // seeds 22080 / 28780 / 55979 / 74899). The flag is now raised once
         // above this block and restored after the replay loop, just before
         // disposal.
-        let _ = sts2_core::card_effects::dispatch_for_card(state, new_uid, card_id, target);
+        let _ =
+            sts2_core::card_effects::dispatch_for_auto_played_card(state, new_uid, card_id, target);
     }
     // Bead `sts2-rs-evd6m`: C# `CardCmd.AutoPlay` runs the FULL `OnPlayWrapper`,
     // which fires `Hook.AfterCardPlayed` for the dupe — so power listeners
@@ -1232,6 +1281,11 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // Strength. (last_attack_skill_played is deliberately NOT updated — the
     // minimal path never routes through `play_card`, matching C#'s IsDupe
     // self-exclusion.)
+    // v0.111.0: the dupe's `CardPlayFinished` entry is recorded before its
+    // `AfterCardPlayed` (decomp CardModel.cs:1961-1965), and PaleBlueDotPower
+    // counts every finished play this turn, dupes included (decomp
+    // PaleBlueDotPower.cs:27). v0.107.1 keeps its tally untouched.
+    bump_card_plays_finished_this_turn_v0111(state);
     let played_ctx = sts2_core::relic_effects::CardEventCtx {
         card_id,
         card_uid: Some(new_uid),
@@ -1330,7 +1384,10 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
             if state.is_over {
                 break;
             }
-            let _ = sts2_core::card_effects::dispatch_for_card(state, new_uid, card_id, target);
+            let _ = sts2_core::card_effects::dispatch_for_auto_played_card(
+                state, new_uid, card_id, target,
+            );
+            bump_card_plays_finished_this_turn_v0111(state);
             let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
             sts2_core::hooks::dispatch_after_card_played(state, &hook_played_ctx);
             sts2_core::combat_loop::flush_rupture_deferred_strength(state);
@@ -1408,6 +1465,19 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     EffectResult::Resolved
 }
 
+/// v0.111.0: count a HistoryCourse dupe play in
+/// `card_plays_finished_this_turn`, which PaleBlueDotPower reads (C#
+/// `History.CardPlaysFinished` includes dupes; decomp PaleBlueDotPower.cs:27,
+/// CardModel.cs:1961). No-op before v0.111.0, whose tally stays as it was.
+fn bump_card_plays_finished_this_turn_v0111(state: &mut CombatState) {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        state.combat_log.card_plays_finished_this_turn = state
+            .combat_log
+            .card_plays_finished_this_turn
+            .saturating_add(1);
+    }
+}
+
 /// `FakeStrikeDummy::modify_damage_additive` — +1 when the originating
 /// card carries `CardTag::Strike` (Python `shop_event.py::FakeStrikeDummy`,
 /// `BONUS=1`). Reads `ctx.card` (4nh5 surface) and locates the first
@@ -1442,7 +1512,7 @@ fn listener_fake_blood_vial(state: &mut CombatState, side: Side) -> EffectResult
     if side != Side::Player || !player_owns(state, RelicKind::FakeBloodVial) {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     let Some(player_uid) = state.player.creature_uid else {
@@ -1471,7 +1541,7 @@ fn listener_royal_poison(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player || !player_owns(state, RelicKind::RoyalPoison) {
         return EffectResult::NotImplemented;
     }
-    if state.round_no() != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     let _ = sts2_core::combat_loop::apply_damage_to_player(
@@ -1506,7 +1576,7 @@ fn listener_mr_struggles(state: &mut CombatState) -> EffectResult {
     }
     // v0.107.1 amount = PlayerCombatState.TurnNumber; == round_no() until
     // extra-turn support lands (see doc above).
-    let damage = i32::from(state.round_no());
+    let damage = i32::from(state.turn_number());
     if damage <= 0 {
         return EffectResult::NotImplemented;
     }
@@ -1649,6 +1719,11 @@ fn listener_tea_of_discourtesy(state: &mut CombatState) -> EffectResult {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn listener_hand_drill(state: &mut CombatState, ctx: &DamageGivenCtx) -> EffectResult {
     if !player_owns(state, RelicKind::HandDrill) {
+        return EffectResult::NotImplemented;
+    }
+    // v0.111.0 HandDrill triggers from `AfterBlockBroken` instead (decomp
+    // HandDrill.cs:21), the relic arm of `hooks::dispatch_after_block_broken`.
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
         return EffectResult::NotImplemented;
     }
     // Gate on `dealer == player` (C# `dealer == Owner.Creature ||
@@ -2034,8 +2109,10 @@ fn listener_lava_lamp_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -> E
         return EffectResult::NotImplemented;
     }
     let mut upgraded_any = false;
+    // GH #793: the run build's upgrade (v0.111.0 Hyperbeam +6, not +8).
+    let version = rs.game_version;
     for card in cards.iter_mut() {
-        if card.upgrade() {
+        if card.upgrade_for(version) {
             upgraded_any = true;
         }
     }
@@ -2161,7 +2238,8 @@ fn listener_paels_tooth_after_combat_end(rs: &mut RunState) -> EffectResult {
     // at PAELS_TOOTH_CARDS so the i32 cast is safe.
     let idx = rs.rng.rewards.next_int_exclusive(0, len as i32) as usize;
     let mut card = rs.paels_tooth_stored.remove(idx);
-    let _ = card.upgrade();
+    // GH #793: the run build's upgrade delta.
+    let _ = card.upgrade_for(rs.game_version);
     rs.master_deck.push(card);
     EffectResult::Resolved
 }
@@ -2445,6 +2523,10 @@ fn listener_pollinous_core_tick(state: &mut CombatState, side: Side) -> EffectRe
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
+    // v0.111.0 counts in `BeforeHandDraw` instead (see below).
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
     let Some(idx) = state
         .relics
         .iter()
@@ -2454,6 +2536,27 @@ fn listener_pollinous_core_tick(state: &mut CombatState, side: Side) -> EffectRe
     };
     let cur = state.relics[idx].counter;
     state.relics[idx].counter = (cur % POLLINOUS_CORE_TURNS) + 1;
+    EffectResult::Resolved
+}
+
+/// v0.111.0 `PollinousCore.BeforeHandDraw` + `AfterModifyingHandDraw`
+/// (decomp PollinousCore.cs:88-125): `TurnsSeen++`, and once the draw was
+/// raised (`TurnsSeen >= Turns`, see the `modify_hand_draw` arm) back to 0.
+fn listener_pollinous_core_before_hand_draw(state: &mut CombatState) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return EffectResult::NotImplemented;
+    }
+    let Some(relic) = state
+        .relics
+        .iter_mut()
+        .find(|r| !r.is_melted && r.kind == RelicKind::PollinousCore)
+    else {
+        return EffectResult::NotImplemented;
+    };
+    relic.counter = relic.counter.saturating_add(1);
+    if relic.counter >= POLLINOUS_CORE_TURNS {
+        relic.counter = 0;
+    }
     EffectResult::Resolved
 }
 
@@ -2474,6 +2577,20 @@ fn listener_pollinous_core_modify_hand_draw(state: &CombatState, current_draw: i
     else {
         return current_draw;
     };
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0 (decomp PollinousCore.cs:88-118): `BeforeHandDraw` bumps
+        // `TurnsSeen`, `ModifyHandDraw` adds 2 once `TurnsSeen >= Turns` (was
+        // `!=`), `AfterModifyingHandDraw` resets it to 0. C# computes the
+        // draw AFTER `BeforeHandDraw`; Rust folds `modify_hand_draw` just
+        // before the relic `before_hand_draw` walk, so read the count this
+        // turn's tick is about to make (`counter + 1`). Nothing between the
+        // two touches the counter; the tick applies the bump and the reset.
+        return if relic.counter.saturating_add(1) >= POLLINOUS_CORE_TURNS {
+            current_draw + POLLINOUS_CORE_EXTRA_CARDS
+        } else {
+            current_draw
+        };
+    }
     if relic.counter == POLLINOUS_CORE_TURNS {
         current_draw + POLLINOUS_CORE_EXTRA_CARDS
     } else {
@@ -3215,6 +3332,49 @@ mod tests {
         assert_eq!(relic.counter, 0, "counter decremented 1 → 0");
     }
 
+    /// v0.111.0: BoneTea fires on `AfterPlayerTurnStart`, not on the side
+    /// turn start (decomp BoneTea.cs:50).
+    #[test]
+    fn listener_bone_tea_upgrades_hand_and_decrements_counter_v0111() {
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        push_relic_with_counter(&mut state, RelicKind::BoneTea, 1);
+        let _ = init_player_uid(&mut state);
+        state.round = 1;
+        let a = push_attack_card(&mut state);
+        state.player.hand.push(a);
+        let _ = sts2_core::relic_effects::dispatch_after_side_turn_start(&mut state, Side::Player);
+        assert!(
+            !state.cards[a.0.get() as usize - 1].upgraded,
+            "side turn start no longer upgrades in v0.111.0"
+        );
+        let _ = sts2_core::relic_effects::dispatch_after_player_turn_start(&mut state);
+        assert!(state.cards[a.0.get() as usize - 1].upgraded);
+        let relic = state
+            .relics
+            .iter()
+            .find(|r| r.kind == RelicKind::BoneTea)
+            .expect("BoneTea row");
+        assert_eq!(relic.counter, 0, "counter decremented 1 -> 0");
+    }
+
+    /// v0.107.1 pin: the new `AfterPlayerTurnStart` arm stays inert.
+    #[test]
+    fn listener_bone_tea_player_turn_start_is_inert_v0107() {
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        push_relic_with_counter(&mut state, RelicKind::BoneTea, 1);
+        let _ = init_player_uid(&mut state);
+        state.round = 1;
+        let a = push_attack_card(&mut state);
+        state.player.hand.push(a);
+        let _ = sts2_core::relic_effects::dispatch_after_player_turn_start(&mut state);
+        assert!(!state.cards[a.0.get() as usize - 1].upgraded);
+    }
+
     /// `BoneTea` only fires on round 1 — a round-2 turn-start is inert.
     #[test]
     fn listener_bone_tea_is_noop_outside_round_one() {
@@ -3513,6 +3673,44 @@ mod tests {
             state.combat_log.player_card_plays_this_combat,
             before + 1,
             "HistoryCourse dupe counts as one finished card play"
+        );
+    }
+
+    /// The dupe's finished play on THIS turn, in the build's per-turn tally.
+    #[cfg(test)]
+    fn history_course_dupe_turn_tally(version: sts2_core::GameVersion) -> u32 {
+        use sts2_core::cards::CardId;
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut state = CombatState {
+            game_version: version,
+            ..CombatState::default()
+        };
+        let _enemy = history_course_setup(&mut state, 2);
+        state.combat_log.prev_round_last_attack_skill_played =
+            Some((CardId::StrikeIronclad, false, None));
+        let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
+        state.combat_log.card_plays_finished_this_turn
+    }
+
+    /// v0.107.1 keeps the dupe out of `card_plays_finished_this_turn`.
+    #[test]
+    fn listener_history_course_dupe_turn_tally_v0107() {
+        assert_eq!(
+            history_course_dupe_turn_tally(sts2_core::GameVersion::V0_107_1),
+            0
+        );
+    }
+
+    /// v0.111.0: the dupe is a `CardPlayFinished` this turn, which
+    /// PaleBlueDotPower counts (decomp PaleBlueDotPower.cs:27). Parity fuzz
+    /// Regent seed 537: the dupe + 4 hand plays = the 5th play, so C# applied
+    /// DrawCardsNextTurn on PaleBlueDot's own play (GH #798).
+    #[test]
+    fn listener_history_course_dupe_turn_tally_v0111() {
+        assert_eq!(
+            history_course_dupe_turn_tally(sts2_core::GameVersion::V0_111_0),
+            1
         );
     }
 
@@ -4295,6 +4493,52 @@ mod tests {
             sts2_core::run_effects::dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
         for card in &cards {
             assert!(card.upgraded, "{:?} should be upgraded", card.card_id);
+        }
+    }
+
+    /// LavaLamp upgrades the reward cards with the run build's delta: a
+    /// v0.111.0 Hyperbeam goes 24 -> 30 (`Hyperbeam.cs:61`
+    /// `UpgradeValueBy(6)`), not the v0.107.1 +8.
+    #[test]
+    fn listener_lava_lamp_upgrades_with_build_delta_v0111() {
+        crate::relics::dispatch::ensure_installed();
+        let v = sts2_core::GameVersion::V0_111_0;
+        let mut rs = RunState::new();
+        rs.game_version = v;
+        rs.relics.push(RelicId::LavaLamp);
+        let mut cards =
+            vec![
+                crate::cards::v0111::card_pod_for(sts2_core::cards::CardId::Hyperbeam, false, v)
+                    .expect("spec"),
+            ];
+        let _ =
+            sts2_core::run_effects::dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
+        assert!(cards[0].upgraded);
+        assert_eq!(cards[0].base_damage, 30);
+    }
+
+    /// PaelsTooth hands the stored card back upgraded with the run build's
+    /// delta (v0.111.0 Hyperbeam 30, Expect a Fight keeps cost 3).
+    #[test]
+    fn listener_paels_tooth_upgrades_with_build_delta_v0111() {
+        crate::relics::dispatch::ensure_installed();
+        let v = sts2_core::GameVersion::V0_111_0;
+        for (id, check) in [
+            (
+                sts2_core::cards::CardId::Hyperbeam,
+                (|c: &Card| c.base_damage == 30) as fn(&Card) -> bool,
+            ),
+            (sts2_core::cards::CardId::ExpectAFight, |c: &Card| {
+                c.cost == 3
+            }),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = v;
+            rs.relics.push(RelicId::PaelsTooth);
+            rs.paels_tooth_stored = vec![crate::cards::v0111::card_pod_for(id, false, v).unwrap()];
+            let _ = listener_paels_tooth_after_combat_end(&mut rs);
+            let card = rs.master_deck.last().expect("returned to the deck");
+            assert!(card.upgraded && check(card), "{id:?}: {card:?}");
         }
     }
 

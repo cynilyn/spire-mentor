@@ -117,6 +117,9 @@ impl PyHeuristicRunAgent {
         py: Python<'py>,
         rm: &mut PyRunManager,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        // Bind a pending event room so the policy sees its real options,
+        // as `drive_full_run` does (GH #841).
+        rm.inner.bind_pending_event();
         let actions = rm.inner.get_available_actions();
         if actions.is_empty() {
             return Ok(None);

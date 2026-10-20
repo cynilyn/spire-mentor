@@ -1054,7 +1054,14 @@ fn apply_damage_with_final_impl(
         false
     };
     if was_block_broken {
-        hooks::dispatch_after_block_broken(state, &hooks::AfterBlockBrokenCtx { broken: target });
+        let breaker = dealer.to_creature_uid(state);
+        hooks::dispatch_after_block_broken(
+            state,
+            &hooks::AfterBlockBrokenCtx {
+                broken: target,
+                breaker,
+            },
+        );
     }
 
     // Bead `sts2-rs-jm6e` (ozy.4-rider): tally a player-as-dealer

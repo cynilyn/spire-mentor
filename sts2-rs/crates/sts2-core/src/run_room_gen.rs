@@ -244,6 +244,8 @@ const SCROLLS: Tag = 11;
 const SEAPUNK: Tag = 12;
 const SLUGS: Tag = 13;
 const EXOSKELETONS: Tag = 14;
+/// v0.111.0-only `EncounterTag.Jaxfruit` (decomp `EncounterTag.cs:20`).
+const JAXFRUIT: Tag = 15;
 
 // ── Act 1 (Overgrowth) — Overgrowth.cs GenerateAllEncounters (22) ───────────
 #[rustfmt::skip]
@@ -515,8 +517,26 @@ impl GrabBag {
     }
 }
 
-fn shares_tags(a: &GenEnc, b: &GenEnc) -> bool {
-    a.tags.iter().any(|t| b.tags.contains(t))
+/// An encounter's `Tags` in game build `version`. The static tables hold the
+/// v0.107.1 tags; v0.111.0 retagged two Overgrowth normals with the new
+/// `Jaxfruit` tag (so they no longer roll back to back), and gave
+/// SlitheringStranglerNormal the `Slimes` tag it lacked:
+///
+/// [decompiled C# omitted — see the cited path]
+fn tags_for(e: &GenEnc, version: crate::GameVersion) -> &'static [Tag] {
+    if version >= crate::GameVersion::V0_111_0 {
+        match e.id {
+            "SLITHERING_STRANGLER_NORMAL" => return &[JAXFRUIT, SLIMES],
+            "SNAPPING_JAXFRUIT_NORMAL" => return &[MUSHROOM, JAXFRUIT],
+            _ => {}
+        }
+    }
+    e.tags
+}
+
+fn shares_tags(a: &GenEnc, b: &GenEnc, version: crate::GameVersion) -> bool {
+    let b_tags = tags_for(b, version);
+    tags_for(a, version).iter().any(|t| b_tags.contains(t))
 }
 
 /// `ActModel.AddWithoutRepeatingTags` (`ActModel.cs:328`): grab an encounter that
@@ -527,11 +547,12 @@ fn add_without_repeating_tags(
     last: Option<&'static GenEnc>,
     bag: &mut GrabBag,
     rng: &mut Rng,
+    version: crate::GameVersion,
 ) {
     let picked = {
         let last_id = last.map(|l| l.id);
         let pred = |e: &GenEnc| match last {
-            Some(l) => !shares_tags(e, l) && e.id != last_id.unwrap(),
+            Some(l) => !shares_tags(e, l, version) && e.id != last_id.unwrap(),
             None => true,
         };
         bag.grab_and_remove(rng, Some(&pred))
@@ -549,6 +570,7 @@ fn generate_act_rooms(
     rng: &mut Rng,
     act: &ActGenData,
     subset_ancients: usize,
+    version: crate::GameVersion,
 ) -> GeneratedActRooms {
     let enc = act.encounters;
 
@@ -587,7 +609,7 @@ fn generate_act_rooms(
                 bag.add(e);
             }
         }
-        add_without_repeating_tags(&mut normal_encounters, last, &mut bag, rng);
+        add_without_repeating_tags(&mut normal_encounters, last, &mut bag, rng, version);
         last = normal_encounters
             .last()
             .and_then(|id| enc.iter().find(|e| e.id == *id));
@@ -601,7 +623,7 @@ fn generate_act_rooms(
                 bag.add(e);
             }
         }
-        add_without_repeating_tags(&mut normal_encounters, last, &mut bag, rng);
+        add_without_repeating_tags(&mut normal_encounters, last, &mut bag, rng, version);
         last = normal_encounters
             .last()
             .and_then(|id| enc.iter().find(|e| e.id == *id));
@@ -617,7 +639,7 @@ fn generate_act_rooms(
                 bag.add(e);
             }
         }
-        add_without_repeating_tags(&mut elite_encounters, last_elite, &mut bag, rng);
+        add_without_repeating_tags(&mut elite_encounters, last_elite, &mut bag, rng, version);
         last_elite = elite_encounters
             .last()
             .and_then(|id| enc.iter().find(|e| e.id == *id));
@@ -680,6 +702,24 @@ pub fn generate_all_rooms(
     has_double_boss: bool,
     act1: ActVariant,
 ) -> Vec<GeneratedActRooms> {
+    generate_all_rooms_for(
+        crate::GameVersion::V0_107_1,
+        up_front,
+        has_double_boss,
+        act1,
+    )
+}
+
+/// [`generate_all_rooms`] for game build `version` (GH #792). The only
+/// v0.111.0 difference in room generation is the encounter tags the
+/// no-repeat rule compares ([`tags_for`]); the RNG call sequence is the same.
+#[must_use]
+pub fn generate_all_rooms_for(
+    version: crate::GameVersion,
+    up_front: &mut Rng,
+    has_double_boss: bool,
+    act1: ActVariant,
+) -> Vec<GeneratedActRooms> {
     let acts = acts_for(act1);
     // (1) SharedAncients.UnstableShuffle — 1 element ([Darv]) → 0 reads. Then
     // (2) distribute the subset among acts 2,3 (`Acts.Skip(1)`).
@@ -693,7 +733,7 @@ pub fn generate_all_rooms(
 
     (0..3)
         .map(|i| {
-            let mut rooms = generate_act_rooms(up_front, acts[i], subset[i]);
+            let mut rooms = generate_act_rooms(up_front, acts[i], subset[i], version);
             if i == 2 && has_double_boss {
                 // Last act only (`i == State.Acts.Count - 1`,
                 // `RunManager.cs:501`): pick the second boss from the
@@ -989,5 +1029,77 @@ mod tests {
                 .any(|e| e.room == RoomKind::Boss && e.id == second),
             "second boss {second} comes from the act-3 boss pool"
         );
+    }
+
+    // ── v0.111.0 (GH #792) ───────────────────────────────────────────
+
+    #[test]
+    fn v0107_generate_all_rooms_is_the_versioned_generator() {
+        for seed in 0..40 {
+            for act1 in [ActVariant::Overgrowth, ActVariant::Underdocks] {
+                let mut a = Rng::new(seed);
+                let mut b = Rng::new(seed);
+                assert_eq!(
+                    generate_all_rooms(&mut a, true, act1),
+                    generate_all_rooms_for(crate::GameVersion::V0_107_1, &mut b, true, act1)
+                );
+                assert_eq!(a, b);
+            }
+        }
+    }
+
+    /// v0.111.0 tags SlitheringStranglerNormal [Jaxfruit, Slimes] and
+    /// SnappingJaxfruitNormal [Mushroom, Jaxfruit], so the no-repeat rule
+    /// keeps them (and the strangler next to a slime fight) apart.
+    #[test]
+    fn jaxfruit_tag_separates_strangler_and_jaxfruit_v0111() {
+        let v = crate::GameVersion::V0_111_0;
+        let find = |id: &str| ACT1.iter().find(|e| e.id == id).unwrap();
+        let strangler = find("SLITHERING_STRANGLER_NORMAL");
+        let jaxfruit = find("SNAPPING_JAXFRUIT_NORMAL");
+        let slimes = find("SLIMES_NORMAL");
+        assert!(shares_tags(strangler, jaxfruit, v));
+        assert!(shares_tags(strangler, slimes, v));
+        assert!(!shares_tags(
+            strangler,
+            jaxfruit,
+            crate::GameVersion::V0_107_1
+        ));
+        assert!(!shares_tags(
+            strangler,
+            slimes,
+            crate::GameVersion::V0_107_1
+        ));
+        // The rule is soft (`AddWithoutRepeatingTags` falls back to an
+        // unconstrained grab when nothing qualifies), so compare adjacency
+        // counts rather than forbidding it outright.
+        let adjacent = |rooms: &[GeneratedActRooms]| {
+            rooms[0]
+                .normal_encounters
+                .windows(2)
+                .filter(|w| {
+                    let ids = [w[0], w[1]];
+                    ids.contains(&"SLITHERING_STRANGLER_NORMAL")
+                        && ids.contains(&"SNAPPING_JAXFRUIT_NORMAL")
+                })
+                .count()
+        };
+        let (mut changed, mut adj_old, mut adj_new) = (false, 0, 0);
+        for seed in 0..300 {
+            let mut a = Rng::new(seed);
+            let mut b = Rng::new(seed);
+            let old = generate_all_rooms_for(
+                crate::GameVersion::V0_107_1,
+                &mut a,
+                false,
+                ActVariant::Overgrowth,
+            );
+            let new = generate_all_rooms_for(v, &mut b, false, ActVariant::Overgrowth);
+            changed |= old[0].normal_encounters != new[0].normal_encounters;
+            adj_old += adjacent(&old);
+            adj_new += adjacent(&new);
+        }
+        assert!(adj_new < adj_old, "old {adj_old} new {adj_new}");
+        assert!(changed, "the retag must change some act-1 rolls");
     }
 }

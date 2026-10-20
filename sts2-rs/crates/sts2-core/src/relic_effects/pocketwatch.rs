@@ -33,7 +33,7 @@ pub(crate) fn on_modify_hand_draw_pocketwatch(state: &CombatState, current_draw:
     if !player_owns_relic(state, crate::RelicKind::Pocketwatch) {
         return current_draw;
     }
-    if state.round_no() <= 1 {
+    if state.turn_number() <= 1 {
         return current_draw;
     }
     let Some(last_turn) = pocketwatch_cards_last_turn(state) else {

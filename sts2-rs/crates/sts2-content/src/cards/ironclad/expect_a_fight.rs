@@ -14,11 +14,25 @@ use super::prelude::*;
 /// unaffected by the suppression.
 /// `CalculatedEnergy`: `CalculationBase(0) + CalculationExtra(1) x <Attacks in
 /// your Hand>`. Shared with the card face — see `crate::cards::preview`.
+///
+/// v0.111.0 (`ExpectAFight.cs:19-23`, GH #793) reworked the card into Block:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// with `OnUpgrade` `CalculationBase +1`, `CalculationExtra +3` → upgraded
+/// `16 + 8 x max(0, Strength)`.
 pub(crate) fn preview_expect_a_fight(
     state: &CombatState,
-    _card: &Card,
+    card: &Card,
     _target: Option<CreatureUid>,
 ) -> i32 {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: CalculatedBlock = base + extra x max(0, Strength)
+        // (decomp ExpectAFight.cs:21-23, OnUpgrade :41-42).
+        let (base, extra) = if card.upgraded { (16, 8) } else { (15, 5) };
+        let strength = state.player_power_amount(PowerKind::Strength).max(0);
+        return base + extra * strength;
+    }
     state
         .player
         .hand
@@ -37,6 +51,13 @@ pub(crate) fn play_expect_a_fight(
     state: &mut CombatState,
     _t: Option<CreatureUid>,
 ) -> EffectResult {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: `CreatureCmd.GainBlock(CalculatedBlock, Move)` — no energy,
+        // no NoEnergyGain (decomp ExpectAFight.cs:36).
+        let block = resolving_preview(state, preview_expect_a_fight, None);
+        gain_block_player(state, block);
+        return EffectResult::Resolved;
+    }
     let attack_count = resolving_preview(state, preview_expect_a_fight, None);
     // C# routes the gain through `PlayerCmd.GainEnergy` (PlayerCmd.cs:24-37),
     // which fires `Hook.ModifyEnergyGain` and clamps; direct `+=` mutation

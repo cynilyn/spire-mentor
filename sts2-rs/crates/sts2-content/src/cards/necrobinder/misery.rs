@@ -55,6 +55,13 @@ pub(crate) fn play_misery(state: &mut CombatState, target: Option<CreatureUid>) 
     // 2. Deal the attack damage to the target.
     let _ = deal_damage_player_to_enemy(state, t, current_damage(state));
 
+    // v0.111.0 (decomp Misery.cs:27-66, GH #793): temporary debuffs fold
+    // their amount into the power they apply internally, and zero amounts
+    // are skipped — see `copy_debuffs_v0111`.
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        copy_debuffs_v0111(state, t, &original_debuffs);
+        return EffectResult::Resolved;
+    }
     // 3. Copy each snapshotted debuff onto every other hittable enemy.
     if !original_debuffs.is_empty() {
         let others: Vec<CreatureUid> = state
@@ -110,4 +117,80 @@ pub(crate) fn upgrade() -> Option<CardUpgradeDelta> {
     // `card_upgrades_generated.rs` table (CardId::Misery row); per-card
     // delta is None.
     None
+}
+
+/// v0.111.0 Misery copy step (decomp Misery.cs:27-66, GH #793):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// Every temporary DEBUFF power in this build is a `TemporaryStrengthPower`
+/// subclass (`afflictions::is_temporary_power_debuff`), so its internally
+/// applied power is Strength. A drained Strength `-N` that came from such a
+/// power reads `-N + N = 0` after the fold and is skipped; the temporary
+/// power is then applied normally and its `BeforeApplied` takes the `N`
+/// Strength off again (applied explicitly here, the PiercingWail pattern).
+/// v0.107.1 instead copied both and suppressed the second Strength loss
+/// (`IgnoreNextInstance`).
+fn copy_debuffs_v0111(state: &mut CombatState, t: CreatureUid, original: &[(PowerKind, i32)]) {
+    use sts2_core::afflictions::is_temporary_power_debuff;
+    let mut amounts: Vec<(PowerKind, i32)> = original.to_vec();
+    for i in 0..amounts.len() {
+        let (kind, amount) = amounts[i];
+        if is_temporary_power_debuff(kind) {
+            if let Some(slot) = amounts.iter_mut().find(|(k, _)| *k == PowerKind::Strength) {
+                slot.1 += amount;
+            }
+        }
+    }
+    if amounts.is_empty() {
+        return;
+    }
+    let others: Vec<CreatureUid> = state
+        .active_enemy_uids()
+        .into_iter()
+        .filter(|uid| *uid != t)
+        .collect();
+    for enemy in others {
+        let alive = state
+            .creatures
+            .iter()
+            .any(|c| c.id == enemy.0 && c.current_hp > 0);
+        if !alive {
+            continue;
+        }
+        for &(kind, amount) in &amounts {
+            if amount == 0 {
+                continue;
+            }
+            if is_temporary_power_debuff(kind) {
+                // `TemporaryStrengthPower.BeforeApplied` (IsPositive => false):
+                // `Strength -amount` alongside the temporary power itself.
+                let prev = creature_power_amount(state, enemy, kind);
+                apply_power_to_enemy(state, enemy, kind, amount);
+                if creature_power_amount(state, enemy, kind) > prev {
+                    apply_power_signed_to_creature(state, enemy, PowerKind::Strength, -amount);
+                }
+            } else if amount < 0 {
+                apply_power_signed_to_creature(state, enemy, kind, amount);
+            } else {
+                apply_power_to_enemy(state, enemy, kind, amount);
+            }
+        }
+    }
+}
+
+/// The `amount` of `kind` on creature `uid` (0 when absent).
+fn creature_power_amount(state: &CombatState, uid: CreatureUid, kind: PowerKind) -> i32 {
+    state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .and_then(|c| {
+            c.powers
+                .iter()
+                .filter_map(|p| state.powers.get_by_id(p.0))
+                .find(|p| p.kind == kind)
+                .map(|p| p.amount)
+        })
+        .unwrap_or(0)
 }

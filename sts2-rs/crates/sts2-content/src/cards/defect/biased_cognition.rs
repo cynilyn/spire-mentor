@@ -11,7 +11,17 @@ pub(crate) fn play_biased_cognition(
     // Bead `sts2-rs-qz8lw`: C# `BiasedCognition.cs` `PowerVar<FocusPower>(4)`
     // with `OnUpgrade UpgradeValueBy(1m)` → Focus 4 base / 5 upgraded.
     // `PowerVar<BiasedCognitionPower>(1)` does NOT upgrade.
-    let focus = if current_card_upgraded(state) { 5 } else { 4 };
+    // v0.111.0: Focus 4 -> 5, upgrade still +1 (decomp BiasedCognition.cs:18,36).
+    let base = if crate::cards::v0111::is_v0111(state.game_version) {
+        5
+    } else {
+        4
+    };
+    let focus = if current_card_upgraded(state) {
+        base + 1
+    } else {
+        base
+    };
     apply_power_to_player(state, PowerKind::Focus, focus);
     apply_power_to_player(state, PowerKind::BiasedCognition, 1);
     EffectResult::Resolved

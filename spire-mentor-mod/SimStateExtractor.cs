@@ -46,6 +46,7 @@ using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Unlocks;
 
@@ -124,6 +125,10 @@ public static class SimStateExtractor
         msg["act_name"] = SafeString(() => runState?.Act?.Id.Entry) ?? "";
         msg["floor"] = runState?.TotalFloor ?? 0;
         msg["mod_version"] = MainFile.ModVersion;
+        // Which game build is running ("v0.107.1" / "v0.111.0"): the advisor
+        // builds its engine for it and refuses a build it does not support.
+        // Absent (every mod before the field) means v0.107.1. PROTOCOL.md s1.
+        msg["game_version"] = SimGameVersion.Wire;
         msg["run_state"] = SerializeRunState(runState, player);
         // The run's RNG position: the once-hashed master seed every per-stream
         // salt mixes into (`RunRngSet.Seed`, which is what sts2-rs's
@@ -144,7 +149,19 @@ public static class SimStateExtractor
     }
 
     /// <summary>
-    /// `{"run_seed": uint, "counters": {stream: readCount}}` — the run's RNG
+    /// A stream's read count. v0.111.0 dropped the public <c>Rng.Counter</c>;
+    /// the count now lives only in the stream's serializable state
+    /// (decomp v0.111.0 <c>Core.Random/Rng.cs</c>
+    /// <c>ToSerializable()</c>, <c>SerializableRng.counter</c>).
+    /// </summary>
+#if GAME_V0111
+    private static int Cursor(Rng r) => r.ToSerializable().counter;
+#else
+    private static int Cursor(Rng r) => r.Counter;
+#endif
+
+    /// <summary>
+    /// `{"run_seed": uint (v0.107.1) | ulong (v0.111.0), "counters": {stream: readCount}}` — the run's RNG
     /// position, keyed by the same snake_case stream names sts2-rs uses so the
     /// two sides line up field-for-field. Empty when no run is active.
     /// </summary>
@@ -166,25 +183,25 @@ public static class SimStateExtractor
             var seed = rng.Seed;
             var c = new Dictionary<string, object?>
             {
-                ["up_front"] = rng.UpFront.Counter,
-                ["shuffle"] = rng.Shuffle.Counter,
-                ["combat_card_generation"] = rng.CombatCardGeneration.Counter,
-                ["combat_potion_generation"] = rng.CombatPotionGeneration.Counter,
-                ["combat_card_selection"] = rng.CombatCardSelection.Counter,
-                ["combat_energy_costs"] = rng.CombatEnergyCosts.Counter,
-                ["combat_targets"] = rng.CombatTargets.Counter,
-                ["monster_ai"] = rng.MonsterAi.Counter,
-                ["niche"] = rng.Niche.Counter,
-                ["combat_orbs"] = rng.CombatOrbGeneration.Counter,
+                ["up_front"] = Cursor(rng.UpFront),
+                ["shuffle"] = Cursor(rng.Shuffle),
+                ["combat_card_generation"] = Cursor(rng.CombatCardGeneration),
+                ["combat_potion_generation"] = Cursor(rng.CombatPotionGeneration),
+                ["combat_card_selection"] = Cursor(rng.CombatCardSelection),
+                ["combat_energy_costs"] = Cursor(rng.CombatEnergyCosts),
+                ["combat_targets"] = Cursor(rng.CombatTargets),
+                ["monster_ai"] = Cursor(rng.MonsterAi),
+                ["niche"] = Cursor(rng.Niche),
+                ["combat_orbs"] = Cursor(rng.CombatOrbGeneration),
             };
             var prng = (runState?.Players != null && runState.Players.Count > 0)
                 ? runState.Players[0].PlayerRng
                 : null;
             if (prng != null)
             {
-                c["rewards"] = prng.Rewards.Counter;
-                c["shops"] = prng.Shops.Counter;
-                c["transformations"] = prng.Transformations.Counter;
+                c["rewards"] = Cursor(prng.Rewards);
+                c["shops"] = Cursor(prng.Shops);
+                c["transformations"] = Cursor(prng.Transformations);
             }
             d["run_seed"] = seed;
             d["counters"] = c;

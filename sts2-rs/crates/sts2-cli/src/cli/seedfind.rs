@@ -47,6 +47,7 @@ use sts2_core::events::EventId;
 use sts2_core::full_run::{drive_full_run, FullRunConfig, RunPolicy};
 use sts2_core::potions::CharacterId;
 use sts2_core::run_manager::{Phase, RunAction, RunManager};
+use sts2_core::GameVersion;
 use sts2_core::{RelicId, RoomType};
 
 // ── CLI surface ─────────────────────────────────────────────────────────────
@@ -110,6 +111,11 @@ pub struct SeedfindArgs {
     /// Ascension level (0-20). Overrides the spec's `ascension` if given.
     #[arg(long)]
     pub ascension: Option<u8>,
+
+    /// Game build to search — filled from the global `--game-version` flag
+    /// by `main` (GH #787), not a flag of its own.
+    #[arg(skip)]
+    pub game_version: GameVersion,
 
     /// Seed enumeration mode.
     #[arg(long, value_enum, default_value_t = SeedMode::String)]
@@ -334,15 +340,30 @@ pub struct ActSnapshot {
 /// do: construct → `with_neow_start` → `initialize_run_setup`. This pre-rolls
 /// every act's rooms (encounters / boss / event pool / ancient) off `up_front`
 /// and rolls the Neow offers, all deterministically from `seed`.
-fn ready_run_manager(seed: i32, character: CharacterId, ascension: u8) -> RunManager {
-    let mut rm =
-        new_run_manager_for_character_with_ascension(seed, character, ascension).with_neow_start();
+///
+/// `seed` is the run's hashed master seed (`RunRngSet.Seed`) — a `uint` in
+/// v0.107.1, a full `ulong` in v0.111.0 (GH #788).
+fn ready_run_manager(
+    seed: u64,
+    character: CharacterId,
+    ascension: u8,
+    game_version: GameVersion,
+) -> RunManager {
+    let mut rm = new_run_manager_for_character_with_ascension(seed as i32, character, ascension)
+        .with_game_version(game_version)
+        .with_run_seed(seed)
+        .with_neow_start();
     initialize_run_setup(&mut rm);
     rm
 }
 
-fn snapshot(seed: i32, character: CharacterId, ascension: u8) -> Snapshot {
-    let mut rm = ready_run_manager(seed, character, ascension);
+fn snapshot(
+    seed: u64,
+    character: CharacterId,
+    ascension: u8,
+    game_version: GameVersion,
+) -> Snapshot {
+    let mut rm = ready_run_manager(seed, character, ascension, game_version);
 
     let neow_offers = rm
         .run_state
@@ -640,9 +661,10 @@ impl RunPolicy for CollectingPolicy {
 
 /// Drive `paths` random full runs for one seed and collect each path's trace.
 fn collect_driven(
-    seed: i32,
+    seed: u64,
     character: CharacterId,
     ascension: u8,
+    game_version: GameVersion,
     paths: u32,
     max_steps: usize,
 ) -> DrivenObservations {
@@ -656,8 +678,8 @@ fn collect_driven(
     for path in 0..paths.max(1) {
         // Vary the policy seed per path so distinct paths are sampled, while
         // keeping the run seed (and thus the content) fixed.
-        let policy_seed = seed.wrapping_add(path.wrapping_mul(0x9E37_79B9) as i32);
-        let mut rm = ready_run_manager(seed, character, ascension);
+        let policy_seed = (seed as i32).wrapping_add(path.wrapping_mul(0x9E37_79B9) as i32);
+        let mut rm = ready_run_manager(seed, character, ascension, game_version);
         let mut policy = CollectingPolicy::from_run_seed(policy_seed);
         let _ = drive_full_run(&mut rm, &mut policy, &cfg);
         obs.paths.push(policy.trace);
@@ -694,27 +716,55 @@ fn index_to_seed_string(mut i: u64) -> String {
     String::from_utf8(out).expect("seed alphabet is ASCII")
 }
 
-/// A candidate seed: its numeric `i32` (what the engine consumes) and the
+/// A candidate seed: the hashed master seed the engine consumes
+/// (`RunRngSet.Seed` — `uint` in v0.107.1, `ulong` in v0.111.0) and the
 /// human-facing label (game seed string, or the integer itself).
 #[derive(Debug, Clone)]
 struct Candidate {
-    numeric: i32,
+    numeric: u64,
     label: String,
 }
 
-fn candidate(mode: SeedMode, index: u64) -> Candidate {
+impl Candidate {
+    /// The master seed as reports print it: the historical `i32` view in
+    /// v0.107.1 (so existing reports are unchanged), the full `u64` in
+    /// v0.111.0.
+    fn reported(&self, version: GameVersion) -> i128 {
+        if version.is_default() {
+            i128::from(self.numeric as u32 as i32)
+        } else {
+            i128::from(self.numeric)
+        }
+    }
+}
+
+/// Hash a game seed string the way the build does at run start
+/// (`SeedHelper.CanonicalizeSeed`, then `RunRngSet`'s hash).
+fn hash_seed_string(version: GameVersion, s: &str) -> u64 {
+    version.run_seed_hash(&sts2_core::canonicalize_seed(s))
+}
+
+/// An integer-mode seed (`i32`, as the engine has always taken it) as a
+/// master seed.
+fn int_seed(n: i32) -> u64 {
+    u64::from(n as u32)
+}
+
+fn candidate(mode: SeedMode, index: u64, version: GameVersion) -> Candidate {
     match mode {
         SeedMode::String => {
             let s = index_to_seed_string(index);
-            let numeric = sts2_core::deterministic_hash_code(&sts2_core::canonicalize_seed(&s));
-            Candidate { numeric, label: s }
+            Candidate {
+                numeric: hash_seed_string(version, &s),
+                label: s,
+            }
         }
         SeedMode::Int => {
             #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-            let numeric = index as i32;
+            let n = index as i32;
             Candidate {
-                numeric,
-                label: numeric.to_string(),
+                numeric: int_seed(n),
+                label: n.to_string(),
             }
         }
     }
@@ -749,7 +799,7 @@ struct PathReport {
 #[derive(Debug, Clone, Serialize)]
 struct Match {
     seed: String,
-    numeric_seed: i32,
+    numeric_seed: i128,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ancient_offers: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -807,17 +857,25 @@ fn evaluate(
     spec: &Spec,
     character: CharacterId,
     ascension: u8,
+    game_version: GameVersion,
     paths: u32,
     max_steps: usize,
 ) -> Option<Match> {
-    let snap = snapshot(cand.numeric, character, ascension);
+    let snap = snapshot(cand.numeric, character, ascension, game_version);
     if !snap.matches_seed_alone(spec) {
         return None;
     }
     let mut card_reward_hits = Vec::new();
     let mut routes = Vec::new();
     if spec.has_driven_predicates() {
-        let obs = collect_driven(cand.numeric, character, ascension, paths, max_steps);
+        let obs = collect_driven(
+            cand.numeric,
+            character,
+            ascension,
+            game_version,
+            paths,
+            max_steps,
+        );
         if !obs.matches_driven(spec) {
             return None;
         }
@@ -843,7 +901,7 @@ fn evaluate(
 
     Some(Match {
         seed: cand.label.clone(),
-        numeric_seed: cand.numeric,
+        numeric_seed: cand.reported(game_version),
         ancient_offers,
         neow_offers: if spec.neow_offer.is_empty() {
             Vec::new()
@@ -886,34 +944,36 @@ pub fn run<W: Write>(args: SeedfindArgs, out: &mut W) -> io::Result<usize> {
         CharacterId::Ironclad
     };
     let ascension = args.ascension.or(spec.ascension).unwrap_or(0);
+    let game_version = args.game_version;
 
     // `--dump`: print one seed's snapshot and exit.
     if let Some(dump) = &args.dump {
         let cand = match args.mode {
-            SeedMode::String => {
-                let numeric =
-                    sts2_core::deterministic_hash_code(&sts2_core::canonicalize_seed(dump));
-                Candidate {
-                    numeric,
-                    label: dump.clone(),
-                }
-            }
+            SeedMode::String => Candidate {
+                numeric: hash_seed_string(game_version, dump),
+                label: dump.clone(),
+            },
             SeedMode::Int => {
-                let numeric: i32 = dump.parse().map_err(|_| {
+                let n: i32 = dump.parse().map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("bad --dump int: {dump}"),
                     )
                 })?;
                 Candidate {
-                    numeric,
+                    numeric: int_seed(n),
                     label: dump.clone(),
                 }
             }
         };
-        let snap = snapshot(cand.numeric, character, ascension);
+        let snap = snapshot(cand.numeric, character, ascension, game_version);
         let json = serde_json::to_string_pretty(&snap).expect("snapshot serializes");
-        writeln!(out, "seed {} (numeric {}):", cand.label, cand.numeric)?;
+        writeln!(
+            out,
+            "seed {} (numeric {}):",
+            cand.label,
+            cand.reported(game_version)
+        )?;
         writeln!(out, "{json}")?;
         return Ok(0);
     }
@@ -963,9 +1023,17 @@ pub fn run<W: Write>(args: SeedfindArgs, out: &mut W) -> io::Result<usize> {
             let mut found: Vec<(u64, Match)> = (start..stop)
                 .into_par_iter()
                 .filter_map(|idx| {
-                    let cand = candidate(mode, idx);
+                    let cand = candidate(mode, idx, game_version);
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        evaluate(&cand, spec_ref, character, ascension, paths, max_steps)
+                        evaluate(
+                            &cand,
+                            spec_ref,
+                            character,
+                            ascension,
+                            game_version,
+                            paths,
+                            max_steps,
+                        )
                     }))
                     .ok()
                     .flatten()
@@ -1135,8 +1203,8 @@ mod tests {
 
     #[test]
     fn snapshot_is_deterministic_per_seed() {
-        let a = snapshot(12345, CharacterId::Ironclad, 0);
-        let b = snapshot(12345, CharacterId::Ironclad, 0);
+        let a = snapshot(12345, CharacterId::Ironclad, 0, GameVersion::default());
+        let b = snapshot(12345, CharacterId::Ironclad, 0, GameVersion::default());
         assert_eq!(a.neow_offers, b.neow_offers);
         assert_eq!(a.acts.len(), b.acts.len());
         for (x, y) in a.acts.iter().zip(b.acts.iter()) {
@@ -1148,7 +1216,7 @@ mod tests {
 
     #[test]
     fn snapshot_populates_three_acts_with_content() {
-        let s = snapshot(999, CharacterId::Ironclad, 0);
+        let s = snapshot(999, CharacterId::Ironclad, 0, GameVersion::default());
         assert_eq!(s.acts.len(), 3, "three acts generated");
         assert_eq!(s.neow_offers.len(), 3, "three neow offers");
         for a in &s.acts {
@@ -1169,7 +1237,7 @@ mod tests {
     #[test]
     fn empty_spec_matches_every_seed() {
         let spec = Spec::default();
-        let snap = snapshot(1, CharacterId::Ironclad, 0);
+        let snap = snapshot(1, CharacterId::Ironclad, 0, GameVersion::default());
         assert!(snap.matches_seed_alone(&spec));
     }
 
@@ -1213,7 +1281,7 @@ mod tests {
     fn ancient_offer_predicate_matches_when_present() {
         // Find any seed whose act-2 ancient offers something, then assert the
         // predicate accepts that exact relic and rejects a bogus one.
-        let snap = snapshot(4242, CharacterId::Ironclad, 0);
+        let snap = snapshot(4242, CharacterId::Ironclad, 0, GameVersion::default());
         let offer = snap.acts[1]
             .ancient_offers
             .first()

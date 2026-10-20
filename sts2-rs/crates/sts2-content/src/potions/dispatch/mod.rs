@@ -6,6 +6,7 @@
 use sts2_core::potion_effects::{self, PotionEffectFn};
 use sts2_core::PotionKind;
 
+pub mod ambergris;
 pub mod ashwater;
 pub mod attack_potion;
 pub mod beetle_juice;
@@ -81,7 +82,7 @@ pub(crate) use helpers::KINGS_COURAGE_FORGE_AMOUNT;
 /// Install every potion on-drink handler into the global registry.
 /// (`register_many` overwrites existing entries with the same value.)
 pub fn install_default_registry() {
-    let entries: [(PotionKind, PotionEffectFn); 63] = [
+    let entries: [(PotionKind, PotionEffectFn); 64] = [
         (
             PotionKind::AttackPotion,
             attack_potion::drink_attack_potion as PotionEffectFn,
@@ -333,6 +334,11 @@ pub fn install_default_registry() {
         (
             PotionKind::PotionShapedRock,
             potion_shaped_rock::drink_potion_shaped_rock as PotionEffectFn,
+        ),
+        // v0.111.0-only (GH #792); unreachable in a v0.107.1 run.
+        (
+            PotionKind::Ambergris,
+            ambergris::drink_ambergris as PotionEffectFn,
         ),
     ];
     potion_effects::register_many(&entries);

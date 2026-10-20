@@ -12,8 +12,9 @@
 #
 # Env overrides:
 #   REPO          monorepo root (default: three levels up from this script) -- only READ:
-#                 GodotStubs sources + sts2-pycli/lib (Harmony, MonoMod, ...)
-#   STS2_DLL      the game's sts2.dll (default: sts2-pycli/lib/sts2.dll, which `just import-game` provides)
+#                 GodotStubs sources + sts2-pycli/lib/<GAME_VERSION> (Harmony, MonoMod, ...)
+#   GAME_VERSION  game build whose DLLs to use (default: $STS2_GAME_VERSION or v0.107.1)
+#   STS2_DLL      the game's sts2.dll (default: sts2-pycli/lib/<GAME_VERSION>/sts2.dll, which `just import-game` provides)
 #   BASELIB_DLL   BaseLib.dll (optional; nothing the server does touches it)
 #   BASELINE      transcript to diff against (default: <this dir>/golden/transcript.jsonl); BASELINE=none to skip
 #   WIRE_BUILD    build directory (default: <this dir>/.build, gitignored)
@@ -28,11 +29,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DLL="$(realpath "$1")"
 OUT="$(mkdir -p "$2" && cd "$2" && pwd)"
 REPO="${REPO:-$(cd "$HERE/../../.." && pwd)}"
-STS2_DLL="${STS2_DLL:-$REPO/sts2-pycli/lib/sts2.dll}"
+GAME_VERSION="${GAME_VERSION:-${STS2_GAME_VERSION:-v0.107.1}}"
+LIB="$REPO/sts2-pycli/lib/$GAME_VERSION"
+# Pre-#789 checkouts keep the v0.107.1 DLLs flat in lib/.
+[[ -f "$LIB/sts2.dll" || "$GAME_VERSION" != v0.107.1 || ! -f "$REPO/sts2-pycli/lib/sts2.dll" ]] || LIB="$REPO/sts2-pycli/lib"
+STS2_DLL="${STS2_DLL:-$LIB/sts2.dll}"
 BASELIB_DLL="${BASELIB_DLL:-}"
 BASELINE="${BASELINE:-$HERE/golden/transcript.jsonl}"
 DOTNET="${DOTNET:-dotnet}"
-LIB="$REPO/sts2-pycli/lib"
 STUB_SRC="$REPO/sts2-pycli/src/GodotStubs"
 BUILD="${WIRE_BUILD:-$HERE/.build}"
 

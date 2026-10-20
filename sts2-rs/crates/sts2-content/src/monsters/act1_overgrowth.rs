@@ -144,7 +144,23 @@ pub fn infested_after_death_spawn(state: &mut CombatState, _owner: CreatureUid) 
         // downstream discard/reshuffle pile size, surfacing as a `shuffle`
         // RNG-counter divergence). Mirrors the Axebot respawn telegraph in
         // `act3_glory::respawn_axebot`.
-        let initial_intent = ai.current_move().intents.first().copied();
+        // v0.111.0: a PhrogParasite killed on the ENEMY side (a Poison tick at
+        // the enemy turn start, before the acting snapshot) adds its wrigglers
+        // while `CurrentSide == Enemy`: `AfterCreatureAdded` rolls no move and
+        // `SpawnedThisTurn` makes `Creature.TakeTurn` skip `PerformMove`
+        // (decomp Creature.cs:722, MonsterModel.cs:555), so they sit out that
+        // turn and perform SPAWNED_MOVE on the next one — the
+        // `surprise_after_death_spawn` / Axebot rule. Telegraphing here let
+        // them stun that same turn and bite/wriggle a turn early (Silent mid
+        // seed 995, PHROG_PARASITE_ELITE: player.hp cs=58 rs=46). v0.107.1 C#
+        // is the same; left alone there for bit-identity.
+        let telegraph = state.game_version < sts2_core::GameVersion::V0_111_0
+            || state.side == sts2_core::Side::Player;
+        let initial_intent = if telegraph {
+            ai.current_move().intents.first().copied()
+        } else {
+            None
+        };
         state.set_creature_ai(uid, ai);
         if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
             c.intent = initial_intent;
@@ -2441,6 +2457,41 @@ mod tests {
                 i + 1,
             );
         }
+    }
+
+    /// Intents of the wrigglers a PhrogParasite death adds on the ENEMY side
+    /// (a Poison tick at the enemy turn start).
+    fn enemy_side_infested_intents(
+        version: sts2_core::GameVersion,
+    ) -> Vec<Option<sts2_core::monsters::Intent>> {
+        let mut state = sts2_core::CombatState {
+            game_version: version,
+            ..Default::default()
+        };
+        state.side = sts2_core::Side::Enemy;
+        let phrog = state.spawn_enemy(MonsterKind::PhrogParasite);
+        infested_after_death_spawn(&mut state, phrog);
+        state
+            .creatures
+            .iter()
+            .filter(|c| c.species == Some(MonsterKind::Wriggler))
+            .map(|c| c.intent)
+            .collect()
+    }
+
+    /// v0.107.1 Rust telegraphs the Stun even on an enemy-side death.
+    #[test]
+    fn infested_enemy_side_wrigglers_telegraph_v0107() {
+        let intents = enemy_side_infested_intents(sts2_core::GameVersion::V0_107_1);
+        assert_eq!(intents, vec![Some(sts2_core::monsters::Intent::Stun); 4]);
+    }
+
+    /// v0.111.0: `SpawnedThisTurn` (MonsterModel.cs:555, Creature.cs:722) —
+    /// wrigglers added during the enemy turn sit it out (no telegraph).
+    #[test]
+    fn infested_enemy_side_wrigglers_sit_out_the_turn_v0111() {
+        let intents = enemy_side_infested_intents(sts2_core::GameVersion::V0_111_0);
+        assert_eq!(intents, vec![None; 4]);
     }
 
     /// Bead `sts2-rs-2u9w1`: the 4 InfestedPower-death Wrigglers must use the

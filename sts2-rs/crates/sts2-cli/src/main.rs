@@ -60,6 +60,7 @@ fn main() -> ExitCode {
         }
     };
 
+    let game_version = cli.game_version;
     match cli.command {
         Command::Combat(args) => {
             // The `combat` subcommand's `ArgMatches` lives under the
@@ -68,7 +69,7 @@ fn main() -> ExitCode {
             let combat_matches = matches
                 .subcommand_matches("combat")
                 .expect("combat subcommand matched");
-            run_combat(args, combat_matches)
+            run_combat(args, combat_matches, game_version)
         }
         Command::List(args) => {
             let mut stdout = io::stdout().lock();
@@ -80,7 +81,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Fuzz(args) => {
+        Command::Fuzz(mut args) => {
+            args.game_version = game_version;
             let mut stdout = io::stdout().lock();
             match cli::fuzz::run(args, &mut stdout) {
                 // Non-zero exit when the sweep found crashes/anomalies so
@@ -93,7 +95,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Command::Seedfind(args) => {
+        Command::Seedfind(mut args) => {
+            args.game_version = game_version;
             let mut stdout = io::stdout().lock();
             match cli::seedfind::run(args, &mut stdout) {
                 Ok(_) => ExitCode::SUCCESS,
@@ -337,7 +340,11 @@ fn apply_random_flags(args: &mut CombatArgs, matches: &ArgMatches) -> Result<(),
     Ok(())
 }
 
-fn run_combat(mut args: CombatArgs, matches: &ArgMatches) -> ExitCode {
+fn run_combat(
+    mut args: CombatArgs,
+    matches: &ArgMatches,
+    game_version: sts2_core::GameVersion,
+) -> ExitCode {
     // ── Scenario-file merge (bead sts2-rs-g2ex / cliext D1) ────────
     // Precedence: CLI > scenario file > defaults. We materialize the
     // file (if any), then for each scalar flag check the matches'
@@ -595,6 +602,8 @@ fn run_combat(mut args: CombatArgs, matches: &ArgMatches) -> ExitCode {
         args.max_hp,
         resolved_deck,
     );
+    // GH #787: the global `--game-version` flag, threaded like ascension.
+    state.game_version = game_version;
     // Seed the player's potion belt (cliext C4). The legacy
     // state.potions arena stays empty (P7-8 sts2-rs-h9u will pair
     // slot + arena); legal_actions keys off state.player.potions for

@@ -8,7 +8,7 @@ pub(crate) fn on_modify_hand_draw_ring_of_the_drake(state: &CombatState, current
     if !player_owns_relic(state, crate::RelicKind::RingOfTheDrake) {
         return current_draw;
     }
-    if state.round_no() <= 3 {
+    if state.turn_number() <= 3 {
         current_draw + 2
     } else {
         current_draw

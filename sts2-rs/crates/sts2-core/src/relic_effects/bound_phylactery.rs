@@ -20,7 +20,7 @@ pub(crate) fn on_before_combat_start_bound_phylactery(state: &mut CombatState) -
 /// Refreshes / revives the Osty on every post-round-1 energy reset
 /// via [`CombatState::summon_osty`] (bead `sts2-rs-jmsx5`).
 pub(crate) fn on_after_energy_reset_bound_phylactery(state: &mut CombatState) -> EffectResult {
-    if state.round_no() <= 1 {
+    if state.turn_number() <= 1 {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::BoundPhylactery) {

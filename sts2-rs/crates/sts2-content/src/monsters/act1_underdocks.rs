@@ -864,6 +864,11 @@ pub fn surprise_after_death_spawn(state: &mut CombatState, owner: sts2_core::Cre
     // respawn telegraph rule in `act3_glory::axebot_stock_after_death`.
     let telegraph = state.side == sts2_core::Side::Player;
 
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        surprise_after_death_spawn_v0111(state, owner, telegraph);
+        return;
+    }
+
     for (kind, ai) in [
         (MonsterKind::SneakyGremlin, create_sneaky_gremlin_ai()),
         (MonsterKind::FatGremlin, create_fat_gremlin_ai()),
@@ -881,6 +886,62 @@ pub fn surprise_after_death_spawn(state: &mut CombatState, owner: sts2_core::Cre
         // The FatGremlin is C#'s `fatGremlin` local — the Heist target.
         if kind == MonsterKind::FatGremlin {
             transfer_thievery_gold_as_heist(state, owner, uid);
+        }
+    }
+}
+
+/// v0.111.0 `SurprisePower.AfterDeath` (decomp SurprisePower.cs:24):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The FatGremlin is now CREATED (`CombatState.CreateCreature`, which rolls its
+/// unique MaxHp off `Rng.Niche`) before the SneakyGremlin, so the fat rolls
+/// first and neither roll excludes the other: the fat is not in `_enemies`
+/// until its own `Add`, which runs after the sneaky's. The Heist transfer also
+/// lands before either joins the combat. `_enemies` order is unchanged
+/// (`[merc, sneaky, fat]`, slot order), so the sneaky is inserted in front of
+/// the already-spawned fat.
+fn surprise_after_death_spawn_v0111(
+    state: &mut CombatState,
+    owner: sts2_core::CreatureUid,
+    telegraph: bool,
+) {
+    use sts2_core::MonsterKind;
+
+    // `SetUniqueMonsterHpValue(_enemies, ...)`: the living enemies as of each
+    // roll. The fat is not yet in `_enemies` when the sneaky rolls.
+    let taken: std::collections::HashSet<i32> = state
+        .enemy_uids
+        .iter()
+        .filter_map(|u| {
+            state
+                .creatures
+                .iter()
+                .find(|c| c.id == u.0 && c.current_hp > 0)
+                .map(|c| c.max_hp)
+        })
+        .collect();
+    let end = state.enemy_uids.len();
+    let fat = state.spawn_enemy_at_index_with_taken(MonsterKind::FatGremlin, end, &taken);
+    transfer_thievery_gold_as_heist(state, owner, fat);
+    let fat_at = state
+        .enemy_uids
+        .iter()
+        .position(|u| *u == fat)
+        .unwrap_or(state.enemy_uids.len());
+    let sneaky = state.spawn_enemy_at_index_with_taken(MonsterKind::SneakyGremlin, fat_at, &taken);
+    for (uid, ai) in [
+        (sneaky, create_sneaky_gremlin_ai()),
+        (fat, create_fat_gremlin_ai()),
+    ] {
+        let initial_intent = if telegraph {
+            ai.current_move().intents.first().copied()
+        } else {
+            None
+        };
+        state.set_creature_ai(uid, ai);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+            c.intent = initial_intent;
         }
     }
 }

@@ -722,7 +722,9 @@ pub(crate) fn continue_player_turn_setup(state: &mut CombatState) -> StepResult 
     // Python's `combat_player_states` walk is single-element at this
     // Phase-3 pin (allies omitted); we operate directly on
     // `state.player`.
-    if state.round > 1 {
+    // C# `Creature` keeps the player's block on `TurnNumber == 1`
+    // (Creature.cs:696), the player's turn number, not the round.
+    if state.turn_number() > 1 {
         // Bead `sts2-rs-2e9q2`-follow-up: tag the cleared creature so
         // owner-scoped `after_block_cleared` arms (BlockNextTurn,
         // SelfFormingClay) fire ONLY on the player's own turn-start clear,
@@ -828,7 +830,10 @@ pub(crate) fn continue_player_turn_setup(state: &mut CombatState) -> StepResult 
     }
     // C# `PaleBlueDotPower.cs:41` (`AfterModifyingHandDraw`) is the same
     // unconditional no-target hook, same single convergence point.
+    // v0.111.0: PaleBlueDot no longer modifies the hand draw (decomp
+    // PaleBlueDotPower.cs:42), so it has no `AfterModifyingHandDraw` flash.
     if crate::event_log::armed(state)
+        && state.game_version < crate::GameVersion::V0_111_0
         && state.player_power_amount(crate::PowerKind::PaleBlueDot) > 0
     {
         crate::event_log::flash_player_power(state, crate::PowerKind::PaleBlueDot);
@@ -1062,7 +1067,9 @@ pub(crate) fn resume_after_relic_hand_draw_select(
     // successive Innate card lands ABOVE the previous one — the net top order
     // is the reverse of pile order. We reproduce that by removing each Innate
     // uid (in pile order) and re-inserting it at the front.
-    if state.round == 1 {
+    // `SetupPlayerTurn` gates the Innate floor on `TurnNumber == 1`
+    // (CombatManager.cs:910), the player's turn number.
+    if state.turn_number() == 1 {
         let innate_uids: smallvec::SmallVec<[crate::CardUid; 8]> = state
             .player
             .draw
@@ -1409,6 +1416,19 @@ fn run_after_player_turn_start_cluster(
                 // `AfterSideTurnStart`), so it used to fire here — that inverted
                 // the PrepTime-Vigor/Mayhem ordering (bead `sts2-rs-181`).
             }
+            crate::PowerKind::Hibernate => {
+                // v0.111.0 `HibernatePower.AfterPlayerTurnStart` (decomp
+                // HibernatePower.cs:22): `if (player.Creature == base.Owner)
+                // await PowerCmd.Decrement(this);`. The power is a marker the
+                // FrostOrb reads; it only exists in v0.111.0.
+                hooks::apply_effect(
+                    state,
+                    hooks::Effect::DecrementPowerAmount {
+                        listener: hooks::ListenerRef::Power(uid),
+                        delta: -1,
+                    },
+                );
+            }
             crate::PowerKind::RollingBoulder => {
                 let amount = state.powers.get_by_id(uid.0).map_or(0, |p| p.amount);
                 // C# `RollingBoulderPower.cs:36` flashes unconditionally inside
@@ -1718,6 +1738,12 @@ pub(crate) fn run_turn_start_relic_tail(
         fire_after_side_turn_start(state);
     }
 
+    // GH #791 note for whoever wires `AfterHandEmptied` (UnceasingTop, today
+    // never dispatched in either build): v0.111.0 `RunAutoPrePlayPhase` runs
+    // `CheckForEmptyHand` right here, on entering AutoPrePlay and before any
+    // `AfterAutoPrePlayPhaseEntered*` listener (decomp CombatManager.cs:868);
+    // v0.107.1 has no check at this point. Gate that call on the version.
+    //
     // ── Bombardment AutoPrePlay(Early) exhaust-pile auto-play ──────────────
     //
     // Card-side START-of-turn auto-play from the EXHAUST pile: Bombardment
@@ -2741,7 +2767,12 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
                 // `Amount` cards). RetainHandPower is whole-hand
                 // (`ShouldFlush == false`) and is handled by the flush gate
                 // below, NOT this budget drain.
-                let is_retain = matches!(power.kind, crate::PowerKind::WellLaidPlans);
+                //
+                // v0.111.0: WellLaidPlans no longer selects cards to retain —
+                // it keeps the whole hand via `ShouldFlush` (decomp
+                // WellLaidPlansPower.cs:12; see the flush gate below).
+                let is_retain = matches!(power.kind, crate::PowerKind::WellLaidPlans)
+                    && state.game_version < crate::GameVersion::V0_111_0;
                 if is_retain && power.amount > 0 {
                     budget = budget.saturating_add(u32::try_from(power.amount).unwrap_or(0));
                 }
@@ -2909,6 +2940,14 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     // turn (the power then decrements by 1 in `after_turn_end`). Use the
     // mirror+legacy union so a card/potion-applied RetainHand is seen.
     if state.player_power_amount(crate::PowerKind::RetainHand) > 0 {
+        flush_hand = false;
+    }
+    // v0.111.0: `WellLaidPlansPower.ShouldFlush(player)` returns `false` for its
+    // owner (decomp WellLaidPlansPower.cs:12), so the whole hand is kept, every
+    // turn, for as long as the power lives (it never decrements).
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && state.player_power_amount(crate::PowerKind::WellLaidPlans) > 0
+    {
         flush_hand = false;
     }
     if flush_hand {
@@ -3110,6 +3149,19 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
             }
         }
         hooks::dispatch_after_taking_extra_turn(state, &CombatLifecycleCtx::default());
+        // v0.111.0: AmbergrisPower spends one stack per extra turn taken
+        // (decomp AmbergrisPower.cs:23). No-op before v0.111.0.
+        hooks::ambergris_after_taking_extra_turn_v0111(state);
+        // v0.111.0: `SwitchSides` increments the extra-turn player's
+        // `TurnNumber` but not `RoundNumber` (CombatManager.cs:1866-1888), so
+        // the turn-number gates see turn 2 on an extra turn taken in round 1.
+        // v0.107.1 keeps the turn number equal to the round (bit-identical).
+        if state.game_version >= crate::GameVersion::V0_111_0 {
+            state.combat_log.extra_turns_taken_this_combat = state
+                .combat_log
+                .extra_turns_taken_this_combat
+                .saturating_add(1);
+        }
         state.phase = CombatPhase::PlayerTurnStart;
         return StepResult::Advanced;
     }
@@ -3407,6 +3459,12 @@ pub fn enemy_turn_start(state: &mut CombatState) -> StepResult {
         };
     }
 
+    // v0.111.0: an extra player turn skips the enemy side (see
+    // [`extra_player_turn_pending_v0111`]).
+    if extra_player_turn_pending_v0111(state) {
+        return StepResult::Advanced;
+    }
+
     debug_assert_eq!(state.phase, CombatPhase::EnemyTurnStart);
 
     // Step 2: set side to Enemy.
@@ -3634,6 +3692,12 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
         } else {
             StepResult::CombatLost
         };
+    }
+
+    // v0.111.0: an extra player turn skips the enemy side (see
+    // [`extra_player_turn_pending_v0111`]).
+    if extra_player_turn_pending_v0111(state) {
+        return StepResult::Advanced;
     }
 
     debug_assert_eq!(state.phase, CombatPhase::EnemyTurnExec);
@@ -5557,6 +5621,12 @@ pub fn enemy_turn_end(state: &mut CombatState) -> StepResult {
         };
     }
 
+    // v0.111.0: an extra player turn skips the enemy side (see
+    // [`extra_player_turn_pending_v0111`]).
+    if extra_player_turn_pending_v0111(state) {
+        return StepResult::Advanced;
+    }
+
     debug_assert_eq!(state.phase, CombatPhase::EnemyTurnEnd);
 
     // Step 2: fire before_turn_end(ENEMY).
@@ -5763,6 +5833,36 @@ pub fn combat_is_ending(state: &CombatState) -> bool {
         }
     }
     any_primary_present && alive_primary == 0 && !adaptable_corpse
+}
+
+/// v0.111.0 `CardModel.OnPlayWrapper` multi-play guard: should the next play
+/// of a multi-played card be skipped because combat is over or ending?
+///
+/// The v0.111.0 play loop re-checks `CombatManager.IsOverOrEnding` at the top
+/// of every iteration (`MegaCrit.Sts2.Core.Models/CardModel.cs:1896-1901`):
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// v0.107.1 had no such check (`CardModel.cs:1905`): a Burst / Echo Form /
+/// replay copy still resolved its `BeforeCardPlayed` / `OnPlay` /
+/// `AfterCardPlayed` after the first copy killed the last enemy.
+///
+/// This is [`combat_is_ending`] plus one case it deliberately leaves out: a
+/// corpse whose on-death reinforcement spawn (Infested, Stock, ...) has not
+/// fired yet. C# spawns those inside the killing hit, so they are alive
+/// primaries by the time the loop re-checks. Rust fires them at the damage
+/// chokepoint too (`enemy_death_effects::fire_for_owner`), but a kill that
+/// bypasses it leaves them for [`check_combat_end`]'s sweep; until then the
+/// combat is not ending ([`crate::enemy_death_effects::has_pending`]).
+///
+/// Always `false` before v0.111.0, so the v0.107.1 loops are untouched.
+#[must_use]
+pub fn multi_play_stops_v0111(state: &CombatState) -> bool {
+    state.game_version >= crate::GameVersion::V0_111_0
+        && combat_is_ending(state)
+        && !(state.player.current_hp > 0
+            && !state.is_over
+            && crate::enemy_death_effects::has_pending(state))
 }
 
 /// [`apply`]: crate::apply
@@ -6067,6 +6167,24 @@ pub fn end_turn_dispatch_from(state: &mut CombatState, first: usize) -> StepResu
     StepResult::Advanced
 }
 
+/// v0.111.0: `end_player_turn_phase_two` granted an extra player turn and left
+/// the phase at [`CombatPhase::PlayerTurnStart`]. C#'s
+/// `SwitchFromPlayerToEnemySide` then keeps `CurrentSide` on the player
+/// (`SwitchSides`, decomp CombatManager.cs:1866-1880) and the turn loop runs
+/// the player side again without an enemy turn or a round increment. The
+/// [`end_turn_dispatch`] chain still calls the three enemy phases, so each
+/// returns at once and [`start_player_turn`] runs the extra turn. Doing it in
+/// the phase fns keeps the `end_turn_phase` / `end_turn_dispatch_from` split
+/// equal to the whole chain.
+///
+/// v0.107.1 is left as it was: there, the PaelsEye extra turn re-enters
+/// `PlayerTurnStart` and the chain runs the enemy phases anyway (a pre-existing
+/// gap kept for bit-identity; v0.111.0's AmbergrisPower made it reachable).
+fn extra_player_turn_pending_v0111(state: &CombatState) -> bool {
+    state.game_version >= crate::GameVersion::V0_111_0
+        && state.phase == CombatPhase::PlayerTurnStart
+}
+
 /// Is a diagnostic armed that records OUTSIDE `state` while a combat step
 /// runs: the thread-local [`crate::damage_trace`], the `STS2_TRACE_RNG` /
 /// `STS2_TRACE_PILES` stderr traces, or `state`'s event log (whose rows ride
@@ -6291,6 +6409,25 @@ fn fire_after_card_exhausted(
     hooks::dispatch_after_card_exhausted(state, &hook_exhaust_ctx, false);
 }
 
+/// The card types `HistoryCourse` replays: the last Attack or Skill in
+/// v0.107.1 (`(uint)(type - 1) <= 1u`).
+///
+/// v0.111.0: only the last Attack (`e.CardPlay.Card.Type == CardType.Attack`,
+/// decomp HistoryCourse.cs:21). The slot is HistoryCourse's alone, so the
+/// stamp sites simply stop recording Skills.
+pub(crate) fn history_course_replays(
+    version: crate::GameVersion,
+    card_type: crate::cards::CardType,
+) -> bool {
+    match version {
+        crate::GameVersion::V0_107_1 => matches!(
+            card_type,
+            crate::cards::CardType::Attack | crate::cards::CardType::Skill
+        ),
+        crate::GameVersion::V0_111_0 => card_type == crate::cards::CardType::Attack,
+    }
+}
+
 /// Bead `sts2-rs-ummci`: stamp `combat_log.last_attack_skill_played` for a
 /// just-FINISHED Attack/Skill play — the slot `HistoryCourse` replays next
 /// round. C# scans `History.CardPlaysFinished` (recorded post-`OnPlay`,
@@ -6302,10 +6439,8 @@ fn stamp_last_attack_skill_played(
     card: &crate::cards::Card,
     card_uid: crate::CardUid,
 ) {
-    if matches!(
-        card.card_type,
-        crate::cards::CardType::Attack | crate::cards::CardType::Skill
-    ) && card.combat_var(VarKey::IsDupe) == 0
+    if history_course_replays(state.game_version, card.card_type)
+        && card.combat_var(VarKey::IsDupe) == 0
     {
         state.combat_log.last_attack_skill_played =
             Some((card.card_id, card.upgraded, Some(card_uid)));
@@ -6746,6 +6881,9 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     // (necro-player-misc C, seeds 3587/5473). Bead `sts2-rs-4wppb`.
     let card_is_ethereal = card_is_ethereal_at_play(state, &card);
     hooks::dispatch_before_card_played_powers(state, resolved_cost, card_is_ethereal);
+    // v0.111.0: Juggling counts / clones in `BeforeCardPlayed` (decomp
+    // JugglingPower.cs:36). No-op before v0.111.0.
+    hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
 
     // Bead `sts2-rs-ybtmu`: `SurroundedPower.BeforeCardPlayed` — a targeted
     // card re-faces the surrounded player toward its target (exposing the
@@ -6827,7 +6965,10 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     // `cards::colorless::play_hidden_gem`, and SoldiersStew's TODO no-op
     // (`potions::dispatch::drink_soldiers_stew`) becomes a real `+= 1`
     // increment in a follow-up.
-    let base_replay = card.base_replay_count;
+    // C# `GeneratePlayCount` seeds the count with `GetEnchantedReplayCount()`
+    // (Spiral / Glam `EnchantPlayCount`, CardModel.cs:2018) — GH #806.
+    let base_replay =
+        card.base_replay_count + crate::enchantment_hooks::enchant_play_count_bonus(&card);
     let power_extra = hooks::dispatch_modify_card_play_count(state, &count_ctx);
     let live = relic_guarded_channel_live(state, GuardedChannel::RelicModifyCardPlayCount);
     let relic_extra = dispatch_if_live(state, live, 0, |state| {
@@ -7322,6 +7463,11 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     // Combat-end short-circuit: if a replay killed the last enemy,
     // stop replaying to avoid `apply_damage` on an empty board.
     for _ in 0..extra_plays.max(0) {
+        // v0.111.0: the play loop breaks at the top of an iteration once combat
+        // is over or ending (decomp CardModel.cs:1898). No-op before v0.111.0.
+        if multi_play_stops_v0111(state) {
+            break;
+        }
         // C# `CardModel.OnPlayWrapper` fires `Hook.BeforeCardPlayed` once per
         // play iteration (CardModel.cs:1496, inside the `i < playCount2` loop),
         // so a duplicated/replayed card re-runs the FULL before-play dispatch:
@@ -7334,6 +7480,9 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         // `arm_storm_snapshot` never re-armed Afterimage) — Silent fuzz seed
         // 262 player.block cs=4 rs=2 (HiddenGem→WraithForm ×3 under Afterimage).
         crate::hooks::dispatch_before_card_played_powers(state, resolved_cost, card_is_ethereal);
+        // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
+        // (decomp JugglingPower.cs:36). No-op before v0.111.0.
+        crate::hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
         // C# `Free{Attack,Skill,Power}Power.BeforeCardPlayed` decrements on
         // EVERY play iteration (no IsDupe guard), so a card replayed under
         // OneTwoPunch/EchoForm consumes the matching Free* stack once per
@@ -7383,6 +7532,11 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
             .combat_log
             .card_plays_finished_this_turn
             .saturating_add(1);
+        // v0.111.0: C# records this replay's `CardPlayFinished` BEFORE its
+        // `AfterCardPlayed` (decomp CardModel.cs:1961-1965); this loop bumps the
+        // count after the dispatch above, so re-run PaleBlueDot's idempotent
+        // check against the current count. No-op before v0.111.0.
+        crate::hooks::pale_blue_dot_after_card_played_v0111(state);
         // Each replay is its own C# `CardPlayFinished`, so the HistoryCourse
         // slot re-stamps per iteration — keeping the parent last after any
         // children this replay's dispatch auto-played.
@@ -7454,7 +7608,11 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         // splitting the decision from its use — reshaping live play logic to
         // host a log line, which the porting rules forbid.
         crate::event_log::flash_player_power(state, crate::PowerKind::EchoForm);
-        {
+        // v0.111.0: the Echo copy is the last iteration of the same C# play
+        // loop, so it is skipped once combat is over or ending (decomp
+        // CardModel.cs:1898). The flash above stays: C# fires it from
+        // `GeneratePlayCount`, before the loop. No-op before v0.111.0.
+        if !multi_play_stops_v0111(state) {
             // Re-run the FULL before-play dispatch per Echo replay (C# fires
             // `Hook.BeforeCardPlayed` per play iteration) — re-arms Storm AND
             // the Afterimage/SerpentForm/Oblivion/Strangle/Monologue snapshots
@@ -7465,6 +7623,9 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
                 resolved_cost,
                 card_is_ethereal,
             );
+            // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
+            // (decomp JugglingPower.cs:36). No-op before v0.111.0.
+            crate::hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
             // C# `Free*Power.BeforeCardPlayed` decrements per play iteration —
             // consume the matching Free* stack on this Echo replay too, same as
             // the `extra_plays` loop above (gh#180 PANACHE HAND_COST residual).
@@ -7523,6 +7684,9 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
                 .combat_log
                 .card_plays_finished_this_turn
                 .saturating_add(1);
+            // v0.111.0: the finished-play count is current only now (see the
+            // `extra_plays` loop above). No-op before v0.111.0.
+            crate::hooks::pale_blue_dot_after_card_played_v0111(state);
             // Each Echo replay is its own C# `CardPlayFinished` — re-stamp
             // the HistoryCourse slot so the parent stays last after any
             // children this replay auto-played.
@@ -7782,6 +7946,12 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         // unlike `FreeThisTurn`). Clear it on this same late
         // `AfterCardPlayedCleanup` path so a replayed RocketPunch pays full cost.
         state.cards[card_idx].set_combat_var(crate::cards::VarKey::FreeUntilPlayed, 0);
+        // v0.111.0 (GH #793): RocketPunch's `AddUntilPlayed(-1)` stack is a
+        // `WhenPlayed` modifier too. `zero` never appends, so a v0.107.1 card
+        // (which never has the var) is untouched.
+        state.cards[card_idx]
+            .combat_vars
+            .zero(crate::cards::VarKey::CostReductionUntilPlayed);
         // Bead `sts2-rs-mnjxg`: SneckoOil sets the randomized
         // cost via C# `EnergyCost.SetThisTurnOrUntilPlayed` — the SAME
         // `EndOfTurn | WhenPlayed` modifier as `SetToFreeThisTurn` above. So a
@@ -8156,6 +8326,20 @@ pub fn auto_play_specific_card_from_discard(
     uid: crate::CardUid,
     force_exhaust: bool,
 ) -> bool {
+    auto_play_specific_card_from_discard_at_target(state, uid, None, force_exhaust)
+}
+
+/// As [`auto_play_specific_card_from_discard`], but with the caller's target
+/// (`None` = roll it in the resolver, the legacy shape). v0.111.0 BeatDown
+/// rolls each `AnyEnemy` card's target itself before `CardCmd.AutoPlay`
+/// (decomp Cards/BeatDown.cs:32-35), so the read happens even when a
+/// `ShouldPlay` veto then skips the play; it passes the rolled target here.
+pub fn auto_play_specific_card_from_discard_at_target(
+    state: &mut CombatState,
+    uid: crate::CardUid,
+    target: Option<CreatureUid>,
+    force_exhaust: bool,
+) -> bool {
     // C# `BeatDown` captures the take-list CardModel *references* before the
     // auto-play loop, then `CardCmd.AutoPlay(item)` plays each BY REFERENCE
     // regardless of which pile it now sits in (`CardCmd.cs:33-109`: it only
@@ -8188,7 +8372,7 @@ pub fn auto_play_specific_card_from_discard(
         return false;
     };
     let _ = crate::cards::move_card(&mut state.player, uid, from, crate::cards::PileKind::Play);
-    resolve_auto_played_card(state, uid, force_exhaust);
+    resolve_auto_played_card_at_target(state, uid, target, force_exhaust);
     true
 }
 
@@ -8994,6 +9178,9 @@ pub(crate) fn resolve_auto_played_card_at_target(
         auto_resolved_cost,
         auto_card_is_ethereal,
     );
+    // v0.111.0: Juggling counts / clones in `BeforeCardPlayed` (decomp
+    // JugglingPower.cs:36). No-op before v0.111.0.
+    crate::hooks::juggling_before_card_played_v0111(state, top_uid, top_card_type);
 
     let skip_dispatch = matches!(top_target_type, TargetType::Enemy) && target_uid.is_none();
 
@@ -9016,7 +9203,10 @@ pub(crate) fn resolve_auto_played_card_at_target(
     let auto_extra_plays: i32 = if skip_dispatch {
         0
     } else {
-        let base_replay = state.cards[top_idx].base_replay_count.max(0);
+        // C# `GeneratePlayCount` (CardModel.cs:2018) seeds the count with
+        // `GetEnchantedReplayCount()` — Spiral / Glam replays (GH #806).
+        let base_replay = state.cards[top_idx].base_replay_count.max(0)
+            + crate::enchantment_hooks::enchant_play_count_bonus(&state.cards[top_idx]);
         let count_ctx = hooks::CardPlayCountCtx {
             owner: hooks::CreatureRef::Player,
             card_id: Some(top_card_id),
@@ -9053,7 +9243,12 @@ pub(crate) fn resolve_auto_played_card_at_target(
         state.cards[top_idx].set_combat_var(crate::cards::VarKey::AutoPlayStarX, captured + 1);
     }
     if !skip_dispatch {
-        let _ = crate::card_effects::dispatch_for_card(state, top_uid, top_card_id, target_uid);
+        let _ = crate::card_effects::dispatch_for_auto_played_card(
+            state,
+            top_uid,
+            top_card_id,
+            target_uid,
+        );
     }
     if auto_weighted_drain != 0 {
         state.player.energy = state
@@ -9391,13 +9586,11 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
     // auto-played Attack/Skill becomes "last round's last Attack/Skill"
     // exactly like a hand play (sweep seeds 5645/4095: C# duped the
     // auto-played PILLAGE/BASH, Rust duped the earlier hand play).
-    if matches!(
-        top_card_type,
-        crate::cards::CardType::Attack | crate::cards::CardType::Skill
-    ) && state
-        .cards
-        .get(top_idx)
-        .is_some_and(|c| c.combat_var(VarKey::IsDupe) == 0)
+    if history_course_replays(state.game_version, top_card_type)
+        && state
+            .cards
+            .get(top_idx)
+            .is_some_and(|c| c.combat_var(VarKey::IsDupe) == 0)
     {
         let upgraded = state.cards.get(top_idx).is_some_and(|c| c.upgraded);
         state.combat_log.last_attack_skill_played = Some((top_card_id, upgraded, Some(top_uid)));
@@ -9499,6 +9692,11 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
             if state.is_over {
                 break;
             }
+            // v0.111.0: also stop once combat is ENDING, not only resolved
+            // (decomp CardModel.cs:1898). No-op before v0.111.0.
+            if multi_play_stops_v0111(state) {
+                break;
+            }
             // C# `CardModel.OnPlayWrapper` fires `Hook.BeforeCardPlayed` per
             // play iteration (CardModel.cs:1496) for auto-plays too, so each
             // replay of an auto-played card re-arms the Afterimage / SerpentForm
@@ -9513,7 +9711,15 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
                 auto_resolved_cost,
                 auto_card_is_ethereal,
             );
-            let _ = crate::card_effects::dispatch_for_card(state, top_uid, top_card_id, target_uid);
+            // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
+            // (decomp JugglingPower.cs:36). No-op before v0.111.0.
+            crate::hooks::juggling_before_card_played_v0111(state, top_uid, top_card_type);
+            let _ = crate::card_effects::dispatch_for_auto_played_card(
+                state,
+                top_uid,
+                top_card_id,
+                target_uid,
+            );
             resolve_inline_auto_play_choices(state);
             state.combat_log.player_card_plays_this_combat = state
                 .combat_log
@@ -9573,7 +9779,13 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
         // pre-dispatch Corruption snapshot (C# pre-OnPlay result-pile).
         let corruption_exhausts_skill =
             top_card_type == cards::CardType::Skill && corruption_active_pre_dispatch;
+        // v0.111.0: `FeralPower.ModifyCardPlayResultLocation` leaves a dupe
+        // (`card.IsDupe`) where it is (decomp FeralPower.cs:51). The hand-play
+        // path already excludes dupes in both builds.
+        let feral_skips_dupe = state.game_version >= crate::GameVersion::V0_111_0
+            && state.cards[top_idx].combat_var(VarKey::IsDupe) != 0;
         let feral_returns_to_hand = auto_is_zero_cost_attack
+            && !feral_skips_dupe
             && (state.combat_log.zero_cost_attacks_played_this_turn as i32)
                 < state.player_power_amount(crate::PowerKind::Feral);
         if feral_returns_to_hand {

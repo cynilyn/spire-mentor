@@ -28,7 +28,17 @@ pub(crate) fn play_maul(state: &mut CombatState, target: Option<CreatureUid>) ->
     // collapsed to "self only" matching the Python pin — separate
     // beyond-scope concern from this upgrade-scaling fix.
     // Bead `sts2-rs-h84kf`.
-    let increase: i32 = if current_upgraded(state) { 2 } else { 1 };
+    // v0.111.0: Increase 1 -> 2, upgrade still +1 (decomp Maul.cs:37,63).
+    let base: i32 = if crate::cards::v0111::is_v0111(state.game_version) {
+        2
+    } else {
+        1
+    };
+    let increase: i32 = if current_upgraded(state) {
+        base + 1
+    } else {
+        base
+    };
     if let Some(idx) =
         sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
     {

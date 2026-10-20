@@ -232,6 +232,8 @@ pub fn drive_full_run(
             break RunOutcome::MaxSteps;
         }
 
+        // Every policy sees a bound event room's real options (GH #841).
+        rm.bind_pending_event();
         policy.prepare(rm);
         let actions = rm.get_available_actions();
         if actions.is_empty() {

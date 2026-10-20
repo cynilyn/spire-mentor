@@ -8,6 +8,12 @@ use super::prelude::*;
 /// after Compact (sts2-rs-4tc6o) started minting upgraded Fuels.
 pub(crate) fn play_fuel(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let upgraded = sts2_core::card_effects::resolving_card_upgraded(state);
+    if crate::cards::v0111::is_v0111(state.game_version) {
+        // v0.111.0: no draw; the upgrade raises the Energy var instead of
+        // the draw (decomp Fuel.cs:17,31).
+        state.gain_energy(if upgraded { 2 } else { 1 });
+        return EffectResult::Resolved;
+    }
     let draws = if upgraded { 2 } else { 1 };
     let _ = sts2_core::cards::draw_via_state(state, draws);
     state.gain_energy(1);

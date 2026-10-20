@@ -21,7 +21,17 @@ use super::prelude::*;
 /// Dexterity directly without the counter; bead `sts2-rs-a5y3i` lifts
 /// the missing immediate-Dexterity stamp and the turn-end revert.
 pub(crate) fn play_anticipate(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    let amt = if current_card_upgraded(state) { 3 } else { 2 };
+    // v0.111.0: the upgrade raises Dexterity by 2, was 1 (decomp Anticipate.cs:31).
+    let upgraded_amt = if crate::cards::v0111::is_v0111(state.game_version) {
+        4
+    } else {
+        3
+    };
+    let amt = if current_card_upgraded(state) {
+        upgraded_amt
+    } else {
+        2
+    };
     apply_power_to_player(state, PowerKind::Dexterity, amt);
     apply_power_to_player(state, PowerKind::Anticipate, amt);
     EffectResult::Resolved

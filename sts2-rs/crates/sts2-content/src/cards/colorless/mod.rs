@@ -102,6 +102,9 @@ pub mod ultimate_strike;
 pub mod volley;
 pub mod whistle;
 pub mod wish;
+// v0.111.0-only cards (GH #793).
+pub mod abundance;
+pub mod the_ball;
 
 pub use helpers::automation;
 pub use helpers::colorless_modifier_spec;
@@ -138,6 +141,7 @@ pub use helpers::PURITY_MAX_EXHAUST_UPGRADED;
 /// [`crate::cards::dispatch::install_default_registry`].
 pub fn install_pool() {
     card_effects::register_many(POOL);
+    card_effects::register_many(POOL_V0111);
 }
 
 #[allow(clippy::type_complexity)]
@@ -364,4 +368,12 @@ const POOL: &[(CardId, PlayCardFn)] = &[
         CardId::CoordinateCard,
         coordinate_card::play_coordinate_card as PlayCardFn,
     ),
+];
+
+/// The v0.111.0-only cards of this pool (GH #793), kept beside [`POOL`]
+/// so the v0.107.1 table is unchanged. Their ids exist in no v0.107.1 state.
+#[allow(clippy::type_complexity)]
+const POOL_V0111: &[(CardId, PlayCardFn)] = &[
+    (CardId::Abundance, abundance::play_abundance as PlayCardFn),
+    (CardId::TheBall, the_ball::play_the_ball as PlayCardFn),
 ];

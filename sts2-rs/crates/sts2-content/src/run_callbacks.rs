@@ -61,6 +61,7 @@ pub fn ironclad_content_callbacks() -> ContentCallbacks {
         generate_treasure_relic_pools: Some(generate_treasure_relic_pools),
         resolve_event_at: Some(crate::events::dispatch::resolve_event_at_callback),
         event_option_count: Some(crate::events::dispatch::event_option_count_callback),
+        bind_pending_event: Some(crate::events::dispatch::bind_pending_event_callback),
         // Stocked merchant inventory: fills the payload-less slots core's
         // `shop::generate_shop_inventory` rolls (price + rarity only) with
         // concrete cards/relics/potions from the run's pools, so the shop
@@ -125,7 +126,7 @@ fn roll_transform_replacement(
             rs, character, original,
         )?,
     };
-    crate::cards::spec_index::card_pod_from_id(new_id, false)
+    crate::cards::v0111::card_pod_for(new_id, false, rs.game_version)
 }
 
 /// Pre-roll the boss encounter for the act the player just entered and
@@ -417,7 +418,11 @@ pub fn initialize_run_setup(rm: &mut sts2_core::run_manager::RunManager) {
     // but it changes act 1's encounter table AND the size of its event pool,
     // which shifts the cursor for acts 2 and 3 as well.
     let act1 = rm.run_state.act1;
-    rm.run_state.generated_rooms = sts2_core::run_room_gen::generate_all_rooms(
+    // v0.111.0: encounter retags (decomp SlitheringStranglerNormal.cs:33,
+    // SnappingJaxfruitNormal.cs:12) change the no-repeat picks.
+    let version = rm.run_state.game_version;
+    rm.run_state.generated_rooms = sts2_core::run_room_gen::generate_all_rooms_for(
+        version,
         &mut rm.run_state.rng.up_front,
         has_double_boss,
         act1,
@@ -674,7 +679,6 @@ fn build_combat_for_room(
 ) -> Option<sts2_core::CombatState> {
     use crate::encounters::{EncounterDef, EncounterTier};
     use crate::monster_dispatch::MonsterSpawnArgs;
-    use sts2_core::dotnet_rng::Rng;
     use sts2_core::MonsterKind;
 
     let table = act_encounter_table(act_index, rs.act1)?;
@@ -827,16 +831,21 @@ fn build_combat_for_room(
     // split (side-wide RAW exclusion in pass 1; even-unique Decimillipede
     // fix-up off the mixed teammate set in pass 2). Bead `sts2-rs-q6bix` /
     // `8mpo1`.
-    let mut enc_rng = Rng::with_name(
-        rs.rng
-            .seed
-            .wrapping_add(rs.total_floor + i32::from(act_index)),
-        enc.id,
-    );
+    //
+    // v0.111.0 (`EncounterModel.cs:264`) widens the same sum to `ulong`:
+    // `(ulong)((long)Seed + (long)TotalFloor) + hash(Id.Entry)` —
+    // `RunRngSet::named_at` computes it in the run's build (GH #788).
+    let mut enc_rng = rs
+        .rng
+        .named_at(i64::from(rs.total_floor + i32::from(act_index)), enc.id);
     let roster_kinds = enc.roster(&mut enc_rng);
     let kinds: Vec<MonsterKind> = roster_kinds.iter().map(|&(k, _)| k).collect();
-    let hps =
-        sts2_core::monsters::roll_unique_max_hps(&kinds, &mut rs.rng.niche, rs.ascension_level);
+    let hps = sts2_core::monsters::roll_unique_max_hps_for(
+        &kinds,
+        &mut rs.rng.niche,
+        rs.ascension_level,
+        rs.game_version,
+    );
     let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = roster_kinds
         .iter()
         .zip(hps)
@@ -921,8 +930,7 @@ pub fn dump_roster_for_encounter(
     // roster-parity sweep is kinds 50/50 (vs 43/50 at +0). The live
     // `build_combat_for_room` path will instead read the run's real
     // post-entry `total_floor` when step-c wires it onto this stream.
-    let mut enc_rng =
-        sts2_core::dotnet_rng::Rng::with_name(rs.rng.seed.wrapping_add(rs.total_floor + 1), enc.id);
+    let mut enc_rng = rs.rng.named_at(i64::from(rs.total_floor + 1), enc.id);
     let roster_kinds = enc.roster(&mut enc_rng);
     // Per-monster HP off niche via the shared two-pass roller — C#'s
     // creation-then-finalize split (raw side-wide exclusion in pass 1, the
@@ -932,8 +940,12 @@ pub fn dump_roster_for_encounter(
     // SAME roller the live `build_combat_for_room` path uses, so the oracle
     // gates exactly what the live run produces.
     let kinds: Vec<MonsterKind> = roster_kinds.iter().map(|&(k, _)| k).collect();
-    let hps =
-        sts2_core::monsters::roll_unique_max_hps(&kinds, &mut rs.rng.niche, rs.ascension_level);
+    let hps = sts2_core::monsters::roll_unique_max_hps_for(
+        &kinds,
+        &mut rs.rng.niche,
+        rs.ascension_level,
+        rs.game_version,
+    );
     let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = roster_kinds
         .iter()
         .zip(hps)
@@ -1103,6 +1115,23 @@ pub fn new_run_manager_for_character_from_string_seed(
     new_run_manager_for_character(int_seed, character)
 }
 
+/// [`new_run_manager_for_character_from_string_seed`] for game build
+/// `version` (GH #787/#788): canonicalise, hash with that build's
+/// `RunRngSet` rule ([`sts2_core::GameVersion::run_seed_hash`] — XxHash64
+/// in v0.111.0), and seed the run with the full master seed. At v0.107.1 this
+/// is exactly the unversioned factory.
+#[must_use]
+pub fn new_run_manager_for_character_from_string_seed_for(
+    version: sts2_core::GameVersion,
+    seed: &str,
+    character: CharacterId,
+) -> RunManager {
+    let master = version.run_seed_hash(&sts2_core::canonicalize_seed(seed));
+    new_run_manager_for_character(master as i32, character)
+        .with_game_version(version)
+        .with_run_seed(master)
+}
+
 /// Character-parameterised counterpart of
 /// [`new_ironclad_run_manager_with_ascension`]. Routes through
 /// [`RunManager::with_ascension`] before loading the starter deck so
@@ -1211,8 +1240,11 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
         Some(RoomType::Boss) => "boss",
         _ => "regular",
     };
+    // The combat room's own card reward: `CardCreationOptions.ForRoom(...)
+    // .WithFlags(CardCreationFlags.IsFromCombat)` (v0.111.0 RewardsSet.cs:233).
     let opts = CardRewardGenerationOptions {
         context,
+        is_from_combat: true,
         ..CardRewardGenerationOptions::default()
     };
     let cards = crate::cards::spec_index::roll_card_reward_cards(rs, opts, character);
@@ -1222,6 +1254,8 @@ pub fn generate_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // RunState side channel so `RunManager::do_card_reward_pick` builds the
     // picked card with the right upgrade state.
     rs.card_reward_upgraded_flags = cards.iter().map(|c| c.upgraded).collect();
+    // Same side channel for relic-stamped enchantments (SilkenTress's Glam).
+    rs.card_reward_enchantments = cards.iter().map(|c| c.enchantments).collect();
     cards.into_iter().map(|c| c.card_id).collect()
 }
 
@@ -3542,7 +3576,8 @@ mod tests {
             events_shuffled: vec![],
             ancient: None,
         }];
-        let seed = rs.rng.seed;
+        // v0.107.1 master seeds are `uint`; reinterpret for the i32 helper.
+        let seed = rs.rng.seed as i32;
         let combat = build_combat_for_room(&mut rs, 1, RoomType::Monster).unwrap();
         let live_kinds: Vec<_> = combat.creatures.iter().filter_map(|c| c.species).collect();
 
@@ -3579,7 +3614,8 @@ mod tests {
         use sts2_core::dotnet_rng::Rng;
         let enc = find("SLIMES_WEAK").expect("SLIMES_WEAK exists");
         let mut rs = RunState::new();
-        let seed = rs.rng.seed;
+        // v0.107.1 master seeds are `uint`; reinterpret for the i32 helper.
+        let seed = rs.rng.seed as i32;
         let dumped = dump_roster_for_encounter(&mut rs, "SLIMES_WEAK").expect("known encounter");
         let dumped_ids: Vec<&'static str> = dumped.iter().map(|&(id, _, _)| id).collect();
 

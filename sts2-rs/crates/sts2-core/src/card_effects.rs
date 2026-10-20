@@ -720,6 +720,10 @@ pub const fn power_kind_is_instanced(kind: PowerKind) -> bool {
             // removal already lives in `hooks::after_turn_end`.
             | PowerKind::Flanking
             | PowerKind::Automation
+            // v0.111.0 `CacophonyPower.InstanceType => Instanced` (decomp
+            // CacophonyPower.cs:16) and `ImitationLearningPower` (:24).
+            | PowerKind::Cacophony
+            | PowerKind::ImitationLearning
             // C# `RollingBoulderPower.IsInstanced => true` — each card play
             // is an independently-ramping boulder (its own amount + per-turn
             // +5). Bead `sts2-rs-boulder-inst`. The paired per-instance
@@ -2120,6 +2124,8 @@ pub fn spawn_card_into_pile_with_origin(
     // C# `CardModel.DeckVersion == null` for combat-generated cards — the
     // marker deck-scoped pickers (ThievingHopper steal) filter on.
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+    card.normalize_for_version(state.game_version);
     state.cards.push(card);
     // C# `CardPileCmd.Add` hand-cap redirect (`CardPileCmd.cs:420-424`):
     // `isFullHandAdd = targetPile.Type == Hand && Cards.Count >= MaxCardsInHand`
@@ -2165,6 +2171,8 @@ pub fn spawn_card_into_draw_pile_random(
     let mut card = card;
     card.uid = uid;
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+    card.normalize_for_version(state.game_version);
     state.cards.push(card);
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`): under a
     // deferred-draw-order pile there is no physical position for a random
@@ -2487,9 +2495,18 @@ pub(crate) fn fire_rocketpunch_free_on_status_generation(
             }
         }
     }
+    let v0111 = state.game_version >= crate::GameVersion::V0_111_0;
     for cu in rockets {
         if let Some(c) = state.cards.get_mut(cu.0.get() as usize - 1) {
-            c.set_combat_var(crate::cards::VarKey::FreeUntilPlayed, 1);
+            if v0111 {
+                // v0.111.0: `EnergyCost.AddUntilPlayed(-1)` — one more energy
+                // off per generated Status, until played (decomp
+                // RocketPunch.cs:49).
+                let n = c.combat_var(crate::cards::VarKey::CostReductionUntilPlayed);
+                c.set_combat_var(crate::cards::VarKey::CostReductionUntilPlayed, n + 1);
+            } else {
+                c.set_combat_var(crate::cards::VarKey::FreeUntilPlayed, 1);
+            }
         }
     }
 }
@@ -2687,6 +2704,8 @@ pub fn spawn_card_into_draw_pile_random_position(
         state.cards.push(card);
         return uid;
     }
+    // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+    card.normalize_for_version(state.game_version);
     state.cards.push(card);
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`): see the
     // matching gate in `spawn_card_into_draw_pile_random` above.
@@ -2734,6 +2753,8 @@ pub fn spawn_card_into_draw_pile_bottom(
     card.uid = uid;
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+    card.normalize_for_version(state.game_version);
     state.cards.push(card);
     state.player.draw.push(uid);
     fire_after_card_entered_combat(state, uid, PileKind::Draw, true);
@@ -2793,6 +2814,8 @@ pub fn spawn_card_into_hand_with_origin(
     card.uid = uid;
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+    card.normalize_for_version(state.game_version);
     state.cards.push(card);
     // Bead `sts2-rs-8h2q`: log the generation *before* the hand-cap
     // check, matching Python's `_add_generated_cards_to_hand` at
@@ -3218,6 +3241,8 @@ pub fn transform_card_in_place(
     // A mid-combat transform's product is a fresh combat-scoped CardModel
     // in C# (the run deck is untouched) — `DeckVersion == null` marker.
     new_card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+    new_card.normalize_for_version(state.game_version);
     state.cards.push(new_card);
     // C# `CardCmd.Transform` records a `CardGeneratedEntry` for every
     // non-Deck destination pile (`CardCmd.cs:444`,
@@ -3310,10 +3335,11 @@ pub fn transform_card_in_place(
 /// Bead `sts2-rs-6ynt.2`.
 pub fn upgrade_card_uid(state: &mut CombatState, uid: CardUid) -> bool {
     let idx = uid.0.get() as usize - 1;
+    let version = state.game_version;
     state
         .cards
         .get_mut(idx)
-        .is_some_and(crate::cards::Card::upgrade)
+        .is_some_and(|c| c.upgrade_for(version))
 }
 
 /// Clear the `upgraded` flag on the card at `uid`. Returns `true` iff
@@ -3448,6 +3474,23 @@ pub fn dispatch_for_card(
     let prev = state.resolving_card.replace(card_uid);
     let out = dispatch(state, card_id, target);
     state.resolving_card = prev;
+    out
+}
+
+/// [`dispatch_for_card`] for an AUTO-PLAY (C# `CardCmd.AutoPlay`): raises
+/// [`crate::TurnEvents::resolving_auto_play`] for the duration of the
+/// dispatch and restores the previous value, so a manual play's nested
+/// auto-plays (Catastrophe, Havoc) and an auto-play's nested manual-free
+/// replays stack correctly.
+pub fn dispatch_for_auto_played_card(
+    state: &mut CombatState,
+    card_uid: CardUid,
+    card_id: CardId,
+    target: Option<CreatureUid>,
+) -> EffectResult {
+    let prev = std::mem::replace(&mut state.combat_log.resolving_auto_play, true);
+    let out = dispatch_for_card(state, card_uid, card_id, target);
+    state.combat_log.resolving_auto_play = prev;
     out
 }
 
@@ -3841,6 +3884,13 @@ pub fn card_sly(card_id: CardId) -> bool {
     SLY_SET.contains(card_id)
 }
 
+/// [`card_sly`] in game build `version` (GH #793): v0.111.0 Haze lost its
+/// Sly keyword (decomp `Models.Cards/Haze.cs:19` — no `CanonicalKeywords`).
+#[must_use]
+pub fn card_sly_in(card_id: CardId, version: crate::GameVersion) -> bool {
+    card_sly(card_id) && !(version >= crate::GameVersion::V0_111_0 && card_id == CardId::Haze)
+}
+
 /// `true` iff the card instance `uid` is `IsSlyThisTurn` (C#
 /// `CardModel.IsSlyThisTurn` / `Keywords.Contains(Sly)`): the permanent `Sly`
 /// keyword by [`card_sly`], OR a single-turn Sly (`player.sly_this_turn`,
@@ -3852,7 +3902,7 @@ pub fn card_is_sly(state: &CombatState, uid: CardUid) -> bool {
     state
         .cards
         .get(uid.0.get() as usize - 1)
-        .is_some_and(|c| card_sly(c.card_id))
+        .is_some_and(|c| card_sly_in(c.card_id, state.game_version))
         || state.player.sly_this_turn.contains(&uid)
         || state.player.sly_this_combat.contains(&uid)
 }
@@ -4024,6 +4074,16 @@ pub fn card_is_any_ally(id: crate::cards::CardId) -> bool {
             | CardId::Largesse
             | CardId::Lift
             | CardId::Mimic
+            // v0.111.0-only MP cards with `TargetType.AnyAlly` (GH #793):
+            // Blaze, Concoct, Constellation, Fade, ImitationLearning,
+            // Soulbound, Tutor. The ids exist in no v0.107.1 state.
+            | CardId::Blaze
+            | CardId::ConcoctCard
+            | CardId::Constellation
+            | CardId::FadeCard
+            | CardId::ImitationLearningCard
+            | CardId::SoulboundCard
+            | CardId::Tutor
     )
 }
 

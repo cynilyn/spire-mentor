@@ -401,6 +401,12 @@ pub struct ContentCallbacks {
     /// `RunAction::EventChoice { idx }` per option. Bead
     /// `sts2-rs-nzdz1`.
     pub event_option_count: Option<fn(rs: &RunState) -> usize>,
+    /// Bind the pending event room: roll its event via `pick_event` and
+    /// enter it, so [`RunManager::get_available_actions`] offers the
+    /// room's real options instead of the single unbound placeholder.
+    /// Idempotent and RNG-free. Called through
+    /// [`RunManager::bind_pending_event`] (GH #841).
+    pub bind_pending_event: Option<fn(rs: &mut RunState)>,
     /// Build the active [`crate::shop::ShopInventory`] for the shop
     /// room the player just entered. Invoked once on Shop-room entry;
     /// the returned inventory is owned by the [`RunManager`] until
@@ -552,6 +558,7 @@ impl core::fmt::Debug for ContentCallbacks {
             )
             .field("resolve_event_at", &self.resolve_event_at.is_some())
             .field("event_option_count", &self.event_option_count.is_some())
+            .field("bind_pending_event", &self.bind_pending_event.is_some())
             .field(
                 "generate_shop_inventory",
                 &self.generate_shop_inventory.is_some(),
@@ -614,6 +621,10 @@ pub struct RunManager {
     /// Ascension level (0-20). Stubbed at 0 across the thin slice —
     /// see `feedback: ascension is identity at pin 01c094d`.
     pub ascension_level: u8,
+    /// Game build this run simulates (GH #787). Set with
+    /// [`Self::with_game_version`]; mirrored onto
+    /// [`RunState::game_version`] and from there onto every combat.
+    pub game_version: crate::GameVersion,
     /// HP healed after every non-boss combat (Ironclad's Burning
     /// Blood is +6; every other starter relic is 0). Cached at
     /// construction from the [`CharacterStarter`] registry.
@@ -634,6 +645,11 @@ pub struct RunManager {
     /// rewards, act-2+ upgrade rolls). Empty for choose-screen / bundle
     /// offerings, which carry no upgrade state.
     card_reward_upgraded: Vec<bool>,
+    /// Per-option enchantments parallel to `card_reward_options`, taken from
+    /// `RunState::card_reward_enchantments` / `PendingCardSelect::enchantments`
+    /// alongside `card_reward_upgraded`. Empty when the offering carries none.
+    /// GH #806 (SilkenTress's Glam stamp survives the pick).
+    card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
     /// When `Some`, the current `Phase::CardReward` offering is a Scroll
     /// Boxes *bundle* pick rather than a single-card reward: each inner
     /// `Vec<CardId>` is one pack, the player picks one pack index and **all**
@@ -655,6 +671,13 @@ pub struct RunManager {
     /// the boss gold roll reads the boss room type. Bead `sts2-rs-jenwp`
     /// (M4 live reward stream — Boss follow-up).
     pending_boss_act_advance: bool,
+    /// Set when an intermediate page of a multi-page event offered rewards
+    /// (C# `RewardsCmd.OfferCustom` awaited inside the option, e.g. Dream
+    /// Catcher's card from DenseVegetation's mimicked rest heal). Once the
+    /// CardReward phase drains, [`Self::advance_after_card_reward`] consumes
+    /// it and returns to [`Phase::Event`] for the event's next page instead
+    /// of the map (GH #817).
+    resume_event_after_rewards: bool,
     /// `true` while the current `card_reward_options` offering is a
     /// *choose screen* drained from
     /// [`crate::runstate::RunState::pending_card_selects`] (C#
@@ -714,8 +737,99 @@ impl RunManager {
     /// DoubleBoss (set `has_double_boss = true`, `sts2-rs-oyzw5`).
     #[must_use]
     pub fn with_ascension(seed: i32, character_id: CharacterId, ascension_level: u8) -> Self {
+        Self::build(
+            seed,
+            character_id,
+            ascension_level,
+            crate::GameVersion::V0_107_1,
+        )
+    }
+
+    /// Re-target this run at game build `version` (GH #787). Builder-style,
+    /// next to [`Self::with_ascension`]: chain it right after the
+    /// constructor (or a `sts2-content` run factory) and before the run
+    /// starts — before [`Self::with_neow_start`] and before
+    /// `initialize_run_setup`.
+    ///
+    /// Sets [`Self::game_version`] and [`RunState::game_version`]; every
+    /// combat built from the run then inherits it. A no-op when `version` is
+    /// already this run's version, so the default build stays bit-identical.
+    ///
+    /// # Panics
+    /// If the run has left its initial [`Phase::MapChoice`] or is in combat:
+    /// a mid-run version switch is not a thing the game can do.
+    #[must_use]
+    pub fn with_game_version(mut self, version: crate::GameVersion) -> Self {
+        if version == self.game_version {
+            return self;
+        }
+        assert!(
+            self.phase == Phase::MapChoice && self.combat.is_none(),
+            "RunManager::with_game_version must be chained before the run starts \
+             (phase = {:?})",
+            self.phase
+        );
+        self.game_version = version;
+        self.run_state.game_version = version;
+        // Everything the constructor derived from the master seed is in the
+        // build's seed arithmetic (GH #788), so re-derive it.
+        let master = self.run_state.rng.seed;
+        self.reseed_run(master);
+        self
+    }
+
+    /// Set the run's hashed master seed (C# `RunRngSet.Seed`) to the full
+    /// `master` — the way into a v0.111.0 run, whose master seed is a 64-bit
+    /// XxHash64 that the `i32` constructors cannot carry (GH #788). Use
+    /// [`crate::GameVersion::run_seed_hash`] to go from a seed string.
+    ///
+    /// The value is brought into the run's build range first (v0.107.1 keeps
+    /// the low 32 bits) and [`Self::seed`] becomes its `i32` view. Re-derives
+    /// every RNG stream, the act-1 map and the act-1 boss pin, like a fresh
+    /// constructor would. A no-op when `master` already is the run's seed.
+    ///
+    /// # Panics
+    /// If the run has left its initial [`Phase::MapChoice`] or is in combat.
+    #[must_use]
+    pub fn with_run_seed(mut self, master: u64) -> Self {
+        let master = self.game_version.normalize_seed(master);
+        if master == self.run_state.rng.seed {
+            return self;
+        }
+        assert!(
+            self.phase == Phase::MapChoice && self.combat.is_none(),
+            "RunManager::with_run_seed must be chained before the run starts \
+             (phase = {:?})",
+            self.phase
+        );
+        self.seed = master as i32;
+        self.run_state.rewards_rng_seed = u64::from(self.seed as u32);
+        self.reseed_run(master);
+        self
+    }
+
+    /// Rebuild everything the constructor derives from the master seed:
+    /// the [`crate::RunRngSet`] (in the run's game build), the act-1 map, and
+    /// — when content callbacks are wired — the act-1 boss pre-roll.
+    fn reseed_run(&mut self, master: u64) {
+        self.run_state.rng = crate::run_rng_set::RunRngSet::new_for(self.game_version, master);
+        self.run_state.generate_map();
+        self.run_state.pinned_act_boss = None;
+        if let Some(pre_roll) = self.callbacks.pre_roll_act_boss {
+            pre_roll(&mut self.run_state);
+        }
+    }
+
+    /// Shared body of [`Self::with_ascension`] / [`Self::with_game_version`].
+    fn build(
+        seed: i32,
+        character_id: CharacterId,
+        ascension_level: u8,
+        game_version: crate::GameVersion,
+    ) -> Self {
         let starter: CharacterStarter = character_starter(character_id);
         let mut run_state = RunState::new();
+        run_state.game_version = game_version;
 
         // Bead `sts2-rs-xbkhd` (P9.3.b): thread the character class
         // onto `RunState.character_id` so the run-side sampler walks
@@ -800,7 +914,12 @@ impl RunManager {
         // uses the same fixed seed regardless of what the caller
         // passes. Discovered via R3.2 map-parity script: 3 different
         // string seeds produced byte-identical act maps.
-        run_state.rng = crate::run_rng_set::RunRngSet::new(seed);
+        //
+        // GH #788: seeded in the run's game build. `seed` is the i32 view of
+        // the hashed master seed; a v0.111.0 master wider than 32 bits comes
+        // in through [`Self::with_run_seed`].
+        run_state.rng =
+            crate::run_rng_set::RunRngSet::new_for(game_version, u64::from(seed as u32));
         // Grant the starter relic. Mirrors Python's
         // `player.obtain_relic(config["starter_relic"])`.
         run_state.relics.push(starter.starter_relic);
@@ -825,14 +944,17 @@ impl RunManager {
             seed,
             character_id,
             ascension_level,
+            game_version,
             heal_after_combat: starter.heal_after_combat,
             phase: Phase::MapChoice,
             callbacks: ContentCallbacks::default(),
             card_reward_options: Vec::new(),
             card_reward_upgraded: Vec::new(),
+            card_reward_enchantments: Vec::new(),
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
             pending_boss_act_advance: false,
+            resume_event_after_rewards: false,
             card_offer_choose_screen: false,
             pending_choose_screen_post_add: Vec::new(),
             shop_inventory: None,
@@ -866,8 +988,11 @@ impl RunManager {
     /// seed is what the training harness needs.
     #[must_use]
     pub fn with_rolled_act1(self) -> Self {
-        let acts = crate::act_selection::roll_acts(
-            self.seed,
+        // The run's master seed in its game build (GH #788) — for v0.107.1
+        // this is `self.seed` as a `uint`, exactly the old `roll_acts(seed)`.
+        let acts = crate::act_selection::roll_acts_for(
+            self.game_version,
+            self.run_state.rng.seed,
             &crate::act_selection::ActSelectionUnlocks::test_mode_on(true),
         );
         self.with_act1(acts[0])
@@ -929,6 +1054,22 @@ impl RunManager {
         self.run_state.acts[0].events_visited += 1;
         self.phase = Phase::Event;
         self
+    }
+
+    /// Bind a pending event room so the next
+    /// [`Self::get_available_actions`] offers its real options (GH #841).
+    ///
+    /// While `current_event` is `None` the engine offers one placeholder
+    /// `EventChoice`, and taking it resolves option 0: a driver that never
+    /// binds never makes an event choice. The game (and `PpoRunEnv`, GH #302)
+    /// binds on room entry. No-op outside an unbound event room or when the
+    /// callback isn't wired; idempotent and RNG-free otherwise.
+    pub fn bind_pending_event(&mut self) {
+        if self.phase == Phase::Event && self.run_state.current_event.is_none() {
+            if let Some(bind) = self.callbacks.bind_pending_event {
+                bind(&mut self.run_state);
+            }
+        }
     }
 
     /// Access the wired callbacks (mostly for tests).
@@ -1732,6 +1873,14 @@ impl RunManager {
         } else {
             point_type.to_room_type()
         };
+        // v0.111.0 (GH #793): `Hook.BeforeRoomEntered` runs after the room is
+        // pushed and before it is entered (decomp RunManager.cs:1228-1231);
+        // its one card listener is the Dowsing quest (Dowsing.cs:43-60).
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && point_type == crate::map::MapPointType::Unknown
+        {
+            self.run_state.tick_dowsing_quests_v0111();
+        }
         self.run_state
             .enter_room(crate::runstate::Room::at(coord, point_type, resolved));
         // Dispatch by resolved room type.
@@ -2127,6 +2276,13 @@ impl RunManager {
         // heal saturates at max HP in the same combat a max-HP listener
         // fires (a 1-HP skew; revisit if a sweep pins it).
         let _ = crate::run_effects::dispatch_after_combat_end(&mut self.run_state);
+        // v0.111.0: Guilty's own AfterCombatEnd counts the combat and removes
+        // the curse after its fifth (decomp `Models.Cards/Guilty.cs:46`). Deck
+        // cards come after the relics in `IterateHookListeners`, so it runs
+        // after the relic listeners above (FishingRod's random upgrade, …).
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+            let _ = self.run_state.tick_guilty_after_combat_end();
+        }
         // Event→combat resume (bead `sts2-rs-ck9z6`, GH #166): if this fight
         // was launched from an event option (`EnterCombatWithoutExitingEvent`),
         // route back through the event instead of the normal combat-reward
@@ -2181,7 +2337,8 @@ impl RunManager {
                 if let Some(apply) = self.callbacks.apply_combat_gold_and_potion {
                     apply(&mut self.run_state, reward_room_type);
                 }
-                self.enter_card_reward_phase();
+                let card_options = self.enter_card_reward_phase();
+                self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
                 return ActionResult::Advanced;
             }
             // Act-1/2 boss kill: grant the combat card reward FIRST (3
@@ -2228,31 +2385,58 @@ impl RunManager {
             // `do_boss_relic_pick` (relic picked) consumes this flag and
             // calls `advance_boss_act`.
             self.pending_boss_act_advance = true;
-            self.enter_card_reward_phase();
+            let card_options = self.enter_card_reward_phase();
+            self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
             return ActionResult::Advanced;
         }
         // Normal / Elite combat win → combat rewards + CardReward.
-        //
-        // C# `RewardsSet.GenerateRewardsFor(Monster/Elite)` consumes the
-        // run-level `PlayerRng.Rewards` stream in this exact order, all
-        // BEFORE the card reward (which `enter_card_reward_phase` rolls off
-        // the same cursor):
-        //   1. potion-odds `NextFloat`  (`RollForPotionAndAddTo`, ctor)
-        //   2. gold `NextInt`           (`GoldReward.Populate`)
-        //   3. potion-contents          (`PotionReward.Populate`, if (1) dropped)
-        //   4. card 3×[rarity,pick,upgrade] (`CardReward.Populate`)
-        // The content callback applies gold + any dropped potion eagerly
-        // (C# auto-claims both on the rewards screen; only the card needs a
-        // pick). Without it wired (raw-core tests) the card rolls at the
-        // un-advanced cursor. Bead `sts2-rs-jenwp`.
         let reward_room_type = self
             .run_state
             .current_room
             .map_or(crate::runstate::RoomType::Monster, |r| r.room_type);
+        self.offer_combat_room_rewards(reward_room_type, &[])
+    }
+
+    /// Grant a won Monster/Elite combat room's reward set and surface its
+    /// card reward: C# `RewardsCmd.OfferForRoomEnd` →
+    /// `RewardsSet.WithRewardsFromRoom` → `GenerateRewardsFor(room)`.
+    /// Shared by the map-room path ([`Self::exit_combat_and_transition`]) and
+    /// an event fight whose encounter grants its room rewards
+    /// ([`Self::finish_event_combat`]).
+    ///
+    /// C# `RewardsSet.GenerateRewardsFor(Monster/Elite)` consumes the
+    /// run-level `PlayerRng.Rewards` stream in this exact order, all
+    /// BEFORE the card reward (which `enter_card_reward_phase` rolls off
+    /// the same cursor):
+    ///   1. potion-odds `NextFloat`  (`RollForPotionAndAddTo`, ctor)
+    ///   2. gold `NextInt`           (`GoldReward.Populate`)
+    ///   3. potion-contents          (`PotionReward.Populate`, if (1) dropped)
+    ///   4. card 3×[rarity,pick,upgrade] (`CardReward.Populate`)
+    /// The content callback applies gold + any dropped potion eagerly
+    /// (C# auto-claims both on the rewards screen; only the card needs a
+    /// pick). Without it wired (raw-core tests) the card rolls at the
+    /// un-advanced cursor. Bead `sts2-rs-jenwp`.
+    ///
+    /// `extra_rewards` are the room's C# `ExtraRewards` (an event fight's
+    /// `extraRewards`), appended after the base set and collected before the
+    /// card reward is shown; see [`Self::collect_extra_combat_rewards`].
+    fn offer_combat_room_rewards(
+        &mut self,
+        reward_room_type: crate::runstate::RoomType,
+        extra_rewards: &[crate::runstate::Reward],
+    ) -> ActionResult {
         if let Some(apply) = self.callbacks.apply_combat_gold_and_potion {
             apply(&mut self.run_state, reward_room_type);
         }
-        self.enter_card_reward_phase();
+        self.roll_card_reward_options();
+        let card_options = if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+            self.card_reward_options.clone()
+        } else {
+            Vec::new()
+        };
+        self.collect_extra_combat_rewards(extra_rewards);
+        self.open_card_reward_phase();
+        let mut elite_relic = None;
         // Elite rooms append a 5th reward: C# `RewardsSet.GenerateRewardsFor`
         // (Elite case) adds `new RelicReward(player)` LAST, whose `Populate`
         // runs AFTER the card reward — `RelicFactory.RollRarity` reads one
@@ -2267,7 +2451,9 @@ impl RunManager {
         // populate order (gold → potion → card 3× → relic rarity). Bead
         // `sts2-rs-jenwp` (M4 live reward stream — Elite follow-up).
         if reward_room_type == crate::runstate::RoomType::Elite {
+            let queued = self.run_state.relic_rewards.len();
             self.run_state.offer_random_relic_rewards(1, &[None]);
+            elite_relic = self.run_state.relic_rewards.get(queued).map(|r| r.relic_id);
             // The C# headless oracle auto-collects the Elite `RelicReward`
             // (along with gold + potion) the moment rewards are generated —
             // only `CardReward` is surfaced to the agent. See
@@ -2284,17 +2470,153 @@ impl RunManager {
             // oracle. Without this the relic surfaced one step late, so the
             // card-reward-screen relic-list diff diverged (RP109/RP72).
             self.run_state.drain_relic_rewards_directly();
+            // v0.111.0: BlackStar's `TryModifyRewards` appends one more
+            // `RelicReward(player)` to an Elite's set (decomp
+            // `Models.Relics/BlackStar.cs:13`), populated after the base
+            // rewards (`Rewards/RewardsSet.cs:139-146`): a second rarity roll
+            // on `Rewards` and grab-bag pull, auto-collected by the oracle like
+            // the first. v0.107.1 has the same code; its arm still drops the
+            // bonus relic so that build stays bit-identical (tracked for #806).
+            if self.run_state.game_version >= crate::GameVersion::V0_111_0
+                && self.run_state.owns_active_relic(crate::RelicId::BlackStar)
+            {
+                self.run_state.offer_random_relic_rewards(1, &[None]);
+                self.run_state.drain_relic_rewards_directly();
+            }
         }
+        self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
         ActionResult::Advanced
     }
 
-    fn enter_card_reward_phase(&mut self) {
+    /// Collect a combat room's `ExtraRewards` the way the C# headless does,
+    /// once the base set is populated and before the card reward is shown.
+    ///
+    /// `RewardsSet.WithRewardsFromRoom` appends `ExtraRewards` after
+    /// `GenerateRewardsFor(room)` (`RewardsSet.cs:88-104`), so their
+    /// `Populate` runs after the card roll. Both kinds an event fight carries
+    /// are pre-populated: a `RelicReward(model)` (`RelicReward.cs:61-67`) and a
+    /// `SpecialCardReward` (`Populate` is empty), so neither reads RNG.
+    /// `GenerateWithoutOffering` then sorts the set by `RewardsSetIndex`
+    /// (`RewardsSet.cs:148`; Gold 1, Potion 2, Relic 3, SpecialCard 4,
+    /// Card 5), and the oracle auto-collects every reward but the
+    /// `CardReward` in that order (`RunSimulator.cs` `DetectPostCombatState`):
+    /// relics before the special card, both before the card pick.
+    ///
+    /// A relic is queued on `relic_rewards` and, under
+    /// `direct_event_relic_grant` (the parity / workbench mode), obtained at
+    /// once; otherwise it is left for the CardReward phase's
+    /// PickRelicReward/SkipRelic surface, as before. A `Reward::Card` with
+    /// pre-resolved options is the request's model of a `SpecialCardReward`
+    /// (TheLanternKey's LanternKey): each card goes straight into the deck
+    /// (`SpecialCardReward.OnSelect` → `CardPileCmd.Add(card, Deck)`). A gold
+    /// extra is gained on the spot (`GoldReward.OnSelect`); any other kind is
+    /// queued on `pending_rewards` (GH #817).
+    fn collect_extra_combat_rewards(&mut self, extra_rewards: &[crate::runstate::Reward]) {
+        use crate::runstate::Reward;
+        const fn rewards_set_index(reward: &Reward) -> u8 {
+            match reward {
+                Reward::Gold { .. } => 1,
+                Reward::Potion(_) => 2,
+                Reward::Relic(_) => 3,
+                Reward::Card(_) => 4,
+                _ => 6,
+            }
+        }
+        let mut ordered: Vec<&Reward> = extra_rewards.iter().collect();
+        // Stable, like .NET's insertion sort at these sizes (< 16 items).
+        ordered.sort_by_key(|r| rewards_set_index(r));
+        for reward in ordered {
+            match reward {
+                Reward::Gold { amount } => self.run_state.gain_gold(*amount),
+                Reward::Relic(rr) => {
+                    self.run_state.offer_relic_rewards(rr.relic_id, 1);
+                    if self.run_state.direct_event_relic_grant {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
+                }
+                Reward::Card(cr) if !cr.options.is_empty() => {
+                    for (i, &card_id) in cr.options.iter().enumerate() {
+                        let upgraded = cr.upgraded.get(i).copied().unwrap_or(false);
+                        let card = crate::build_card_for_version(
+                            card_id,
+                            upgraded,
+                            self.run_state.game_version,
+                        )
+                        .unwrap_or_else(|| {
+                            let mut c = crate::cards::Card::pod_defaults();
+                            c.card_id = card_id;
+                            c.upgraded = upgraded;
+                            c
+                        });
+                        self.run_state.add_card_to_deck_with_hooks(
+                            card,
+                            crate::relic_effects::AddSource::Reward,
+                        );
+                    }
+                }
+                other => self.run_state.pending_rewards.push(other.clone()),
+            }
+        }
+    }
+
+    /// v0.111.0 `Hook.BeforeCombatRewardOffered` (decomp CombatRoom.cs:264-276)
+    /// for a combat room's reward set, fired once the set is fully built: the
+    /// card options rolled (with `TryModifyCardRewardOptions`, i.e.
+    /// LastingCandy's extra Power, already applied) and the Elite relic
+    /// rolled. The gold and potion were claimed as they were rolled (see
+    /// [`crate::run_effects::CombatRewardsSet`]). No-op in v0.107.1, which
+    /// has no such hook.
+    fn fire_before_combat_reward_offered(
+        &mut self,
+        room_type: crate::runstate::RoomType,
+        card_options: Vec<crate::cards::CardId>,
+        elite_relic: Option<crate::RelicId>,
+    ) {
+        if self.run_state.game_version < crate::GameVersion::V0_111_0 {
+            return;
+        }
+        let mut rewards = vec![crate::runstate::Reward::Card(
+            crate::runstate::CardReward::from_options(card_options),
+        )];
+        if let Some(id) = elite_relic {
+            rewards.push(crate::runstate::Reward::Relic(
+                crate::runstate::RelicReward::new(id),
+            ));
+        }
+        let set = crate::run_effects::CombatRewardsSet { room_type, rewards };
+        crate::run_effects::dispatch_before_combat_reward_offered(&mut self.run_state, &set);
+    }
+
+    /// Roll and surface a combat room's card reward, returning the rolled
+    /// options for the reward set
+    /// [`Self::fire_before_combat_reward_offered`] carries (captured before
+    /// an empty offering routes onward). Empty in v0.107.1, where nothing
+    /// reads them.
+    fn enter_card_reward_phase(&mut self) -> Vec<crate::cards::CardId> {
+        self.roll_card_reward_options();
+        let rolled = if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+            self.card_reward_options.clone()
+        } else {
+            Vec::new()
+        };
+        self.open_card_reward_phase();
+        rolled
+    }
+
+    /// Roll the post-combat card offering (C# `CardReward.Populate`).
+    fn roll_card_reward_options(&mut self) {
         self.card_reward_options = self
             .callbacks
             .generate_card_reward_options
             .map(|f| f(&mut self.run_state))
             .unwrap_or_default();
         self.card_reward_upgraded = std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+        self.card_reward_enchantments =
+            std::mem::take(&mut self.run_state.card_reward_enchantments);
+    }
+
+    /// Surface the rolled offering as the `CardReward` phase.
+    fn open_card_reward_phase(&mut self) {
         // A fresh post-combat offering is never a choose screen.
         self.card_offer_choose_screen = false;
         self.phase = Phase::CardReward;
@@ -2325,13 +2647,15 @@ impl RunManager {
                 return ActionResult::InvalidForPhase;
             };
             for &card_id in pack {
-                let mut card = crate::lookup_card_factory()
-                    .and_then(|f| f(card_id, false))
-                    .unwrap_or_else(|| {
-                        let mut c = crate::cards::Card::pod_defaults();
-                        c.card_id = card_id;
-                        c
-                    });
+                // GH #793: built at the run's game build (v0.107.1 is
+                // exactly the build-agnostic factory).
+                let mut card =
+                    crate::build_card_for_version(card_id, false, self.run_state.game_version)
+                        .unwrap_or_else(|| {
+                            let mut c = crate::cards::Card::pod_defaults();
+                            c.card_id = card_id;
+                            c
+                        });
                 // C# `CardPileCmd.cs:502` fires `Hook.ModifyCardBeingAddedToDeck`
                 // on EVERY new Deck add, BEFORE the add — so egg relics
                 // (MoltenEgg/FrozenEgg/ToxicEgg) upgrade a matching reward card at
@@ -2369,14 +2693,24 @@ impl RunManager {
                 // POD default (1), which mis-displayed e.g. Anger (cost 0)
                 // as cost 1. Fall back to a bare POD only if no factory /
                 // spec is available.
-                let mut card = crate::lookup_card_factory()
-                    .and_then(|f| f(card_id, upgraded))
-                    .unwrap_or_else(|| {
-                        let mut c = crate::cards::Card::pod_defaults();
-                        c.card_id = card_id;
-                        c.upgraded = upgraded;
-                        c
-                    });
+                // GH #793: built at the run's game build (v0.107.1 is
+                // exactly the build-agnostic factory).
+                let mut card =
+                    crate::build_card_for_version(card_id, upgraded, self.run_state.game_version)
+                        .unwrap_or_else(|| {
+                            let mut c = crate::cards::Card::pod_defaults();
+                            c.card_id = card_id;
+                            c.upgraded = upgraded;
+                            c
+                        });
+                // Offer-time enchantment (SilkenTress's Glam clone,
+                // `SilkenTress.cs:61-70`): C# adds the enchanted clone itself.
+                // GH #806.
+                if let Some(ench) = self.card_reward_enchantments.get(i) {
+                    if !ench.is_empty() {
+                        card.enchantments = *ench;
+                    }
+                }
                 // C# fires `Hook.ModifyCardBeingAddedToDeck` before the deck add
                 // (CardPileCmd.cs:502) — egg relics upgrade a matching pick at add
                 // time (run-starter-upgrade-flip A).
@@ -2553,7 +2887,7 @@ impl RunManager {
             enum Resolve {
                 Potion(Option<crate::potions::PotionKind>),
                 RemoveCard(u32),
-                SurfaceCard(Vec<crate::cards::CardId>),
+                SurfaceCard(Vec<crate::cards::CardId>, Vec<bool>),
             }
             let queued = match &self.run_state.pending_rewards[i] {
                 Reward::Potion(reward) => Some(Resolve::Potion(reward.potion_kind)),
@@ -2563,7 +2897,10 @@ impl RunManager {
                     // already-populated CardReward — BrainLeech's
                     // colorless 3) surface verbatim; an empty sentinel
                     // rolls at queue position below.
-                    Some(Resolve::SurfaceCard(reward.options.clone()))
+                    Some(Resolve::SurfaceCard(
+                        reward.options.clone(),
+                        reward.upgraded.clone(),
+                    ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
                 _ => None,
@@ -2593,7 +2930,7 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved) => {
+                Resolve::SurfaceCard(pre_resolved, pre_upgraded) => {
                     if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
@@ -2610,9 +2947,14 @@ impl RunManager {
                             roller.map(|f| f(&mut self.run_state)).unwrap_or_default();
                         self.card_reward_upgraded =
                             std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+                        self.card_reward_enchantments =
+                            std::mem::take(&mut self.run_state.card_reward_enchantments);
                     } else {
                         self.card_reward_options = pre_resolved;
-                        self.card_reward_upgraded = Vec::new();
+                        // Empty unless a v0.111.0 caller built the reward
+                        // with `CardReward::from_cards` (BrainLeech Rip).
+                        self.card_reward_upgraded = pre_upgraded;
+                        self.card_reward_enchantments.clear();
                     }
                     opened = true;
                 }
@@ -2641,6 +2983,7 @@ impl RunManager {
         // never these representatives.
         self.card_reward_options = bundles.iter().filter_map(|b| b.first().copied()).collect();
         self.card_reward_upgraded.clear();
+        self.card_reward_enchantments.clear();
         self.card_reward_bundles = Some(bundles);
         true
     }
@@ -2678,6 +3021,7 @@ impl RunManager {
             // all-false. Replaces the prior unconditional `.clear()`, which
             // always granted unupgraded.
             self.card_reward_upgraded = select.upgraded;
+            self.card_reward_enchantments = select.enchantments;
             self.card_offer_choose_screen = true;
             self.pending_choose_screen_post_add = select.post_add;
             // Stay in CardReward — get_available_actions now fans out the
@@ -2751,6 +3095,12 @@ impl RunManager {
         // (which `return`s above) nor the already-passing chained-RELIC defer
         // case (A5P41 SmallCapsule).
         self.drain_post_pick_deck_cards_if_settled();
+        // Rewards offered by an intermediate event page have drained: back to
+        // the event for its next page (see `route_mid_event_rewards`).
+        if std::mem::take(&mut self.resume_event_after_rewards) {
+            self.phase = Phase::Event;
+            return;
+        }
         // Boss combat: after the card reward resolves, surface the boss-relic
         // / next-act Ancient choice pre-generated at boss-win time (C# shows
         // the card reward first, then the relic — the boss `RewardsSet`
@@ -3135,6 +3485,18 @@ impl RunManager {
             if hp_loss > 0 {
                 let _ = self.run_state.lose_hp(hp_loss);
             }
+            // v0.111.0 Cook: `GainMaxHp(5)` after its two removals
+            // (decomp CookRestSiteOption.cs:58). Always 0 in v0.107.1.
+            let max_hp_gain = std::mem::take(&mut self.run_state.pending_post_removal_max_hp_gain);
+            if max_hp_gain > 0 {
+                self.run_state.gain_max_hp(max_hp_gain);
+            }
+            // v0.111.0 ZenWeaver: `LoseGold(cost)` after its removals (decomp
+            // ZenWeaver.cs:72-73). Always 0 in v0.107.1.
+            let gold_loss = std::mem::take(&mut self.run_state.pending_post_removal_gold_loss);
+            if gold_loss > 0 {
+                self.run_state.gold = self.run_state.gold.saturating_sub(gold_loss);
+            }
         }
         self.settle_after_deck_pick();
         ActionResult::Advanced
@@ -3190,8 +3552,18 @@ impl RunManager {
         else {
             return ActionResult::InvalidForPhase;
         };
-        self.run_state.master_deck[deck_idx].upgrade();
+        let version = self.run_state.game_version;
+        self.run_state.master_deck[deck_idx].upgrade_for(version);
         self.run_state.pending_deck_upgrades -= 1;
+        // v0.111.0 SpiritGrafter Rejection: the 10 damage lands after the
+        // upgrade pick returns (decomp SpiritGrafter.cs:47-52). Always 0 in
+        // v0.107.1.
+        if self.run_state.pending_deck_upgrades == 0 {
+            let hp_loss = std::mem::take(&mut self.run_state.pending_post_upgrade_hp_loss);
+            if hp_loss > 0 {
+                let _ = self.run_state.lose_hp(hp_loss);
+            }
+        }
         self.settle_after_deck_pick();
         ActionResult::Advanced
     }
@@ -3363,7 +3735,7 @@ impl RunManager {
                     return true;
                 }
                 match rank {
-                    Some(f) => f(c.card_id) == 1,
+                    Some(f) => f(c.card_id, self.run_state.game_version) == 1,
                     None => true,
                 }
             })
@@ -3530,7 +3902,8 @@ impl RunManager {
             .nth(idx)
             .map(|(i, _)| i)
         {
-            self.run_state.master_deck[deck_idx].upgrade();
+            let version = self.run_state.game_version;
+            self.run_state.master_deck[deck_idx].upgrade_for(version);
         }
         self.phase = Phase::MapChoice;
         ActionResult::Advanced
@@ -3656,11 +4029,43 @@ impl RunManager {
         // fallback never dispatches a handler (so it can't clear
         // `current_event`) and must keep its single-shot advance-to-map
         // behavior rather than wedge the run in `Phase::Event`.
+        //
+        // A page can still OFFER rewards before the next one appears: C#
+        // awaits `RewardsCmd.OfferCustom` inside the option, so the rewards
+        // screen comes before `SetEventState` shows the next page (Dream
+        // Catcher on DenseVegetation's Rest heal: the card reward precedes
+        // FIGHT). Surface whatever the page queued now and come back to the
+        // event once it drains (GH #817).
         if self.callbacks.resolve_event_at.is_some() && self.run_state.current_event.is_some() {
-            self.phase = Phase::Event;
-            return ActionResult::Advanced;
+            return self.route_mid_event_rewards();
         }
         self.route_after_event_rewards()
+    }
+
+    /// Surface the rewards an intermediate event page queued, then return to
+    /// [`Phase::Event`] (directly, or via [`Self::advance_after_card_reward`]
+    /// once the CardReward phase drains). The mid-event counterpart of
+    /// [`Self::route_after_event_rewards`]: the same drains, but the event is
+    /// still open, so the fall-through is the event's next page, not the map.
+    fn route_mid_event_rewards(&mut self) -> ActionResult {
+        let opened_card_reward = self.drain_pending_rewards();
+        let opened_bundle = self.surface_pending_bundle();
+        if self.run_state.direct_event_relic_grant {
+            let _ = self.run_state.drain_relic_rewards_directly();
+        }
+        if opened_card_reward
+            || opened_bundle
+            || !self.run_state.relic_rewards.is_empty()
+            || !self.card_reward_options.is_empty()
+            || !self.run_state.pending_card_selects.is_empty()
+        {
+            self.resume_event_after_rewards = true;
+            self.phase = Phase::CardReward;
+            self.advance_after_card_reward();
+        } else {
+            self.phase = Phase::Event;
+        }
+        ActionResult::Advanced
     }
 
     /// Drain an event's staged rewards and route to the next phase
@@ -3724,9 +4129,11 @@ impl RunManager {
     /// `resume`-flagged request (BattlewornDummy) this fires the
     /// `resume_event_after_combat` content callback (which rolls the
     /// per-setting reward, gated on `clean_victory`); for a no-resume
-    /// request (TheLanternKey / FakeMerchant) it pushes the request's
-    /// `victory_rewards` onto `pending_rewards` only on a clean victory.
-    /// Bead `sts2-rs-ck9z6` (GH #166).
+    /// request it pushes the request's `victory_rewards` onto
+    /// `pending_rewards` only on a clean victory. A won no-resume fight
+    /// normally takes the room-reward path in [`Self::finish_event_combat`]
+    /// instead (GH #817); this arm remains for the builder-less fallback in
+    /// [`Self::do_event_choice`]. Bead `sts2-rs-ck9z6` (GH #166).
     fn grant_event_combat_outcome(
         &mut self,
         req: &crate::events::EventCombatRequest,
@@ -3769,6 +4176,27 @@ impl RunManager {
             .as_ref()
             .is_some_and(|c| c.event_combat_timed_out);
         let clean_victory = !timed_out;
+        // An event fight is a real C# `CombatRoom` whose `RoomType` is the
+        // encounter's, so the run's end-of-room reward set is generated for
+        // it like for any map combat (`RewardsSet.WithRewardsFromRoom`):
+        // gold, potion odds and a card reward. The parent event is torn down
+        // first; with `shouldResumeAfterCombat: false` the player proceeds to
+        // the map once the rewards resolve. The request's `victory_rewards`
+        // are the room's `ExtraRewards`, collected with the set. Every
+        // encounter but BattlewornDummy's takes this path (see
+        // `EventEncounter::grants_base_room_rewards`).
+        if !req.resume && clean_victory && req.encounter.grants_base_room_rewards() {
+            self.run_state.exit_event_room();
+            // `FakeMerchantEventEncounter` fixes its gold at 300; the roll
+            // reads the override, then it is cleared for every later room.
+            self.run_state.combat_gold_bounds_override = req.encounter.gold_reward_bounds();
+            let result = self.offer_combat_room_rewards(
+                crate::runstate::RoomType::Monster,
+                &req.victory_rewards,
+            );
+            self.run_state.combat_gold_bounds_override = None;
+            return result;
+        }
         self.grant_event_combat_outcome(&req, clean_victory);
         // Tear down the parent event (C# `SetEventFinished` inside Resume /
         // the no-resume combat room exit). `exit_event_room` clears
@@ -4347,6 +4775,7 @@ impl RunManager {
             | O::Hatched
             | O::Kindled
             | O::Lifted
+            | O::Cooked
             | O::Disabled
             | O::Unsupported => {
                 self.phase = Phase::MapChoice;
@@ -5540,6 +5969,122 @@ mod tests {
         );
     }
 
+    /// Win `n` synthetic Monster combats through `exit_combat_and_transition`
+    /// (no content callbacks, so only the run-manager seam runs).
+    fn win_synthetic_combats(rm: &mut RunManager, n: usize) {
+        for _ in 0..n {
+            rm.run_state.current_room = Some(crate::runstate::Room::new(
+                crate::runstate::RoomType::Monster,
+            ));
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let _ = rm.exit_combat_and_transition();
+        }
+    }
+
+    fn guilty_count(rm: &RunManager) -> usize {
+        rm.run_state
+            .master_deck
+            .iter()
+            .filter(|c| c.card_id == crate::cards::CardId::Guilty)
+            .count()
+    }
+
+    fn guilty_card() -> crate::cards::Card {
+        let mut c = crate::cards::Card::pod_defaults();
+        c.card_id = crate::cards::CardId::Guilty;
+        c
+    }
+
+    /// Win one synthetic Elite combat holding BlackStar with a small grab bag;
+    /// return the relics obtained by the reward chain.
+    fn black_star_elite_relics(version: crate::GameVersion) -> Vec<crate::RelicId> {
+        use crate::RelicId;
+        use crate::RelicRarity;
+        let mut rm = RunManager::new(7, CharacterId::Ironclad).with_game_version(version);
+        let mut by_rarity = std::collections::BTreeMap::new();
+        for rarity in [
+            RelicRarity::Common,
+            RelicRarity::Uncommon,
+            RelicRarity::Rare,
+        ] {
+            by_rarity.insert(
+                rarity,
+                vec![RelicId::Anchor, RelicId::Vajra, RelicId::LuckyFysh],
+            );
+        }
+        rm.run_state
+            .populate_relic_grab_bag_by_rarity(by_rarity, Vec::new(), Vec::new());
+        rm.run_state.relics = vec![RelicId::BlackStar];
+        rm.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Elite));
+        rm.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        rm.set_phase(Phase::Combat);
+        let _ = rm.exit_combat_and_transition();
+        rm.run_state
+            .relics
+            .iter()
+            .copied()
+            .filter(|&r| r != RelicId::BlackStar)
+            .collect()
+    }
+
+    /// v0.107.1 keeps its pre-port behaviour: only the Elite's own relic.
+    #[test]
+    fn black_star_elite_gives_one_relic() {
+        assert_eq!(
+            black_star_elite_relics(crate::GameVersion::V0_107_1).len(),
+            1
+        );
+    }
+
+    /// v0.111.0 BlackStar (`BlackStar.cs:13`) appends a second relic reward
+    /// to an Elite's set; the oracle auto-collects both.
+    #[test]
+    fn black_star_elite_gives_two_relics_v0111() {
+        assert_eq!(
+            black_star_elite_relics(crate::GameVersion::V0_111_0).len(),
+            2
+        );
+    }
+
+    /// v0.107.1 keeps its pre-port behaviour: the curse never leaves.
+    #[test]
+    fn guilty_stays_in_deck_after_five_combats() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.master_deck.push(guilty_card());
+        win_synthetic_combats(&mut rm, 6);
+        assert_eq!(guilty_count(&rm), 1);
+    }
+
+    /// v0.111.0 `Guilty.AfterCombatEnd` (`Guilty.cs:46`): each Guilty counts
+    /// its own combats and removes itself at the end of its fifth; a Guilty
+    /// gained later keeps its own count.
+    #[test]
+    fn guilty_removes_itself_after_five_combats_v0111() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_game_version(crate::GameVersion::V0_111_0);
+        rm.run_state.master_deck.push(guilty_card());
+        win_synthetic_combats(&mut rm, 3);
+        rm.run_state.master_deck.push(guilty_card());
+        win_synthetic_combats(&mut rm, 1);
+        assert_eq!(guilty_count(&rm), 2, "4 and 1 combats seen");
+        win_synthetic_combats(&mut rm, 1);
+        assert_eq!(guilty_count(&rm), 1, "the first leaves after its 5th");
+        win_synthetic_combats(&mut rm, 2);
+        assert_eq!(guilty_count(&rm), 1, "the second has seen 4");
+        win_synthetic_combats(&mut rm, 1);
+        assert_eq!(guilty_count(&rm), 0);
+    }
+
     #[test]
     fn exit_combat_clears_settled_swipe_ledger() {
         // Bead `sts2-rs-RP13` follow-up (shadow census seed 1034): the exit
@@ -5779,6 +6324,81 @@ mod tests {
         assert_eq!(result, ActionResult::Advanced);
         assert_eq!(rm.phase(), Phase::MapChoice);
         assert!(rm.run_state.relics.contains(&crate::RelicId::CallingBell));
+    }
+
+    /// v0.111.0 `Hook.BeforeCombatRewardOffered` fires once per combat
+    /// reward set, after the set is built, carrying the rolled card options
+    /// (and an Elite's relic); v0.107.1 has no such hook (decomp
+    /// CombatRoom.cs:264-276). GH #795.
+    #[test]
+    fn act1_boss_win_offers_card_reward_before_boss_relic_v0111() {
+        use std::sync::Mutex;
+        static SEEN: Mutex<Vec<crate::run_effects::CombatRewardsSet>> = Mutex::new(Vec::new());
+        fn record(
+            _rs: &mut RunState,
+            set: &crate::run_effects::CombatRewardsSet,
+        ) -> crate::card_effects::EffectResult {
+            SEEN.lock().expect("lock").push(set.clone());
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+            vec![
+                crate::cards::CardId::StrikeIronclad,
+                crate::cards::CardId::Bash,
+            ]
+        }
+        crate::run_effects::register_before_combat_reward_offered(
+            crate::RelicId::LastingCandy,
+            record,
+        );
+        for (version, room, fired) in [
+            (
+                crate::GameVersion::V0_107_1,
+                crate::runstate::RoomType::Monster,
+                false,
+            ),
+            (
+                crate::GameVersion::V0_111_0,
+                crate::runstate::RoomType::Monster,
+                true,
+            ),
+            (
+                crate::GameVersion::V0_111_0,
+                crate::runstate::RoomType::Boss,
+                true,
+            ),
+        ] {
+            SEEN.lock().expect("lock").clear();
+            let cb = ContentCallbacks {
+                generate_card_reward_options: Some(cards),
+                ..ContentCallbacks::default()
+            };
+            let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+            rm.run_state.game_version = version;
+            rm.run_state.act_index = 1;
+            rm.run_state.current_room = Some(crate::runstate::Room::new(room));
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let _ = rm.exit_combat_and_transition();
+            let seen = SEEN.lock().expect("lock").clone();
+            if fired {
+                assert_eq!(seen.len(), 1, "{version} {room:?}: one set");
+                assert_eq!(seen[0].room_type, room);
+                assert!(seen[0].has_card_reward());
+                assert_eq!(
+                    seen[0].rewards[0],
+                    crate::runstate::Reward::Card(crate::runstate::CardReward::from_options(
+                        cards(&mut rm.run_state)
+                    ))
+                );
+            } else {
+                assert!(seen.is_empty(), "{version}: no hook");
+            }
+        }
     }
 
     #[test]
@@ -6362,6 +6982,51 @@ mod tests {
         assert_eq!(rm.run_state.pending_deck_removals, 0);
         assert_eq!(rm.run_state.current_hp, hp0 - 16);
         assert_eq!(rm.run_state.pending_post_removal_hp_loss, 0, "consumed");
+    }
+
+    /// v0.111.0 ZenWeaver parks its cost in `pending_post_removal_gold_loss`
+    /// (`ZenWeaver.cs:72-73`); it is spent once, when the removal batch drains.
+    #[test]
+    fn pending_post_removal_gold_loss_applies_when_removal_batch_drains_v0111() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_game_version(crate::GameVersion::V0_111_0);
+        rm.run_state.interactive_card_removal = true;
+        rm.run_state.master_deck = (1..=4)
+            .map(|i| crate::Card {
+                uid: crate::CardUid::new(i).expect("nz"),
+                card_id: crate::cards::CardId::StrikeIronclad,
+                ..crate::Card::pod_defaults()
+            })
+            .collect();
+        rm.run_state.gold = 300;
+        rm.run_state.pending_deck_removals = 2;
+        rm.run_state.pending_post_removal_gold_loss = 250;
+        let _ = rm.take_action(RunAction::RemoveDeckCard { idx: 0 });
+        assert_eq!(rm.run_state.gold, 300, "unpaid mid-batch");
+        let _ = rm.take_action(RunAction::RemoveDeckCard { idx: 0 });
+        assert_eq!(rm.run_state.gold, 50);
+        assert_eq!(rm.run_state.pending_post_removal_gold_loss, 0, "consumed");
+    }
+
+    /// v0.111.0 SpiritGrafter parks its damage in `pending_post_upgrade_hp_loss`
+    /// (`SpiritGrafter.cs:47-52`); it lands when the upgrade pick drains.
+    #[test]
+    fn pending_post_upgrade_hp_loss_applies_when_upgrade_pick_drains_v0111() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_game_version(crate::GameVersion::V0_111_0);
+        rm.run_state.master_deck = (1..=3)
+            .map(|i| crate::Card {
+                uid: crate::CardUid::new(i).expect("nz"),
+                card_id: crate::cards::CardId::StrikeIronclad,
+                ..crate::Card::pod_defaults()
+            })
+            .collect();
+        let hp0 = rm.run_state.current_hp;
+        rm.run_state.pending_deck_upgrades = 1;
+        rm.run_state.pending_post_upgrade_hp_loss = 10;
+        assert_eq!(rm.do_upgrade_deck_card_at(0), ActionResult::Advanced);
+        assert_eq!(rm.run_state.current_hp, hp0 - 10);
+        assert_eq!(rm.run_state.pending_post_upgrade_hp_loss, 0, "consumed");
     }
 
     /// NeowsBones defers its curse to `pending_post_pick_cards`; it must land in
@@ -9166,6 +9831,296 @@ mod tests {
         assert!(!rm.run_state.player_won);
     }
 
+    /// `resolve_event_at` test double: stages DenseVegetation's no-resume
+    /// Wriggler fight (no extra rewards), as its page-1 FIGHT option does.
+    fn resolve_stages_dense_vegetation(rs: &mut RunState, _idx: usize) -> bool {
+        rs.event_combat = Some(EventCombatRequest::no_resume(
+            EventEncounter::DenseVegetation,
+            EventId::DenseVegetation,
+            Vec::new(),
+        ));
+        true
+    }
+
+    /// `apply_combat_gold_and_potion` test double: grants a 13-gold marker
+    /// and records the room type it was asked for in the gold's thousands
+    /// (Monster → +1000), so a test can see both that it ran and for which
+    /// room.
+    fn apply_marker_gold(rs: &mut RunState, room_type: crate::runstate::RoomType) {
+        let room_marker = if room_type == crate::runstate::RoomType::Monster {
+            1000
+        } else {
+            0
+        };
+        rs.gain_gold(13 + room_marker);
+    }
+
+    fn dense_vegetation_callbacks(resolve: fn(&mut RunState, usize) -> bool) -> ContentCallbacks {
+        ContentCallbacks {
+            apply_combat_gold_and_potion: Some(apply_marker_gold),
+            generate_card_reward_options: drain_test_callbacks().generate_card_reward_options,
+            ..bridge_callbacks(resolve)
+        }
+    }
+
+    /// GH #817: C# runs an event fight in a real `CombatRoom` whose
+    /// `RoomType` is the encounter's (`DenseVegetationEventEncounter` →
+    /// `Monster`), so winning it grants the normal Monster-room rewards
+    /// (`RewardsSet.WithRewardsFromRoom`): the gold + potion roll and a card
+    /// reward, then the map.
+    #[test]
+    fn dense_vegetation_fight_victory_grants_monster_room_rewards() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(dense_vegetation_callbacks(resolve_stages_dense_vegetation));
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+        let gold_before = rm.run_state.gold;
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(
+            rm.phase(),
+            Phase::Combat,
+            "FIGHT enters the Wriggler combat"
+        );
+
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let result = rm.exit_combat_and_transition();
+
+        assert_eq!(result, ActionResult::Advanced);
+        assert_eq!(
+            rm.run_state.gold,
+            gold_before + 1013,
+            "gold + potion roll ran once, for a Monster room"
+        );
+        assert_eq!(
+            rm.phase(),
+            Phase::CardReward,
+            "the combat card reward is offered"
+        );
+        assert_eq!(
+            rm.card_reward_options(),
+            &[
+                crate::cards::CardId::StrikeIronclad,
+                crate::cards::CardId::DefendIronclad,
+                crate::cards::CardId::Bash,
+            ],
+            "the combat card roller supplied the offering"
+        );
+        assert!(rm.run_state.event_combat.is_none(), "request cleared");
+        assert!(rm.run_state.current_event.is_none(), "event closed");
+
+        rm.take_action(RunAction::PickCardReward { idx: Some(0) });
+        assert_eq!(rm.phase(), Phase::MapChoice, "no resume: on to the map");
+    }
+
+    /// `resolve_event_at` test double: TheLanternKey's page-1 FIGHT, which
+    /// stages the MysteriousKnight with its `SpecialCardReward(LanternKey)`
+    /// extra (modelled as a pre-resolved one-card `CardReward`).
+    fn resolve_stages_lantern_key_fight(rs: &mut RunState, _idx: usize) -> bool {
+        rs.event_combat = Some(EventCombatRequest::no_resume(
+            EventEncounter::MysteriousKnight,
+            EventId::TheLanternKey,
+            vec![crate::runstate::Reward::Card(
+                crate::runstate::CardReward::from_options(vec![crate::cards::CardId::LanternKey]),
+            )],
+        ));
+        true
+    }
+
+    /// `resolve_event_at` test double: FakeMerchant's foul-potion throw,
+    /// which stages its fight with the Rug + stock as relic extras.
+    fn resolve_stages_fake_merchant_fight(rs: &mut RunState, _idx: usize) -> bool {
+        rs.event_combat = Some(EventCombatRequest::no_resume(
+            EventEncounter::FakeMerchant,
+            EventId::FakeMerchant,
+            vec![
+                crate::runstate::Reward::Relic(crate::runstate::RelicReward::new(
+                    crate::RelicId::FakeMerchantsRug,
+                )),
+                crate::runstate::Reward::Relic(crate::runstate::RelicReward::new(
+                    crate::RelicId::FakeAnchor,
+                )),
+            ],
+        ));
+        true
+    }
+
+    /// `apply_combat_gold_and_potion` test double that records the gold
+    /// bounds override it saw as gold (`min + max`, or 0 without one).
+    fn apply_override_marker_gold(rs: &mut RunState, _room_type: crate::runstate::RoomType) {
+        let marker = rs.combat_gold_bounds_override.map_or(0, |(lo, hi)| lo + hi);
+        rs.gain_gold(marker);
+    }
+
+    /// Win the staged event fight from `Phase::Event` (option 0).
+    fn win_event_fight(rm: &mut RunManager) {
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(rm.phase(), Phase::Combat, "the option enters the fight");
+        let combat = rm.combat.as_mut().expect("combat set");
+        combat.player_won = true;
+        combat.is_over = true;
+        let result = rm.exit_combat_and_transition();
+        assert_eq!(result, ActionResult::Advanced);
+    }
+
+    /// GH #817: TheLanternKey's fight is a Monster `CombatRoom` too, so the
+    /// win grants the room's gold + potion roll and card reward, and the
+    /// `SpecialCardReward(LanternKey)` extra (RewardsSetIndex 4, before the
+    /// CardReward's 5) is auto-collected into the deck before the card pick.
+    #[test]
+    fn mysterious_knight_victory_grants_room_rewards_and_lantern_key() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(dense_vegetation_callbacks(resolve_stages_lantern_key_fight));
+        rm.run_state.enter_event_room(EventId::TheLanternKey);
+        rm.set_phase(Phase::Event);
+        let gold_before = rm.run_state.gold;
+        let deck_before = rm.run_state.master_deck.len();
+        win_event_fight(&mut rm);
+
+        assert_eq!(
+            rm.run_state.gold,
+            gold_before + 1013,
+            "Monster-room gold + potion roll ran once"
+        );
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert_eq!(rm.card_reward_options().len(), 3, "combat card reward");
+        assert_eq!(
+            rm.run_state.master_deck.len(),
+            deck_before + 1,
+            "LanternKey added before the card pick"
+        );
+        assert_eq!(
+            rm.run_state.master_deck.last().map(|c| c.card_id),
+            Some(crate::cards::CardId::LanternKey)
+        );
+        assert!(
+            rm.run_state.pending_rewards.is_empty(),
+            "no pick sentinel left behind"
+        );
+        assert!(rm.run_state.current_event.is_none(), "event closed");
+
+        rm.take_action(RunAction::PickCardReward { idx: None });
+        assert_eq!(rm.phase(), Phase::MapChoice);
+    }
+
+    /// GH #817: FakeMerchant's fight grants its room rewards with the
+    /// encounter's flat 300-gold bounds, and its relic extras (RewardsSetIndex
+    /// 3) are obtained before the card pick under `direct_event_relic_grant`.
+    /// The bounds override is gone once the rewards are rolled.
+    #[test]
+    fn fake_merchant_victory_uses_its_gold_bounds_and_collects_relics() {
+        let callbacks = ContentCallbacks {
+            apply_combat_gold_and_potion: Some(apply_override_marker_gold),
+            ..dense_vegetation_callbacks(resolve_stages_fake_merchant_fight)
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(callbacks);
+        rm.run_state.direct_event_relic_grant = true;
+        rm.run_state.enter_event_room(EventId::FakeMerchant);
+        rm.set_phase(Phase::Event);
+        let gold_before = rm.run_state.gold;
+        win_event_fight(&mut rm);
+
+        assert_eq!(
+            rm.run_state.gold,
+            gold_before + 600,
+            "the gold roll saw the (300, 300) override"
+        );
+        assert_eq!(rm.run_state.combat_gold_bounds_override, None, "cleared");
+        assert!(rm
+            .run_state
+            .owns_active_relic(crate::RelicId::FakeMerchantsRug));
+        assert!(rm.run_state.owns_active_relic(crate::RelicId::FakeAnchor));
+        assert!(rm.run_state.relic_rewards.is_empty(), "both obtained");
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert_eq!(rm.card_reward_options().len(), 3, "combat card reward");
+    }
+
+    /// Without `direct_event_relic_grant` the relic extras stay offered on
+    /// the CardReward screen next to the card reward, as before.
+    #[test]
+    fn fake_merchant_victory_offers_relics_without_direct_grant() {
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(
+            dense_vegetation_callbacks(resolve_stages_fake_merchant_fight),
+        );
+        rm.run_state.enter_event_room(EventId::FakeMerchant);
+        rm.set_phase(Phase::Event);
+        win_event_fight(&mut rm);
+
+        let offered: Vec<crate::RelicId> = rm
+            .run_state
+            .relic_rewards
+            .iter()
+            .map(|r| r.relic_id)
+            .collect();
+        assert_eq!(
+            offered,
+            [crate::RelicId::FakeMerchantsRug, crate::RelicId::FakeAnchor]
+        );
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert_eq!(rm.card_reward_options().len(), 3);
+    }
+
+    /// `resolve_event_at` test double for a two-page event: option 0 on page
+    /// 0 queues a card-reward sentinel and opens page 1 (Dream Catcher on
+    /// DenseVegetation's Rest heal); option 0 on page 1 finishes the event.
+    fn resolve_rest_then_finish(rs: &mut RunState, _idx: usize) -> bool {
+        if rs.event_state.page == 0 {
+            rs.pending_rewards.push(crate::runstate::Reward::Card(
+                crate::runstate::CardReward::empty(),
+            ));
+            rs.event_state.page = 1;
+        } else {
+            rs.exit_event_room();
+        }
+        true
+    }
+
+    /// GH #817: a reward an intermediate page offers (C# `RewardsCmd.
+    /// OfferCustom` awaited inside the option) surfaces right away, before
+    /// the next page, and the run then returns to the event, not the map.
+    #[test]
+    fn intermediate_event_page_rewards_surface_before_the_next_page() {
+        let callbacks = ContentCallbacks {
+            resolve_event_at: Some(resolve_rest_then_finish),
+            ..drain_test_callbacks()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(callbacks);
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(rm.phase(), Phase::CardReward, "the card reward comes first");
+        assert_eq!(rm.card_reward_options().len(), 3);
+        assert!(rm.run_state.pending_rewards.is_empty());
+
+        rm.take_action(RunAction::PickCardReward { idx: Some(0) });
+        assert_eq!(rm.phase(), Phase::Event, "back to the event's next page");
+        assert_eq!(rm.run_state.current_event, Some(EventId::DenseVegetation));
+
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(rm.phase(), Phase::MapChoice, "the last page leaves");
+    }
+
+    /// An intermediate page that queued nothing stays in `Phase::Event`.
+    #[test]
+    fn intermediate_event_page_without_rewards_stays_in_event() {
+        fn next_page(rs: &mut RunState, _idx: usize) -> bool {
+            rs.event_state.page = 1;
+            true
+        }
+        let callbacks = ContentCallbacks {
+            resolve_event_at: Some(next_page),
+            ..drain_test_callbacks()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(callbacks);
+        rm.run_state.enter_event_room(EventId::DenseVegetation);
+        rm.set_phase(Phase::Event);
+        rm.take_action(RunAction::EventChoice { idx: 0 });
+        assert_eq!(rm.phase(), Phase::Event);
+        assert!(!rm.resume_event_after_rewards);
+    }
+
     // -----------------------------------------------------------------
     // Live-state import: `debug_place_on_map` positioning.
     // -----------------------------------------------------------------
@@ -9278,6 +10233,57 @@ mod tests {
         assert_eq!(
             rm.run_state.current_room.and_then(|r| r.map_coord),
             Some(coord)
+        );
+    }
+
+    /// GH #806 (PARITY149): a `TryModifyCardRewardOptionsLate` relic stamp
+    /// on the offered card survives the pick. C# `SilkenTress` clones each
+    /// option and `CardCmd.Enchant<Glam>`s it (v0.107.1 `SilkenTress.cs:61-70`);
+    /// `CardReward` adds that enchanted clone to the deck. The bare-`CardId`
+    /// callback used to drop the enchantment, so the Glam replay never fired.
+    #[test]
+    fn card_reward_pick_keeps_offer_time_enchantment() {
+        fn cards(rs: &mut RunState) -> Vec<crate::cards::CardId> {
+            let mut glam = crate::cards::CardEnchantments::default();
+            glam.set(crate::cards::EnchantmentId::Glam, 1);
+            rs.card_reward_enchantments =
+                vec![crate::cards::CardEnchantments::default(), glam, glam];
+            vec![
+                crate::cards::CardId::StrikeIronclad,
+                crate::cards::CardId::Bash,
+                crate::cards::CardId::Anger,
+            ]
+        }
+        let pick = |idx: usize| {
+            let cb = ContentCallbacks {
+                generate_card_reward_options: Some(cards),
+                ..ContentCallbacks::default()
+            };
+            let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+            rm.run_state.act_index = 1;
+            rm.run_state.current_room = Some(crate::runstate::Room::new(
+                crate::runstate::RoomType::Monster,
+            ));
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            assert_eq!(rm.exit_combat_and_transition(), ActionResult::Advanced);
+            assert_eq!(rm.phase(), Phase::CardReward);
+            let result = rm.take_action(RunAction::PickCardReward { idx: Some(idx) });
+            assert_eq!(result, ActionResult::Advanced);
+            *rm.run_state.master_deck.last().expect("picked card")
+        };
+        let bash = pick(1);
+        assert_eq!(bash.card_id, crate::cards::CardId::Bash);
+        assert_eq!(bash.enchantment(crate::cards::EnchantmentId::Glam), 1);
+        let strike = pick(0);
+        assert_eq!(strike.card_id, crate::cards::CardId::StrikeIronclad);
+        assert!(
+            strike.enchantments.is_empty(),
+            "unstamped option stays plain"
         );
     }
 }

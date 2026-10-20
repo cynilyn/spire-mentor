@@ -559,7 +559,9 @@ fn roll_intents(
         .iter()
         .map(|m| as_str(m.get("monster"), "").to_string())
         .collect();
-    let cs = sts2_wire::scenario::build_scenario_state(
+    let cs = sts2_wire::scenario::build_scenario_state_for_version(
+        // SimLab has no session: positions are the default build's.
+        sts2_core::GameVersion::default(),
         u64::try_from(seed.max(1)).unwrap_or(1),
         character,
         &["STRIKE_IRONCLAD".to_string()],
@@ -969,7 +971,9 @@ pub fn new_position(
             "pick an encounter or name at least one monster",
         ));
     }
-    let cs = sts2_wire::scenario::build_scenario_state(
+    let cs = sts2_wire::scenario::build_scenario_state_for_version(
+        // SimLab has no session: positions are the default build's.
+        sts2_core::GameVersion::default(),
         u64::try_from(seed.max(0)).unwrap_or(0),
         character,
         &deck_ids,

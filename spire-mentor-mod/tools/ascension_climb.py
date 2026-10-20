@@ -51,6 +51,35 @@ def _is_mod_line(line: str) -> bool:
     return "[SpireMentor]" in line
 
 
+def all_progress_saves() -> list[Path]:
+    """Every modded profile's `progress.save` (any Steam account)."""
+    root = APPDATA / "SlayTheSpire2" / "steam"
+    return [p for p in root.glob("*/modded/profile*/saves/progress.save") if p.is_file()]
+
+
+#: The game names the profile it plays every time it saves it:
+#: `Wrote N bytes to path=user://steam/<id>/modded/profile1/saves/progress.save`.
+PROFILE_WRITE_RE = re.compile(
+    r"path=user://steam/(\d+)/modded/(profile\d+)/saves/progress\.save"
+)
+
+
+def profile_in_log(text: str) -> Path | None:
+    """The `progress.save` the game in `text` actually wrote, newest write wins.
+
+    `detect_progress_save` can only guess before launch (newest mtime), and the
+    guess goes stale whenever the game loads a different slot: 2026-10-19 it
+    picked profile2 while the game played profile1, so a won run came back
+    UNGRADED. The log is authoritative once the game has saved once.
+    """
+    found = PROFILE_WRITE_RE.findall(text)
+    if not found:
+        return None
+    steam_id, profile = found[-1]
+    root = APPDATA / "SlayTheSpire2" / "steam"
+    return root / steam_id / "modded" / profile / "saves" / "progress.save"
+
+
 def detect_progress_save() -> Path:
     """The profile the GAME is actually playing, not the one we hard-coded.
 
@@ -68,7 +97,7 @@ def detect_progress_save() -> Path:
     if env:
         return Path(env)
     root = APPDATA / "SlayTheSpire2" / "steam"
-    saves = [p for p in root.glob("*/modded/profile*/saves/progress.save") if p.is_file()]
+    saves = all_progress_saves()
     if saves:
         return max(saves, key=lambda p: p.stat().st_mtime)
     # No profile found: keep the pattern shape (SteamID64 segment varies per
@@ -134,6 +163,27 @@ RESUME_ATTEMPTS = 3
 TAKEOVER = "Takeover executed"
 VICTORY_RE = re.compile(r"has won a run with ancient")
 GAMEOVER_RE = re.compile(r"Decision up: NGameOverScreen|has lost to encounter")
+#: Where THIS launch's run begins: a new run embarks, a resumed one is
+#: continued (SimAutoSlayer.TryResumeSavedRunAsync). Verdicts only count after
+#: it -- see `this_run`.
+RUN_START_RE = re.compile(
+    r"Embarking on a singleplayer|\[SimAutoSlayer\] resume_run: continuing the saved run"
+)
+
+
+def this_run(text: str) -> str:
+    """The part of the log after this launch's run started; "" before that.
+
+    Autopilot abandons any saved run at the main menu, and the game books an
+    abandoned run as a defeat -- `CHARACTER.SILENT has lost to encounter
+    ENCOUNTER.CORPSE_SLUGS_WEAK` -- BEFORE the new run embarks. Matched against
+    the whole log, that line scored a healthy Ironclad run as a loss on floor
+    12 and killed it (2026-10-19, logs/2026-10-19-v0111-live run 001).
+    """
+    starts = list(RUN_START_RE.finditer(text))
+    return text[starts[-1].start():] if starts else ""
+
+
 RUNAWAY_RE = re.compile(r"has not moved after")
 REFUSED_RE = re.compile(r"changed nothing on the board|the game refuses")
 
@@ -155,17 +205,18 @@ def say(msg: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def ladder() -> dict[str, int]:
+def ladder(progress: Path | None = None) -> dict[str, int]:
     """max_ascension per character name, from the live profile save.
 
     Retried, because the game rewrites this file on every room transition and
     reading it mid-write yields half a JSON document. An unhandled
     JSONDecodeError here would end a multi-day climb over a torn read.
     """
+    progress = progress or PROGRESS
     last: Exception | None = None
     for _ in range(10):
         try:
-            data = json.loads(PROGRESS.read_text(encoding="utf-8"))
+            data = json.loads(progress.read_text(encoding="utf-8"))
             by_id = {c["id"]: c for c in data.get("character_stats", [])}
             return {
                 name: int(by_id.get(cid, {}).get("max_ascension", 0))
@@ -174,7 +225,7 @@ def ladder() -> dict[str, int]:
         except (json.JSONDecodeError, OSError) as exc:
             last = exc
             time.sleep(2)
-    raise RuntimeError(f"could not read {PROGRESS}: {last}")
+    raise RuntimeError(f"could not read {progress}: {last}")
 
 
 def wins_remaining(state: dict[str, int]) -> int:
@@ -465,8 +516,10 @@ ADVISOR_LOG = (
 ADVISOR_LOG_ROTATED = ADVISOR_LOG.with_suffix(ADVISOR_LOG.suffix + ".1")
 #: The game's own end-of-run record. Carries `seed`, `ascension`, and a
 #: `map_point_history` with per-floor `player_stats` (deck / relics / hp /
-#: potions) -- i.e. everything needed to set the situation up again.
-RUN_HISTORY_DIR = PROGRESS.parent / "history"
+#: potions) -- i.e. everything needed to set the situation up again. Searched
+#: in EVERY modded profile (`history_files`): the slot the game plays is only
+#: known once it has saved, after the "before" snapshot was taken.
+HISTORY_GLOB = "*/modded/profile*/saves/history/*.run"
 
 
 def advisor_log_offset() -> int:
@@ -514,12 +567,17 @@ def read_advisor_since(offset: int) -> bytes:
     return old + live
 
 
-def history_snapshot() -> set[str]:
-    """Names of the run-history files that exist BEFORE this run."""
+def history_files() -> list[Path]:
+    """Every run-history record of every modded profile."""
     try:
-        return {p.name for p in RUN_HISTORY_DIR.glob("*.run")}
+        return list((APPDATA / "SlayTheSpire2" / "steam").glob(HISTORY_GLOB))
     except OSError:
-        return set()
+        return []
+
+
+def history_snapshot() -> set[str]:
+    """Paths of the run-history files that exist BEFORE this run."""
+    return {str(p) for p in history_files()}
 
 
 def archive_repro(
@@ -558,7 +616,7 @@ def archive_repro(
 
     try:
         fresh = sorted(
-            (p for p in RUN_HISTORY_DIR.glob("*.run") if p.name not in history_before),
+            (p for p in history_files() if str(p) not in history_before),
             key=lambda p: p.stat().st_mtime,
         )
         if fresh:
@@ -772,10 +830,11 @@ def watch_one_attempt(
         if progress != last_progress:
             last_progress, last_move, size_at_last_move = progress, time.time(), size
 
-        if VICTORY_RE.search(text):
+        run_text = this_run(text)
+        if VICTORY_RE.search(run_text):
             return "win", "log: has won a run with ancient"
-        if GAMEOVER_RE.search(text):
-            lost = re.search(r"has lost to encounter.*", text)
+        if GAMEOVER_RE.search(run_text):
+            lost = re.search(r"has lost to encounter.*", run_text)
             return "loss", (lost.group(0)[:120] if lost else "game over screen")
         if RUNAWAY_RE.search(text):
             m = RUNAWAY_RE.search(text)
@@ -844,10 +903,19 @@ def play_one(
     resume_first: bool = False,
     time_scale: float = 1.0,
 ) -> RunResult:
+    global PROGRESS
     stamp = datetime.now().strftime("%m%d-%H%M")
     tag = f"{index:03d}-{character.lower()}-a{ascension}-{stamp}"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    before = ladder()[character]
+    # Every profile's, because which one the game plays is only known from the
+    # log once it has saved (`profile_in_log`).
+    before_by_profile: dict[Path, int] = {}
+    for save in {PROGRESS, *all_progress_saves()}:
+        try:
+            before_by_profile[save] = ladder(save)[character]
+        except RuntimeError:
+            pass
+    before = before_by_profile.get(PROGRESS, 0)
     started = time.time()
     verdict = detail = ""
     # Captured BEFORE the first launch so the archived advisor slice covers
@@ -877,6 +945,15 @@ def play_one(
             say(f"RUN {tag}: {verdict} -- {detail}; killing and resuming the saved run.")
         else:
             say(f"RUN {tag}: {verdict} after {RESUME_ATTEMPTS} resumes; giving up on this run.")
+
+    live = profile_in_log(read_log())
+    if live is not None and live != PROGRESS:
+        say(
+            f"  the game played {live.parent.parent.name}, not "
+            f"{PROGRESS.parent.parent.name}; grading and climbing that profile from now on."
+        )
+        PROGRESS = live
+        before = before_by_profile.get(live, before)
 
     # The save is written when the run resolves; give it a moment, and grade by
     # the profile rather than by what the log claimed.

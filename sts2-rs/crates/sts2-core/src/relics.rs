@@ -968,6 +968,12 @@ impl RelicId {
             Self::FishingRod => Some(RelicKind::FishingRod),
             Self::Kaleidoscope => Some(RelicKind::Kaleidoscope),
             Self::SilkenTress => Some(RelicKind::SilkenTress),
+            // v0.111.0-only (GH #792): pure on-pickup relics with no combat
+            // hook (`DowsingRod.cs`, `NeowsSacrifice.cs` override only
+            // `AfterObtained`), so they need no combat-side kind. Kept off
+            // `RelicKind` so its universe (combat encoders, digests) stays
+            // the v0.107.1 one.
+            Self::DowsingRod | Self::NeowsSacrifice => None,
         }
     }
 }

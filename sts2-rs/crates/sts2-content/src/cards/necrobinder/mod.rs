@@ -106,6 +106,10 @@ pub mod undeath;
 pub mod unleash;
 pub mod veilpiercer;
 pub mod wisp;
+// v0.111.0-only cards (GH #793).
+pub mod cacophony_card;
+pub mod soulbound_card;
+pub mod underworld_card;
 
 // ─── dispatch POOL (C# pool order) ──────────────────────────────────────────
 const POOL: &[(CardId, PlayCardFn)] = &[
@@ -316,6 +320,24 @@ const POOL: &[(CardId, PlayCardFn)] = &[
     (CardId::Wisp, wisp::play_wisp as PlayCardFn),
 ];
 
+/// The v0.111.0-only cards of this pool (GH #793), kept beside [`POOL`]
+/// so the v0.107.1 table is unchanged. Their ids exist in no v0.107.1 state.
+#[allow(clippy::type_complexity)]
+const POOL_V0111: &[(CardId, PlayCardFn)] = &[
+    (
+        CardId::CacophonyCard,
+        cacophony_card::play_cacophony as PlayCardFn,
+    ),
+    (
+        CardId::SoulboundCard,
+        soulbound_card::play_soulbound as PlayCardFn,
+    ),
+    (
+        CardId::UnderworldCard,
+        underworld_card::play_underworld as PlayCardFn,
+    ),
+];
+
 pub use helpers::necrobinder_starter_deck;
 
 /// Late-effect handlers fired by `card_effects::fire_late_effects` after every
@@ -329,5 +351,6 @@ const LATE_EFFECTS: &[(CardId, card_effects::LateEffectFn)] = &[(
 /// Install every Necrobinder card handler + late-effect. Idempotent.
 pub fn install_pool() {
     card_effects::register_many(POOL);
+    card_effects::register_many(POOL_V0111);
     card_effects::register_many_late_effects(LATE_EFFECTS);
 }

@@ -148,6 +148,13 @@ pub enum PotionKind {
     FoulPotion,
     GlowwaterPotion,
     PotionShapedRock,
+    // ── v0.111.0-only (GH #792) ────────────────────────────────────
+    // Not in [`PotionKind::ALL`], which stays the v0.107.1 universe (PPO
+    // vocab, random pools, dispatch-coverage tests read it); see
+    // [`PotionKind::V0111_ONLY`].
+    /// v0.111.0 Event potion (`Potions/Ambergris.cs`): heal 50% max HP,
+    /// plus an extra turn in combat. Procured by NeowsSacrifice.
+    Ambergris,
 }
 
 impl PotionKind {
@@ -220,6 +227,7 @@ impl PotionKind {
             PotionKind::FoulPotion => "FOUL_POTION",
             PotionKind::GlowwaterPotion => "GLOWWATER_POTION",
             PotionKind::PotionShapedRock => "POTION_SHAPED_ROCK",
+            PotionKind::Ambergris => "AMBERGRIS",
         }
     }
 
@@ -287,6 +295,7 @@ impl PotionKind {
             PotionKind::FoulPotion
                 | PotionKind::GlowwaterPotion
                 | PotionKind::PotionShapedRock
+                | PotionKind::Ambergris
                 | PotionKind::RegenPotion
                 | PotionKind::FairyInABottle
                 | PotionKind::FruitJuice
@@ -361,6 +370,9 @@ impl PotionKind {
         PotionKind::GlowwaterPotion,
         PotionKind::PotionShapedRock,
     ];
+
+    /// Potions that exist only in game build v0.111.0 (GH #792).
+    pub const V0111_ONLY: [PotionKind; 1] = [PotionKind::Ambergris];
 }
 
 /// Player-facing potion-slot index. Mirrors the existing `Option<u8>`

@@ -117,6 +117,15 @@ static class B
         _advice = M("SendAdviceRequest", 2);
         _cancelAdvice = M("CancelAdviceRequest", 1);
         _conn = t.GetProperty("IsClientConnected", I)!;
+        // v5 coach lane: optional, so the harness still runs on an older DLL
+        // (its transcript then simply lacks the coach_received hooks).
+        EventInfo? coach = t.GetEvent("CoachReceived", I);
+        if (coach != null)
+        {
+            Action<JsonElement> onCoach = rec =>
+                Hooks.Q.Enqueue(new { hook = "coach_received", coach = T.Str(rec.GetRawText()), thread = "server" });
+            coach.AddEventHandler(_inst, onCoach);
+        }
     }
 
     public static string PortName(int p) => PortNames.TryGetValue(p, out var n) ? n : "<PORT?>";

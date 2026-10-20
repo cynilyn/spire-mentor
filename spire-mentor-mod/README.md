@@ -86,15 +86,34 @@ falling back to `C:/Program Files (x86)/Steam/steamapps/common/Slay the Spire 2`
 dotnet build -p:STS2_GAME_DIR="D:/SteamLibrary/steamapps/common/Slay the Spire 2"
 ```
 
-**Compile-only on a machine without the game (Linux dev box):** the csproj
-only needs the game-dir *layout*, so assemble one from what the monorepo
-already carries and point `STS2_GAME_DIR` at it —
-`<dir>/data_sts2_windows_x86_64/{sts2.dll,0Harmony.dll,GodotSharp.dll}`
-(`sts2.dll` from `sts2_binaries/v0.107.1/…`; the other two from any sibling
-mod's `lib/`) plus `<dir>/mods/BaseLib/BaseLib.dll` (v3.4.1 from the BaseLib
-release, NOT an older v0.1.0 copy — that one lacks `ConfigIgnore` /
-`ConfigSlider`). Add `-p:SpireMentorSkipDeploy=true` so the post-build copy
-does not run. This proves the mod compiles; it does not run it.
+**One DLL per game build (GH #800).** The mod compiles for either the stable
+build (v0.107.1) or the beta (v0.111.0), but a DLL only runs on the build it was
+compiled for: several game members it calls changed signature between the two
+(`RunRngSet.Seed` uint → ulong, `Rng.Counter` removed,
+`CardSelectCmd.UseSelector` gained a parameter), which compiles from source
+either way and then throws `MissingMethodException` at runtime on the other
+build. The csproj's `GameVersion` property picks the build — by default the one
+the install's `release_info.json` names, else v0.107.1 — and v0.111.0 defines
+`GAME_V0111` for the few `#if`-guarded differences. Override it with
+`dotnet build -p:GameVersion=v0.111.0`. At startup the mod logs the running
+build next to the one it was built for, and warns on a mismatch. Every
+outbound message carries the running build as `game_version`
+(`PROTOCOL.md` section 1); the advisor builds its engine for it and refuses a
+build it does not support.
+
+**Compile-only on a machine without the game (Linux dev box):**
+`tests/run_all.sh` is the local gate: for each of v0.107.1 and v0.111.0 it
+compiles the mod against that build's own `sts2.dll` (from
+`sts2_binaries/<ver>/data_sts2_windows_x86_64/`, gitignored, found in the main
+checkout from a worktree), checks that every game type / method / field the DLL
+references binds by signature in that `sts2.dll` (`tests/compile/RefCheck`, and
+prints how many would not bind on the other build), and runs the BridgeServer
+wire test on the result; then the game-free unit tests (`tests/unit`). Nothing
+is deployed. BaseLib is not vendored, so by default `tests/compile/build_mod.sh`
+compiles against a compile-only API stub (`tests/compile/BaseLibStub`) holding
+just the members `SpireMentorModConfig.cs` uses; set `BASELIB_DIR` to a real
+BaseLib v3.4.1 install to compile against that instead. This proves the mod
+compiles and binds; it does not run it.
 
 It compiles against `sts2.dll` / `0Harmony.dll` / `GodotSharp.dll` straight
 from the game's data dir (plain `Microsoft.NET.Sdk`, no Godot SDK or NuGet
@@ -167,8 +186,10 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 - **Hotkeys** (`SimHotkeys.cs`) — `F1` help panel (the in-game documentation:
   current mode, every key, file locations), `F3` action-log panel, `F4` HUD
   on/off, `F6` AI takes this one decision, `F7` AI plays until you stop,
-  `F8` Advisor mode on/off (from Autopilot: stops the AI and hands you the
-  controls), `F9`/`F10` game speed −/+, `Ctrl+Z` undo to the start of the
+  `F8` turns the AI on / off in the current style (from Autopilot: stops the
+  AI and hands you the controls; the toolbar's Hints / Coach button switches
+  style), `F5` peeks at the AI's next pick in the Coach style,
+  `F9`/`F10` game speed −/+, `Ctrl+Z` undo to the start of the
   combat turn, `Ctrl+Shift+Z` restart the room. `F2` and `F11` belong to the
   game.
 - **Rewind** (`SimSnapshots.cs` / `SimRestore.cs` / `SimCombatUndo.cs`) —
@@ -180,7 +201,7 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
   Protocol §7 (`list_snapshots` / `restore_snapshot` / `undo_turn`) exposes
   the same to the workbench, whose game tree rewinds to any room — or any
   recorded combat turn — and tracks forks.
-- **Console** (`F11`) — `spirementor` (status), `spirementor mode off|advisor`,
+- **Console** (`F11`) — `spirementor` (status), `spirementor mode off|advisor|hints|coach`,
   `spirementor speed <0.1-4.0>`, `spirementor hud on|off`, `spirementor log`,
   `spirementor waitmult <f>` / `spirementor animmult <f>` (Autopilot-only
   multipliers).

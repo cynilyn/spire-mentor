@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use crate::advisors;
 use crate::assets::AssetResolver;
 use crate::enrich::EnrichCtx;
-use crate::localization::embedded_monster_hp_ranges;
+use crate::localization::embedded_monster_hp_ranges_for;
 use crate::localization::Loc;
 use crate::ppo;
 use crate::replay;
@@ -24,6 +24,7 @@ use crate::runlog::{self, ReplayStore, RunLog};
 use crate::saves;
 use crate::session::{Session, SessionError};
 use crate::step::live_step;
+use sts2_core::GameVersion;
 
 /// A failed route: `status` is the HTTP status, `detail` the message
 /// (FastAPI's `{"detail": ...}` body).
@@ -63,6 +64,13 @@ fn payload_of(body: &Value) -> Result<&str, ApiError> {
     body.get("payload")
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::new(422, "payload must be a string"))
+}
+
+/// The optional `game_version` of a start / start-faithful / import-state
+/// request (GH #801): `"v0.107.1"` (the default when absent) or
+/// `"v0.111.0"`; anything else is a 400 naming the supported builds.
+fn body_game_version(body: &Value) -> Result<GameVersion, ApiError> {
+    crate::session::parse_game_version(body.get("game_version")).map_err(|e| ApiError::new(400, e))
 }
 
 /// `{}`: the default `args` of an action request.
@@ -121,11 +129,12 @@ impl Default for Config {
 }
 
 /// The workbench: one live session plus the static data every route reads.
+/// The display data (loc, art, HP ranges) is per game build (GH #801): a
+/// live route reads the live session's build, a replay route the loaded
+/// recording's.
 #[derive(Debug)]
 pub struct Workbench {
     config: Config,
-    loc: &'static Loc,
-    assets: &'static AssetResolver,
     live: Option<Session>,
     /// The loaded replay (`Session.store`), from `load_run`.
     store: Option<ReplayStore>,
@@ -151,8 +160,6 @@ impl Workbench {
         }
         Self {
             config,
-            loc: Loc::embedded(),
-            assets: AssetResolver::embedded(),
             live: None,
             store: None,
             pending_log: None,
@@ -212,9 +219,11 @@ impl Workbench {
     /// `combat_log` — `server.py::bridge_tree`, the same formatter a
     /// simulated run goes through. Anything that is not a node passes
     /// through untouched.
-    fn bridge_render_tree(&self, body: &Value) -> Value {
+    fn bridge_render_tree(body: &Value) -> Value {
         let mut tree = body.get("tree").cloned().unwrap_or_else(|| json!({}));
-        let names = crate::enrich::log_names(self.loc);
+        // The bridge tree describes the REAL running game, not the simulated
+        // session, so it is named in the default build like `server.py`.
+        let names = crate::enrich::log_names(Loc::embedded());
         if let Some(nodes) = tree.get_mut("nodes").and_then(Value::as_array_mut) {
             for node in nodes.iter_mut().filter_map(Value::as_object_mut) {
                 let raw = node.remove("combat_log_raw");
@@ -402,10 +411,10 @@ impl Workbench {
         self.attach_ppo();
     }
 
-    /// A fresh session pre-wired to `character`'s champion, so the root
-    /// node (and everything after) is scored.
-    fn new_session(&self, character: &str) -> Session {
-        let mut sess = Session::new(self.loc);
+    /// A fresh session in game build `version`, pre-wired to `character`'s
+    /// champion, so the root node (and everything after) is scored.
+    fn new_session(&self, character: &str, version: GameVersion) -> Session {
+        let mut sess = Session::new_for(version);
         let key = character.to_lowercase();
         let error = self
             .ppo_errors
@@ -415,11 +424,36 @@ impl Workbench {
         sess
     }
 
+    /// The enrichment context of the live session's build (the default
+    /// build when no run is live).
     fn ctx(&self) -> EnrichCtx<'_> {
+        self.ctx_for(self.live_version())
+    }
+
+    /// The live session's build (the default when no run is live).
+    fn live_version(&self) -> GameVersion {
+        self.live
+            .as_ref()
+            .map_or_else(GameVersion::default, |s| s.game_version)
+    }
+
+    /// The enrichment context of the loaded recording's build.
+    fn store_ctx(&self) -> EnrichCtx<'_> {
+        self.ctx_for(self.store_version())
+    }
+
+    /// The loaded recording's build (the default when none is loaded).
+    fn store_version(&self) -> GameVersion {
+        self.store
+            .as_ref()
+            .map_or_else(GameVersion::default, ReplayStore::game_version)
+    }
+
+    fn ctx_for(&self, version: GameVersion) -> EnrichCtx<'_> {
         EnrichCtx {
-            assets: self.assets,
-            loc: self.loc,
-            hp_ranges: Some(embedded_monster_hp_ranges()),
+            assets: AssetResolver::embedded_for(version),
+            loc: Loc::embedded_for(version),
+            hp_ranges: Some(embedded_monster_hp_ranges_for(version)),
             assets_base: &self.config.assets_base,
         }
     }
@@ -464,6 +498,14 @@ impl Workbench {
                     "simlab": true,
                     "simlab_sweeps": true,
                 },
+                // GH #801: the game builds a run can be started in (the
+                // `game_version` of start / start-faithful / import-state) —
+                // only those whose display bundle this binary embeds.
+                "game_versions": crate::data::embedded_versions()
+                    .into_iter()
+                    .map(GameVersion::as_str)
+                    .collect::<Vec<_>>(),
+                "default_game_version": GameVersion::default().as_str(),
             })),
             ("GET", "/api/meta") => Ok(crate::simlab_catalog::meta()),
             ("GET", "/api/simlab/catalog") => Ok(crate::simlab_catalog::catalog()),
@@ -476,7 +518,7 @@ impl Workbench {
             // control plane directly; the one proxy transform the Python
             // server did — rendering each node's raw combat-log rows with the
             // loc map — is this route.
-            ("POST", "/api/bridge/render-tree") => Ok(self.bridge_render_tree(body)),
+            ("POST", "/api/bridge/render-tree") => Ok(Self::bridge_render_tree(body)),
             ("POST", "/api/sweeps") => self.sweep_submit(body),
             ("GET", "/api/sweeps") => Ok(self.sweeps.list()),
             (m, p) if p.starts_with("/api/sweeps/") => {
@@ -638,8 +680,11 @@ impl Workbench {
                 501,
                 "run logs are handled by the host (load_run / mcts_runs)",
             )),
-            ("GET", "/api/timeline") => Ok(replay::timeline(self.store()?, self.loc)),
-            ("GET", "/api/map") => Ok(replay::map(self.store()?, &self.ctx())),
+            ("GET", "/api/timeline") => Ok(replay::timeline(
+                self.store()?,
+                Loc::embedded_for(self.store_version()),
+            )),
+            ("GET", "/api/map") => Ok(replay::map(self.store()?, &self.store_ctx())),
             ("GET", p) if p.starts_with("/api/step/") => {
                 let rest = &p["/api/step/".len()..];
                 let (idx_s, sub) = rest.split_once('/').unwrap_or((rest, ""));
@@ -647,7 +692,7 @@ impl Workbench {
                     ApiError::new(422, format!("step index must be an integer, got {idx_s:?}"))
                 })?;
                 match sub {
-                    "" => replay::step(self.store()?, idx, &self.ctx()),
+                    "" => replay::step(self.store()?, idx, &self.store_ctx()),
                     "deck-analysis" => replay::step_deck_analysis(self.store()?, idx),
                     _ => Err(ApiError::new(
                         404,
@@ -672,7 +717,7 @@ impl Workbench {
             ("POST", "/api/regret-review") => Ok(replay::regret_review(
                 self.store()?,
                 &config_of(body),
-                self.loc,
+                Loc::embedded_for(self.store_version()),
             )),
             ("POST", "/api/wpa-review") => Ok(replay::wpa_review(self.store()?, &config_of(body))),
             ("POST", "/api/live/from_replay") => self.live_from_replay(body),
@@ -767,6 +812,7 @@ impl Workbench {
         let ascension = body.get("ascension").and_then(Value::as_i64).unwrap_or(0);
         let ascension = u8::try_from(ascension)
             .map_err(|_| ApiError::new(400, format!("ascension {ascension} out of range")))?;
+        let version = body_game_version(body)?;
         if backend != "rust" {
             return Err(ApiError::new(
                 400,
@@ -777,7 +823,7 @@ impl Workbench {
         }
         // Build the new run BEFORE touching the slot, so a rejected start never
         // costs the client the run they already had.
-        let mut sess = self.new_session(&character);
+        let mut sess = self.new_session(&character, version);
         let state = match sess.start(&character, &seed, ascension, &act1) {
             Ok(v) => v,
             Err(e) => {
@@ -912,6 +958,7 @@ impl Workbench {
     /// the engine cannot rebuild it.
     fn live_import_state(&mut self, body: &Value) -> Result<Value, ApiError> {
         let payload = payload_of(body)?;
+        let version = body_game_version(body)?;
         let imported = crate::state_import::parse_pasted_state(payload)
             .map_err(|e| ApiError::new(422, e.0))?;
         // `_import_lane`: which lane to rebuild, and why the other is not
@@ -943,7 +990,7 @@ impl Workbench {
         };
         // Build in a fresh session first; only swap it in once it succeeds, so
         // a rejected paste never costs the user the run they already had.
-        let mut sess = self.new_session(&imported.run.character);
+        let mut sess = self.new_session(&imported.run.character, version);
         let mut snapshot = imported.run.clone();
         if lane == "run" {
             // The run position only: the fight stays out of the graft, and
@@ -983,7 +1030,7 @@ impl Workbench {
     fn live_from_replay(&mut self, body: &Value) -> Result<Value, ApiError> {
         let idx = idx_of(body)?;
         let (ident, line) = replay::resume_plan(self.store()?, idx)?;
-        let mut sess = self.new_session(&ident.character);
+        let mut sess = self.new_session(&ident.character, ident.game_version);
         let state = match sess.load_line(
             &ident.character,
             &ident.seed,
@@ -1030,8 +1077,9 @@ impl Workbench {
         let sims = u("sims", 1000)?;
         let boss_sims = u("boss_sims", 4000)?;
         let threads = u("threads", 1)?;
+        let version = body_game_version(body)?;
         let seed_int = crate::runmode::hash_seed(&seed);
-        let mut sess = self.new_session(&character);
+        let mut sess = self.new_session(&character, version);
         let state = match sess.start_run_mode(
             &character,
             seed_int,
@@ -1103,7 +1151,7 @@ impl Workbench {
                 "act": state.get("act").cloned().unwrap_or(Value::Null),
                 "act_name": state.get("act_name").cloned().unwrap_or(Value::Null),
                 "floor": state.get("floor").cloned().unwrap_or(Value::Null),
-                "full_map": crate::enrich::enrich_map_nodes(full_map, self.assets, &self.config.assets_base),
+                "full_map": crate::enrich::enrich_map_nodes(full_map, self.ctx().assets, &self.config.assets_base),
             }));
         }
         Ok(json!({"rows": [], "graphs": graphs}))
@@ -1155,6 +1203,7 @@ impl Workbench {
             sess.backend(),
             sess.run_mode(),
             &sess.act1,
+            sess.game_version,
             &progress,
             &line,
             &values,
@@ -1168,6 +1217,10 @@ impl Workbench {
         if !saves::is_valid(payload) {
             return Err(ApiError::new(404, "unknown save"));
         }
+        // An unknown build is refused outright rather than replayed as
+        // v0.107.1 (`RunIdentity` reads it as the default).
+        crate::session::game_version_of(payload)
+            .map_err(|e| ApiError::new(409, format!("cannot restore this save: {e}")))?;
         let ident = saves::RunIdentity::from_save(payload);
         if ident.backend != "rust" {
             return Err(ApiError::new(
@@ -1189,7 +1242,7 @@ impl Workbench {
             .map(|vs| vs.iter().map(Value::as_f64).collect());
         let mut failures = Vec::new();
         for run_mode in ident.restore_attempts() {
-            let mut sess = self.new_session(&ident.character);
+            let mut sess = self.new_session(&ident.character, ident.game_version);
             match sess.load_line(
                 &ident.character,
                 &ident.seed,
@@ -1240,7 +1293,9 @@ impl Workbench {
             .get("character")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let mut sess = self.new_session(character);
+        let version = crate::session::game_version_of(payload)
+            .map_err(|e| ApiError::new(409, format!("cannot restore this session: {e}")))?;
+        let mut sess = self.new_session(character, version);
         let state = match sess.import_persist(payload, progress) {
             Ok(v) => v,
             Err(e) => {

@@ -30,8 +30,8 @@ pub(crate) fn drink_droplet_of_precognition(
     ordered.sort_by(|&a, &b| {
         let id_a = state.cards[a.0.get() as usize - 1].card_id;
         let id_b = state.cards[b.0.get() as usize - 1].card_id;
-        csharp_rarity_ordinal(id_a)
-            .cmp(&csharp_rarity_ordinal(id_b))
+        csharp_rarity_ordinal(id_a, state.game_version)
+            .cmp(&csharp_rarity_ordinal(id_b, state.game_version))
             .then_with(|| id_a.to_python_name().cmp(id_b.to_python_name()))
     });
     // C# `CardSelectCmd.FromSimpleGrid` auto-resolves inline when
@@ -78,9 +78,10 @@ pub(crate) fn drink_droplet_of_precognition(
 /// Uncommon=3, Rare=4, Ancient=5, Event=6, Token=7, Status=8, Curse=9,
 /// Quest=10 — Event sorts BEFORE Status/Curse), so we map explicitly rather
 /// than casting. An unknown id (no spec) sorts last. Bead `sts2-rs-19hm7`.
-fn csharp_rarity_ordinal(card_id: sts2_core::cards::CardId) -> u8 {
+/// GH #793: the rarity of the combat's game build (v0.111.0 moved some).
+fn csharp_rarity_ordinal(card_id: sts2_core::cards::CardId, version: sts2_core::GameVersion) -> u8 {
     use crate::cards::types::CardRarity;
-    match crate::cards::spec_index::rarity_for_card_id(card_id) {
+    match crate::cards::spec_index::rarity_for_card_id_in(card_id, version) {
         Some(CardRarity::Basic) => 1,
         Some(CardRarity::Common) => 2,
         Some(CardRarity::Uncommon) => 3,

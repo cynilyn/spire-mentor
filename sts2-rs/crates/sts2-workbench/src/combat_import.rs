@@ -203,6 +203,21 @@ fn int_of(v: Option<&Value>) -> Option<i64> {
     }
 }
 
+/// The run's master seed: a full `ulong` in v0.111.0 (GH #788), so read as
+/// u64 — `int_of`'s i64 view would drop every seed above `i64::MAX`. A
+/// negative integer is a 32-bit seed written signed: its `uint` view. Same
+/// reading as `state_import::rng_block`.
+#[allow(clippy::cast_sign_loss)]
+fn run_seed_of(v: Option<&Value>) -> Option<u64> {
+    match v {
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(u) => Some(u),
+            None => n.as_i64().map(|i| u64::from(i as u32)),
+        },
+        _ => None,
+    }
+}
+
 fn get<'a>(obj: &'a Value, key: &str) -> Option<&'a Value> {
     obj.get(key).filter(|v| !v.is_null())
 }
@@ -1031,7 +1046,7 @@ pub fn combat_wire_from_bridge(
     rng.insert("ascension".into(), json!(ascension));
     if let Some(raw) = board.get("rng").and_then(Value::as_object) {
         if let (Some(run_seed), Some(counters)) = (
-            int_of(raw.get("run_seed")),
+            run_seed_of(raw.get("run_seed")),
             raw.get("counters").and_then(Value::as_object),
         ) {
             let clean: Map<String, Value> = counters
@@ -1237,6 +1252,17 @@ mod tests {
         assert_eq!(wire["encounter"][0]["move_state"], "BITE_MOVE");
         assert_eq!(wire["rng"]["run_seed"], 12345);
         assert_eq!(wire["rng"]["ascension"], 5);
+        // A v0.111.0 master seed is a full u64 (GH #788): one above i64::MAX
+        // keeps the run's dice instead of silently dropping the block.
+        let mut wide = board.clone();
+        wide["rng"]["run_seed"] = json!(u64::MAX - 7);
+        let (w, _) = combat_wire_from_bridge(&wide, "Ironclad", 5).unwrap();
+        assert_eq!(w["rng"]["run_seed"], json!(u64::MAX - 7));
+        assert_eq!(w["rng"]["counters"]["shuffle"], 3);
+        // A signed 32-bit seed is its `uint` view, as in the run graft.
+        wide["rng"]["run_seed"] = json!(-2);
+        let (w, _) = combat_wire_from_bridge(&wide, "Ironclad", 5).unwrap();
+        assert_eq!(w["rng"]["run_seed"], json!(u64::from(u32::MAX - 1)));
         assert!(wire["player"].get("osty").is_none());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("Byrdpip"));

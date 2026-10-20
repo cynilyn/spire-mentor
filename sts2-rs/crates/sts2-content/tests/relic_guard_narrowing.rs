@@ -454,6 +454,18 @@ fn base_states() -> Vec<(String, CombatState)> {
         }
         out.push((format!("{character:?} after plays"), state));
     }
+    // GH #795: v0.111.0 copies, so the handlers gated on the game build
+    // (Pendulum, PollinousCore, Regalite, ...) act in the battery too and
+    // every handler's guard is checked in both builds.
+    let v0111: Vec<_> = out
+        .iter()
+        .map(|(label, state)| {
+            let mut state = state.clone();
+            state.game_version = sts2_core::GameVersion::V0_111_0;
+            (format!("{label} v0.111.0"), state)
+        })
+        .collect();
+    out.extend(v0111);
     out
 }
 
@@ -534,7 +546,8 @@ fn guarded_channels_are_declared_and_planned() {
 }
 
 /// Every `Owned` registration, on mid-combat states of all five characters
-/// (rounds 1 and 2, elite or not, relic counters 0, 1 and 4), holding every
+/// in both game builds (rounds 1 and 2, elite or not, relic counters 0, 1, 2
+/// and 4), holding every
 /// battery relic BUT its own kind, and again holding its own kind melted:
 /// each context of its channel's battery returns the identity and leaves
 /// the state `==` (RNG cursors, counters and event log included). The same
@@ -575,7 +588,8 @@ fn every_owned_handler_is_inert_without_its_relic() {
             .collect();
         (present, absent, melted)
     };
-    let batteries: Vec<_> = [0, 1, 4].into_iter().map(|c| (c, stores(c))).collect();
+    // Counter 2 reaches v0.111.0 Pendulum's every-3rd-turn arm (GH #795).
+    let batteries: Vec<_> = [0, 1, 2, 4].into_iter().map(|c| (c, stores(c))).collect();
     let bases = base_states();
     let mut acted: BTreeSet<(&str, RelicId)> = BTreeSet::new();
     let mut inert_checks = 0usize;

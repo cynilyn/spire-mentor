@@ -15,14 +15,15 @@
 //! semantics, the same fallbacks.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::Value;
 
+use sts2_core::GameVersion;
+
 use crate::data::{self, Data, LocMap, WikiCard, WikiMonster, WikiOwned};
 
-pub use crate::data::ENGINE_WIKI_VERSION;
+pub use crate::data::{engine_wiki_version, ENGINE_WIKI_VERSION};
 
 // ── The loc map ─────────────────────────────────────────────────────────
 
@@ -44,10 +45,18 @@ impl Loc {
         Self::default()
     }
 
-    /// The map `create_app` builds over the embedded bundle, built once.
+    /// The map `create_app` builds over the default build's embedded
+    /// bundle, built once. Same as `Loc::embedded_for(GameVersion::default())`.
     pub fn embedded() -> &'static Loc {
-        static LOC: OnceLock<Loc> = OnceLock::new();
-        LOC.get_or_init(|| build_loc(data::data()))
+        Self::embedded_for(GameVersion::default())
+    }
+
+    /// The map `create_app` builds over build `version`'s embedded bundle
+    /// ([`data::data_for`]), built once per build. Python twin:
+    /// `workbench.localization.build_workbench_loc(..., version=...)`.
+    pub fn embedded_for(version: GameVersion) -> &'static Loc {
+        static CELLS: data::PerVersion<Loc> = data::PerVersion::new();
+        CELLS.get_or_init(version, || build_loc(data::data_for(version)))
     }
 
     /// `loc.get(key)`.
@@ -859,10 +868,18 @@ pub fn load_monster_hp_ranges(rows: &[WikiMonster]) -> BTreeMap<String, HpRange>
     out
 }
 
-/// The HP bands over the embedded bundle, built once.
+/// The HP bands over the default build's embedded bundle, built once.
 pub fn embedded_monster_hp_ranges() -> &'static BTreeMap<String, HpRange> {
-    static RANGES: OnceLock<BTreeMap<String, HpRange>> = OnceLock::new();
-    RANGES.get_or_init(|| load_monster_hp_ranges(&data::data().wiki_monsters))
+    embedded_monster_hp_ranges_for(GameVersion::default())
+}
+
+/// The HP bands over build `version`'s embedded bundle, built once per
+/// build.
+pub fn embedded_monster_hp_ranges_for(version: GameVersion) -> &'static BTreeMap<String, HpRange> {
+    static CELLS: data::PerVersion<BTreeMap<String, HpRange>> = data::PerVersion::new();
+    CELLS.get_or_init(version, || {
+        load_monster_hp_ranges(&data::data_for(version).wiki_monsters)
+    })
 }
 
 // ── `create_app`'s bundle ───────────────────────────────────────────────
@@ -1223,6 +1240,40 @@ mod tests {
         // implements must survive the re-vendor, or it renders nameless.
         assert_eq!(d.loc_cards["GRAPPLE.title"], "Grapple");
         assert_eq!(d.loc_cards["FOLLOW_THROUGH.title"], "Follow Through");
+    }
+
+    #[cfg(workbench_game_data_v0_111_0)] // asserts on real game text (see build.rs)
+    #[test]
+    fn every_bundle_describes_its_own_build() {
+        for v in GameVersion::ALL {
+            let d = data::data_for(v);
+            assert_eq!(d.loc_build, engine_wiki_version(v), "{v}");
+            // Content the engine still implements keeps its name in every
+            // build's bundle (the vendor merge retains older keys).
+            assert_eq!(d.loc_cards["GRAPPLE.title"], "Grapple", "{v}");
+        }
+    }
+
+    #[cfg(workbench_game_data_v0_111_0)] // asserts on real game text (see build.rs)
+    #[test]
+    fn embedded_v0_111_loc_names_its_new_content() {
+        let loc = Loc::embedded_for(GameVersion::V0_111_0);
+        assert_eq!(loc.get("CACOPHONY.title"), Some("Cacophony"));
+        assert!(loc.get("CACOPHONY.card_type").is_some());
+        assert!(loc.get("CACOPHONY.description_plain").is_some());
+        assert_eq!(loc.get("DOWSING_ROD.title"), Some("Dowsing Rod"));
+        assert!(loc.get("DOWSING_ROD.description_plain").is_some());
+        assert_eq!(loc.get("AMBERGRIS.title"), Some("Ambergris"));
+        // Shared namespaced tables still land.
+        assert_eq!(loc.get("card_keyword.Exhaust"), Some("Exhaust"));
+        assert_eq!(loc.get("rest_site.OPTION_LIFT.name"), Some("Train"));
+        // The default build's map does not know the new card.
+        assert_eq!(Loc::embedded().get("CACOPHONY.title"), None);
+        assert!(std::ptr::eq(
+            Loc::embedded(),
+            Loc::embedded_for(GameVersion::V0_107_1)
+        ));
+        assert!(!embedded_monster_hp_ranges_for(GameVersion::V0_111_0).is_empty());
     }
 
     #[cfg(workbench_game_data)] // asserts on real game text (see build.rs)

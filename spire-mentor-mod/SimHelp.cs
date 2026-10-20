@@ -117,9 +117,14 @@ internal static class SimHelp
                 ? "[color=#ff9d5c][b]Spire Mentor: AUTOPILOT IS ARMED[/b] — the AI will play by itself as soon as " +
                   "the advisor connects. Press [b]F8[/b] to take the controls back, or set " +
                   "[i]auto_start[/i] to false in SpireMentor.conf. [b]F1[/b] for help.[/color]"
+                : SimRuntime.CoachStyleActive
+                    ? $"[color=#9aa3b8]Spire Mentor {MainFile.ModVersion} loaded — [b]Coach[/b]: nothing shows " +
+                      "before you act, [b]F5[/b] peeks at the AI's next pick, and a note afterwards says where " +
+                      "you differed. [b]F8[/b] turns the AI off, the toolbar switches Hints / Coach, [b]F1[/b] for help.[/color]"
                 : SimRuntime.Mode == SimMode.Advisor
-                    ? $"[color=#9aa3b8]Spire Mentor {MainFile.ModVersion} loaded — the AI coach is on. " +
-                      "[b]F8[/b] turns it off, [b]F1[/b] for help.[/color]"
+                    ? $"[color=#9aa3b8]Spire Mentor {MainFile.ModVersion} loaded — [b]Hints[/b]: the AI rates " +
+                      "your options while you decide. [b]F8[/b] turns the AI off, the toolbar switches Hints / Coach, " +
+                      "[b]F1[/b] for help.[/color]"
                     : $"[color=#9aa3b8]Spire Mentor {MainFile.ModVersion} loaded — click the [b]Spire Mentor[/b] " +
                       "strip in the top-left to turn the AI coach on, or press [b]F1[/b] for help.[/color]";
             Reposition();
@@ -141,7 +146,10 @@ internal static class SimHelp
         string mode = SimRuntime.Mode switch
         {
             SimMode.Off => "[color=#9aa3b8]Off[/color] — the mod is doing nothing; the game is vanilla",
-            SimMode.Advisor => "[color=#7fd4e8]Advisor[/color] — you play, the AI rates your options",
+            SimMode.Advisor when SimRuntime.Style == AdviceStyle.Coach =>
+                "[color=#7fd4e8]Coach[/color] — you play; nothing shows before you act (F5 peeks), " +
+                "and afterwards a note says where your turn or choice differed from the AI's",
+            SimMode.Advisor => "[color=#7fd4e8]Hints[/color] — you play, the AI rates your options while you decide",
             _ => SimRuntime.AutopilotEngaged
                 ? "[color=#ff9d5c]Autopilot[/color] — the AI is playing this run"
                 : "[color=#ff9d5c]Autopilot (armed, idle)[/color] — the AI plays as soon as it connects",
@@ -152,7 +160,8 @@ internal static class SimHelp
         sb.Append("Mode: ").Append(mode).Append("\n\n");
 
         sb.Append("[b]Keys[/b]\n");
-        Row(sb, "F8", "turn the AI coach on / off (from Autopilot: take the controls back)");
+        Row(sb, "F8", "turn the AI on / off (from Autopilot: take the controls back); the toolbar's Hints / Coach button switches style");
+        Row(sb, "F5", "Coach: peek at the AI's pick for just the next decision (also the toolbar's Peek button)");
         Row(sb, "F6", "let the AI take just this one decision");
         Row(sb, "F7", "let the AI keep playing until you stop it (press again to stop)");
         Row(sb, "F4", "show / hide the HUD");
@@ -181,9 +190,13 @@ internal static class SimHelp
           .Append("combat turn, replaying that fight's tape \u2014 and shows where lines forked.[/color]\n");
 
         sb.Append("\n[b]What the coach draws[/b]\n");
-        sb.Append("[color=#c8ccd4]A score on each card in hand, a ranked list of the moves it considered, ")
-          .Append("a win-chance bar, and markers on the map for the route it likes. ")
-          .Append("Each of those can be switched off on the settings page.[/color]\n");
+        sb.Append("[color=#c8ccd4][b]Hints[/b]: a score on each card in hand, a ranked list of the moves it ")
+          .Append("considered, a win-chance bar, and markers on the map for the route it likes. ")
+          .Append("Each of those can be switched off on the settings page.\n")
+          .Append("[b]Coach[/b]: none of that before you act. [b]F5[/b] shows its pick for the next decision ")
+          .Append("only. After a turn that cost HP or win chance — or a choice it clearly disagrees with — ")
+          .Append("a small note shows what it would have done and why (click it to keep it; good turns stay ")
+          .Append("quiet unless you ask for a ✓ in the settings). Both styles get those notes.[/color]\n");
 
         sb.Append("\n[b]Settings[/b]\n");
         sb.Append("[color=#c8ccd4]Main menu → Options → Mod Configuration → SpireMentor, ")

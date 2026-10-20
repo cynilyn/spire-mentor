@@ -262,3 +262,17 @@ class TestCombatLog:
         _entry_snapshot(tree, "111-0")
         tree.on_decision({**ENV}, "combat_action")
         assert _nodes_by_decision(tree, "combat_action")[0]["combat_log_raw"] == []
+
+
+class TestLogIdx:
+    def test_tree_node_carries_log_idx(self) -> None:
+        tree = LiveRunTree()
+        tree.on_decision({**ENV}, "combat_action", log_idx=4)
+        tree.on_decision({**ENV, "floor": 2}, "map_select")
+        combat = _nodes_by_decision(tree, "combat_action")[0]
+        mapsel = _nodes_by_decision(tree, "map_select")[0]
+        assert combat["log_idx"] == 4
+        assert tree.log_idx(combat["id"]) == 4
+        assert tree.log_idx(mapsel["id"]) is None
+        assert tree.log_idx("x1") is None and tree.log_idx(999) is None
+        assert all("log_idx" in n for n in tree.timeline()["nodes"])

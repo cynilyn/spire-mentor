@@ -28,6 +28,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from sts2_client import DEFAULT_GAME_VERSION, rs_engine_call
 from sts2_hint import display_maps
 
 from workbench import localization
@@ -247,8 +248,15 @@ def _map_disagreements(rm: Any, snapshot: Any) -> list[str]:
 class RustGame(GameBackend):
     """Drives an ``sts2_rs.RunManager`` through the :class:`GameBackend` interface."""
 
-    def __init__(self, *, target_convention: str = "native") -> None:
+    def __init__(
+        self, *, target_convention: str = "native", game_version: str | None = None
+    ) -> None:
         self.rm: Any = None
+        # The game build every run this backend constructs simulates (GH #801):
+        # ``"v0.107.1"`` / ``"v0.111.0"``. ``None`` defers to the process-wide
+        # selection (``sts2_client.GAME_VERSION``) — the parity harnesses rely
+        # on that; the workbench always passes its session's build explicitly.
+        self.game_version = game_version
         self.character = ""
         # The Act-1 model this run was built with (GH #544). Recorded so a
         # save can be restored under the act it was played on, and so the
@@ -310,7 +318,9 @@ class RustGame(GameBackend):
 
         self.character = character
         self.act1 = act1
-        self.rm = sts2_rs.RunManager(
+        self.rm = rs_engine_call(
+            sts2_rs.RunManager,
+            version=self.game_version,
             string_seed=seed,
             character=character,
             ascension_level=ascension,
@@ -395,7 +405,9 @@ class RustGame(GameBackend):
         # the exact failure this mirror exists to prevent. When training moves
         # to the rolled mixture, this and `ppo/env.py` change together.
         self.act1 = "overgrowth"
-        self.rm = sts2_rs.RunManager(
+        self.rm = rs_engine_call(
+            sts2_rs.RunManager,
+            version=self.game_version,
             seed=seed,
             character=character,
             ascension_level=ascension,
@@ -454,7 +466,9 @@ class RustGame(GameBackend):
         import sts2_rs
 
         self.character = snapshot.character
-        self.rm = sts2_rs.RunManager(
+        self.rm = rs_engine_call(
+            sts2_rs.RunManager,
+            version=self.game_version,
             string_seed=snapshot.seed,
             character=snapshot.character,
             ascension_level=snapshot.ascension,
@@ -791,6 +805,21 @@ class RustGame(GameBackend):
                 if result not in ("advanced", "run_over"):
                     return _err(f"{action} rejected by engine: {result}")
             return self._serialize()
+        # Interactive multi-card deck upgrade (YummyCookie: upgrade 4): C#
+        # resolves the whole ``FromDeckForUpgrade`` pick-N in one
+        # ``select_cards``. Each index is a position in the engine's upgradable
+        # subset, and an upgraded card drops out of it, so apply descending to
+        # keep the lower indices valid. A single index keeps the one-pick path
+        # below (Smith).
+        if action == "select_cards" and getattr(self.rm, "pending_deck_upgrades", 0) > 0:
+            raw = args.get("indices", "")
+            idxs = sorted({int(s) for s in str(raw).split(",") if s.strip() != ""}, reverse=True)
+            if len(idxs) > 1:
+                for i in idxs:
+                    result = self.rm.take_action({"action": "upgrade_deck_card", "idx": i})
+                    if result not in ("advanced", "run_over"):
+                        return _err(f"{action} rejected by engine: {result}")
+                return self._serialize()
         # Interactive deck enchant (Wood Carvings' Snake → Slither): same
         # pick-N card_select shape. Enchanting mutates the card in place (no
         # removal), but an enchanted card drops OUT of the eligible subset
@@ -1066,6 +1095,14 @@ class RustGame(GameBackend):
         # the fallback was the ONLY branch ever taken: acts 2 and 3 were painted
         # in act 1's jungle ruin, and an Underdocks run showed Overgrowth art.
         state["act_name"] = _act_name(self.rm.act_index, self.rm.act1)
+        # GH #801: the build this run simulates, so the SPA (and a bug report
+        # built off this state) can tell a v0.111.0 run from a default one.
+        # Emitted only off the default, which keeps every v0.107.1 state —
+        # and the golden bytes recorded from them — exactly as it was. A
+        # reader treats the missing key as the default.
+        version = getattr(self.rm, "game_version", None)
+        if isinstance(version, str) and version != DEFAULT_GAME_VERSION:
+            state["game_version"] = version
         # The run's master RNG seed and the map node this room sits on. The game
         # rolls a combat room's layer variants from
         # `Rng(runSeed + row + col * 747)`

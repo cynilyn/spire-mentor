@@ -59,7 +59,16 @@ pub(crate) fn preview_rend(state: &CombatState, card: &Card, target: Option<Crea
                 })
                 .count()
         });
-    let calc_base = if card.upgraded { 18 } else { 15 };
+    // v0.111.0: CalculationBase 15 -> 10, upgrade +3 -> +2 (decomp Rend.cs:19,40).
+    let calc_base = match (
+        crate::cards::v0111::is_v0111(state.game_version),
+        card.upgraded,
+    ) {
+        (false, false) => 15,
+        (false, true) => 18,
+        (true, false) => 10,
+        (true, true) => 12,
+    };
     let extra = if card.upgraded { 8 } else { 5 };
     calc_base + extra * i32::try_from(debuffs).unwrap_or(i32::MAX)
 }

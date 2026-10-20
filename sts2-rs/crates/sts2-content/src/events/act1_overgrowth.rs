@@ -67,7 +67,10 @@ fn brain_leech_share_knowledge(state: &mut RunState) -> EventOutcome {
         .into_iter()
         .filter_map(|id| crate::cards::spec_index::card_pod_from_id(id, false))
         .collect();
-    let option_cards = state.offer_card_reward(option_cards);
+    // v0.111.0: the slate has no `IsCardReward` (`BrainLeech.cs:66` builds it
+    // with a bare `CreateForReward`), so SilverCrucible / SilkenTress skip it
+    // (`SilverCrucible.cs:104`); see `RunState::offer_card_slate`.
+    let option_cards = state.offer_card_slate(option_cards, false);
     state
         .pending_card_selects
         .push(sts2_core::runstate::PendingCardSelect::from_cards(
@@ -85,9 +88,22 @@ fn brain_leech_rip(state: &mut RunState) -> EventOutcome {
     // at option time); the drain surfaces the options verbatim.
     let lost = state.lose_hp(BRAIN_LEECH_RIP_DAMAGE);
     let options = crate::cards::spec_index::roll_colorless_reward_options_no_upgrade(state, 3);
-    state
-        .pending_rewards
-        .push(Reward::Card(CardReward::from_options(options)));
+    let reward = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: the colorless 3 is a real `CardReward` (`BrainLeech.cs:57`),
+        // whose `Populate` runs `CreateForReward` with `IsCardReward`
+        // (`CardReward.cs:115`) and so the card-reward hooks: SilverCrucible
+        // upgrades the slate (`SilverCrucible.cs:94`), FresnelLens enchants it.
+        // Route it through the same listeners and keep each upgrade flag.
+        let cards: Vec<sts2_core::Card> = options
+            .into_iter()
+            .filter_map(|id| crate::cards::spec_index::card_pod_from_id(id, false))
+            .collect();
+        let cards = state.offer_card_slate(cards, true);
+        CardReward::from_cards(&cards)
+    } else {
+        CardReward::from_options(options)
+    };
+    state.pending_rewards.push(Reward::Card(reward));
     EventOutcome::finished(format!("Took {lost} damage, gained a colorless card."))
 }
 
@@ -160,7 +176,9 @@ fn room_full_of_cheese_gorge(state: &mut RunState) -> EventOutcome {
     // FresnelLens enchants, etc. Route through `offer_card_reward` (the same
     // `modify_card_reward_options_late` dispatch the post-combat reward uses)
     // so the offered cards match C# (RP16: SilverCrucible upgrades all 8).
-    let options = state.offer_card_reward(options);
+    // v0.111.0: no `IsCardReward` on this slate (`RoomFullOfCheese.cs:40`), so
+    // SilverCrucible / SilkenTress skip it; see `RunState::offer_card_slate`.
+    let options = state.offer_card_slate(options, false);
     let pick = ROOM_FULL_OF_CHEESE_GORGE_PICK.min(options.len());
     state
         .pending_card_grants
@@ -542,6 +560,80 @@ mod tests {
             Some(0),
             "SilverCrucible TimesUsed must increment after offering the slate"
         );
+    }
+
+    fn silver_crucible_rs_v0111(character: sts2_core::CharacterId) -> RunState {
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        sts2_core::relic_effects::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.character_id = character;
+        rs.relics.push(RelicId::SilverCrucible);
+        rs
+    }
+
+    /// v0.111.0: ShareKnowledge's slate has no `IsCardReward`, so
+    /// SilverCrucible neither upgrades it nor spends a charge
+    /// (`SilverCrucible.cs:104`).
+    #[test]
+    fn brain_leech_share_knowledge_silver_crucible_skips_slate_v0111() {
+        let mut rs = silver_crucible_rs_v0111(sts2_core::CharacterId::Silent);
+        let outcome = (BRAIN_LEECH.options[0].handler)(&mut rs);
+        assert!(outcome.finished);
+        let select = &rs.pending_card_selects[0];
+        assert_eq!(select.options.len(), 5);
+        assert!(select.upgraded.iter().all(|&u| !u), "{:?}", select.upgraded);
+        assert_eq!(
+            rs.relic_counters
+                .get(&RelicId::SilverCrucible)
+                .copied()
+                .unwrap_or(0),
+            0,
+            "no charge spent"
+        );
+        assert!(
+            !rs.card_slate_not_card_reward,
+            "flag cleared after the walk"
+        );
+    }
+
+    /// v0.111.0: Rip's colorless 3 is a real `CardReward` (`IsCardReward`),
+    /// so SilverCrucible upgrades every upgradable option and spends a charge;
+    /// the flags ride on the pre-resolved reward.
+    #[test]
+    fn brain_leech_rip_silver_crucible_upgrades_colorless_v0111() {
+        let mut rs = silver_crucible_rs_v0111(sts2_core::CharacterId::Ironclad);
+        let outcome = (BRAIN_LEECH.options[1].handler)(&mut rs);
+        assert!(outcome.finished);
+        let Reward::Card(reward) = &rs.pending_rewards[0] else {
+            panic!("expected Card reward, got {:?}", rs.pending_rewards[0]);
+        };
+        assert_eq!(reward.options.len(), 3);
+        assert_eq!(reward.upgraded.len(), 3, "flags parallel options");
+        assert!(reward.upgraded.iter().any(|&u| u), "{:?}", reward.upgraded);
+        assert_ne!(
+            rs.relic_counters
+                .get(&RelicId::SilverCrucible)
+                .copied()
+                .unwrap_or(0),
+            0,
+            "one charge spent"
+        );
+    }
+
+    /// v0.107.1 keeps the pre-port Rip: the colorless 3 bypasses the
+    /// card-reward listeners (no upgrade flags, no charge spent).
+    #[test]
+    fn brain_leech_rip_silver_crucible_untouched() {
+        let mut rs = silver_crucible_rs_v0111(sts2_core::CharacterId::Ironclad);
+        rs.game_version = sts2_core::GameVersion::V0_107_1;
+        let _ = (BRAIN_LEECH.options[1].handler)(&mut rs);
+        let Reward::Card(reward) = &rs.pending_rewards[0] else {
+            panic!("expected Card reward");
+        };
+        assert!(reward.upgraded.is_empty());
+        assert!(!rs.relic_counters.contains_key(&RelicId::SilverCrucible));
     }
 
     #[test]

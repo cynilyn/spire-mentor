@@ -32,6 +32,7 @@ pub(crate) fn play_apotheosis(state: &mut CombatState, _t: Option<CreatureUid>) 
     uids.extend(state.player.discard.iter().copied());
     uids.extend(state.player.play.iter().copied());
     uids.extend(state.player.exhaust.iter().copied());
+    let version = state.game_version;
     for uid in uids {
         if Some(uid) == played {
             continue;
@@ -43,7 +44,8 @@ pub(crate) fn play_apotheosis(state: &mut CombatState, _t: Option<CreatureUid>) 
             // (sweep seed 1248): a bogus upgraded flag on a non-upgradable
             // card shifts the reshuffle pre-sort's instance tie-order.
             if card.is_upgradable() {
-                let _ = card.upgrade();
+                // GH #793: the upgrade delta of the combat's game build.
+                let _ = card.upgrade_for(version);
             }
         }
     }

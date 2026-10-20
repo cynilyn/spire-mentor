@@ -50,7 +50,16 @@ pub(crate) fn preview_soul_storm(
         .count()
         .try_into()
         .unwrap_or(i32::MAX);
-    let extra = if card.upgraded { 3 } else { 2 };
+    // v0.111.0: ExtraDamage per Soul 2 -> 4, upgrade +1 -> +2 (decomp SoulStorm.cs:22,41).
+    let extra = match (
+        crate::cards::v0111::is_v0111(state.game_version),
+        card.upgraded,
+    ) {
+        (false, false) => 2,
+        (false, true) => 3,
+        (true, false) => 4,
+        (true, true) => 6,
+    };
     9 + extra * soul_count
 }
 

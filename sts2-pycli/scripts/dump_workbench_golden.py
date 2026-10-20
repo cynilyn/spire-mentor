@@ -873,6 +873,8 @@ def run_scenario(
                     "boss_sims": int(scn.get("combat_boss_sims", 16)),
                     "threads": 1,
                 }
+                if scn.get("game_version"):
+                    start_body["game_version"] = scn["game_version"]
             else:
                 start_route = "/api/live/start"
                 start_body = {
@@ -882,6 +884,10 @@ def run_scenario(
                     "act1": scn["act1"],
                     "backend": "rust",
                 }
+                # GH #801: only a scenario on a non-default build names one, so
+                # every v0.107.1 scenario's start request is byte-identical.
+                if scn.get("game_version"):
+                    start_body["game_version"] = scn["game_version"]
             status, body = rec.request("POST", start_route, start_body, probe=False)
             if status != 200:
                 raise RuntimeError(f"{name}: {start_route} -> {status}: {body}")
@@ -1224,7 +1230,8 @@ def run_mode_probes(max_steps: int, *, ppo: bool) -> list[dict[str, Any]]:
 
 
 def scenario_matrix() -> list[dict[str, Any]]:
-    """The committed scenario set: 5 chars x 2 seeds x A{0,10} x 2 acts + 3 long."""
+    """The committed scenario set: 5 chars x 2 seeds x A{0,10} x 2 acts, 3 run-mode,
+    1 on the v0.111.0 build, 3 long."""
     out: list[dict[str, Any]] = []
     for character in CHARACTERS:
         for seed_no, seed in enumerate(SEEDS):
@@ -1267,6 +1274,23 @@ def scenario_matrix() -> list[dict[str, Any]]:
                 "probes": run_mode_probes(150, ppo=ppo),
             }
         )
+    # GH #801: one short run on the v0.111.0 build (its own seed hashing,
+    # rules and display data), through the save/load and seek probes and the
+    # replay block, so the per-session build round-trips on both hosts.
+    v0111_steps = 80
+    out.append(
+        {
+            "name": f"v0111_ironclad_{SEEDS[0].lower()}_a0_roll",
+            "character": "Ironclad",
+            "seed": SEEDS[0],
+            "ascension": 0,
+            "act1": "roll",
+            "game_version": "v0.111.0",
+            "max_steps": v0111_steps,
+            "neow_option": 0,
+            "probes": [p for p in standard_probes(v0111_steps) if p["at"] <= v0111_steps],
+        }
+    )
     for character in ("Ironclad", "Silent", "Defect"):
         name = f"long_{character.lower()}_{SEEDS[0].lower()}_a0_roll"
         out.append(

@@ -50,12 +50,21 @@ pub(crate) fn play_hidden_gem(state: &mut CombatState, _t: Option<CreatureUid>) 
     // already-enchanted cards — inflating the pool and desyncing the
     // `combat_card_selection` read. Bead `sts2-rs-7pg9x` follow-up (sweep
     // 49aeb, seed 2460).
+    // v0.111.0: the fallback's `(uint)(type - 5) <= 1u` excludes CardType 5
+    // and 6, which are Curse and Quest (CardType.cs: Status = 4), so a
+    // playable Status such as FranticEscape stays in the pool (decomp
+    // HiddenGem.cs:41). With only a FranticEscape left in the draw pile C#
+    // picks it and reads combat_card_selection; Rust read nothing (Silent mid
+    // seed 1026, THE_INSATIABLE_BOSS). v0.107.1 C# has the same filter; left
+    // alone there for bit-identity.
+    let keep_status = state.game_version >= sts2_core::GameVersion::V0_111_0;
     let not_status_curse = |uid: &CardUid| -> bool {
         let idx = uid.0.get() as usize - 1;
-        !matches!(
-            state.cards[idx].card_type,
-            CardType::Status | CardType::Curse
-        )
+        match state.cards[idx].card_type {
+            CardType::Curse => false,
+            CardType::Status => keep_status,
+            _ => true,
+        }
     };
     let fallback: SmallVec<[CardUid; 16]> = if primary.is_empty() {
         state

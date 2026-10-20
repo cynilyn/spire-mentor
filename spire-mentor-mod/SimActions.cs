@@ -69,24 +69,75 @@ internal static class SimActions
         RequireAdvisor(surface, () => SimAdvisor.Instance.ToggleAutoPlay());
 
     /// <summary>
-    /// Off &lt;-&gt; Advisor; from Autopilot: stop the AI and hand the game
-    /// back. (Autopilot can only be entered at launch, from the config file.)
+    /// F8 / the on-off button: AI off &lt;-&gt; on in the current style
+    /// (CoachStyle.ToggleOnOff). From Autopilot: stop the AI, hand the game
+    /// back, and land in the current style. (Autopilot can only be entered at
+    /// launch, from the config file.)
     /// </summary>
     public static void ToggleAdvisor()
     {
+        (SimModeLite nextMode, AdviceStyle nextStyle) =
+            CoachStyle.ToggleOnOff((SimModeLite)(int)SimRuntime.Mode, SimRuntime.Style);
         if (SimRuntime.Mode == SimMode.Autopilot)
         {
             // Taking over from the AI: stop the slayer FIRST so its card
             // selector and non-interactive mode are released before the mode
             // flips (see MainFile.StopAutopilot).
             MainFile.StopAutopilot();
-            SimRuntime.Mode = SimMode.Advisor;
-            GD.Print("[SpireMentor] Autopilot stopped -> Advisor (you have the controls).");
-            SimActionLog.Note("Autopilot stopped; you have the controls (Advisor mode).");
+            SimRuntime.SetModeAndStyle((SimMode)(int)nextMode, nextStyle);
+            string style = CoachStyle.StyleLabel(nextStyle);
+            GD.Print($"[SpireMentor] Autopilot stopped -> {style} (you have the controls).");
+            SimActionLog.Note($"Autopilot stopped; you have the controls ({style}).");
             return;
         }
-        SimRuntime.Mode = SimRuntime.Mode == SimMode.Advisor ? SimMode.Off : SimMode.Advisor;
-        GD.Print($"[SpireMentor] Mode -> {SimRuntime.Mode}");
+        SimRuntime.SetModeAndStyle((SimMode)(int)nextMode, nextStyle);
+        string name = CoachStyle.ModeName(nextMode, nextStyle);
+        GD.Print($"[SpireMentor] Mode -> {name}");
+        if (nextMode == SimModeLite.Advisor)
+        {
+            SimActionLog.Note(nextStyle == AdviceStyle.Coach
+                ? "Coach: nothing shows before you act -- F5 peeks at the AI's next pick."
+                : "Hints: the AI's opinion shows while you decide.");
+        }
+    }
+
+    /// <summary>
+    /// The style button: Hints &lt;-&gt; Coach (CoachStyle.SwitchStyle). Never
+    /// changes the mode, so it can't turn the AI (or its process) off.
+    /// </summary>
+    public static void SwitchStyle()
+    {
+        (SimModeLite mode, AdviceStyle nextStyle) =
+            CoachStyle.SwitchStyle((SimModeLite)(int)SimRuntime.Mode, SimRuntime.Style);
+        SimRuntime.SetModeAndStyle((SimMode)(int)mode, nextStyle);
+        GD.Print($"[SpireMentor] Style -> {CoachStyle.StyleLabel(nextStyle)}");
+        SimActionLog.Note(nextStyle == AdviceStyle.Coach
+            ? "Coach: nothing shows before you act -- F5 peeks at the AI's next pick."
+            : "Hints: the AI's opinion shows while you decide.");
+    }
+
+    /// <summary>
+    /// F5: in the Coach style, show the AI's pick for just the next decision
+    /// (SimAdvisor.Peek). Hints already shows everything, so F5 does nothing
+    /// there; with the coach off or in Autopilot it only says what it is for
+    /// (the RequireAdvisor pattern).
+    /// </summary>
+    public static void Peek()
+    {
+        GD.Print($"[SpireMentor] F5 pressed (mode {SimRuntime.Mode}, style {SimRuntime.Style}).");
+        if (SimRuntime.Mode == SimMode.Advisor && SimRuntime.Style == AdviceStyle.Hints)
+        {
+            SimToolbar.Instance.SetNote("Hints already shows the AI's pick (F5 peeks in Coach)");
+            return;
+        }
+        if (!SimRuntime.CoachStyleActive)
+        {
+            GD.Print("[SpireMentor] F5 peeks in Coach mode.");
+            SimToolbar.Instance.SetNote("F5 peeks in Coach mode");
+            SimActionLog.Note("F5 peeks in Coach mode (F8 turns the AI on; the toolbar's style button picks Hints or Coach).");
+            return;
+        }
+        SimAdvisor.Instance.Peek();
     }
 
     /// <summary>

@@ -80,23 +80,50 @@ fn next_item(rng: &mut Rng, lst: &[RelicId]) -> RelicId {
 /// the v0.107.1 `NetId`→`GetPlayerSlotIndex` swap dropped it — bead
 /// `sts2-rs-ms8mm`). Mirrors
 /// [`crate::runstate::RunState::roll_neow_offers_if_needed`].
+///
+/// This is the v0.107.1 form from a bare `i32` master seed (tests, tools);
+/// the run path uses [`event_rng_for`], which follows the run's game build.
 #[must_use]
 pub fn event_rng(master_seed: i32, ancient: AncientId) -> Rng {
     Rng::with_name(master_seed, ancient.entry())
+}
+
+/// [`event_rng`] off a run's [`crate::RunRngSet`], in that set's game build:
+/// v0.111.0 `EventModel.cs:234` is
+/// `Rng((ulong)((long)Seed + (long)slot) + hash(Id.Entry))` with slot 0
+/// (GH #788).
+#[must_use]
+pub fn event_rng_for(run_rng: &crate::RunRngSet, ancient: AncientId) -> Rng {
+    run_rng.named(ancient.entry())
 }
 
 /// Dispatch to the selected ancient's option roll. Neow is handled by
 /// [`crate::neow_offers`] (different return shape) and is not rolled here.
 #[must_use]
 pub fn roll_offers(ancient: AncientId, rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
+    roll_offers_for(crate::GameVersion::V0_107_1, ancient, rng, cond)
+}
+
+/// [`roll_offers`] for game build `version` (GH #792). v0.111.0 moved
+/// SandCastle between Orobas's pools and split Darv's act-gated sets; every
+/// other ancient rolls identically in both builds (Vakuu's v0.111.0 change
+/// only moves the UI-only `ThatDecreasesMaxHp` red-flash marker,
+/// `Vakuu.cs:37`, which the engine does not model).
+#[must_use]
+pub fn roll_offers_for(
+    version: crate::GameVersion,
+    ancient: AncientId,
+    rng: &mut Rng,
+    cond: &AncientConditions,
+) -> Vec<RelicId> {
     match ancient {
-        AncientId::Orobas => roll_orobas(rng, cond),
+        AncientId::Orobas => roll_orobas(version, rng, cond),
         AncientId::Pael => roll_pael(rng, cond),
         AncientId::Tezcatara => roll_tezcatara(rng, cond),
         AncientId::Nonupeipe => roll_nonupeipe(rng, cond),
         AncientId::Tanx => roll_tanx(rng, cond),
         AncientId::Vakuu => roll_vakuu(rng),
-        AncientId::Darv => roll_darv(rng, cond),
+        AncientId::Darv => roll_darv(version, rng, cond),
         // Neow's offers are rolled via `neow_offers::roll_neow_offers`
         // (2 positives + 1 curse), not this 3-relic boss-relic surface.
         AncientId::Neow => Vec::new(),
@@ -133,7 +160,11 @@ fn roll_tezcatara(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
 /// character variant from the other-character pool, (2) `NextFloat() < 1/3`
 /// PrismaticGem vs SeaGlass, (3) `NextItem` over `pool1 ++ [item]`,
 /// (4) `NextItem(pool2)`, (5) `NextItem(pool3)`.
-fn roll_orobas(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
+fn roll_orobas(
+    version: crate::GameVersion,
+    rng: &mut Rng,
+    cond: &AncientConditions,
+) -> Vec<RelicId> {
     use RelicId::{
         AlchemicalCoffer, Driftwood, ElectricShrymp, GlassEye, PrismaticGem, RadiantPearl,
         SandCastle, SeaGlass,
@@ -149,11 +180,21 @@ fn roll_orobas(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
         SeaGlass
     };
     // (3) pool1 ++ [item].
-    let list = [ElectricShrymp, GlassEye, SandCastle, item];
-    let pool2 = [AlchemicalCoffer, Driftwood, RadiantPearl];
+    let (list, pool2): (&[RelicId], &[RelicId]) = match version {
+        crate::GameVersion::V0_107_1 => (
+            &[ElectricShrymp, GlassEye, SandCastle, item],
+            &[AlchemicalCoffer, Driftwood, RadiantPearl],
+        ),
+        // v0.111.0: SandCastle moved from OptionPool1 to the END of
+        // OptionPool2 (decomp Orobas.cs:28-39).
+        crate::GameVersion::V0_111_0 => (
+            &[ElectricShrymp, GlassEye, item],
+            &[AlchemicalCoffer, Driftwood, RadiantPearl, SandCastle],
+        ),
+    };
     vec![
-        next_item(rng, &list),
-        next_item(rng, &pool2),
+        next_item(rng, list),
+        next_item(rng, pool2),
         next_item(rng, &cond.orobas_pool3),
     ]
 }
@@ -268,7 +309,7 @@ fn roll_nonupeipe(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
 /// order, act-gated), `NextItem(set)` picks one relic (single-element sets
 /// still read); the picks are `UnstableShuffle`d; then `NextBool()` decides
 /// between [take 2 + DustyTome] and [take 3].
-fn roll_darv(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
+fn roll_darv(version: crate::GameVersion, rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
     use RelicId::{
         Astrolabe, BlackStar, CallingBell, DustyTome, Ectoplasm, EmptyCage, PandorasBox,
         PhilosophersStone, RunicPyramid, SneckoEye, Sozu, VelvetChoker,
@@ -280,11 +321,29 @@ fn roll_darv(rng: &mut Rng, cond: &AncientConditions) -> Vec<RelicId> {
     }
     sets.push(&[RunicPyramid]);
     sets.push(&[SneckoEye]);
-    if cond.act_index == 1 {
-        sets.push(&[Ectoplasm, Sozu]);
-    }
-    if cond.act_index == 2 {
-        sets.push(&[PhilosophersStone, VelvetChoker]);
+    match version {
+        crate::GameVersion::V0_107_1 => {
+            if cond.act_index == 1 {
+                sets.push(&[Ectoplasm, Sozu]);
+            }
+            if cond.act_index == 2 {
+                sets.push(&[PhilosophersStone, VelvetChoker]);
+            }
+        }
+        // v0.111.0: 9 -> 11 sets — every pair split into single-relic sets
+        // (each still costs its own `NextItem` read), and PhilosophersStone /
+        // VelvetChoker are valid from act 2 on (`CurrentActIndex >= 1`, was
+        // `== 2`). Decomp Darv.cs:172-197.
+        crate::GameVersion::V0_111_0 => {
+            if cond.act_index == 1 {
+                sets.push(&[Ectoplasm]);
+                sets.push(&[Sozu]);
+            }
+            if cond.act_index >= 1 {
+                sets.push(&[PhilosophersStone]);
+                sets.push(&[VelvetChoker]);
+            }
+        }
     }
 
     let mut source: Vec<RelicId> = sets.iter().map(|s| next_item(rng, s)).collect();
@@ -659,9 +718,9 @@ mod tests {
         let mut act3_seen = std::collections::HashSet::new();
         for seed in 0..512i32 {
             let mut r2 = event_rng(seed, AncientId::Darv);
-            act2_seen.extend(roll_darv(&mut r2, &c2));
+            act2_seen.extend(roll_darv(crate::GameVersion::V0_107_1, &mut r2, &c2));
             let mut r3 = event_rng(seed, AncientId::Darv);
-            act3_seen.extend(roll_darv(&mut r3, &c3));
+            act3_seen.extend(roll_darv(crate::GameVersion::V0_107_1, &mut r3, &c3));
         }
         assert!(act2_seen.contains(&RelicId::Sozu) || act2_seen.contains(&RelicId::Ectoplasm));
         assert!(!act2_seen.contains(&RelicId::PhilosophersStone));
@@ -670,5 +729,78 @@ mod tests {
             act3_seen.contains(&RelicId::PhilosophersStone)
                 || act3_seen.contains(&RelicId::VelvetChoker)
         );
+    }
+
+    // ── v0.111.0 (GH #792) ───────────────────────────────────────────
+
+    /// `roll_offers` is the v0.107.1 build of `roll_offers_for`.
+    #[test]
+    fn v0107_roll_offers_is_the_versioned_roll() {
+        for seed in 0..200 {
+            for a in [AncientId::Orobas, AncientId::Darv, AncientId::Vakuu] {
+                for act in [1, 2] {
+                    let mut c = cond();
+                    c.act_index = act;
+                    let mut r1 = event_rng(seed, a);
+                    let mut r2 = event_rng(seed, a);
+                    assert_eq!(
+                        roll_offers(a, &mut r1, &c),
+                        roll_offers_for(crate::GameVersion::V0_107_1, a, &mut r2, &c)
+                    );
+                }
+            }
+        }
+    }
+
+    /// `Orobas.cs:28-39`: SandCastle left OptionPool1 for the end of
+    /// OptionPool2, so it is only ever the SECOND offer in v0.111.0.
+    #[test]
+    fn orobas_sand_castle_moved_to_pool2_v0111() {
+        let c = cond();
+        let mut second = false;
+        for seed in 0..400 {
+            let mut rng = event_rng(seed, AncientId::Orobas);
+            let o = roll_offers_for(
+                crate::GameVersion::V0_111_0,
+                AncientId::Orobas,
+                &mut rng,
+                &c,
+            );
+            assert_ne!(o[0], RelicId::SandCastle, "seed {seed}");
+            second |= o[1] == RelicId::SandCastle;
+        }
+        assert!(second);
+    }
+
+    /// `Darv.cs:172-197`: PhilosophersStone / VelvetChoker are valid from
+    /// act 2 on (they were act-3 only), Ectoplasm / Sozu stay act 2.
+    #[test]
+    fn darv_sets_split_and_philosophers_stone_from_act2_v0111() {
+        let mut act2_seen = std::collections::BTreeSet::new();
+        let mut act3_seen = std::collections::BTreeSet::new();
+        for seed in 0..600 {
+            for (act, seen) in [(1, &mut act2_seen), (2, &mut act3_seen)] {
+                let mut c = cond();
+                c.act_index = act;
+                let mut rng = event_rng(seed, AncientId::Darv);
+                seen.extend(roll_offers_for(
+                    crate::GameVersion::V0_111_0,
+                    AncientId::Darv,
+                    &mut rng,
+                    &c,
+                ));
+            }
+        }
+        for r in [
+            RelicId::Ectoplasm,
+            RelicId::Sozu,
+            RelicId::PhilosophersStone,
+            RelicId::VelvetChoker,
+        ] {
+            assert!(act2_seen.contains(&r), "act 2 offers {r:?}");
+        }
+        assert!(act3_seen.contains(&RelicId::PhilosophersStone));
+        assert!(!act3_seen.contains(&RelicId::Ectoplasm));
+        assert!(!act3_seen.contains(&RelicId::Sozu));
     }
 }

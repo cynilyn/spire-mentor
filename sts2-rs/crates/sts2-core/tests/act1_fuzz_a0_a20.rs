@@ -317,6 +317,7 @@ fn make_combat(seed: u64, variant: CharVariant, ascension: u8, enc_idx: usize) -
         is_over: false,
         player_won: false,
         ascension,
+        game_version: sts2_core::GameVersion::V0_107_1,
         master_deck: Vec::new(),
         last_added_card: None,
         is_elite: false,

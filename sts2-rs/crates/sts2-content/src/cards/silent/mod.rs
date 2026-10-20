@@ -99,6 +99,11 @@ pub mod untouchable;
 pub mod up_my_sleeve;
 pub mod well_laid_plans;
 pub mod wraith_form;
+// v0.111.0-only cards (GH #793).
+pub mod blade_symphony;
+pub mod concoct_card;
+pub mod fade_card;
+pub mod sidestep;
 
 pub use helpers::silent_starter_deck;
 
@@ -106,6 +111,7 @@ pub use helpers::silent_starter_deck;
 /// [`crate::cards::dispatch::install_default_registry`].
 pub fn install_pool() {
     card_effects::register_many(POOL);
+    card_effects::register_many(POOL_V0111);
 }
 
 #[allow(clippy::type_complexity)]
@@ -342,4 +348,20 @@ const POOL: &[(CardId, PlayCardFn)] = &[
         CardId::WraithForm,
         wraith_form::play_wraith_form as PlayCardFn,
     ),
+];
+
+/// The v0.111.0-only cards of this pool (GH #793), kept beside [`POOL`]
+/// so the v0.107.1 table is unchanged. Their ids exist in no v0.107.1 state.
+#[allow(clippy::type_complexity)]
+const POOL_V0111: &[(CardId, PlayCardFn)] = &[
+    (
+        CardId::BladeSymphony,
+        blade_symphony::play_blade_symphony as PlayCardFn,
+    ),
+    (
+        CardId::ConcoctCard,
+        concoct_card::play_concoct as PlayCardFn,
+    ),
+    (CardId::FadeCard, fade_card::play_fade as PlayCardFn),
+    (CardId::Sidestep, sidestep::play_sidestep as PlayCardFn),
 ];

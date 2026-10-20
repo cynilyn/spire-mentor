@@ -7,6 +7,7 @@ pub(crate) fn drink_blessing_of_the_forge(
 ) -> EffectResult {
     let hand_uids: smallvec::SmallVec<[sts2_core::CardUid; 16]> =
         state.player.hand.iter().copied().collect();
+    let version = state.game_version;
     for card_uid in hand_uids {
         if let Some(card) = state.cards.iter_mut().find(|c| c.uid == card_uid) {
             // C# `BlessingOfTheForge.OnUse` gates on `card.IsUpgradable`
@@ -18,7 +19,8 @@ pub(crate) fn drink_blessing_of_the_forge(
             // order vs C# (sweep seed 1248: the cost-bumped FRANTIC_ESCAPE
             // landed one draw slot early).
             if card.is_upgradable() {
-                let _ = card.upgrade();
+                // GH #793: the upgrade delta of the combat's game build.
+                let _ = card.upgrade_for(version);
             }
         }
     }

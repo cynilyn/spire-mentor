@@ -516,6 +516,27 @@ def test_an_unfollowable_action_drops_rather_than_drifts() -> None:
         assert advisor.stats["unfollowable"] == 1
 
 
+def test_end_turn_report_does_not_drop_the_mirror() -> None:
+    """The coach's end-turn report (protocol v5) is a no-op for the mirror.
+
+    It carries no card and no potion, which used to read as unfollowable and
+    DROP the mirror. The turn boundary is already followed from the next board
+    (`_catch_up_turns`), so following the report too would end the turn twice.
+    """
+    advisor, _ = _advisor_on(_burning_pact_state())
+    advisor.on_world_action(
+        {
+            "type": "human_action",
+            "decision_type": "combat_action",
+            "action": "end_turn",
+            "detail": "End turn",
+        }
+    )
+    assert advisor.live is not None
+    assert advisor.stats["unfollowable"] == 0
+    assert advisor.stats["followed"] == 0
+
+
 def test_the_late_echo_of_a_replayed_play_does_not_drop_a_good_mirror() -> None:
     """The two follow mechanisms collide once per searched select.
 
@@ -1250,7 +1271,7 @@ def test_a_park_the_world_has_finished_with_is_dropped_not_searched() -> None:
     advisor, board = _parked_advisor()
     assert advisor.live is not None and advisor.live.state.pending_choice() is not None
 
-    advice, _cs, _cfg = ra.compute_combat_advice(board, HONEST, 24, advisor)
+    advice, _cs, _cfg, _rows = ra.compute_combat_advice(board, HONEST, 24, advisor)
 
     assert advisor.live is None, "a stale park must cost the mirror, not the run"
     assert "best" in advice, "the rebuild must still produce an executable action"

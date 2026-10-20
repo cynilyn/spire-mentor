@@ -57,7 +57,7 @@ pub(crate) fn play_jackpot(state: &mut CombatState, target: Option<CreatureUid>)
     // index vs C#. Defect isn't validated against C# yet and still uses its raw
     // slice (no cost-0 Basic/Ancient/Event/MultiplayerOnly card, so equivalent
     // here). Bead `sts2-rs-q6bix`.
-    let pool: SmallVec<[CardSpec; 64]> = match state.player.character {
+    let mut pool: SmallVec<[CardSpec; 64]> = match state.player.character {
         Some(CharacterId::Ironclad) => {
             crate::cards::ironclad::specs::ironclad_combat_generatable_specs()
                 .into_iter()
@@ -98,6 +98,23 @@ pub(crate) fn play_jackpot(state: &mut CombatState, target: Option<CreatureUid>)
         }
         _ => return EffectResult::Resolved,
     };
+    // v0.111.0 (GH #793): Sidestep holds Scare's Silent slot (decomp
+    // SilentCardPool.cs:68; both cost 0), every spec takes the build's values
+    // (`v0111::pool_spec_of`), and Eidolon / Nightmare / Transfigure are no
+    // longer combat-generatable. No base cost changed to 0 in v0.111.0, so
+    // filtering the v0.107.1 cost-0 pool and re-checking the cost is the whole
+    // difference; the spawned card takes the build's values in
+    // `spawn_card_into_hand`.
+    let version = state.game_version;
+    if crate::cards::v0111::is_v0111(version) {
+        pool = pool
+            .into_iter()
+            .map(|s| crate::cards::v0111::pool_spec_of(s, version))
+            .filter(|s| {
+                s.cost == 0 && crate::cards::v0111::can_be_generated_in_combat(s.id, version)
+            })
+            .collect();
+    }
     if pool.is_empty() {
         return EffectResult::Resolved;
     }

@@ -63,7 +63,7 @@ use sts2_core::monsters::MonsterKind;
 use sts2_core::runstate::RunState;
 use sts2_core::{CombatState, Creature, CreatureUid, IntentHistory, MonsterId};
 
-use crate::monster_dispatch::{build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition};
+use crate::monster_dispatch::{build_ai_for_version, MonsterSpawnArgs, SpawnPosition};
 
 /// Build a fresh combat from `rs` + `encounter`.
 ///
@@ -104,36 +104,65 @@ use crate::monster_dispatch::{build_ai_with_ascension, MonsterSpawnArgs, SpawnPo
 /// FlailKnight, FakeMerchantMonster = 165). [`roll_unique_max_hps`] is the
 /// faithful mirror (same stream, same two-pass uniqueness), so this advances
 /// the shared cursor exactly like a normal encounter entry and keeps the
-/// event→combat path parity-aligned. The room type is `Unknown` (an
-/// event-nested combat is not a Monster/Elite/Boss map room). Bead
-/// `sts2-rs-ck9z6` (GH #166).
+/// event→combat path parity-aligned.
+///
+/// The room type is `Monster`: every event encounter's C# `RoomType` is
+/// `RoomType.Monster`, and the nested `CombatRoom` reports its encounter's
+/// type. (In combat it only drives the elite/boss flags, both false for
+/// either value.) Bead `sts2-rs-ck9z6` (GH #166).
+///
+/// `DenseVegetation` spawns four Wrigglers, C# `DenseVegetationEventEncounter`
+/// (slots `wriggler1..4`, `StartStunned = false`), so each opens on its
+/// slot's move with no spawn-turn stun. The HP roll covers the whole roster
+/// in slot order, one `Niche` draw per Wriggler (GH #817).
 #[must_use]
 pub fn build_event_combat(
     rs: &mut RunState,
     req: &sts2_core::events::EventCombatRequest,
 ) -> CombatState {
+    use crate::monsters::shared::DenseVegetationWrigglerSlot as Slot;
     use sts2_core::events::{BattlewornDummySetting, EventEncounter};
     use sts2_core::runstate::RoomType;
-    let kind = match req.encounter {
+    // `(kind, spawn args)` per slot, in C# `Slots` / `GenerateMonsters` order.
+    let members: Vec<(MonsterKind, MonsterSpawnArgs)> = match req.encounter {
         EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting1) => {
-            MonsterKind::BattleFriendV1
+            vec![(MonsterKind::BattleFriendV1, MonsterSpawnArgs::None)]
         }
         EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting2) => {
-            MonsterKind::BattleFriendV2
+            vec![(MonsterKind::BattleFriendV2, MonsterSpawnArgs::None)]
         }
         EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting3) => {
-            MonsterKind::BattleFriendV3
+            vec![(MonsterKind::BattleFriendV3, MonsterSpawnArgs::None)]
         }
-        EventEncounter::MysteriousKnight => MonsterKind::MysteriousKnight,
-        EventEncounter::FakeMerchant => MonsterKind::FakeMerchantMonster,
+        EventEncounter::MysteriousKnight => {
+            vec![(MonsterKind::MysteriousKnight, MonsterSpawnArgs::None)]
+        }
+        EventEncounter::FakeMerchant => {
+            vec![(MonsterKind::FakeMerchantMonster, MonsterSpawnArgs::None)]
+        }
+        EventEncounter::DenseVegetation => [Slot::First, Slot::Second, Slot::Third, Slot::Fourth]
+            .into_iter()
+            .map(|slot| {
+                (
+                    MonsterKind::DenseVegetationWriggler,
+                    MonsterSpawnArgs::DenseVegetationWriggler { slot },
+                )
+            })
+            .collect(),
     };
-    let hp =
-        sts2_core::monsters::roll_unique_max_hps(&[kind], &mut rs.rng.niche, rs.ascension_level)
-            .first()
-            .copied()
-            .unwrap_or(0);
-    let roster = [(kind, MonsterSpawnArgs::None, hp)];
-    enter_combat_from_roster(rs, &roster, RoomType::Unknown)
+    let kinds: Vec<MonsterKind> = members.iter().map(|&(kind, _)| kind).collect();
+    let hps = sts2_core::monsters::roll_unique_max_hps_for(
+        &kinds,
+        &mut rs.rng.niche,
+        rs.ascension_level,
+        rs.game_version,
+    );
+    let roster: Vec<(MonsterKind, MonsterSpawnArgs, i32)> = members
+        .into_iter()
+        .zip(hps)
+        .map(|((kind, args), hp)| (kind, args, hp))
+        .collect();
+    enter_combat_from_roster(rs, &roster, RoomType::Monster)
 }
 
 #[must_use]
@@ -217,11 +246,12 @@ pub fn spawn_roster(
             monster_id: MonsterId(python_name(kind)),
             intent: None,
             intent_history: IntentHistory::default(),
-            ai: Some(build_ai_with_ascension(
+            ai: Some(build_ai_for_version(
                 kind,
                 args,
                 spawn_position(i, n),
                 state.ascension,
+                state.game_version,
             )),
         });
         let uid = CreatureUid(id);
@@ -276,7 +306,11 @@ pub fn enter_combat_from_roster(
     // seed to match the combat-parity builder (`sts2-py` lib.rs).
     let mut state = CombatState {
         ascension: rs.ascension_level,
-        rng: sts2_core::dotnet_rng::Rng::new(rs.rng.seed),
+        // The run's game build rides into combat beside ascension (GH #787).
+        game_version: rs.game_version,
+        // No C# analog; seeded from the master seed as-is (a `uint` in
+        // v0.107.1, so `from_seed` == the old `Rng::new(seed as i32)`).
+        rng: sts2_core::dotnet_rng::Rng::from_seed(rs.rng.seed),
         run_rng: rs.rng.clone(),
         ..CombatState::default()
     };
@@ -707,7 +741,8 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
                 if !upgradable.is_empty() {
                     let idx = rs.rng.niche.next_int(0, last) as usize;
                     let deck_idx = upgradable[idx];
-                    rs.master_deck[deck_idx].upgrade();
+                    let version = rs.game_version;
+                    rs.master_deck[deck_idx].upgrade_for(version);
                 }
             }
         }
@@ -729,7 +764,20 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // Same `player_won` gate as FishingRod above: `Hook.AfterCombatEnd` is
     // reached only from `CombatManager.EndCombatInternal`, which a defeat
     // (`ProcessPendingLoss`) never calls.
-    if combat.player_won && rs.owns_active_relic(sts2_core::RelicId::ToyBox) {
+    // v0.111.0: `if (IsUsedUp) return;` at the top of `AfterCombatEnd`
+    // (decomp ToyBox.cs:101): once `CombatsSeen >= Combats * Relics` the
+    // counter stops. v0.107.1 keeps counting (and finds no wax relic left
+    // to melt).
+    let toy_box_used_up = rs.game_version >= sts2_core::GameVersion::V0_111_0
+        && rs
+            .relic_counters
+            .get(&sts2_core::RelicId::ToyBox)
+            .copied()
+            .unwrap_or(0)
+            >= crate::relics::shop_event::TOY_BOX_COMBATS
+                * i32::try_from(crate::relics::shop_event::toy_box_relics(rs.game_version))
+                    .unwrap_or(i32::MAX);
+    if combat.player_won && !toy_box_used_up && rs.owns_active_relic(sts2_core::RelicId::ToyBox) {
         let combats_seen = {
             let counter = rs
                 .relic_counters
@@ -2233,13 +2281,14 @@ mod tests {
 
         // `run_rng` field present → clone of rs.rng, NOT the default seed-0 set.
         assert_eq!(
-            state.run_rng.seed, SEED,
+            state.run_rng.seed,
+            u64::from(SEED as u32),
             "run_rng must be the run's RNG bundle (seed carried in), not the default seed-0 set"
         );
         // `rng` field present → `Rng::new(rs.rng.seed)`, NOT the default seed-0.
         assert_eq!(
             state.rng.seed(),
-            SEED as u32,
+            u64::from(SEED as u32),
             "legacy combat rng must be seeded from the run's master seed, not 0"
         );
     }
@@ -2753,6 +2802,34 @@ mod tests {
             0,
             "CombatsSeen does not tick on Elite/Boss rooms"
         );
+    }
+
+    /// v0.111.0 `ToyBox.AfterCombatEnd` returns while `IsUsedUp` (decomp
+    /// ToyBox.cs:101): with 5 relics the counter stops at `3 * 5 = 15`,
+    /// where v0.107.1 keeps counting past its own `3 * 4`.
+    #[test]
+    fn toy_box_melts_wax_relics_in_inventory_order_every_third_combat_v0111() {
+        use sts2_core::runstate::RoomType;
+        use sts2_core::RelicId;
+        let roster = [(MonsterKind::FuzzyWurmCrawler, MonsterSpawnArgs::None, 57)];
+        for (version, expect) in [
+            (sts2_core::GameVersion::V0_107_1, 17),
+            (sts2_core::GameVersion::V0_111_0, 15),
+        ] {
+            let mut rs = fresh_run();
+            rs.game_version = version;
+            rs.relics.push(RelicId::ToyBox);
+            for _ in 0..17 {
+                let mut state = enter_combat_from_roster(&rs, &roster, RoomType::Monster);
+                state.player_won = true;
+                exit_combat(&mut rs, &state);
+            }
+            assert_eq!(
+                rs.relic_counters.get(&RelicId::ToyBox),
+                Some(&expect),
+                "{version}: CombatsSeen after 17 won combats"
+            );
+        }
     }
 
     /// `ToyBox.AfterCombatEnd` (`MegaCrit.Sts2.Core.Models.Relics/ToyBox.cs:99-112`)

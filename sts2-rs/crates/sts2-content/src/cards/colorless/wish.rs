@@ -30,7 +30,10 @@ pub(crate) fn play_wish(state: &mut CombatState, _t: Option<CreatureUid>) -> Eff
         .min_by_key(|uid| {
             let idx = uid.0.get() as usize - 1;
             let card_id = state.cards[idx].card_id;
-            (rarity_sort_key(card_rarity_for_id(card_id)), card_id)
+            (
+                rarity_sort_key(card_rarity_for_id_in(card_id, state.game_version)),
+                card_id,
+            )
         })
         .expect("draw non-empty above");
     state.move_card_to_hand(pick);

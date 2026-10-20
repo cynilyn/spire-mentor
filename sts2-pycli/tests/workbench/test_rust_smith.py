@@ -66,3 +66,33 @@ def test_select_cards_still_routes_to_removal_when_pending() -> None:
     g.rm.pending_deck_removals = 1
     g.act("select_cards", indices="2")
     assert g.rm.taken[-1] == {"action": "remove_deck_card", "idx": 2}
+
+
+def _upgrade_game(pending: int) -> RustGame:
+    g = _smith_game()
+    g.rm.pending_deck_upgrades = pending
+    # The fake never drains the queue, so the re-render needs the upgrade
+    # select's accessors.
+    g.rm.master_deck_detailed = lambda: []
+    g.rm.upgrade_select_deck_indices = lambda: []
+    return g
+
+
+def test_multi_index_deck_upgrade_fans_out_descending() -> None:
+    """YummyCookie's upgrade-4 is one C# ``select_cards`` with every index;
+    each is a position in the shrinking upgradable subset, so the backend
+    applies them highest first."""
+    g = _upgrade_game(4)
+    g.act("select_cards", indices="0,1,4,15")
+    assert g.rm.taken[-4:] == [
+        {"action": "upgrade_deck_card", "idx": 15},
+        {"action": "upgrade_deck_card", "idx": 4},
+        {"action": "upgrade_deck_card", "idx": 1},
+        {"action": "upgrade_deck_card", "idx": 0},
+    ]
+
+
+def test_single_index_deck_upgrade_is_one_pick() -> None:
+    g = _upgrade_game(1)
+    g.act("select_cards", indices="3")
+    assert g.rm.taken[-1] == {"action": "upgrade_deck_card", "idx": 3}

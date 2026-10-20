@@ -476,7 +476,7 @@ fn listener_fencing_manual(state: &mut CombatState, side: Side) -> EffectResult 
     if side != Side::Player {
         return EffectResult::NotImplemented;
     }
-    if state.round != 1 {
+    if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
     if !state.relics.owns(RelicKind::FencingManual) {

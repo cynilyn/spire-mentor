@@ -180,7 +180,29 @@ const fn is_discovered(act: ActVariant, unlocks: &ActSelectionUnlocks) -> bool {
 /// Returns the act chosen for index 0, 1, 2 in order.
 #[must_use]
 pub fn roll_acts(seed_hash: i32, unlocks: &ActSelectionUnlocks) -> [ActVariant; 3] {
-    let mut rng = Rng::with_name(seed_hash, "act_selection");
+    roll_acts_for(
+        crate::GameVersion::V0_107_1,
+        u64::from(seed_hash as u32),
+        unlocks,
+    )
+}
+
+/// [`roll_acts`] for game build `version`, from the hashed seed as a `u64`
+/// (GH #788). v0.111.0 `StartRunLobby.cs:468`:
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// i.e. XxHash64 of the seed string, then `+ hash("act_selection")` in
+/// `ulong` (v0.107.1 `StartRunLobby.cs:461` is the same in `uint`). Note the
+/// hash here is the PLAIN `GetDeterministicHashCode` — for every non-migrated
+/// seed it equals `RunRngSet.Seed`, which is what callers pass.
+#[must_use]
+pub fn roll_acts_for(
+    version: crate::GameVersion,
+    seed_hash: u64,
+    unlocks: &ActSelectionUnlocks,
+) -> [ActVariant; 3] {
+    let mut rng = Rng::with_name_for(version, seed_hash, "act_selection");
     roll_acts_with(&mut rng, unlocks)
 }
 
@@ -227,6 +249,21 @@ pub fn roll_acts_with(rng: &mut Rng, unlocks: &ActSelectionUnlocks) -> [ActVaria
 pub fn roll_acts_for_seed(display_seed: &str, unlocks: &ActSelectionUnlocks) -> [ActVariant; 3] {
     roll_acts(
         deterministic_hash_code(&canonicalize_seed(display_seed)),
+        unlocks,
+    )
+}
+
+/// [`roll_acts_for_seed`] for game build `version` (GH #788): canonicalise,
+/// hash with that build's `GetDeterministicHashCode`, roll.
+#[must_use]
+pub fn roll_acts_for_seed_for(
+    version: crate::GameVersion,
+    display_seed: &str,
+    unlocks: &ActSelectionUnlocks,
+) -> [ActVariant; 3] {
+    roll_acts_for(
+        version,
+        version.seed_hash(&canonicalize_seed(display_seed)),
         unlocks,
     )
 }

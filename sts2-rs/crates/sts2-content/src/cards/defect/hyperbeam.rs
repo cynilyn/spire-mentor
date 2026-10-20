@@ -16,10 +16,24 @@ use super::prelude::*;
 /// amount, so Focus(-3) persists as a real player power. The unsigned
 /// `apply_power_to_player` early-returns on `amount <= 0` and would silently
 /// drop it, so route through the signed helper instead.
+///
+/// v0.111.0 (`Hyperbeam.cs:56`, GH #793): the Focus loss is temporary —
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// `HyperbeamFocusDownPower : TemporaryFocusPower` with `IsPositive => false`:
+/// its `BeforeApplied` applies `Focus -3`, and the owner's turn end removes it
+/// and gives the 3 Focus back. As for Hotfix / Synchronize, the card applies
+/// the Focus itself and the marker power carries the revert.
 pub(crate) fn play_hyperbeam(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     let base = current_card_damage(state);
     deal_damage_player_to_all(state, base);
     apply_power_signed_to_player(state, PowerKind::Focus, -3);
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: the -3 Focus reverts at turn end (decomp Hyperbeam.cs:56,
+        // TemporaryFocusPower.cs:132).
+        apply_power_to_player(state, PowerKind::HyperbeamFocusDown, 3);
+    }
     EffectResult::Resolved
 }
 

@@ -5,7 +5,7 @@ pub(crate) fn on_after_block_cleared_horn_cleat(
     state: &mut CombatState,
     _ctx: &crate::hooks::BlockClearedCtx,
 ) -> EffectResult {
-    if state.side != Side::Player || state.round_no() != HORN_CLEAT_ROUND {
+    if state.side != Side::Player || state.turn_number() != HORN_CLEAT_ROUND {
         return EffectResult::NotImplemented;
     }
     if !player_owns_relic(state, crate::RelicKind::HornCleat) {

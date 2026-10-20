@@ -1,6 +1,6 @@
 <!--
-  IL-patches the game's sts2.dll for headless use (lib/sts2.dll, in place).
-  Run by scripts/setup_oracle.py (dotnet run with lib/sts2.dll as the argument).
+  IL-patches the game's sts2.dll for headless use (lib/<version>/sts2.dll, in place).
+  Run by scripts/setup_oracle.py (dotnet run with lib/<version>/sts2.dll as the argument).
 -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>

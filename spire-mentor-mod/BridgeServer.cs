@@ -543,6 +543,14 @@ public class BridgeServer
                 DeliverAdvice(root.Clone());
                 return true;
             }
+            if (Is(action, "coach"))
+            {
+                // PROTOCOL.md v5 "coach": after-the-fact feedback, answers no
+                // request. Routed here -- never to DeliverToPending, where an
+                // uncorrelated autopilot wait would swallow it as its reply.
+                DeliverCoach(root);
+                return true;
+            }
             if (Is(action, "list_snapshots"))
             {
                 SendSnapshotList();
@@ -681,6 +689,38 @@ public class BridgeServer
         catch (Exception ex)
         {
             Logger.Log($"[BridgeServer] SendSnapshotList failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Raised for every inbound {"action":"coach"} message whose `coach`
+    /// field is an object (PROTOCOL.md section 5, v5). The argument is a
+    /// detached copy of that `coach` record. Runs on the SOCKET thread:
+    /// marshal before touching the scene tree. A throwing handler is logged
+    /// and never tears down the connection.
+    /// </summary>
+    public event Action<JsonElement>? CoachReceived;
+
+    private void DeliverCoach(JsonElement root)
+    {
+        if (!root.TryGetProperty("coach", out JsonElement rec) || rec.ValueKind != JsonValueKind.Object)
+        {
+            Logger.Log("[BridgeServer] coach message ignored: 'coach' is not an object");
+            return;
+        }
+        Action<JsonElement>? handler = CoachReceived;
+        if (handler == null)
+        {
+            return;
+        }
+        try
+        {
+            // The document is disposed after routing; hand over a copy.
+            handler(rec.Clone());
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"[BridgeServer] coach handler failed: {ex.Message}");
         }
     }
 

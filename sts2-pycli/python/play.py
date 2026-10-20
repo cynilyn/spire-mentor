@@ -19,6 +19,7 @@ import sys
 import threading
 import traceback
 
+import sts2_client
 from game_log import GameLogger
 
 # Hint recommender (T9 wire-up). Imported lazily-safely: if the
@@ -61,7 +62,8 @@ _LAST_HINT_ERROR: str | None = None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
-LIB_DIR = os.path.join(ROOT, "lib")
+# lib/<ver>/ for the selected game build (STS2_GAME_VERSION / --game-version).
+LIB_DIR = sts2_client.LIB_DIR
 SAVE_DIR = os.path.join(ROOT, "saves")
 CURRENT_SAVE_SCHEMA_VERSION = 14
 
@@ -165,7 +167,12 @@ def _build():
     """Build the C# project."""
     if not DOTNET:
         return False
-    r = subprocess.run([DOTNET, "build", PROJECT], capture_output=True, text=True, timeout=60)
+    r = subprocess.run(
+        [DOTNET, "build", PROJECT, f"-p:GameVersion={sts2_client.GAME_VERSION}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
     return r.returncode == 0
 
 
@@ -201,7 +208,7 @@ def ensure_setup():
         os.environ["STS2_GAME_DIR"] = game_dir
 
     # Check if built
-    exe_dir = os.path.join(ROOT, "src", "Sts2Headless", "bin", "Debug", "net9.0")
+    exe_dir = os.path.dirname(sts2_client.headless_bin())
     exe = os.path.join(exe_dir, "Sts2Headless.dll")
     if (
         not os.path.isfile(exe)
@@ -2272,7 +2279,14 @@ def play(
     logger = GameLogger(character, actual_seed, enabled=log, ascension=ascension)
     action_log = []
     proc = subprocess.Popen(
-        [DOTNET, "run", "--no-build", "--project", PROJECT],
+        [
+            DOTNET,
+            "run",
+            "--no-build",
+            "--project",
+            PROJECT,
+            f"--property:GameVersion={sts2_client.GAME_VERSION}",
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2940,8 +2954,17 @@ if __name__ == "__main__":
         help="Don't render inline tags during combat; type '/hint' in the "
         "REPL to compute hints on demand.",
     )
+    parser.add_argument(
+        "--game-version",
+        default=sts2_client.GAME_VERSION,
+        choices=sts2_client.SUPPORTED_GAME_VERSIONS,
+        help="game build the C# oracle simulates (default: $STS2_GAME_VERSION or "
+        f"{sts2_client.DEFAULT_GAME_VERSION}); needs `just build-cs <version>`",
+    )
 
     args = parser.parse_args()
+    sts2_client.set_game_version(args.game_version)
+    LIB_DIR = sts2_client.LIB_DIR
 
     if args.save_info is not None:
         p = args.save_info

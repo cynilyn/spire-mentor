@@ -104,6 +104,9 @@ pub mod combat_loop;
 // v2.1 plan §Phase-4 line 115 list.
 pub mod ascension;
 pub use ascension::{get_value_if_ascension, AscensionLevel};
+/// Which game build the engine simulates (multi-version port, GH #787).
+pub mod game_version;
+pub use game_version::{GameVersion, ParseGameVersionError};
 pub mod monsters;
 pub use monsters::{Intent, IntentHistory, IntentKindTag, MonsterId, MonsterKind};
 
@@ -3095,6 +3098,14 @@ pub struct PlayLogEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct TurnEvents {
+    /// v0.111.0 (GH #803): extra player turns taken this combat. C#
+    /// `CombatManager.SwitchSides` (v0.111.0 Combat/CombatManager.cs:1866-1888)
+    /// runs `PlayerCombatState.IncrementTurnNumber()` for a player taking an
+    /// extra turn WITHOUT bumping `RoundNumber`, so the player's turn number
+    /// runs ahead of the round by one per extra turn (see
+    /// [`CombatState::turn_number`]). Combat-wide (not reset per turn); only
+    /// ever bumped at v0.111.0+, so it is 0 for every v0.107.1 state.
+    pub extra_turns_taken_this_combat: u16,
     /// Count of cards the player has drawn THIS TURN via card effects —
     /// i.e. `CardDrawnEntry`s with `!FromHandDraw` (every draw that is NOT
     /// the turn-start hand draw). C# Necrobinder `DeathMarch.cs`'s
@@ -3401,6 +3412,17 @@ pub struct TurnEvents {
     /// with the rest of `TurnEvents`; recording must therefore be re-asserted
     /// per combat, exactly like `record_card_play_log`.
     pub event_log: crate::event_log::EventLog,
+    /// `true` while an AUTO-PLAYED card's `OnPlay` is dispatching (Mayhem /
+    /// Havoc / Cascade / Catastrophe / DistilledChaos / HistoryCourse …). C#
+    /// `CardCmd.AutoPlay` hands `OnPlayWrapper` a `ResourceInfo` whose
+    /// `EnergySpent` is 0 (v0.111.0 Commands/CardCmd.cs:124-126) while Rust
+    /// stamps the card's `energy_spent` with C#'s `EnergyValue`, so this flag
+    /// is what says "no energy was spent on this play". Dispatch-scoped like
+    /// [`CombatState::resolving_card`]: raised by
+    /// [`crate::card_effects::dispatch_for_auto_played_card`] and restored on
+    /// the way out, so it is `false` between `apply()` calls (not hashed).
+    /// Its only reader is the v0.111.0-only `OneForAllPower` (GH #798).
+    pub resolving_auto_play: bool,
 }
 
 impl TurnEvents {
@@ -3838,6 +3860,13 @@ pub struct CombatState {
     /// a back-reference to a run object.
     pub ascension: u8,
 
+    /// Game build this combat simulates (GH #787). Threaded exactly like
+    /// [`Self::ascension`]: copied from `RunState::game_version` by every
+    /// run→combat builder. Defaults to [`GameVersion::V0_107_1`]; folded into
+    /// the state digests only when non-default, so v0.107.1 hashes are
+    /// unchanged.
+    pub game_version: GameVersion,
+
     /// The player's master deck — the run-scoped card collection that
     /// persists across combats. Bead `sts2-rs-anx` (P7-surf): deck-add
     /// event-bus surface required by the `BingBong` / `DarkstonePeriapt`
@@ -4034,6 +4063,7 @@ impl Default for CombatState {
             player_won: false,
 
             ascension: 0,
+            game_version: GameVersion::V0_107_1,
             master_deck: Vec::new(),
             last_added_card: None,
             is_elite: false,
@@ -4432,6 +4462,20 @@ impl CombatState {
         self.round
     }
 
+    /// The player's turn number — C# `PlayerCombatState.TurnNumber`, which
+    /// nearly every "first turn" / "turn N" gate reads (BagOfPreparation,
+    /// Lantern, RingingTriangle, the turn-1 Innate draw floor, the turn-1
+    /// block keep, …; `ICombatState.RoundNumber` carries a "BE CAREFUL! You
+    /// usually want TurnNumber" note). It equals [`Self::round_no`] except
+    /// after a v0.111.0 extra turn, which increments the turn number but not
+    /// the round (CombatManager.cs:1866-1888); v0.107.1 never takes that
+    /// branch, so there it is always the round.
+    #[must_use]
+    pub fn turn_number(&self) -> u16 {
+        self.round
+            .saturating_add(self.combat_log.extra_turns_taken_this_combat)
+    }
+
     /// Whether this combat is taking place in an Elite room. Mirrors
     /// the `combat.is_elite` getter at
     /// `sts2-rl-agent@01c094d:sts2_env/core/combat.py`. Read on
@@ -4565,6 +4609,9 @@ impl CombatState {
         let uid = CardUid::new(raw).expect("non-zero uid");
         let mut card = card;
         card.uid = uid;
+        // v0.111.0: the combat sees the build's card values even for a deck
+        // card minted on a v0.107.1-only path (GH #793).
+        card.normalize_for_version(self.game_version);
         self.cards.push(card);
         self.player.draw.insert(0, uid);
         uid
@@ -4630,6 +4677,8 @@ impl CombatState {
         let new_uid = CardUid::new(raw).expect("non-zero uid");
         let mut new_card = new_card;
         new_card.uid = new_uid;
+        // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
+        new_card.normalize_for_version(self.game_version);
         self.cards.push(new_card);
         // C# `CardCmd.Transform` records a `CardGeneratedEntry` for every
         // non-Deck destination pile (`CardCmd.cs:444`), creator = the
@@ -5858,7 +5907,7 @@ impl CombatState {
                     .map(|c| c.max_hp)
             })
             .collect();
-        self.spawn_enemy_at_with_taken(species, enemy_index, &taken)
+        self.spawn_enemy_at_with_taken(species, enemy_index, &taken, 0)
     }
 
     /// Spawn variant accepting an explicit `taken` MaxHp exclusion set for the
@@ -5876,7 +5925,21 @@ impl CombatState {
         enemy_index: usize,
         taken: &std::collections::HashSet<i32>,
     ) -> CreatureUid {
-        self.spawn_enemy_at_with_taken(species, enemy_index, taken)
+        self.spawn_enemy_at_with_taken(species, enemy_index, taken, 0)
+    }
+
+    /// [`Self::spawn_enemy_at_index_with_taken`] with `hp_bonus` added to both
+    /// ends of the species' HP range before the unique-HP draw. Only the
+    /// v0.111.0 Axebot respawn passes a non-zero bonus (`RespawnMaxHpBonus =
+    /// (2 - StockAmount) * 10`, `v0.111.0/…/Axebot.cs:48-54`).
+    pub fn spawn_enemy_at_index_with_taken_hp_bonus(
+        &mut self,
+        species: MonsterKind,
+        enemy_index: usize,
+        taken: &std::collections::HashSet<i32>,
+        hp_bonus: i32,
+    ) -> CreatureUid {
+        self.spawn_enemy_at_with_taken(species, enemy_index, taken, hp_bonus)
     }
 
     fn spawn_enemy_at_with_taken(
@@ -5884,11 +5947,18 @@ impl CombatState {
         species: MonsterKind,
         enemy_index: usize,
         taken: &std::collections::HashSet<i32>,
+        hp_bonus: i32,
     ) -> CreatureUid {
         let raw =
             u32::try_from(self.creatures.len() + 1).expect("creature arena length fits in u32");
         let id = NonZeroU32::new(raw).expect("non-zero");
-        let hp = species.starting_hp_unique(&mut self.run_rng.niche, taken, self.ascension);
+        let hp = species.starting_hp_unique_with_bonus_for(
+            &mut self.run_rng.niche,
+            taken,
+            self.ascension,
+            self.game_version,
+            hp_bonus,
+        );
         // Decimillipede segments run an extra C# `AfterAddedToRoom` maxHp
         // fix-up (round up to even + dedup vs already-spawned teammates).
         // `taken` is exactly the set of prior same-side maxHp values C#
@@ -5947,7 +6017,9 @@ impl CombatState {
         let deadly = self.ascension >= crate::ascension::AscensionLevel::DeadlyEnemies as u8;
         for &(kind, amount) in species.on_spawn_self_buffs() {
             let amount = if deadly {
-                species.on_spawn_self_buff_deadly(kind).unwrap_or(amount)
+                species
+                    .on_spawn_self_buff_deadly_for(kind, self.game_version)
+                    .unwrap_or(amount)
             } else {
                 amount
             };
@@ -7204,6 +7276,14 @@ impl CombatState {
         // live power kind, so a miss proves the per-drawn-card Automation walk
         // over the whole power arena below could never match — skip it.
         let automation_present = self.powers.present_kinds().contains(PowerKind::Automation);
+        // v0.111.0 `CacophonyPower` (GH #794); the kind only exists from v0.111.0.
+        let cacophony_present = self.game_version >= crate::GameVersion::V0_111_0
+            && self.powers.present_kinds().contains(PowerKind::Cacophony);
+        // Cacophony damage triggers (one `Amount` per instance that wrapped),
+        // dealt after the per-card loop like Speedster's.
+        let mut cacophony_hits: smallvec::SmallVec<[i32; 2]> = smallvec::SmallVec::new();
+        // `CacophonyPower`'s `CardsVar(33)` (decomp CacophonyPower.cs:20).
+        const CACOPHONY_CARDS: i32 = 33;
 
         let mut auto_play_uids: smallvec::SmallVec<[CardUid; 4]> = smallvec::SmallVec::new();
         // Bead `sts2-rs-q6bix` (F-S): accumulated AutomationPower energy
@@ -7417,6 +7497,25 @@ impl CombatState {
                     }
                 }
             }
+            // v0.111.0 `CacophonyPower.AfterCardDrawn` (decomp
+            // CacophonyPower.cs:22): every card drawn (no owner gate) takes one
+            // off the instance's `Cards` var (33); at 0 it resets to 33 and
+            // deals `Amount` unpowered damage to a random hittable enemy. The
+            // per-instance `counter` counts up to 33 (Instanced, like
+            // Automation's).
+            if cacophony_present {
+                for p in &mut self.powers {
+                    if p.kind == PowerKind::Cacophony {
+                        let new_counter = p.counter.saturating_add(1);
+                        if new_counter >= CACOPHONY_CARDS {
+                            p.counter = 0;
+                            cacophony_hits.push(p.amount);
+                        } else {
+                            p.counter = new_counter;
+                        }
+                    }
+                }
+            }
             // Bead `sts2-rs-4wppb`: PagestormPower.AfterCardDrawn. C# gates on
             // `card.Owner.Creature == base.Owner` (the card is mine) — always
             // true here since this walks the player's own hand — and
@@ -7491,6 +7590,21 @@ impl CombatState {
         // mid-batch matches C#'s per-card `HittableEnemies` recompute.
         for _ in 0..speedster_hits {
             self.deal_unpowered_damage_to_all_enemies(speedster_amount);
+        }
+        // Cacophony (v0.111.0): `Rng.CombatTargets.NextItem(HittableEnemies)`
+        // then `CreatureCmd.Damage(enemy, Amount, ValueProp.Unpowered, Owner)`
+        // (decomp CacophonyPower.cs:30-37); no roll and no hit with no enemy.
+        for amount in cacophony_hits {
+            if let Some(enemy) = self.get_random_enemy() {
+                crate::damage::apply_damage(
+                    self,
+                    crate::hooks::CreatureRef::Player,
+                    enemy,
+                    amount,
+                    crate::hooks::ValueProps::UNPOWERED,
+                    None,
+                );
+            }
         }
         // Pagestorm extra draws (bead `sts2-rs-4wppb`). Route through the
         // card-effect draw chokepoint `draw_via_state` — NOT `draw_into_hand`:
@@ -8174,6 +8288,10 @@ impl CombatState {
         // once the transplant started carrying them.
         c.set_combat_var(crate::cards::VarKey::FreeThisTurn, 0);
         c.set_combat_var(crate::cards::VarKey::FreeUntilPlayed, 0);
+        // v0.111.0 (GH #793): RocketPunch's until-played reduction; `zero`
+        // never appends, so a v0.107.1 card is untouched.
+        c.combat_vars
+            .zero(crate::cards::VarKey::CostReductionUntilPlayed);
         let banked = c.combat_var(crate::cards::VarKey::WireCostExpiringOnPlay);
         if banked == 0 {
             return;
@@ -9369,6 +9487,35 @@ fn resolve_choice_atomic(
                     return r;
                 }
             }
+            // v0.111.0: a potion whose `OnUse` auto-plays cards (DistilledChaos,
+            // `CardPileCmd.AutoPlayFromDrawPile`) finishes once the auto-play
+            // batch resumed above has run, so its parked `Hook.AfterPotionUsed`
+            // fires now (PotionModel.cs:338 runs after `await OnUse`). The
+            // deferred dispatch further up skips while this resume is armed and
+            // this arm returns before reaching it again, so ReptileTrinket's +3
+            // temporary Strength was never granted (Silent mid seed 1959,
+            // KAISER_CRAB_BOSS: DistilledChaos auto-played PREPARED's discard
+            // select). v0.107.1 C# is the same; left alone there for
+            // bit-identity.
+            if state.game_version >= crate::GameVersion::V0_111_0
+                && state.pending_choice.is_none()
+                && state.pending_draw_resume.is_none()
+                && state.pending_autoplay_resume.is_none()
+            {
+                if let Some(resume) = state.pending_potion_hook_resume.take() {
+                    let _ = crate::relic_effects::dispatch_after_potion_used(
+                        state,
+                        resume.kind,
+                        resume.target,
+                    );
+                    if !state.enemy_uids.is_empty() {
+                        let ended = crate::combat_loop::check_combat_end(state);
+                        if !matches!(ended, StepResult::Advanced) {
+                            return ended;
+                        }
+                    }
+                }
+            }
             return StepResult::Advanced;
         }
     }
@@ -9490,10 +9637,10 @@ fn resolve_add_generated_choice(
     {
         template
     } else {
-        let Some(factory) = lookup_card_factory() else {
-            return;
-        };
-        let Some(card) = factory(opt.card_id, opt.upgraded) else {
+        // GH #793: built at the combat's game build (v0.107.1 is exactly the
+        // build-agnostic factory).
+        let Some(card) = build_card_for_version(opt.card_id, opt.upgraded, state.game_version)
+        else {
             return;
         };
         card
@@ -9541,8 +9688,10 @@ fn resolve_upgrade_in_hand(state: &mut CombatState, pc: &PendingChoice, selectio
         return;
     }
     let idx = uid.0.get() as usize - 1;
+    let version = state.game_version;
     if let Some(c) = state.cards.get_mut(idx) {
-        let _ = c.upgrade();
+        // GH #793: the upgrade delta of the combat's game build.
+        let _ = c.upgrade_for(version);
     }
 }
 
@@ -10452,6 +10601,58 @@ pub fn lookup_card_factory() -> Option<CardFactoryFn> {
         .expect("card factory registry poisoned")
 }
 
+/// Signature of the game-build-aware card factory (GH #793): the POD for
+/// `(CardId, upgraded)` with the cost / damage / block / type / target /
+/// keyword values of game build `GameVersion`. For
+/// [`GameVersion::V0_107_1`] it must return exactly what the plain
+/// [`CardFactoryFn`] returns.
+pub type CardFactoryForVersionFn =
+    fn(crate::cards::CardId, bool, GameVersion) -> Option<crate::cards::Card>;
+
+static CARD_FACTORY_FOR_VERSION: std::sync::OnceLock<
+    std::sync::RwLock<Option<CardFactoryForVersionFn>>,
+> = std::sync::OnceLock::new();
+
+fn card_factory_for_version_cell() -> &'static std::sync::RwLock<Option<CardFactoryForVersionFn>> {
+    CARD_FACTORY_FOR_VERSION.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Register the game-build-aware card factory (GH #793). Called by the
+/// content crate's registry installers next to [`register_card_factory`].
+pub fn register_card_factory_for_version(f: CardFactoryForVersionFn) {
+    *card_factory_for_version_cell()
+        .write()
+        .expect("versioned card factory registry poisoned") = Some(f);
+}
+
+/// Look up the registered game-build-aware card factory, if any.
+#[must_use]
+pub fn lookup_card_factory_for_version() -> Option<CardFactoryForVersionFn> {
+    *card_factory_for_version_cell()
+        .read()
+        .expect("versioned card factory registry poisoned")
+}
+
+/// Build the card POD for `(card_id, upgraded)` in game build `version`.
+///
+/// The default build goes through the plain [`lookup_card_factory`] hook
+/// exactly as before, so v0.107.1 stays bit-identical. Any other build uses
+/// the versioned factory, falling back to the plain one when none is
+/// registered (core-only unit tests).
+#[must_use]
+pub fn build_card_for_version(
+    card_id: crate::cards::CardId,
+    upgraded: bool,
+    version: GameVersion,
+) -> Option<crate::cards::Card> {
+    if !version.is_default() {
+        if let Some(f) = lookup_card_factory_for_version() {
+            return f(card_id, upgraded, version);
+        }
+    }
+    lookup_card_factory().and_then(|f| f(card_id, upgraded))
+}
+
 // ---------------------------------------------------------------------------
 // Card-rarity-rank hook — registered by `sts2-content` so `sts2-core` can
 // sort cards by the C# `CardRarity` enum discriminant without depending on
@@ -10465,7 +10666,13 @@ pub fn lookup_card_factory() -> Option<CardFactoryFn> {
 /// `CardRarity` enum discriminant (`CardRarity.cs`: None=0, Basic=1,
 /// Common=2, Uncommon=3, Rare=4, Ancient=5, Event=6, Token=7, Status=8,
 /// Curse=9, Quest=10) so core-side sorts replicate C# `orderby c.Rarity`.
-pub type CardRarityRankFn = fn(crate::cards::CardId) -> u8;
+///
+/// GH #793: the rank is that of the card's rarity in the given game build —
+/// v0.111.0 moved rarities (Accelerant Rare -> Uncommon, Outbreak Uncommon ->
+/// Rare, …), and `CardSelectCmd.FromCombatPile` sorts by the live
+/// `c.Rarity` (v0.111.0 Commands/CardSelectCmd.cs:490-505). Callers pass the
+/// state's `game_version`.
+pub type CardRarityRankFn = fn(crate::cards::CardId, GameVersion) -> u8;
 
 static CARD_RARITY_RANK: std::sync::OnceLock<std::sync::RwLock<Option<CardRarityRankFn>>> =
     std::sync::OnceLock::new();
@@ -12347,7 +12554,27 @@ const fn card_base_star_cost(id: crate::cards::CardId) -> i32 {
         | CardId::ParticleWall
         | CardId::Quasar => 2,
         CardId::CloakOfStars | CardId::CrescentSpear => 1,
+        // v0.111.0-only MP card (GH #793): `CanonicalStarCost => 2`
+        // (decomp Constellation.cs:16). The id exists in no v0.107.1 state.
+        CardId::Constellation => 2,
         _ => 0,
+    }
+}
+
+/// The v0.111.0 `CanonicalStarCost` of the star cards whose cost changed
+/// from v0.107.1 (GH #793), `None` for every other card. Only consulted on
+/// a non-free card ([`effective_star_cost`] > 0), so the free markers keep
+/// winning.
+#[must_use]
+pub const fn card_base_star_cost_v0111(id: crate::cards::CardId) -> Option<i32> {
+    use crate::cards::CardId;
+    match id {
+        // v0.111.0: Alignment 3 -> 2 (decomp Models.Cards/Alignment.cs:13).
+        // v0.111.0: Resonance 3 -> 2 (decomp Models.Cards/Resonance.cs:15).
+        CardId::Alignment | CardId::Resonance => Some(2),
+        // v0.111.0: GuidingStar 2 -> 1 (decomp Models.Cards/GuidingStar.cs:22).
+        CardId::GuidingStar => Some(1),
+        _ => None,
     }
 }
 
@@ -12412,6 +12639,11 @@ pub fn effective_star_cost_in_combat(state: &CombatState, card: &crate::cards::C
     if base == 0 {
         return 0;
     }
+    let base = if state.game_version >= GameVersion::V0_111_0 {
+        card_base_star_cost_v0111(card.card_id).unwrap_or(base)
+    } else {
+        base
+    };
     let vf_amount = state.player_power_amount(crate::powers::PowerKind::VoidForm);
     if vf_amount > 0 {
         let played = crate::combat_loop::void_form_cards_played_this_turn(state);

@@ -18,7 +18,13 @@ pub(crate) fn play_brightest_flame(
     let _ = sts2_core::cards::draw_via_state(state, draws);
     state.gain_energy(energy);
     if let Some(player_uid) = state.player.creature_uid {
-        let _ = state.creature_lose_max_hp(player_uid, 1);
+        // v0.111.0: MaxHp loss 1 -> 2 (decomp BrightestFlame.cs:15).
+        let max_hp_loss = if crate::cards::v0111::is_v0111(state.game_version) {
+            2
+        } else {
+            1
+        };
+        let _ = state.creature_lose_max_hp(player_uid, max_hp_loss);
     }
     EffectResult::Resolved
 }

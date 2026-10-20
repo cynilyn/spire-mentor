@@ -54,9 +54,15 @@ from typing import Any
 
 import realgame_hand_select
 import runtime_paths
-from realgame_adapter import character_display_name, to_headless_combat_play
+from realgame_adapter import (
+    UnsupportedGameVersionError,
+    character_display_name,
+    envelope_game_version,
+    to_headless_combat_play,
+)
 from realgame_advisor_mirror import AdvisorMirror
 from realgame_bridge import DEFAULT_HOST, DEFAULT_PORT, RealGameBridgeClient
+from realgame_coach import CoachGrader, GraderThread
 from realgame_control import BRIDGE_MESSAGE_TYPES, ControlPlane, StaticSite
 from realgame_livetree import LiveRunTree
 from realgame_workbench_log import WorkbenchRunLogger
@@ -91,6 +97,14 @@ HONEST_SEARCH = {
     "c_puct": 2.5,
     "draw_widening_c": 2.0,
 }
+
+#: What this advisor advertises on every ``advice`` reply (PROTOCOL.md v5). A
+#: mod sends the new ``human_action`` kinds (end turn, run-level choices) only
+#: once it has seen ``coach >= 1``, because an older advisor's mirror would
+#: drop on them. ``coach: 2`` (v5.1) adds the fight recap and the death
+#: autopsy: the mod sends ``combat_ended`` and its Advisor-mode ``game_over``
+#: only to an advisor at 2 or above.
+ADVISOR_CAPABILITIES = {"coach": 2}
 
 # Upper bound on root-parallel workers for the combat search. Beyond ~8 the
 # per-tree budget gets thin enough to cost decision quality faster than the
@@ -353,13 +367,14 @@ def build_advice(
 
 def compute_combat_advice(
     state: dict[str, Any], cfg: RecommendConfig, sims: int, mirror: Any = None
-) -> tuple[dict[str, Any], Any, RecommendConfig]:
+) -> tuple[dict[str, Any], Any, RecommendConfig, list[dict[str, Any]]]:
     """One full search for one ``advice_request`` wrapping a combat board.
 
-    Returns ``(advice, cs, call_cfg)`` — the wire advice object, the native
-    ``sts2_rs`` combat state the search ran on, and the resolved config —
+    Returns ``(advice, cs, call_cfg, rows)`` — the wire advice object, the
+    native ``sts2_rs`` combat state the search ran on, the resolved config —
     so callers can run companion searches (``mcts_search_tree``) against
-    the very same board.
+    the very same board — and the search's regret rows (:func:`combat_rows`),
+    which the live coach grades the human's move against.
 
     Args:
         mirror: The fight's :class:`realgame_advisor_mirror.AdvisorMirror`.
@@ -449,7 +464,55 @@ def compute_combat_advice(
         )
     tags = tags_from_result(result, wire["deck"]["hand"])
     pv = _pv_labels(list(result.get("pv") or [])[:4], state)
-    return build_advice(tags, state, sims=sims, pv=pv), cs, call_cfg
+    advice = build_advice(tags, state, sims=sims, pv=pv)
+    rows = combat_rows(result, headless, advice)
+    return advice, cs, call_cfg, rows
+
+
+def _row_key(d: dict[str, Any]) -> tuple[Any, Any]:
+    return (d.get("stable_idx"), d.get("target_index"))
+
+
+def combat_rows(
+    result: dict[str, Any], headless: dict[str, Any], advice: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The search's per-action regret rows, crowned the way ``advice`` is.
+
+    :func:`workbench.reasoning.rows_from_mcts` over the raw result -- the shape
+    ``regret_review.assess_decision`` grades -- then two alignments with the
+    advice the HUD shows, which the coach grades against:
+
+    * ``is_best`` moves to the advice's best option. :func:`veto_unplayable`
+      can re-crown the advice when the game refuses the search's #1, and rows
+      that still crowned the refused card would grade the player against a
+      move nobody could make.
+    * Each row takes the advice option's label (potion and target names the
+      advisor resolves against the wire board), and in return the options
+      gain the rows' ``mean_final_hp`` / ``hp_n`` (additive keys).
+    """
+    from workbench.reasoning import rows_from_mcts
+
+    rows = rows_from_mcts(result, headless)
+    options = [o for o in advice.get("options") or [] if isinstance(o, dict)]
+    by_key = {_row_key(r): r for r in reversed(rows)}  # first row per key wins
+    for o in options:
+        row = by_key.get(_row_key(o))
+        if row is None:
+            continue
+        if o.get("label"):
+            row["action"] = o["label"]
+        o["mean_final_hp"] = row.get("mean_final_hp")
+        o["hp_n"] = row.get("hp_n", 0)
+    best = next((o for o in options if o.get("is_best")), None)
+    if best is not None:
+        crown = by_key.get(_row_key(best)) or next(
+            (r for r in rows if r.get("stable_idx") == best.get("stable_idx")), None
+        )
+        if crown is not None:
+            for r in rows:
+                r["is_best"] = r is crown
+            rows.sort(key=lambda r: (not r["is_best"], -r["win_prob"]))
+    return rows
 
 
 #: ``advice_for`` values answered by the PPO run policy rather than by MCTS.
@@ -1130,6 +1193,69 @@ def ensure_workbench_running() -> None:
         logger.warning("could not spawn workbench: %s", exc)
 
 
+def build_coach(
+    client: Any,
+    wlog: Any,
+    args: Any,
+    policies: Any = None,
+    session: dict[str, Any] | None = None,
+    executor: Any = None,
+    tree: Any = None,
+) -> CoachGrader:
+    """The connection's live coach, wired to this client and run log.
+
+    Every record goes to the run log; the ``coach`` message goes to the mod
+    only while its last ``advice_request`` advertised ``capabilities.coach``
+    (the grader gates that). ``request_id`` / ``state_id`` are explicit
+    ``None``: the bridge client would otherwise echo the last request's, and a
+    coach record answers no request. Records name the run log and the replay
+    step of their decision (``log_name`` / ``log_idx``, from ``tree``) so the
+    mod can open the workbench right there.
+    """
+
+    def _locate(node_id: Any) -> tuple[str | None, int | None]:
+        log_idx = tree.log_idx(node_id) if tree is not None else None
+        return wlog.log_name, log_idx
+
+    def _send(record: dict[str, Any]) -> None:
+        client.send_action(
+            {"action": "coach", "request_id": None, "state_id": None, "coach": record}
+        )
+
+    def _log(record: dict[str, Any]) -> None:
+        logger.info(
+            "coach %s %s: %s",
+            record.get("kind"),
+            record.get("id") or record.get("ids"),
+            record.get("verdict", ""),
+        )
+        wlog.log_coach(record)
+
+    def _map_path(msg: dict[str, Any], chosen: int) -> list[dict[str, Any]] | None:
+        if policies is None:
+            return None
+        import realgame_ppo
+
+        state = realgame_ppo.apply_session_context({**msg, "type": "map_select"}, session)
+        character = (
+            character_display_name((state.get("run_state") or {}).get("character")) or "Ironclad"
+        )
+        policy, _error = policies.get(character)
+        if policy is None:
+            return None
+        return _project_map_path(state, policy, chosen, hp_table=_projection_hp_table())
+
+    return CoachGrader(
+        send=_send,
+        log=_log,
+        executor=executor if executor is not None else GraderThread(),
+        catchup_sims=int(getattr(args, "coach_catchup_sims", 2000)),
+        budget_s=float(getattr(args, "coach_budget_s", 6.0)),
+        map_path=_map_path,
+        locate=_locate,
+    )
+
+
 def serve(args: argparse.Namespace) -> None:
     cfg = RecommendConfig(
         sims=args.sims,
@@ -1191,16 +1317,23 @@ def serve(args: argparse.Namespace) -> None:
         # 2026-08-05 session), and any advice_request sent during the gap was
         # simply lost -- the mod saw no answer and the HUD stayed blank.
         client = RealGameBridgeClient(host=args.host, port=args.port, timeout=args.idle_timeout)
+        coach: CoachGrader | None = None
         try:
             client.connect()
             logger.info("connected to SpireMentor at %s:%s", args.host, args.port)
             log.write("meta", {"event": "connected", "sims": args.sims, **HONEST_SEARCH})
             control.set_client(client)
-            _serve_connected(client, cfg, args, log, wlog, policies, tree, control, mirror, session)
+            coach = build_coach(client, wlog, args, policies, session, tree=tree)
+            _serve_connected(
+                client, cfg, args, log, wlog, policies, tree, control, mirror, session, coach
+            )
         except (ConnectionError, TimeoutError) as e:
             logger.warning("connection lost/failed: %s; retrying in 3s", e)
             time.sleep(3)
         finally:
+            if coach is not None:
+                coach.executor.stop()
+                coach = None
             control.set_client(None)
             client.disconnect()
 
@@ -1216,6 +1349,7 @@ def _serve_connected(
     control: ControlPlane,
     mirror: AdvisorMirror,
     session: dict[str, Any],
+    coach: CoachGrader | None = None,
 ) -> None:
     while True:
         msg = client.receive_state()
@@ -1225,16 +1359,26 @@ def _serve_connected(
 
         if mtype == "advice_request":
             _handle_advice_request(
-                client, cfg, args, log, wlog, msg, policies, tree, mirror, session
+                client, cfg, args, log, wlog, msg, policies, tree, mirror, session, coach
             )
         elif mtype == "human_action":
+            # The position the action was taken FROM, for the coach's catch-up
+            # search -- it must be cloned before the mirror follows the move.
+            pre_state = None
+            if coach is not None and mirror.live is not None:
+                try:
+                    pre_state = mirror.live.state.clone()
+                except Exception as exc:
+                    logger.debug("coach: cannot clone the mirror: %s", exc)
             # Follow the world BEFORE logging: the mirror is only a mirror
             # while it is advanced through what actually happened.
             mirror.on_world_action(msg)
             logger.info("human: %s", msg.get("detail") or msg.get("action"))
             log.write("action", msg)
             wlog.log_human_action(msg)
-            tree.on_human_action(msg)
+            node_id = tree.on_human_action(msg)
+            if coach is not None:
+                coach.on_human_action(msg, pre_state, node_id)
         elif mtype in BRIDGE_MESSAGE_TYPES:
             # Rewind lane (snapshots / snapshot_saved / snapshot_restored /
             # error): the control plane routes them, including into the tree.
@@ -1249,8 +1393,20 @@ def _serve_connected(
                 # corrupt it silently.
                 mirror.on_rewind(msg)
             control.on_bridge_message(msg)
+            if coach is not None and mtype in ("snapshot_restored", "combat_undone"):
+                # AFTER the tree moved its active pointer: grades for nodes
+                # the rewind abandoned are withdrawn from the mod and the log.
+                coach.on_rewind(msg, tree.active_path())
         elif mtype == "pong":
             logger.debug("%s: %s", mtype, msg)
+        elif mtype == "combat_ended":
+            # The fight's end (PROTOCOL.md v5.1): only the coach's recap
+            # needs it. The mirror catches up from the next board and the
+            # tree / run log record decisions, not fight boundaries.
+            logger.info("combat_ended: %s", {k: msg.get(k) for k in ("victory", "hp", "round")})
+            log.write("meta", {"event": mtype, **msg})
+            if coach is not None:
+                coach.on_combat_ended(msg)
         elif mtype in ("game_over", "run_complete"):
             logger.info("%s: %s", mtype, {k: msg.get(k) for k in ("victory", "floor", "act")})
             log.write("meta", {"event": mtype, **msg})
@@ -1260,6 +1416,13 @@ def _serve_connected(
             mirror.drop("run over")
             logger.info("advisor %s", mirror.note())
             session.clear()
+            if coach is not None:
+                if is_death(msg):
+                    # The autopsy is built behind the grading still in flight
+                    # and appended to the run log this branch just closed.
+                    coach.on_game_over(msg)
+                else:
+                    coach.on_run_end()
         else:
             # Autopilot-style decision messages (combat_action, map_select,
             # run_config, ...) mean this advisor is connected to a session
@@ -1272,7 +1435,107 @@ def _serve_connected(
         # guesses when it is absent, so publishing it once the first advice
         # lands left a window where Follow tailed some other file -- and a
         # human_action, which opens the log just as well, never closed it.
+        publish_log_path(control, wlog)
+
+
+def is_death(msg: dict[str, Any]) -> bool:
+    """A ``game_over`` the player lost (PROTOCOL.md section 3: ``result``).
+
+    Only a death gets the coach's autopsy; a victory or a ``run_complete``
+    (which also covers an abandoned run, ``terminated``) does not.
+    """
+    if msg.get("type") != "game_over":
+        return False
+    return msg.get("result") == "defeat" or msg.get("victory") is False
+
+
+def publish_log_path(control: Any, wlog: Any) -> None:
+    """Publish the run log the control plane serves at ``GET /log``.
+
+    Only an OPEN log replaces the published path: once ``game_over`` closes
+    the file the last one stays served until the next run opens its own, so
+    the autopsy's "open in workbench" links (which arrive just then) still
+    reach their file. Follow mode reloads on a path change, so a finished
+    file left published is harmless.
+    """
+    if wlog.path is not None:
         control.set_log_path(wlog.path)
+
+
+def _cache_for_coach(
+    coach: CoachGrader,
+    msg: dict[str, Any],
+    advice_for: str,
+    state: dict[str, Any],
+    advice: dict[str, Any],
+    rows: list[dict[str, Any]] | None,
+    cs: Any,
+    call_cfg: Any,
+) -> None:
+    """Keep this request's raw result for grading the move made from it."""
+    try:
+        if advice_for == "combat_action":
+            if rows is None:
+                return  # the search failed: nothing to grade against
+            entry = coach.cache.put(
+                msg.get("request_id"),
+                msg.get("state_id"),
+                kind="combat",
+                rows=rows,
+                cs=cs,
+                cfg=call_cfg,
+                advice=advice,
+                pv_labels=list(advice.get("pv") or []),
+                msg=state,
+            )
+        elif advice_for in SCREEN_ADVICE_FOR and advice.get("options"):
+            entry = coach.cache.put(
+                msg.get("request_id"),
+                msg.get("state_id"),
+                kind="screen",
+                options=list(advice.get("options") or []),
+                advice=advice,
+                msg=state,
+            )
+        else:
+            return
+        coach.on_advice(entry)
+    except Exception as exc:  # bookkeeping must never cost the advice loop
+        logger.warning("coach: caching advice failed: %s", exc)
+
+
+def refusal_advice(exc: UnsupportedGameVersionError) -> dict[str, Any]:
+    """The advice for a board from a game build this advisor cannot simulate.
+
+    No ranking and no ``best``: there is no engine for that build, and a search
+    on the wrong one would rank moves by rules the game is not using. The
+    ``note`` is the player-facing explanation the mod shows in the HUD;
+    ``unsupported_game_version`` names the build for tooling.
+    """
+    return {"note": str(exc), "unsupported_game_version": exc.raw}
+
+
+def note_game_version(session: dict[str, Any] | None, game_version: str, mirror: Any) -> None:
+    """Track the game build across requests; a change invalidates carried state.
+
+    The mirror's carried combat state and the cached search board were built
+    for the previous build's engine, so neither survives a build change.
+    """
+    if session is None:
+        return
+    previous = session.get("game_version")
+    if previous == game_version:
+        return
+    if previous is None:
+        logger.info("game build: %s", game_version)
+    else:
+        logger.warning(
+            "game build changed %s -> %s; dropping carried state", previous, game_version
+        )
+        LAST_COMBAT.clear()
+        if mirror is not None:
+            mirror.drop(f"game build changed {previous} -> {game_version}")
+    session["game_version"] = game_version
 
 
 def _handle_advice_request(
@@ -1286,19 +1549,30 @@ def _handle_advice_request(
     tree: LiveRunTree | None = None,
     mirror: Any = None,
     session: dict[str, Any] | None = None,
+    coach: CoachGrader | None = None,
 ) -> None:
     request_id = msg.get("request_id")
     state_id = msg.get("state_id")
     advice_for = msg.get("advice_for") or "combat_action"
+    if coach is not None:
+        coach.on_advice_request(msg)
+    rows: list[dict[str, Any]] | None = None
+    cs: Any = None
+    call_cfg: Any = None
     # State first, advice second: the mcts record attaches to the most recent
     # state line (TimelineStore contract), and the state must survive even if
     # the search below throws.
     logged_step = wlog.log_decision(msg, advice_for)
-    if logged_step and tree is not None:
-        tree.on_decision(msg, advice_for)
+    if logged_step is not None and tree is not None:
+        tree.on_decision(msg, advice_for, log_idx=logged_step)
     search_tree_log: dict[str, Any] | None = None
+    state: dict[str, Any] = msg
     t0 = time.monotonic()
     try:
+        # The build the mod reports (absent = v0.107.1). The combat engine is
+        # built for it downstream (`to_headless_combat_play` -> `$.game_version`
+        # -> `state_from_dict`); an unknown build is refused before any search.
+        note_game_version(session, envelope_game_version(msg), mirror)
         state = dict(msg)
         state["type"] = advice_for
         is_boss = (state.get("room_type") or "") == "Boss"
@@ -1308,7 +1582,7 @@ def _handle_advice_request(
                 state, advice_for, policies, session=session, mirror=mirror, cfg=cfg, sims=sims
             )
         elif advice_for == "combat_action":
-            advice, cs, call_cfg = compute_combat_advice(state, cfg, sims, mirror)
+            advice, cs, call_cfg, rows = compute_combat_advice(state, cfg, sims, mirror)
             LAST_COMBAT.put(state_id, cs, call_cfg)
             if args.log_search_tree > 0 and logged_step:
                 try:
@@ -1317,6 +1591,9 @@ def _handle_advice_request(
                     logger.warning("search-tree logging failed: %s", exc)
         else:
             raise ValueError(f"unsupported advice_for={advice_for!r}")
+    except UnsupportedGameVersionError as e:
+        logger.error("advice_request refused: %s", e)
+        advice = refusal_advice(e)
     except Exception as e:
         # With the traceback: this handler renders "advisor error" into the
         # HUD and moves on, so without one a live failure leaves only a
@@ -1332,11 +1609,15 @@ def _handle_advice_request(
         "request_id": request_id,
         "state_id": state_id,
         "advice": advice,
+        "capabilities": dict(ADVISOR_CAPABILITIES),
     }
     try:
         client.send_action(reply)
     except ConnectionError:
         raise
+    if coach is not None:
+        # AFTER the reply: the coach's bookkeeping never delays advice.
+        _cache_for_coach(coach, msg, advice_for, state, advice, rows, cs, call_cfg)
     log.write(
         "mcts",
         {
@@ -1616,6 +1897,22 @@ def main(argv: list[str] | None = None) -> int:
         "an older mod build that omits those fields every action is "
         "unfollowable and the mirror drops itself rather than drift. Use this "
         "flag to A/B the mirror or to rule it out of a live problem.",
+    )
+    parser.add_argument(
+        "--coach-catchup-sims",
+        type=int,
+        default=2000,
+        help="Sims for the live coach's catch-up search of a position the "
+        "player moved past before its advice arrived (run during the enemy "
+        "turn on 2 threads, off the advice path).",
+    )
+    parser.add_argument(
+        "--coach-budget-s",
+        type=float,
+        default=6.0,
+        help="Seconds after an end turn within which the coach must finish "
+        "grading that turn; past it, or once the next turn's advice is "
+        "requested, the turn stays ungraded and silent (never a late chip).",
     )
     parser.add_argument(
         "--smoke",
