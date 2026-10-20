@@ -465,9 +465,24 @@ pub fn effective_master_deck_indices(rm: &RunManager) -> Vec<usize> {
     let Some(combat) = rm.combat.as_ref() else {
         return keep;
     };
+    // v0.111.0: the run-deck original is found by combat uid (`n - uid`), as `exit_combat` does, because its
+    // upgrade state can differ from the in-combat card (upgraded mid-fight); identity match otherwise.
+    let n = rm.run_state.master_deck.len();
+    let by_uid = combat.game_version >= sts2_core::GameVersion::V0_111_0;
     for stolen in &combat.swipe_stolen {
         if stolen.reclaimed {
             continue;
+        }
+        if by_uid {
+            if let Some(u) = stolen.card_uid.map(|u| u as usize) {
+                if (1..=n).contains(&u) && rm.run_state.master_deck[n - u].card_id == stolen.card_id
+                {
+                    if let Some(pos) = keep.iter().position(|&i| i == n - u) {
+                        keep.remove(pos);
+                        continue;
+                    }
+                }
+            }
         }
         if let Some(pos) = keep.iter().position(|&i| {
             let c = &rm.run_state.master_deck[i];
@@ -1265,6 +1280,39 @@ mod tests {
         assert_eq!(neow_offers(&rm), None);
         assert_eq!(card_play_log(&rm), serde_json::json!([]));
         assert_eq!(combat_log(&rm), serde_json::json!([]));
+    }
+
+    /// v0.111.0: a stolen card that was upgraded mid-combat hides its UN-upgraded run-deck original from the
+    /// mid-combat deck view (found by combat uid, `n - uid`); 0.107.1 keeps the `(id, upgraded)` identity match,
+    /// which finds nothing and hides nothing.
+    #[test]
+    fn stolen_card_upgraded_in_combat_is_hidden_from_the_deck_view_by_uid() {
+        for (version, hidden) in [
+            (sts2_core::GameVersion::V0_111_0, 1usize),
+            (sts2_core::GameVersion::V0_107_1, 0usize),
+        ] {
+            let mut rm = ironclad_seed_0();
+            let n = rm.run_state.master_deck.len();
+            let victim = rm.run_state.master_deck[n - 1];
+            assert!(!victim.upgraded);
+            let mut combat = sts2_core::CombatState {
+                game_version: version,
+                ..sts2_core::CombatState::default()
+            };
+            combat.swipe_stolen.push(sts2_core::SwipeStolen {
+                thief: sts2_core::CreatureUid(std::num::NonZero::new(1).unwrap()),
+                card_id: victim.card_id,
+                upgraded: true,
+                card_uid: Some(1),
+                reclaimed: false,
+            });
+            rm.combat = Some(combat);
+            assert_eq!(
+                effective_master_deck_indices(&rm).len(),
+                n - hidden,
+                "{version:?}"
+            );
+        }
     }
 
     #[test]
