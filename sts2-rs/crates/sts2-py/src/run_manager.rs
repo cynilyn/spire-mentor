@@ -602,6 +602,13 @@ impl PyRunManager {
         emit_rm::card_grant_options(&self.inner)
     }
 
+    /// Kind of the open card offering: `"special_card"` (a C# `SpecialCardReward`, e.g. a killed Thieving Hopper
+    /// returning its stolen card), `"bundle"` (Scroll Boxes) or `"card"`. See `RunManager::card_reward_kind`.
+    #[getter]
+    fn card_reward_kind(&self) -> &'static str {
+        self.inner.card_reward_kind()
+    }
+
     /// `true` while the current card offering is a *choose screen* (C#
     /// `FromChooseACardScreen` — HeftyTablet's 3 Rares, LeadPaperweight's
     /// 2 Colorless): a UI host should render a skippable 1-of-N
@@ -1274,6 +1281,22 @@ impl PyRunManager {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Remove exactly the master-deck card at raw position `idx` (0-based, deck order as listed by
+    /// [`Self::master_deck_detailed`] outside combat), keeping the order of every other card. Returns `True` if a
+    /// card was removed, `False` for an out-of-range `idx`. Unlike [`Self::force_remove_card`] it never picks a
+    /// different copy by id, and unlike `remove_deck_card` it needs no pending removal and applies no game rule
+    /// (no removal hooks, no gold, no curse-front ordering) -- a state-editing primitive for hosts that mirror a
+    /// reference engine's deck. It leaves everything else untouched.
+    fn remove_deck_card_at(&mut self, idx: usize) -> bool {
+        let deck = &mut self.inner.run_state.master_deck;
+        if idx < deck.len() {
+            deck.remove(idx);
+            true
+        } else {
+            false
+        }
     }
 
     /// Grant a relic to the player by id (e.g. `"RELIC.WHETSTONE"` or

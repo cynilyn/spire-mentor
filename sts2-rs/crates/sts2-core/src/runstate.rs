@@ -283,6 +283,11 @@ pub struct CardReward {
     /// for every other reward. Unlike the room's own card reward these carry no
     /// `IsFromCombat` flag (`PrayerWheel.cs:20`, `WhiteStar.cs:27`).
     pub room_context: Option<&'static str>,
+    /// `Some(card)` marks a C# `SpecialCardReward` (`SpecialCardReward.cs`): it hands back one existing card
+    /// INSTANCE -- enchantments, counters and all -- and taking it adds exactly that card to the deck tail. It is
+    /// not a `CardReward`, so card-reward modifiers (Pael's Wing's sacrifice alternative, SilverCrucible, ...)
+    /// never apply to it. `options` then holds just that card's id.
+    pub special: Option<Card>,
 }
 
 impl CardReward {
@@ -293,6 +298,18 @@ impl CardReward {
             options: Vec::new(),
             upgraded: Vec::new(),
             room_context: None,
+            special: None,
+        }
+    }
+
+    /// A `SpecialCardReward` returning `card` itself (see [`Self::special`]).
+    #[must_use]
+    pub fn special_card(card: Card) -> Self {
+        Self {
+            options: vec![card.card_id],
+            upgraded: vec![card.upgraded],
+            room_context: None,
+            special: Some(card),
         }
     }
 
@@ -313,6 +330,7 @@ impl CardReward {
             options,
             upgraded: Vec::new(),
             room_context: None,
+            special: None,
         }
     }
 
@@ -324,6 +342,7 @@ impl CardReward {
             options: cards.iter().map(|c| c.card_id).collect(),
             upgraded: cards.iter().map(|c| c.upgraded).collect(),
             room_context: None,
+            special: None,
         }
     }
 }

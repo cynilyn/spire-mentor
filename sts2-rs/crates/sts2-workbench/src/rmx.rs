@@ -416,6 +416,12 @@ pub fn upgrade_select_deck_indices(rm: &RunManager) -> Vec<usize> {
         .collect()
 }
 
+/// `card_reward_kind` (`"special_card"` | `"bundle"` | `"card"`).
+#[must_use]
+pub fn card_reward_kind(rm: &RunManager) -> &'static str {
+    rm.card_reward_kind()
+}
+
 /// `card_offer_choose_screen`.
 #[must_use]
 pub fn card_offer_choose_screen(rm: &RunManager) -> bool {

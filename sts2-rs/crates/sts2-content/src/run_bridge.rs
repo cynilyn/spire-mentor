@@ -880,9 +880,11 @@ fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState)
             }
         }
     }
+    // C# `SwipePower.BeforeDeath`: `SpecialCardReward(StolenCard.DeckVersion)` hands back the deck card INSTANCE
+    // (enchantments and all); it is not a `CardReward`, so Pael's Wing and the other card-reward modifiers skip it.
     for card in returned {
         rs.pending_rewards.push(sts2_core::runstate::Reward::Card(
-            sts2_core::runstate::CardReward::from_cards(&[card]),
+            sts2_core::runstate::CardReward::special_card(card),
         ));
     }
 }
@@ -2149,6 +2151,36 @@ mod tests {
             .filter(|r| matches!(r, sts2_core::runstate::Reward::Card(c) if c.options == [CardId::StrikeIronclad]))
             .count();
         (before, rs.master_deck.len(), card_rewards)
+    }
+
+    /// The returned reward carries the deck card INSTANCE (enchantment included), not a rebuilt card from its id.
+    #[test]
+    fn killed_thief_reward_carries_the_deck_card_instance_v0111() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        let mut rs = fresh_run();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.master_deck.push(
+            crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false)
+                .expect("strike spec"),
+        );
+        let n = rs.master_deck.len();
+        rs.master_deck[n - 1].set_enchantment(EnchantmentId::Imbued, 1);
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        combat.game_version = rs.game_version;
+        let thief = *combat.enemy_uids.first().expect("combat has an enemy");
+        combat.record_swipe_steal_uid(thief, CardId::StrikeIronclad, false, 1);
+        combat.reclaim_swipe_on_death(thief);
+        exit_combat(&mut rs, &combat);
+        let special = rs
+            .pending_rewards
+            .iter()
+            .find_map(|r| match r {
+                sts2_core::runstate::Reward::Card(c) => c.special,
+                _ => None,
+            })
+            .expect("a special card reward");
+        assert_eq!(special.card_id, CardId::StrikeIronclad);
+        assert_eq!(special.enchantment(EnchantmentId::Imbued), 1);
     }
 
     #[test]

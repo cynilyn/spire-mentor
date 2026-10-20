@@ -1588,6 +1588,10 @@ class RustGame(GameBackend):
         state["can_skip"] = any(
             a.get("action") == "pick_card_reward" and a.get("idx") is None for a in actions
         )
+        # ``"special_card"`` marks a C# ``SpecialCardReward`` (a killed Thieving Hopper returning its card).
+        kind = getattr(rm, "card_reward_kind", "card")
+        if kind != "card":  # only a non-default kind is reported, so ordinary offerings keep the recorded shape
+            state["reward_kind"] = kind
         # A choose screen (HeftyTablet's 3 Rares / Lead Paperweight's 2
         # Colorless — C# ``CardSelectCmd.FromChooseACardScreen(canSkip:
         # true)``) is a ``card_select`` in the C# headless decision

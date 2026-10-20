@@ -650,6 +650,9 @@ pub struct RunManager {
     /// alongside `card_reward_upgraded`. Empty when the offering carries none.
     /// GH #806 (SilkenTress's Glam stamp survives the pick).
     card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
+    /// `Some` while the open offering is a `SpecialCardReward` (see [`crate::runstate::CardReward::special`]): picking
+    /// it adds exactly that card instance to the deck and no card-reward modifier (Pael's Wing) applies.
+    card_reward_special: Option<crate::cards::Card>,
     /// When `Some`, the current `Phase::CardReward` offering is a Scroll
     /// Boxes *bundle* pick rather than a single-card reward: each inner
     /// `Vec<CardId>` is one pack, the player picks one pack index and **all**
@@ -956,6 +959,7 @@ impl RunManager {
             card_reward_options: Vec::new(),
             card_reward_upgraded: Vec::new(),
             card_reward_enchantments: Vec::new(),
+            card_reward_special: None,
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
             pending_boss_act_advance: false,
@@ -1452,7 +1456,9 @@ impl RunManager {
                     // owns the relic AND a card-reward is currently up.
                     // Mirrors Python `_actions` arm at
                     // `sts2-rl-agent@01c094d:sts2_env/run/run_manager.py:945-946`.
-                    if self.run_state.owns_active_relic(crate::RelicId::PaelsWing) {
+                    if self.card_reward_special.is_none()
+                        && self.run_state.owns_active_relic(crate::RelicId::PaelsWing)
+                    {
                         v.push(RunAction::SacrificeCardReward);
                     }
                     v
@@ -2654,16 +2660,18 @@ impl RunManager {
                 Reward::Card(cr) if !cr.options.is_empty() => {
                     for (i, &card_id) in cr.options.iter().enumerate() {
                         let upgraded = cr.upgraded.get(i).copied().unwrap_or(false);
-                        let card = crate::build_card_for_version(
-                            card_id,
-                            upgraded,
-                            self.run_state.game_version,
-                        )
-                        .unwrap_or_else(|| {
-                            let mut c = crate::cards::Card::pod_defaults();
-                            c.card_id = card_id;
-                            c.upgraded = upgraded;
-                            c
+                        let card = cr.special.unwrap_or_else(|| {
+                            crate::build_card_for_version(
+                                card_id,
+                                upgraded,
+                                self.run_state.game_version,
+                            )
+                            .unwrap_or_else(|| {
+                                let mut c = crate::cards::Card::pod_defaults();
+                                c.card_id = card_id;
+                                c.upgraded = upgraded;
+                                c
+                            })
                         });
                         self.run_state.add_card_to_deck_with_hooks(
                             card,
@@ -2722,6 +2730,7 @@ impl RunManager {
 
     /// Roll the post-combat card offering (C# `CardReward.Populate`).
     fn roll_card_reward_options(&mut self) {
+        self.card_reward_special = None;
         self.card_reward_options = self
             .callbacks
             .generate_card_reward_options
@@ -2820,6 +2829,10 @@ impl RunManager {
                             c.upgraded = upgraded;
                             c
                         });
+                // `SpecialCardReward.OnSelect` adds the very card instance it holds (`SpecialCardReward.cs`).
+                if let Some(special) = self.card_reward_special.take() {
+                    card = special;
+                }
                 // Offer-time enchantment (SilkenTress's Glam clone,
                 // `SilkenTress.cs:61-70`): C# adds the enchanted clone itself.
                 // GH #806.
@@ -2847,7 +2860,10 @@ impl RunManager {
                 self.card_reward_options.clear();
             }
             Some(_) => return ActionResult::InvalidForPhase,
-            None => self.card_reward_options.clear(),
+            None => {
+                self.card_reward_special = None;
+                self.card_reward_options.clear();
+            }
         }
         // A resolved choose screen (HeftyTablet / LeadPaperweight) appends
         // its deferred cards now — after the chosen card, on pick AND skip —
@@ -2897,7 +2913,10 @@ impl RunManager {
         if self.card_reward_options.is_empty() {
             return ActionResult::InvalidForPhase;
         }
-        if !self.run_state.owns_active_relic(crate::RelicId::PaelsWing) {
+        // C# `PaelsWing.TryModifyCardRewardAlternatives` only sees a `CardReward`; a `SpecialCardReward` is not one.
+        if self.card_reward_special.is_some()
+            || !self.run_state.owns_active_relic(crate::RelicId::PaelsWing)
+        {
             return ActionResult::InvalidForPhase;
         }
         let count = self.run_state.pael_record_sacrifice();
@@ -3004,7 +3023,11 @@ impl RunManager {
             enum Resolve {
                 Potion(Option<crate::potions::PotionKind>),
                 RemoveCard(u32),
-                SurfaceCard(Vec<crate::cards::CardId>, Vec<bool>),
+                SurfaceCard(
+                    Vec<crate::cards::CardId>,
+                    Vec<bool>,
+                    Option<crate::cards::Card>,
+                ),
             }
             let queued = match &self.run_state.pending_rewards[i] {
                 Reward::Potion(reward) => Some(Resolve::Potion(reward.potion_kind)),
@@ -3017,6 +3040,7 @@ impl RunManager {
                     Some(Resolve::SurfaceCard(
                         reward.options.clone(),
                         reward.upgraded.clone(),
+                        reward.special,
                     ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
@@ -3047,7 +3071,8 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved, pre_upgraded) => {
+                Resolve::SurfaceCard(pre_resolved, pre_upgraded, special) => {
+                    self.card_reward_special = special;
                     if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
@@ -3102,6 +3127,7 @@ impl RunManager {
         self.card_reward_upgraded.clear();
         self.card_reward_enchantments.clear();
         self.card_reward_bundles = Some(bundles);
+        self.card_reward_special = None;
         true
     }
 
@@ -3140,6 +3166,7 @@ impl RunManager {
             self.card_reward_upgraded = select.upgraded;
             self.card_reward_enchantments = select.enchantments;
             self.card_offer_choose_screen = true;
+            self.card_reward_special = None;
             self.pending_choose_screen_post_add = select.post_add;
             // Stay in CardReward — get_available_actions now fans out the
             // option picks.
@@ -4978,6 +5005,21 @@ impl RunManager {
     #[must_use]
     pub fn card_reward_options(&self) -> &[crate::cards::CardId] {
         &self.card_reward_options
+    }
+
+    /// What kind of offering the open `CardReward` screen is: `"special_card"` for a C# `SpecialCardReward`
+    /// (the Thieving Hopper returning its stolen card -- one existing card instance, no skip-alternatives such as
+    /// Pael's Wing), `"bundle"` for a Scroll Boxes pack choice, `"card"` for every other card offering. Hosts that
+    /// compare against a reference engine can use it to tell a special reward apart.
+    #[must_use]
+    pub fn card_reward_kind(&self) -> &'static str {
+        if self.card_reward_special.is_some() {
+            "special_card"
+        } else if self.card_reward_bundles.is_some() {
+            "bundle"
+        } else {
+            "card"
+        }
     }
 
     /// Per-option upgrade flags parallel to [`Self::card_reward_options`]
@@ -7982,6 +8024,47 @@ mod tests {
     /// SeaGlass' optional grid (`FromSimpleGridForRewards`, `MinSelect 0`, `MaxSelect 15`,
     /// `SeaGlass.cs:89-91`): the player may confirm any number of picks, 0 through 15, and every selected card
     /// joins the deck. `GrantDeckCard { idx: options.len() }` confirms early; a mandatory grid offers no such action.
+    /// C# `SpecialCardReward` (`SpecialCardReward.cs`) is not a `CardReward`: Pael's Wing's sacrifice alternative
+    /// (`PaelsWing.TryModifyCardRewardAlternatives`) never applies, the screen reports kind `special_card`, and taking
+    /// it adds the very card instance it holds (enchantment included) to the deck's tail.
+    #[test]
+    fn special_card_reward_returns_the_instance_and_skips_pael_wing() {
+        use crate::cards::{CardId, EnchantmentId};
+        use crate::runstate::{CardReward, Reward};
+        let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.master_deck.clear();
+        rm.run_state.relics.push(crate::RelicId::PaelsWing);
+        let mut card = crate::Card {
+            uid: crate::CardUid::new(300).expect("nz"),
+            card_id: CardId::Bash,
+            ..crate::Card::pod_defaults()
+        };
+        card.set_enchantment(EnchantmentId::Imbued, 1);
+        rm.run_state
+            .pending_rewards
+            .push(Reward::Card(CardReward::special_card(card)));
+        rm.set_phase(Phase::CardReward);
+        assert!(rm.drain_pending_rewards());
+        assert_eq!(rm.card_reward_kind(), "special_card");
+        let actions = rm.get_available_actions();
+        assert!(actions.contains(&RunAction::PickCardReward { idx: Some(0) }));
+        assert!(actions.contains(&RunAction::PickCardReward { idx: None }));
+        assert!(!actions.contains(&RunAction::SacrificeCardReward));
+        assert_eq!(
+            rm.take_action(RunAction::SacrificeCardReward),
+            ActionResult::InvalidForPhase
+        );
+        assert_eq!(
+            rm.take_action(RunAction::PickCardReward { idx: Some(0) }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.master_deck.len(), 1);
+        let added = rm.run_state.master_deck[0];
+        assert_eq!(added.card_id, CardId::Bash);
+        assert_eq!(added.enchantment(EnchantmentId::Imbued), 1);
+        assert_eq!(rm.card_reward_kind(), "card");
+    }
+
     /// Orobas' empty third pool is a LOCKED option (`Orobas.cs:88`): the slot stays in the offer list but has no
     /// pick action and cannot be taken.
     #[test]

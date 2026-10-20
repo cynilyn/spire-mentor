@@ -1281,6 +1281,11 @@ impl Game {
         let m = state.as_object_mut().expect("state dict");
         m.insert("cards".into(), Value::Array(cards));
         m.insert("can_skip".into(), json!(can_skip));
+        // `"special_card"` marks a C# `SpecialCardReward` (a killed Thieving Hopper returning its card).
+        // Only a non-default kind is reported, so ordinary card offerings keep the recorded state shape.
+        if rmx::card_reward_kind(rm) != "card" {
+            m.insert("reward_kind".into(), json!(rmx::card_reward_kind(rm)));
+        }
         // A choose screen is a `card_select` in the C# vocabulary. GH #34.
         if rmx::card_offer_choose_screen(rm) {
             m.insert("decision".into(), json!("card_select"));
