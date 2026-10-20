@@ -5389,8 +5389,6 @@ mod tests {
         assert_eq!(treasure, Some(RelicId::IntimidatingHelmet));
     }
 
-    /// Obtaining a relic strips it from the shared bag too
-    /// (`RelicCmd.cs:29-30`).
     // --- RL-C9 / RL-C10 / RL-C11 (stage 2 bundle gamma) ---------------------
 
     fn bag(entries: &[(RelicRarity, &[RelicId])]) -> BTreeMap<RelicRarity, Vec<RelicId>> {
@@ -5402,7 +5400,7 @@ mod tests {
     /// the pull then lands on the next relic.
     #[test]
     fn rl_c9_player_pull_drops_disallowed_relics_before_pulling() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.relic_grab_bag_by_rarity = bag(&[
             (RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor]),
             (RelicRarity::Uncommon, &[RelicId::Planisphere]),
@@ -5425,7 +5423,7 @@ mod tests {
     /// Same bag below the limit: nothing is dropped and the front relic pulls.
     #[test]
     fn rl_c9_floor_below_limit_keeps_floor_gated_relics() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.relic_grab_bag_by_rarity =
             bag(&[(RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor])]);
         rs.total_floor = 40;
@@ -5438,7 +5436,7 @@ mod tests {
     /// RL-C9 consumes no RNG: the removal is membership only.
     #[test]
     fn rl_c9_removal_reads_no_rng() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.relic_grab_bag_by_rarity =
             bag(&[(RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor])]);
         rs.total_floor = 41;
@@ -5454,7 +5452,7 @@ mod tests {
     /// back-pull applies the same removal.
     #[test]
     fn rl_c9_peek_and_back_pull_agree_with_front_pull() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.relic_grab_bag_by_rarity = bag(&[(
             RelicRarity::Common,
             &[RelicId::Anchor, RelicId::BowlerHat, RelicId::BloodVial],
@@ -5478,7 +5476,7 @@ mod tests {
     /// `WingedBoots`/`SilverCrucible` stay.
     #[test]
     fn rl_c9_solo_run_drops_massive_scroll_keeps_winged_boots() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.relic_grab_bag_by_rarity = bag(&[(
             RelicRarity::Rare,
             &[
@@ -5501,7 +5499,7 @@ mod tests {
     /// `NumberOfRuns == 0`; the oracle value (999999999) leaves it on.
     #[test]
     fn rl_c9_lasting_candy_first_run_gate() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         assert_eq!(rs.character_id, crate::potions::CharacterId::Ironclad);
         assert!(rs.relic_is_allowed(RelicId::LastingCandy));
         rs.number_of_runs = 0;
@@ -5514,7 +5512,7 @@ mod tests {
     /// re-appended from the original (pre-shuffle) list, in original order.
     #[test]
     fn rl_c10_shared_bag_refills_empty_rarity_from_original() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.shared_relic_grab_bag_original = bag(&[
             (
                 RelicRarity::Common,
@@ -5544,7 +5542,7 @@ mod tests {
     /// A non-empty requested deque is never refilled (`list.Count == 0` only).
     #[test]
     fn rl_c10_no_refill_while_requested_deque_has_relics() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.shared_relic_grab_bag_original =
             bag(&[(RelicRarity::Common, &[RelicId::Anchor, RelicId::BloodVial])]);
         rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[RelicId::BloodVial])]);
@@ -5561,7 +5559,7 @@ mod tests {
     /// would hand out `MealTicket` here.
     #[test]
     fn rl_c10_refill_is_followed_by_second_removal_pass() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.shared_relic_grab_bag_original =
             bag(&[(RelicRarity::Common, &[RelicId::MealTicket, RelicId::Anchor])]);
         rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
@@ -5576,7 +5574,7 @@ mod tests {
     /// Refill reads no RNG (no shuffle, `RelicGrabBag.cs:292-308`).
     #[test]
     fn rl_c10_refill_reads_no_rng() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.shared_relic_grab_bag_original = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
         rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
         let up_front = rs.rng.up_front.counter();
@@ -5590,7 +5588,7 @@ mod tests {
     /// `RelicGrabBag.cs:47-49`): an emptied deque is not refilled.
     #[test]
     fn rl_c10_player_bag_does_not_refill() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.shared_relic_grab_bag_original = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
         rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
         assert_eq!(rs.pop_relic_from_grab_bag(RelicRarity::Common), None);
@@ -5601,7 +5599,7 @@ mod tests {
     /// returns `None` rather than panicking.
     #[test]
     fn rl_c10_shared_bag_without_original_list_stays_empty() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.shared_relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[])]);
         assert_eq!(rs.pop_relic_from_shared_grab_bag(RelicRarity::Common), None);
     }
@@ -5610,7 +5608,7 @@ mod tests {
     /// Circlet instead of `None`.
     #[test]
     fn rl_c11_front_pull_falls_back_to_circlet() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         assert_eq!(
             rs.pull_next_relic_from_front(RelicRarity::Common, |_| true),
             RelicId::Circlet
@@ -5627,7 +5625,7 @@ mod tests {
     /// returns null when no relic passes the filter).
     #[test]
     fn rl_c11_filter_rejecting_all_falls_back_to_circlet() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.relic_grab_bag_by_rarity = bag(&[(RelicRarity::Common, &[RelicId::Anchor])]);
         assert_eq!(
             rs.pull_next_relic_from_front(RelicRarity::Common, |_| false),
@@ -5644,7 +5642,7 @@ mod tests {
     /// no bucket rarity (`RelicRarity.None`).
     #[test]
     fn rl_c11_back_pull_falls_back_to_circlet_without_rarity() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         assert_eq!(
             rs.pull_next_relic_from_back(RelicRarity::Rare, |_| true),
             (RelicId::Circlet, None)
@@ -5660,12 +5658,14 @@ mod tests {
     /// queues a Circlet reward instead of silently skipping the slot.
     #[test]
     fn rl_c11_elite_relic_reward_from_empty_bag_is_circlet() {
-        let mut rs = RunState::default();
+        let mut rs = RunState::new();
         rs.offer_random_relic_rewards(1, &[Some(RelicRarity::Common)]);
         assert_eq!(rs.relic_rewards.len(), 1);
         assert_eq!(rs.relic_rewards[0].relic_id, RelicId::Circlet);
     }
 
+    /// Obtaining a relic strips it from the shared bag too
+    /// (`RelicCmd.cs:29-30`).
     #[test]
     fn obtain_relic_strips_shared_bag() {
         let mut rs = RunState::default();
