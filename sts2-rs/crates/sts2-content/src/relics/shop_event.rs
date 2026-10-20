@@ -2732,8 +2732,15 @@ fn listener_glass_eye(rs: &mut RunState) -> EffectResult {
             card_rarity,
             3,
         );
+        // `CardFactory.CreateForReward` fires the reward-modification hooks
+        // (`CardFactory.cs:84-87`; `CardReward` adds `IsCardReward`), so
+        // SilverCrucible & co. apply to each of the five rewards, consuming uses.
+        let (options, upgraded, enchantments) =
+            crate::cards::spec_index::apply_card_reward_late_hooks(rs, options);
         rs.pending_rewards.push(Reward::Card(
-            CardReward::from_options(options).with_reroll(RerollSpec::UniformRarity(rarity)),
+            CardReward::from_options(options)
+                .with_reroll(RerollSpec::UniformRarity(rarity))
+                .with_offer_state(upgraded, enchantments),
         ));
     }
     EffectResult::Resolved

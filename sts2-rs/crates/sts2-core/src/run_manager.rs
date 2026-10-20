@@ -2815,7 +2815,13 @@ impl RunManager {
             enum Resolve {
                 Potion(Option<crate::potions::PotionKind>),
                 RemoveCard(u32),
-                SurfaceCard(Vec<crate::cards::CardId>, bool, crate::runstate::RerollSpec),
+                SurfaceCard(
+                    Vec<crate::cards::CardId>,
+                    bool,
+                    crate::runstate::RerollSpec,
+                    Vec<bool>,
+                    Vec<crate::cards::CardEnchantments>,
+                ),
             }
             let queued = match &self.run_state.pending_rewards[i] {
                 Reward::Potion(reward) => Some(Resolve::Potion(reward.potion_kind)),
@@ -2829,6 +2835,8 @@ impl RunManager {
                         reward.options.clone(),
                         reward.can_reroll,
                         reward.reroll,
+                        reward.upgraded.clone(),
+                        reward.enchantments.clone(),
                     ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
@@ -2859,7 +2867,7 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved, can_reroll, reroll) => {
+                Resolve::SurfaceCard(pre_resolved, can_reroll, reroll, upgraded, enchantments) => {
                     if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
@@ -2880,8 +2888,8 @@ impl RunManager {
                             std::mem::take(&mut self.run_state.card_reward_enchantments);
                     } else {
                         self.card_reward_options = pre_resolved;
-                        self.card_reward_upgraded = Vec::new();
-                        self.card_reward_enchantments = Vec::new();
+                        self.card_reward_upgraded = upgraded;
+                        self.card_reward_enchantments = enchantments;
                     }
                     // Carry the reward's own reroll state onto the screen (set
                     // by Driftwood's Late pass above).

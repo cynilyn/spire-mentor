@@ -1016,6 +1016,44 @@ pub fn roll_infested_touch_core_card(rs: &mut RunState) -> Option<CardId> {
     roll_filtered_character_reward_id(rs, |s| s.cost == 0)
 }
 
+/// Run freshly rolled reward ids through the card-reward modification hooks C#
+/// `CardFactory.CreateForReward` fires after rolling (`CardFactory.cs:84-87`,
+/// every reward without `NoModifyHooks`): the run-side `_late` channel
+/// (SilverCrucible, SilkenTress, ...) over the materialized cards. Returns the
+/// ids with the offer-aligned upgrade flags and Glam enchantments (the only
+/// offer-time enchantment carried, as in the combat callback).
+pub fn apply_card_reward_late_hooks(
+    rs: &mut RunState,
+    ids: Vec<CardId>,
+) -> (
+    Vec<CardId>,
+    Vec<bool>,
+    Vec<sts2_core::cards::CardEnchantments>,
+) {
+    let mut cards: Vec<sts2_core::cards::Card> = ids
+        .iter()
+        .filter_map(|id| card_pod_from_id(*id, false))
+        .collect();
+    let _ = sts2_core::run_effects::dispatch_modify_card_reward_options_late(rs, &mut cards);
+    let upgraded = cards.iter().map(|c| c.upgraded).collect();
+    let enchantments = cards
+        .iter()
+        .map(|c| {
+            let mut e = sts2_core::cards::CardEnchantments::default();
+            let glam = c.enchantment(sts2_core::cards::EnchantmentId::Glam);
+            if glam != 0 {
+                e.set(sts2_core::cards::EnchantmentId::Glam, glam);
+            }
+            e
+        })
+        .collect();
+    (
+        cards.into_iter().map(|c| c.card_id).collect(),
+        upgraded,
+        enchantments,
+    )
+}
+
 /// Lost Coffer / Orrery / event card grants — `CardFactory.CreateForReward(
 /// owner, 3, new CardCreationOptions(owner.Character.CardPool,
 /// CardCreationSource.Other, CardRarityOddsType.RegularEncounter))`
@@ -1037,14 +1075,13 @@ pub fn roll_noncombat_card_reward_options(rs: &mut RunState) -> Vec<CardId> {
     // A GlassEye reroll reuses the reward's fixed-rarity uniform options.
     if let Some(rarity) = rs.card_reward_gen_ctx.and_then(|c| c.uniform_rarity) {
         let character = rs.character_id;
-        rs.card_reward_upgraded_flags.clear();
-        rs.card_reward_enchantments.clear();
-        return sample_distinct_cards_of_rarity(
-            rs,
-            character,
-            reward_rarity_to_card_rarity(rarity),
-            3,
-        );
+        let ids =
+            sample_distinct_cards_of_rarity(rs, character, reward_rarity_to_card_rarity(rarity), 3);
+        // `Populate` -> `CreateForReward` re-fires the modification hooks.
+        let (ids, upgraded, enchantments) = apply_card_reward_late_hooks(rs, ids);
+        rs.card_reward_upgraded_flags = upgraded;
+        rs.card_reward_enchantments = enchantments;
+        return ids;
     }
     let character = rs.character_id;
     roll_reward_options_base_odds(rs, 3, true, &[character], false)

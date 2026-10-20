@@ -288,6 +288,12 @@ pub struct CardReward {
     /// `CardReward.RerollOptions`). A reroll must reuse the reward's OWN options
     /// (pool, odds, flags), never the combat ones.
     pub reroll: RerollSpec,
+    /// Offer-time upgrade flags parallel to [`Self::options`] (empty = none), as
+    /// stamped by the reward-modification hooks (SilverCrucible). Carried through
+    /// `pending_rewards` so the picked card enters the deck upgraded.
+    pub upgraded: Vec<bool>,
+    /// Offer-time enchantments parallel to [`Self::options`] (empty = none).
+    pub enchantments: Vec<crate::cards::CardEnchantments>,
 }
 
 /// The options a [`CardReward`] rerolls with.
@@ -314,6 +320,18 @@ pub enum RerollSpec {
 }
 
 impl CardReward {
+    /// Builder: attach the offer-time upgrade / enchantment state.
+    #[must_use]
+    pub fn with_offer_state(
+        mut self,
+        upgraded: Vec<bool>,
+        enchantments: Vec<crate::cards::CardEnchantments>,
+    ) -> Self {
+        self.upgraded = upgraded;
+        self.enchantments = enchantments;
+        self
+    }
+
     /// Builder: set the reroll options.
     #[must_use]
     pub fn with_reroll(mut self, reroll: RerollSpec) -> Self {
@@ -329,6 +347,9 @@ impl CardReward {
             can_reroll: false,
             room_context: None,
             reroll: RerollSpec::NonCombat,
+
+            upgraded: Vec::new(),
+            enchantments: Vec::new(),
         }
     }
 
@@ -340,6 +361,9 @@ impl CardReward {
             can_reroll: false,
             room_context: None,
             reroll: RerollSpec::Unsupported,
+
+            upgraded: Vec::new(),
+            enchantments: Vec::new(),
         }
     }
 
@@ -353,6 +377,9 @@ impl CardReward {
             can_reroll: false,
             room_context: Some(room_type),
             reroll: RerollSpec::Room,
+
+            upgraded: Vec::new(),
+            enchantments: Vec::new(),
         }
     }
 }

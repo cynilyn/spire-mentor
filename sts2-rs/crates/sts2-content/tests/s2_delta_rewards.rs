@@ -987,3 +987,74 @@ fn glass_eye_rewards_keep_their_fixed_rarity_through_a_reroll() {
         }
     }
 }
+
+/// GlassEye's rewards go through `CardFactory.CreateForReward`'s modification
+/// hooks (`CardFactory.cs:84-87`; options carry `IsCardReward`, no `NoModifyHooks`).
+/// With SilverCrucible (`SilverCrucible.cs:94-123`: `Cards` var = 3; every reward
+/// while `TimesUsed < 3` is upgraded, then `TimesUsed++`) owned, the five rewards —
+/// all populated up front by `OfferCustom` — come out as: rewards 1-3 fully
+/// upgraded, rewards 4-5 plain, `TimesUsed == 3`. A later reroll finds the budget
+/// spent and is plain. Expectations are the C# numbers above, not a re-roll.
+#[test]
+fn glass_eye_rewards_run_the_silver_crucible_hook() {
+    for seed in SEEDS {
+        let mut rm = coffer_with(
+            seed,
+            None,
+            &[
+                RelicId::Driftwood,
+                RelicId::GlassEye,
+                RelicId::SilverCrucible,
+            ],
+            |rs| {
+                rs.last_obtained_relic = Some(RelicId::GlassEye);
+                let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+                assert_eq!(rs.pending_rewards.len(), 5);
+            },
+        );
+        // SilverCrucible `TimesUsed` is the low byte of its packed counter.
+        let used = rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF;
+        assert_eq!(used, 3, "seed {seed}: 3 of the 5 populates consumed a use");
+        for i in 0..5 {
+            assert_eq!(rm.phase(), Phase::CardReward, "reward {i}");
+            let flags = rm.card_reward_upgraded_flags().to_vec();
+            assert_eq!(flags.len(), 3, "reward {i}");
+            let want = i < 3;
+            assert!(
+                flags.iter().all(|f| *f == want),
+                "reward {i}: upgraded == {want}, got {flags:?}"
+            );
+            if i == 0 {
+                // The reroll re-fires the hooks with the budget already spent.
+                assert_eq!(
+                    rm.take_action(RunAction::RerollCardReward),
+                    ActionResult::Advanced
+                );
+                let rerolled = rm.card_reward_upgraded_flags().to_vec();
+                assert!(rerolled.iter().all(|f| !*f), "reroll plain: {rerolled:?}");
+                assert_eq!(
+                    rm.run_state.relic_counters[&RelicId::SilverCrucible] & 0xFF,
+                    3
+                );
+                // Un-reroll check: pick from reward 2 later keeps its upgrade.
+                let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+            } else if i == 1 {
+                let before = rm.run_state.master_deck.len();
+                let _ = rm.take_action(RunAction::PickCardReward { idx: Some(0) });
+                assert_eq!(rm.run_state.master_deck.len(), before + 1);
+                assert!(
+                    rm.run_state.master_deck.last().expect("picked").upgraded,
+                    "picked card keeps its offer-time upgrade"
+                );
+            } else {
+                let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+            }
+        }
+    }
+    // Control: without SilverCrucible nothing is upgraded.
+    let rm = coffer_with(SEEDS[0], None, &[RelicId::GlassEye], |rs| {
+        rs.last_obtained_relic = Some(RelicId::GlassEye);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(rs);
+    });
+    assert!(rm.card_reward_upgraded_flags().iter().all(|f| !*f));
+}
