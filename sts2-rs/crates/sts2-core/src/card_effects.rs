@@ -2642,6 +2642,12 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
         ),
         _ => return,
     };
+    // v0.111.0 `Stomp.AfterCardEnteredCombat` returns early for a clone (`IsClone`): a copy of a
+    // discounted card (Juggling's) arrives carrying the discount it was cloned with, so it must
+    // not be shaved again for the attacks already finished. A card generated fresh has no bank.
+    if state.game_version >= crate::GameVersion::V0_111_0 && card.combat_var(var) > 0 {
+        return;
+    }
     let card = &mut state.cards[idx];
     let shave = i32::try_from(plays)
         .unwrap_or(i32::MAX)

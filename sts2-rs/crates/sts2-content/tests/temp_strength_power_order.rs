@@ -277,3 +277,46 @@ fn brilliant_scarf_zeroes_the_fifth_card_cost_on_v0111_only() {
     assert_eq!(cost(GameVersion::V0_111_0, 3), 2);
     assert_eq!(cost(GameVersion::V0_107_1, 4), 2);
 }
+
+/// The card's own `MaxSelect` survives a short candidate list (v0.111.0): Neow's Fury offering a
+/// single card still says 2, so picking it does not confirm the screen by itself.
+#[test]
+fn selection_keeps_the_cards_max_select_on_v0111_only() {
+    use sts2_core::{ChoiceKind, ChoiceOption};
+    for (version, want) in [(GameVersion::V0_111_0, 2), (GameVersion::V0_107_1, 1)] {
+        let (mut state, _) = board(version, CardId::StrikeIronclad, TargetType::Enemy);
+        let uid = CardUid::new(1).expect("non-zero uid");
+        state.request_card_choice(
+            ChoiceKind::ExhaustFromHand,
+            vec![ChoiceOption {
+                card_id: CardId::StrikeIronclad,
+                upgraded: false,
+                card_uid: Some(uid),
+                source_pile: Some(sts2_core::cards::PileKind::Hand),
+            }],
+            0,
+            2,
+            true,
+        );
+        let pc = state.pending_choice.as_ref().expect("choice open");
+        assert_eq!(pc.max_select, want, "{version:?}");
+    }
+}
+
+/// A Juggling copy of a discounted Stomp keeps the discount it was cloned with and is not shaved again
+/// for the attacks already finished this turn (`Stomp.AfterCardEnteredCombat` skips clones).
+#[test]
+fn juggled_stomp_copy_is_not_shaved_twice_on_v0111_only() {
+    use sts2_core::cards::VarKey;
+    for (version, want) in [(GameVersion::V0_111_0, 1), (GameVersion::V0_107_1, 0)] {
+        let (mut state, _) = board(version, CardId::Stomp, TargetType::AllEnemies);
+        // the source Stomp: cost 3 -> 1 after two attacks, banked 2
+        state.cards[0].cost = 1;
+        state.cards[0].set_combat_var(VarKey::StompCostReductionThisTurn, 2);
+        state.player.cards_played_this_turn[CardType::Attack.index()] = 2;
+        let copy = state.cards[0];
+        let uid = sts2_core::card_effects::spawn_card_into_hand(&mut state, copy);
+        let cost = state.cards[uid.0.get() as usize - 1].cost;
+        assert_eq!(i32::from(cost), want, "{version:?}");
+    }
+}
