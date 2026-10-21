@@ -376,7 +376,14 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
             continue;
         };
         if pos != 0 {
-            state.player.draw.swap(0, pos);
+            if state.game_version >= crate::GameVersion::V0_111_0 {
+                // C# `AutoPlay` plays the card out of the draw pile without touching the
+                // others; moving it to the top (not swapping) keeps every other card's place.
+                let u = state.player.draw.remove(pos);
+                state.player.draw.insert(0, u);
+            } else {
+                state.player.draw.swap(0, pos);
+            }
         }
         // Imbued does NOT force-exhaust — C# `Imbued.cs` calls
         // `CardCmd.AutoPlay(card, null)` which leaves `ExhaustOnNextPlay`

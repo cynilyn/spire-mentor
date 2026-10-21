@@ -121,3 +121,47 @@ fn whispering_earring_plays_the_opening_hand_on_v0111_only() {
     // v0.107.1 is unchanged: the full hand and the energy are untouched.
     assert_eq!(earring_opening(GameVersion::V0_107_1).0, 5);
 }
+
+/// The Imbued auto-play leaves every other card's place in the draw pile alone (v0.111.0): the pile
+/// after the opening turn is the shuffled pile minus the Imbued card minus the five drawn.
+#[test]
+fn imbued_auto_play_keeps_the_draw_order_on_v0111() {
+    install();
+    for seed in 1..20 {
+        let mut state = CombatState {
+            rng: sts2_core::dotnet_rng::Rng::new(seed),
+            run_rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            game_version: GameVersion::V0_111_0,
+            ..Default::default()
+        };
+        state.player.character = Some(CharacterId::Ironclad);
+        state.player.current_hp = 70;
+        state.player.max_hp = 70;
+        state.player.max_energy = 3;
+        state.init_player_creature();
+        let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+            c.max_hp = 500;
+            c.current_hp = 500;
+        }
+        let imbued = add_card(&mut state, CardId::DefendIronclad);
+        state.cards[imbued.0.get() as usize - 1].add_enchantment(EnchantmentId::Imbued, 1);
+        state.player.draw.push(imbued);
+        for _ in 0..12 {
+            let uid = add_card(&mut state, CardId::StrikeIronclad);
+            state.player.draw.push(uid);
+        }
+        let _ = start_combat(&mut state);
+        let before: Vec<CardUid> = state
+            .player
+            .draw
+            .iter()
+            .copied()
+            .filter(|u| *u != imbued)
+            .collect();
+        let _ = start_player_turn(&mut state);
+        let expect: Vec<CardUid> = before[5..].to_vec();
+        let got: Vec<CardUid> = state.player.draw.iter().copied().collect();
+        assert_eq!(got, expect, "seed {seed}");
+    }
+}
