@@ -122,3 +122,50 @@ fn thieving_hopper_thievery_is_attack_then_card_debuff_v0111() {
         vec!["Attack", "CardDebuff"]
     );
 }
+
+/// A state rebuilt from a wire dict keeps the move's full declared list on v0.111.0 even when the
+/// ingested head only matches the declared head in kind (Tunneler BURROW `[Buff, Defend]`).
+#[test]
+fn round_tripped_burrow_keeps_both_intents_v0111() {
+    use sts2_content::monster_dispatch::{build_ai_for_version, MonsterSpawnArgs, SpawnPosition};
+    let kind = monster_kind_from_python_name("Tunneler").expect("known monster");
+    let mut state = CombatState {
+        game_version: GameVersion::V0_111_0,
+        ..CombatState::default()
+    };
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    state.init_player_creature();
+    let uid = state.spawn_enemy(kind);
+    let creature = state
+        .creatures
+        .iter_mut()
+        .find(|c| c.id == uid.0)
+        .expect("enemy");
+    let mut ai = build_ai_for_version(
+        kind,
+        MonsterSpawnArgs::default(),
+        SpawnPosition {
+            alone: true,
+            front: true,
+            back: false,
+            index: 0,
+        },
+        0,
+        GameVersion::V0_111_0,
+    );
+    assert!(ai.force_current_state_by_name("BURROW_MOVE"));
+    creature.intent = ai.current_move().intents.first().copied();
+    creature.ai = Some(ai);
+    let wire = combat_state_to_value(&state).expect("emit");
+    let text = serde_json::to_string(&wire).expect("json");
+    let back = sts2_wire::state_from_json_str(&text).expect("ingest");
+    let again = combat_state_to_value(&back).expect("emit again");
+    let kinds: Vec<String> = again["encounter"][0]["intents"]
+        .as_array()
+        .expect("intents")
+        .iter()
+        .map(|i| i["kind"].as_str().expect("kind").to_owned())
+        .collect();
+    assert_eq!(kinds, vec!["Buff", "Defend"]);
+}

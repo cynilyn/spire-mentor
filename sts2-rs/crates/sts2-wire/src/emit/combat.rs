@@ -981,9 +981,28 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                 c.ai.as_ref()
                     .and_then(|ai| ai.current_move_opt())
                     .filter(|mv| multi && mv.intents.first().copied() == Some(intent));
+            // A state rebuilt from a wire dict carries a head that only matches the move's
+            // declared head in KIND (a `Buff` without the engine's amount/power): keep the
+            // primed head and append the move's remaining declared halves (Tunneler BURROW
+            // `[Buff, Defend]`).
+            let same_kind = || {
+                c.ai.as_ref()
+                    .and_then(|ai| ai.current_move_opt())
+                    .filter(|mv| {
+                        multi
+                            && mv.intents.first().is_some_and(|h| {
+                                std::mem::discriminant(h) == std::mem::discriminant(&intent)
+                            })
+                    })
+            };
             let list: Vec<Intent> = match full {
                 Some(mv) => mv.intents.iter().copied().collect(),
-                None => vec![intent],
+                None => match same_kind() {
+                    Some(mv) => std::iter::once(intent)
+                        .chain(mv.intents.iter().skip(1).copied())
+                        .collect(),
+                    None => vec![intent],
+                },
             };
             for i in list {
                 let mut v = intent_to_value(i, state, CreatureUid(c.id));
