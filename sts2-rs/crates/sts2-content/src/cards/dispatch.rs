@@ -42,6 +42,8 @@ pub fn install_default_registry() {
     // deck-removal offer (`CardSelectCmd.FromDeckForRemoval`), so Eternal
     // curses (Greed/AscendersBane) don't occupy a removal-offer index.
     sts2_core::register_card_removable(super::spec_index::card_is_removable_instance);
+    // Soul's Power's Exhaust gate for the generic enchant offer (`SoulsPower.CanEnchant`).
+    sts2_core::register_card_can_enchant(crate::enchantments::card_can_enchant_instance);
     // GH #793: the game-build-aware card factory behind `Card::upgrade_for`
     // and `Card::normalize_for_version` (v0.107.1 never reaches it).
     sts2_core::register_card_factory_for_version(super::v0111::card_pod_for);

@@ -3951,6 +3951,11 @@ impl RunManager {
             front.is_some_and(|e| e.enchantment != crate::cards::EnchantmentId::Slither);
         let requires_block =
             front.is_some_and(|e| e.enchantment == crate::cards::EnchantmentId::Nimble);
+        // Soul's Power only enchants cards that carry Exhaust (`SoulsPower.cs`): a keyword gate core cannot read.
+        let keyword_gate = front
+            .filter(|e| e.enchantment == crate::cards::EnchantmentId::SoulsPower)
+            .and_then(|e| crate::lookup_card_can_enchant().map(|f| (f, e.enchantment)));
+        let version = self.run_state.game_version;
         self.run_state
             .master_deck
             .iter()
@@ -3964,6 +3969,7 @@ impl RunManager {
                     && c.enchantments.is_empty()
                     && (c.cost >= 0 || (allow_x_cost && c.is_x_cost()))
                     && (!requires_block || c.base_block > 0)
+                    && keyword_gate.map_or(true, |(f, ench)| f(c, ench, version))
                     && restriction
                         .map_or(true, |t| c.card_type == t || secondary == Some(c.card_type))
             })

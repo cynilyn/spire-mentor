@@ -2863,13 +2863,22 @@ mod tests {
         let mut rs = RunState::new();
         rs.game_version = sts2_core::GameVersion::V0_111_0;
         rs.interactive_card_transform = true;
-        rs.master_deck = vec![mk(CardId::Offering), mk(CardId::Offering)];
+        rs.master_deck = vec![
+            mk(CardId::StrikeIronclad),
+            mk(CardId::Offering),
+            mk(CardId::Offering),
+        ];
         (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
         assert_eq!(
             rs.pending_deck_enchants.len(),
             1,
             "a real pick among two Exhaust cards"
         );
+        // The offer lists only the Exhaust cards (`SoulsPower.CanEnchant`), not the whole deck.
+        crate::cards::dispatch::ensure_installed();
+        let mut rm = sts2_core::run_manager::RunManager::new(0, sts2_core::CharacterId::Ironclad);
+        rm.run_state = rs;
+        assert_eq!(rm.enchant_eligible_deck_indices(), vec![1, 2]);
     }
 
     #[test]

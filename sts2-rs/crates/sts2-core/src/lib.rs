@@ -10817,6 +10817,33 @@ pub fn lookup_card_removable() -> Option<CardRemovableFn> {
         .expect("card removable registry poisoned")
 }
 
+/// `EnchantmentModel.CanEnchant(card)` for one live deck card, content-registered: it needs the card's spec (keywords),
+/// which core cannot see. Core's generic enchant offer consults it only for enchantments whose gate reads the card's
+/// keywords (Soul's Power needs Exhaust, `SoulsPower.cs`); the other enchantments keep the hand-synced core gate.
+pub type CardCanEnchantFn = fn(&crate::Card, crate::cards::EnchantmentId, GameVersion) -> bool;
+
+static CARD_CAN_ENCHANT: std::sync::OnceLock<std::sync::RwLock<Option<CardCanEnchantFn>>> =
+    std::sync::OnceLock::new();
+
+fn card_can_enchant_cell() -> &'static std::sync::RwLock<Option<CardCanEnchantFn>> {
+    CARD_CAN_ENCHANT.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Register the keyword-aware `CanEnchant` hook (content-crate initialization).
+pub fn register_card_can_enchant(f: CardCanEnchantFn) {
+    *card_can_enchant_cell()
+        .write()
+        .expect("card can-enchant registry poisoned") = Some(f);
+}
+
+/// The registered `CanEnchant` fn, if any (unregistered = treat every card as eligible).
+#[must_use]
+pub fn lookup_card_can_enchant() -> Option<CardCanEnchantFn> {
+    *card_can_enchant_cell()
+        .read()
+        .expect("card can-enchant registry poisoned")
+}
+
 // ---------------------------------------------------------------------------
 // Bead sts2-rs-uiq (P8-1): terminal / legal-actions helpers used by the
 // MCTS rollout harness and the Python rollout bridge.

@@ -47,6 +47,19 @@ pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId
     can_enchant_card_for(sts2_core::GameVersion::default(), spec, card, enchantment)
 }
 
+/// [`can_enchant_card_for`] for a live deck card, looking its spec up by id -- the shape core's `CardCanEnchantFn`
+/// registry hook needs. A card with no known spec is treated as eligible (core's own gate already screened it).
+#[must_use]
+pub fn card_can_enchant_instance(
+    card: &Card,
+    enchantment: EnchantmentId,
+    version: sts2_core::GameVersion,
+) -> bool {
+    crate::cards::spec_index::spec_for_card_id(card.card_id).map_or(true, |spec| {
+        can_enchant_card_for(version, &spec, card, enchantment)
+    })
+}
+
 /// [`can_enchant_card`] for game build `version`: from v0.111.0 on, Quest cards
 /// (modelled as Skills, see [`Card::is_quest`]) are rejected like Status/Curse
 /// (`EnchantmentModel.cs:247-251`); the default build keeps its pre-R1 behaviour.
