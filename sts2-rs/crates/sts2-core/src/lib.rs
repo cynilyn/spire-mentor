@@ -6035,6 +6035,15 @@ impl CombatState {
         // time. Empty for most species; non-empty for 5 act1/act2
         // monsters (see [`MonsterKind::on_spawn_self_buffs`]).
         self.apply_creature_spawn_buffs(uid);
+        // v0.111.0 `PhilosophersStone.AfterCreatureAddedToCombat`: an enemy added to a
+        // combat already under way (a summon) gets the Stone's Strength too -- the
+        // room-entry leg only covers the enemies present at the start.
+        if self.game_version >= GameVersion::V0_111_0
+            && self.phase != CombatPhase::Setup
+            && self.relics.owns(RelicKind::PhilosophersStone)
+        {
+            crate::card_effects::apply_power_to_creature(self, uid, PowerKind::Strength, 1);
+        }
         uid
     }
 
