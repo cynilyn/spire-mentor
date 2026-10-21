@@ -1186,6 +1186,14 @@ impl RunManager {
             point_type,
             point_type.to_room_type(),
         ));
+        // This debug transition also backs the headless adapter's skipped
+        // events. Leaving an event must drop its binding so the next event
+        // room can draw from the act pool instead of reusing the old event.
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && self.run_state.current_event.is_some()
+        {
+            self.run_state.exit_event_room();
+        }
         self.combat = None;
         self.phase = Phase::MapChoice;
         Ok(())
@@ -10950,6 +10958,47 @@ mod tests {
         rm.debug_place_on_map(1, coord, Vec::new(), coord.row + 1, 1)
             .expect("placement succeeds");
         assert_eq!(rm.run_state.visited_map_coords, vec![coord]);
+    }
+
+    #[test]
+    fn debug_place_on_map_clears_skipped_event_only_in_v0111() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rm = RunManager::new(11, CharacterId::Ironclad).with_game_version(version);
+            rm.callbacks.bind_pending_event = Some(|rs| {
+                rs.acts[0].events_visited += 1;
+                rs.enter_event_room(crate::events::EventId::Bugslayer);
+            });
+            let coord = a_row1_coord(&rm);
+            rm.run_state
+                .enter_event_room(crate::events::EventId::CrystalSphere);
+            rm.phase = Phase::Event;
+            let cursor_before = rm.run_state.acts[0].events_visited;
+
+            rm.debug_place_on_map(1, coord, vec![coord], coord.row + 1, 1)
+                .expect("skip parks on the map");
+            assert_eq!(rm.phase(), Phase::MapChoice);
+            assert_eq!(rm.run_state.acts[0].events_visited, cursor_before);
+
+            if version >= crate::GameVersion::V0_111_0 {
+                assert_eq!(rm.run_state.current_event, None);
+                // A second event room draws once from the act pool.
+                rm.phase = Phase::Event;
+                rm.bind_pending_event();
+                assert_eq!(
+                    rm.run_state.current_event,
+                    Some(crate::events::EventId::Bugslayer)
+                );
+                let cursor_after = rm.run_state.acts[0].events_visited;
+                assert_eq!(cursor_after, cursor_before + 1);
+                rm.bind_pending_event();
+                assert_eq!(rm.run_state.acts[0].events_visited, cursor_after);
+            } else {
+                assert_eq!(
+                    rm.run_state.current_event,
+                    Some(crate::events::EventId::CrystalSphere)
+                );
+            }
+        }
     }
 
     #[test]
