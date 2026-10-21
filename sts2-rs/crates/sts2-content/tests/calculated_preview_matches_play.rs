@@ -380,3 +380,20 @@ fn hand_face_includes_strike_dummy_on_v0111_only() {
         calculated_value(&old_bare, &old_bare.cards[obidx], Some(enemy)),
     );
 }
+
+#[test]
+fn normality_face_counts_down_with_the_plays_this_turn_on_v0111_only() {
+    let (mut state, _) = busy_board();
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let uid = push_card(&mut state, CardId::Normality, 0);
+    let idx = uid.0.get() as usize - 1;
+    let face = |s: &CombatState| calculated_value(s, &s.cards[idx], None);
+    assert_eq!(face(&state), Some(3));
+    state.player.cards_played_this_turn[0] = 1;
+    state.player.cards_played_this_turn[1] = 1;
+    assert_eq!(face(&state), Some(1));
+    state.player.cards_played_this_turn[0] = 5;
+    assert_eq!(face(&state), Some(0));
+    state.game_version = sts2_core::GameVersion::V0_107_1;
+    assert_eq!(face(&state), None);
+}

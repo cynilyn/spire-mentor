@@ -269,6 +269,12 @@ pub fn calculated_value(
             crate::cards::defect::voltaic::preview_voltaic,
             ValueKind::Count,
         ),
+        // v0.111.0 `Normality.cs`: `CalculatedCards` = CalculationBase(3) +
+        // CalculationExtra(-1) x min(3, cards played this turn), i.e. how many
+        // more cards may still be played.
+        CardId::Normality if state.game_version >= sts2_core::GameVersion::V0_111_0 => {
+            (preview_normality, ValueKind::Count)
+        }
         _ => return None,
     };
     let raw = f(state, card, target);
@@ -361,4 +367,15 @@ fn absent_creature(state: &CombatState) -> CreatureRef {
         .unwrap_or(0)
         .saturating_add(1);
     CreatureRef::Enemy(CreatureUid::new(free).expect("max id + 1 is non-zero"))
+}
+
+/// `Normality`'s `{CalculatedCards}`: plays still allowed this turn.
+fn preview_normality(state: &CombatState, _card: &Card, _target: Option<CreatureUid>) -> i32 {
+    let played: i32 = state
+        .player
+        .cards_played_this_turn
+        .iter()
+        .map(|&n| i32::try_from(n).unwrap_or(i32::MAX))
+        .fold(0, i32::saturating_add);
+    3 - played.min(3)
 }
