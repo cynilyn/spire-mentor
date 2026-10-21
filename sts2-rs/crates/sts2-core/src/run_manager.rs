@@ -2327,7 +2327,10 @@ impl RunManager {
             let _ = self.run_state.tick_guilty_after_combat_end();
             // v0.111.0: the run-side `AfterCombatVictory` listeners (WarHammer's four upgrades on an Elite,
             // SwordOfStone's turn into Jade) had no caller in the run loop.
-            let is_elite = self.combat.as_ref().is_some_and(|c| c.is_elite());
+            let is_elite = self
+                .combat
+                .as_ref()
+                .is_some_and(crate::CombatState::is_elite);
             let _ = crate::run_effects::dispatch_after_combat_victory_run(
                 &mut self.run_state,
                 &crate::run_effects::CombatVictoryRunCtx { is_elite },

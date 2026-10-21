@@ -10204,6 +10204,19 @@ fn clear_per_turn_card_vars(state: &mut CombatState) {
     }
 }
 
+/// `relic_effects::dispatch_after_card_played` for an AUTO-PLAYED card: raises
+/// [`crate::TurnEvents::resolving_auto_play`] so a listener can tell it apart (C# `cardPlay.IsAutoPlay`,
+/// which `BrilliantScarf.AfterCardPlayed` skips).
+fn dispatch_after_auto_played_relics(
+    state: &mut CombatState,
+    ctx: &crate::relic_effects::CardEventCtx,
+) -> crate::EffectResult {
+    let prev = std::mem::replace(&mut state.combat_log.resolving_auto_play, true);
+    let out = crate::relic_effects::dispatch_after_card_played(state, ctx);
+    state.combat_log.resolving_auto_play = prev;
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -20221,17 +20234,4 @@ mod tests {
         super::dispatch_after_death_listeners(&mut state);
         assert!(state.combat_log.newly_dead_this_turn.is_empty());
     }
-}
-
-/// `relic_effects::dispatch_after_card_played` for an AUTO-PLAYED card: raises
-/// [`crate::TurnEvents::resolving_auto_play`] so a listener can tell it apart (C# `cardPlay.IsAutoPlay`,
-/// which `BrilliantScarf.AfterCardPlayed` skips).
-fn dispatch_after_auto_played_relics(
-    state: &mut CombatState,
-    ctx: &crate::relic_effects::CardEventCtx,
-) -> crate::EffectResult {
-    let prev = std::mem::replace(&mut state.combat_log.resolving_auto_play, true);
-    let out = crate::relic_effects::dispatch_after_card_played(state, ctx);
-    state.combat_log.resolving_auto_play = prev;
-    out
 }

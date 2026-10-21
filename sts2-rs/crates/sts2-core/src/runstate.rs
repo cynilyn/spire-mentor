@@ -6371,9 +6371,11 @@ mod tests {
                 RelicId::LuckyFysh,
             ),
         ] {
-            let mut rs = RunState::default();
-            rs.game_version = version;
-            rs.total_floor = floor;
+            let mut rs = RunState {
+                game_version: version,
+                total_floor: floor,
+                ..RunState::default()
+            };
             let mut m = BTreeMap::new();
             m.insert(
                 RelicRarity::Common,
