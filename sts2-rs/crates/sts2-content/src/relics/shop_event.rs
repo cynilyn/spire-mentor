@@ -4727,6 +4727,15 @@ fn listener_fur_coat_after_obtained(rs: &mut RunState) -> EffectResult {
     if rs.fur_coat_act_index.is_none() {
         rs.fur_coat_act_index = Some(rs.act_index);
     }
+    // v0.111.0 `FurCoat.AfterObtained` marks the map that is already generated (`AddMarkedRooms(Map)`):
+    // the Ancient hands the relic over after the act's map exists, so the generation-time listener
+    // never sees it.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        if let Some(mut map) = rs.current_act_map.take() {
+            fur_coat_mark_rooms(rs, &mut map);
+            rs.current_act_map = Some(map);
+        }
+    }
     EffectResult::Resolved
 }
 
@@ -4769,14 +4778,22 @@ fn listener_fur_coat_modify_generated_map_late(
     act_map: &mut sts2_core::map::ActMap,
     act_index: u8,
 ) -> EffectResult {
-    use sts2_core::map::{MapCoord, MapPointType};
-
     if !rs.owns_active_relic(RelicId::FurCoat) {
         return EffectResult::NotImplemented;
     }
     if rs.fur_coat_act_index != Some(act_index) {
         return EffectResult::NotImplemented;
     }
+    fur_coat_mark_rooms(rs, act_map)
+}
+
+/// The body of `FurCoat.AddMarkedRooms`: pick the quota of Monster / Elite map points and mark them.
+///
+/// v0.111.0 draws them the way C# does: the candidates in `GetAllMapPoints` order (column-major),
+/// shuffled by `new Rng(Owner, Id, 0)`, whose stream name is the relic's `Id.Entry` (`FUR_COAT`).
+fn fur_coat_mark_rooms(rs: &mut RunState, act_map: &mut sts2_core::map::ActMap) -> EffectResult {
+    use sts2_core::map::{MapCoord, MapPointType};
+
     // Idempotency: already marked the full quota on this map?
     let combats = fur_coat_combats(rs.game_version);
     let existing_marks = act_map.marked_coords_for(RelicId::FurCoat).len();
@@ -4792,7 +4809,11 @@ fn listener_fur_coat_modify_generated_map_late(
     if candidates.is_empty() {
         return EffectResult::NotImplemented;
     }
-    let mut rng = rs.rng.named("FurCoat");
+    let v0111 = rs.game_version >= sts2_core::GameVersion::V0_111_0;
+    if v0111 {
+        candidates.sort_by_key(|c| (c.col, c.row));
+    }
+    let mut rng = rs.rng.named(if v0111 { "FUR_COAT" } else { "FurCoat" });
     rng.shuffle(&mut candidates);
     let needed = combats.saturating_sub(existing_marks);
     let to_mark: Vec<MapCoord> = candidates.into_iter().take(needed).collect();
@@ -7084,6 +7105,51 @@ mod tests {
             rs.fur_coat_act_index.is_none(),
             "no FurCoat in rs.relics → no latch"
         );
+    }
+
+    /// v0.111.0 `FurCoat.AfterObtained` marks the map that already exists (the Ancient hands the relic
+    /// over after the act's map is generated) with 8 rooms, and the fight on a marked room starts every
+    /// enemy at 1 HP; v0.107.1 marks nothing from `after_obtained`.
+    #[test]
+    fn fur_coat_after_obtained_marks_the_current_map_on_v0111_only() {
+        use sts2_core::map::{ActMap, MapCoord, MapPointType};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        for (version, want_marks) in [
+            (sts2_core::GameVersion::V0_111_0, 8),
+            (sts2_core::GameVersion::V0_107_1, 0),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.act_index = 3;
+            let mut map = ActMap::new(15);
+            for row in 1..=4 {
+                for col in 0..3 {
+                    let idx = map.get_or_create(col, row);
+                    map.point_mut(idx).point_type = if (col + row) % 2 == 0 {
+                        MapPointType::Monster
+                    } else {
+                        MapPointType::Elite
+                    };
+                }
+            }
+            rs.current_act_map = Some(map);
+            rs.relics.push(RelicId::FurCoat);
+            rs.last_obtained_relic = Some(RelicId::FurCoat);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            let marked: Vec<MapCoord> = rs
+                .current_act_map
+                .as_ref()
+                .expect("map kept")
+                .marked_coords_for(RelicId::FurCoat);
+            assert_eq!(marked.len(), want_marks, "{version:?}");
+            if let Some(&coord) = marked.first() {
+                rs.visited_map_coords.push(coord);
+                assert!(rs.fur_coat_marks_current_room());
+            } else {
+                assert!(!rs.fur_coat_marks_current_room());
+            }
+        }
     }
 
     /// Bead `sts2-rs-eboqq`: FurCoat's late map-mark listener picks

@@ -928,3 +928,19 @@ fn auto_played_corrupted_card_hurts_its_owner_on_v0111_only() {
         assert_eq!(state.player.current_hp, want_hp, "{version:?}");
     }
 }
+
+/// On a Fur Coat room every enemy spawns at 1 HP, a later summon too (v0.111.0 `FurCoat`).
+#[test]
+fn fur_coat_room_spawns_enemies_at_one_hp() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    state.combat_log.fur_coat_one_hp = true;
+    let uid = state.spawn_enemy(MonsterKind::Nibbit);
+    let hp = state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .map(|c| (c.current_hp, c.max_hp))
+        .expect("spawned");
+    assert_eq!(hp.0, 1);
+    assert!(hp.1 > 1);
+}

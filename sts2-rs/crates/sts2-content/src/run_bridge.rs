@@ -444,6 +444,16 @@ pub fn enter_combat_from_roster(
     state.act_index = rs.act_index;
 
     spawn_roster(&mut state, roster);
+    // v0.111.0 `FurCoat.BeforeCombatStart`: on a marked room every enemy of the opening roster is set to 1 HP.
+    let fur_coat_room = rs.fur_coat_marks_current_room();
+    if fur_coat_room {
+        let enemies: Vec<_> = state.enemy_uids.iter().map(|u| u.0).collect();
+        for c in &mut state.creatures {
+            if enemies.contains(&c.id) {
+                c.current_hp = 1;
+            }
+        }
+    }
 
     // Bead `sts2-rs-9i1c2`: advance through Setup → PlayerTurnStart →
     // PlayerPlayPhase so the returned state is in the resting phase the
@@ -467,6 +477,8 @@ pub fn enter_combat_from_roster(
     state.is_boss = room_type == RoomType::Boss;
 
     let _ = sts2_core::combat_loop::start_combat(&mut state);
+    // `start_combat` resets the combat log, so raise the summon flag after it.
+    state.combat_log.fur_coat_one_hp = fur_coat_room;
     let _ = sts2_core::combat_loop::start_player_turn(&mut state);
 
     state

@@ -3987,12 +3987,38 @@ impl RunState {
             .map(|(_, _, picked)| picked)
     }
 
+    /// `true` when the room being fought is one of the Fur Coat's marked map points (v0.111.0): C#
+    /// `FurCoat.BeforeCombatStart` / `AfterCreatureAddedToCombat` set every enemy to 1 HP there.
+    #[must_use]
+    pub fn fur_coat_marks_current_room(&self) -> bool {
+        if self.game_version < crate::GameVersion::V0_111_0
+            || !self.owns_active_relic(RelicId::FurCoat)
+        {
+            return false;
+        }
+        let (Some(map), Some(coord)) = (
+            self.current_act_map.as_ref(),
+            self.visited_map_coords.last(),
+        ) else {
+            return false;
+        };
+        map.is_marked_by(*coord, RelicId::FurCoat)
+    }
+
+    /// C# `RunState.TotalFloor` (the sum of `MapPointHistory`): this port's `total_floor` advances on
+    /// map-node entry only, while C# also counts each Ancient event (Neow, the act 2 and act 3 Ancients),
+    /// which is exactly `act_index` of them by now.
+    #[must_use]
+    pub fn csharp_total_floor(&self) -> i32 {
+        self.total_floor + i32::from(self.act_index)
+    }
+
     /// C# `RelicModel.IsAllowed(runState)` for the relics gated by `IsBeforeAct3TreasureChest`
     /// (`TotalFloor < 41` in a single-player run): from the Act 3 treasure chest on they are never
     /// pulled from a grab bag (`RelicGrabBag.RemoveDisallowedRelicsFromDeques` runs on every pull).
     /// Always `true` before v0.111.0, where this port had no such gate.
     fn relic_is_allowed_now(&self, id: RelicId) -> bool {
-        relic_allowed_at(self.game_version, self.total_floor, id)
+        relic_allowed_at(self.game_version, self.csharp_total_floor(), id)
     }
 
     /// The single grab-bag walk both the pop and the peek run: the first entry
@@ -4058,7 +4084,7 @@ impl RunState {
     /// modeled, consistent with the player-bag pop).
     pub fn pop_relic_from_shared_grab_bag(&mut self, rarity: RelicRarity) -> Option<RelicId> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
-        let (version, total_floor) = (self.game_version, self.total_floor);
+        let (version, total_floor) = (self.game_version, self.csharp_total_floor());
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self
                 .shared_relic_grab_bag_by_rarity
@@ -4103,7 +4129,7 @@ impl RunState {
         filter: impl Fn(RelicId) -> bool,
     ) -> Option<(RelicId, RelicRarity)> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
-        let (version, total_floor) = (self.game_version, self.total_floor);
+        let (version, total_floor) = (self.game_version, self.csharp_total_floor());
         let allowed = |id: RelicId| relic_allowed_at(version, total_floor, id);
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get_mut(&candidate_rarity) else {

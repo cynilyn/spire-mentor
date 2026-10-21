@@ -3426,6 +3426,10 @@ pub struct TurnEvents {
     /// the way out, so it is `false` between `apply()` calls (not hashed).
     /// Its only reader is the v0.111.0-only `OneForAllPower` (GH #798).
     pub resolving_auto_play: bool,
+    /// v0.111.0 `FurCoat.AfterCreatureAddedToCombat`: this combat sits on one of the Fur Coat's marked
+    /// map points, so an enemy added to it later (a summon) starts at 1 HP too. The run layer
+    /// raises it once the opening roster has been clamped; `false` otherwise.
+    pub fur_coat_one_hp: bool,
 }
 
 impl TurnEvents {
@@ -6014,9 +6018,14 @@ impl CombatState {
         // Niche cursor is unaffected. Identity for every other species
         // (bead `sts2-rs-8mpo1`).
         let hp = species.finalize_spawn_max_hp(hp, taken, self.ascension);
+        let current_hp = if self.combat_log.fur_coat_one_hp {
+            1
+        } else {
+            hp
+        };
         self.creatures.push(Creature {
             id,
-            current_hp: hp,
+            current_hp,
             max_hp: hp,
             block: 0,
             powers: SmallVec::new(),
