@@ -69,3 +69,31 @@ fn enchant_pick_candidates_follow_each_enchantments_can_enchant_on_v0111_only() 
         );
     }
 }
+
+/// Trial is a three-page event on v0.111.0: Accept rolls the Merchant / Noble / Nondescript page and
+/// leaves the event open for Guilty / Innocent (a single flavour step before).
+#[test]
+fn trial_accept_opens_a_judgment_page_on_v0111_only() {
+    use sts2_content::events::dispatch::{present, resolve};
+    sts2_content::relics::dispatch::ensure_installed();
+    let mut pages = std::collections::BTreeSet::new();
+    for seed in 1..40u64 {
+        let mut rs = RunState::new();
+        rs.game_version = GameVersion::V0_111_0;
+        rs.rng = sts2_core::run_rng_set::RunRngSet::new_for(GameVersion::V0_111_0, seed);
+        rs.enter_event_room(EventId::Trial);
+        let out = resolve(&mut rs, "accept").expect("event active");
+        assert!(!out.finished);
+        pages.insert(rs.event_state.page);
+        let opts = present(&rs).expect("still in the event");
+        let ids: Vec<_> = opts.iter().map(|o| o.option_id).collect();
+        assert_eq!(ids, ["guilty", "innocent"]);
+        let _ = resolve(&mut rs, "guilty").expect("event active");
+        assert!(rs.current_event.is_none());
+    }
+    assert_eq!(pages.len(), 3, "all three judgments reachable: {pages:?}");
+    let mut old = RunState::new();
+    old.game_version = GameVersion::V0_107_1;
+    old.enter_event_room(EventId::Trial);
+    assert!(resolve(&mut old, "accept").expect("event active").finished);
+}

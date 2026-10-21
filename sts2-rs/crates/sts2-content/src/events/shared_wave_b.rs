@@ -1967,32 +1967,162 @@ pub const TINKER_TIME: EventSpec = EventSpec {
 
 // ── Trial ────────────────────────────────────────────────────────────
 
-fn trial_accept(_state: &mut RunState) -> EventOutcome {
-    // Python: rolls merchant/noble/nondescript and presents a guilty/
-    // innocent choice that branches into curse-add + relic / heal /
-    // upgrade / transform. Multi-page collapses to flavor-only;
-    // 6ynt.4.multi-page lands the branches.
-    //
-    // v0.107.1 RNG-stream migration (bead `…wb8lk.12`): C# `Trial.cs`
-    // moved its `CardCmd.TransformToRandom` draw (NondescriptInnocent) from
-    // `RunState.Rng.Niche` to the event-local `base.Rng`, and the trial-type
-    // pick already uses `base.Rng.NextInt(3)`. NO-OP here: the entire
-    // multi-page judgment body (the `NextInt(3)` pick + the transform draws)
-    // is unimplemented, so there is no niche draw to migrate. When the
-    // multi-page progression lands it must seed off the "TRIAL" event stream
-    // (see `roll_transform_replacement_event_stream`), not `rng.niche`.
-    EventOutcome::finished(
-        "Accepted the trial — multi-page judgment progression deferred to 6ynt.4.multi-page.",
-    )
+/// `Trial` pages (v0.111.0, `Trial.cs`): 0 = Accept / Reject, 1..=3 = the Merchant / Noble /
+/// Nondescript judgments `Accept` rolls (`base.Rng.NextInt(3)`) with Guilty / Innocent, 4 = the
+/// Reject page (Accept / Double Down).
+const TRIAL_PAGE_MERCHANT: u8 = 1;
+const TRIAL_PAGE_NOBLE: u8 = 2;
+const TRIAL_PAGE_NONDESCRIPT: u8 = 3;
+const TRIAL_PAGE_REJECT: u8 = 4;
+const TRIAL_STREAM: &str = "TRIAL";
+
+fn trial_v0111(state: &RunState) -> bool {
+    state.game_version >= sts2_core::GameVersion::V0_111_0
 }
 
-fn trial_reject(_state: &mut RunState) -> EventOutcome {
-    // Python: presents a `double_down` next-option that calls
-    // `lose_run()`. Multi-page collapses to flavor-only;
-    // 6ynt.4.multi-page lands the run-loss path.
-    EventOutcome::finished(
-        "Rejected the trial — multi-page abandon-run path deferred to 6ynt.4.multi-page.",
-    )
+fn trial_accept(state: &mut RunState) -> EventOutcome {
+    if !trial_v0111(state) {
+        // Python pin: multi-page collapses to flavor-only.
+        return EventOutcome::finished(
+            "Accepted the trial — multi-page judgment progression deferred to 6ynt.4.multi-page.",
+        );
+    }
+    // C# `Accept`: `switch (base.Rng.NextInt(3))` -> the Merchant / Noble / Nondescript page.
+    let mut rng = state.rng.named(TRIAL_STREAM);
+    let pick = rng.next_int_exclusive(0, 3);
+    state.event_state.page = TRIAL_PAGE_MERCHANT + u8::try_from(pick).unwrap_or(0);
+    EventOutcome {
+        finished: false,
+        description: "The trial begins.".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+fn trial_reject(state: &mut RunState) -> EventOutcome {
+    if !trial_v0111(state) {
+        return EventOutcome::finished(
+            "Rejected the trial — multi-page abandon-run path deferred to 6ynt.4.multi-page.",
+        );
+    }
+    state.event_state.page = TRIAL_PAGE_REJECT;
+    EventOutcome {
+        finished: false,
+        description: "You reconsider.".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+/// `DoubleDown` opens the abandon-run confirmation and does nothing else.
+fn trial_double_down(_state: &mut RunState) -> EventOutcome {
+    EventOutcome {
+        finished: false,
+        description: "Abandon the run?".to_string(),
+        effects: Vec::new(),
+    }
+}
+
+/// `CardPileCmd.AddCurseToDeck<T>` then the judgment's reward.
+fn trial_add_curse(state: &mut RunState, curse: CardId) {
+    super::crystal_sphere::add_curse_to_deck(state, curse);
+}
+
+fn trial_pull_front_relic(state: &mut RunState) {
+    let rarity = state.roll_reward_relic_rarity();
+    if let Some(id) = state.pop_relic_from_grab_bag(rarity) {
+        state.grant_event_relic(id);
+    }
+}
+
+fn trial_guilty(state: &mut RunState) -> EventOutcome {
+    match state.event_state.page {
+        TRIAL_PAGE_MERCHANT => {
+            trial_add_curse(state, CardId::Regret);
+            for _ in 0..2 {
+                trial_pull_front_relic(state);
+            }
+        }
+        TRIAL_PAGE_NOBLE => {
+            let _ = state.heal(10);
+        }
+        _ => {
+            trial_add_curse(state, CardId::Doubt);
+            for _ in 0..2 {
+                state
+                    .pending_rewards
+                    .push(Reward::Card(CardReward::empty()));
+            }
+        }
+    }
+    EventOutcome::finished("The judgment is made.")
+}
+
+fn trial_innocent(state: &mut RunState) -> EventOutcome {
+    match state.event_state.page {
+        TRIAL_PAGE_MERCHANT => {
+            trial_add_curse(state, CardId::Shame);
+            let _ = state.upgrade_random_cards(2);
+        }
+        TRIAL_PAGE_NOBLE => {
+            trial_add_curse(state, CardId::Regret);
+            state.gain_gold(300);
+        }
+        _ => {
+            trial_add_curse(state, CardId::Doubt);
+            // `FromDeckForTransformation(2)` then `TransformToRandom(item, base.Rng)` for each:
+            // the stream's first read was the page roll, each transform reads on after it.
+            for skip in 1..=2u32 {
+                state
+                    .pending_deck_transforms
+                    .push(sts2_core::PendingDeckTransform {
+                        event_stream_roll: Some((TRIAL_STREAM, skip)),
+                        ..Default::default()
+                    });
+            }
+        }
+    }
+    EventOutcome::finished("The judgment is made.")
+}
+
+fn trial_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let info = |opt: &EventOptionSpec, loc_key: &'static str| EventOptionInfo {
+        option_id: opt.option_id,
+        loc_key,
+        vars: Vec::new(),
+        title_vars: Vec::new(),
+        label: opt.default_label.to_string(),
+        description: opt.default_description.to_string(),
+        enabled: true,
+    };
+    let (guilty, innocent) = match state.event_state.page {
+        TRIAL_PAGE_MERCHANT => (
+            "TRIAL.pages.MERCHANT.options.GUILTY",
+            "TRIAL.pages.MERCHANT.options.INNOCENT",
+        ),
+        TRIAL_PAGE_NOBLE => (
+            "TRIAL.pages.NOBLE.options.GUILTY",
+            "TRIAL.pages.NOBLE.options.INNOCENT",
+        ),
+        TRIAL_PAGE_NONDESCRIPT => (
+            "TRIAL.pages.NONDESCRIPT.options.GUILTY",
+            "TRIAL.pages.NONDESCRIPT.options.INNOCENT",
+        ),
+        TRIAL_PAGE_REJECT => {
+            return vec![
+                info(&spec.options[0], "TRIAL.pages.REJECT.options.ACCEPT"),
+                info(&spec.options[4], "TRIAL.pages.REJECT.options.DOUBLE_DOWN"),
+            ];
+        }
+        _ => {
+            return spec.options[..2]
+                .iter()
+                .map(|o| info(o, o.loc_key))
+                .collect()
+        }
+    };
+    vec![
+        info(&spec.options[2], guilty),
+        info(&spec.options[3], innocent),
+    ]
 }
 
 const TRIAL_OPTIONS: &[EventOptionSpec] = &[
@@ -2016,13 +2146,43 @@ const TRIAL_OPTIONS: &[EventOptionSpec] = &[
         title_vars_fn: None,
         handler: trial_reject,
     },
+    EventOptionSpec {
+        option_id: "guilty",
+        loc_key: "",
+        default_label: "Guilty",
+        default_description: "Judge the defendant guilty.",
+        default_vars: &[],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: trial_guilty,
+    },
+    EventOptionSpec {
+        option_id: "innocent",
+        loc_key: "",
+        default_label: "Innocent",
+        default_description: "Judge the defendant innocent.",
+        default_vars: &[],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: trial_innocent,
+    },
+    EventOptionSpec {
+        option_id: "double_down",
+        loc_key: "TRIAL.pages.REJECT.options.DOUBLE_DOWN",
+        default_label: "Double Down",
+        default_description: "Abandon the run.",
+        default_vars: &[],
+        vars_fn: None,
+        title_vars_fn: None,
+        handler: trial_double_down,
+    },
 ];
 
 pub const TRIAL: EventSpec = EventSpec {
     id: EventId::Trial,
     python_name: "Trial",
     is_allowed: always_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: trial_generate_options,
     options: TRIAL_OPTIONS,
 };
 
