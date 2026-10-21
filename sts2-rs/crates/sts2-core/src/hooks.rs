@@ -11461,17 +11461,61 @@ pub struct DamageParts {
     pub mul: DamageMul,
     /// The minimum cap any listener asked for, or `i32::MAX` for "uncapped".
     pub cap: i32,
+    /// v0.111.0: the card enchantment's additive, applied to the base BEFORE `pre_mul` and before
+    /// every listener's additive (`Hook.ModifyDamage` runs the enchantment on `damage` first, then
+    /// `ModifyDamageInternal`). `0` before v0.111.0, where it is folded into `additive`.
+    pub pre_add: i32,
+    /// v0.111.0: the card enchantment's multiplier (Favored / Instinct / Corrupted), applied to the
+    /// enchanted base only, so Strength is added AFTER it. `ONE` before v0.111.0, where it is
+    /// composed into `mul`.
+    pub pre_mul: DamageMul,
+}
+
+impl DamageParts {
+    /// `true` when no enchantment stage precedes the listeners (always, before v0.111.0).
+    #[inline]
+    #[must_use]
+    fn pre_is_identity(&self) -> bool {
+        self.pre_add == 0 && self.pre_mul == DamageMul::ONE
+    }
+
+    /// The un-floored damage `((base + pre_add) * pre_mul + additive) * mul` as `(numerator,
+    /// denominator)`; with an identity enchantment stage this is exactly `(base + additive) * mul`.
+    #[inline]
+    #[must_use]
+    fn value_rational(&self, base: i32) -> (i128, i128) {
+        if self.pre_is_identity() {
+            let after_add = i128::from(base.saturating_add(self.additive));
+            return (
+                after_add * i128::from(self.mul.num),
+                i128::from(self.mul.den),
+            );
+        }
+        let staged = i128::from(base.saturating_add(self.pre_add)) * i128::from(self.pre_mul.num)
+            + i128::from(self.additive) * i128::from(self.pre_mul.den);
+        (
+            staged * i128::from(self.mul.num),
+            i128::from(self.pre_mul.den) * i128::from(self.mul.den),
+        )
+    }
 }
 
 #[must_use]
 pub fn modify_damage(state: &CombatState, base_damage: i32, ctx: &DamageCtx) -> i32 {
-    let DamageParts { additive, mul, cap } = modify_damage_parts(state, ctx);
+    let parts = modify_damage_parts(state, ctx);
+    let DamageParts {
+        additive, mul, cap, ..
+    } = parts;
 
-    // Step 1: additive (Strength, Vigor, ...).
-    let after_add = base_damage.saturating_add(additive);
-
-    // Step 3: single floor at end via div_euclid (matches math.floor).
-    let after_mul = mul.apply(after_add);
+    // Step 1: additive (Strength, Vigor, ...); Step 3: single floor at end via div_euclid
+    // (matches math.floor).
+    let after_mul = if parts.pre_is_identity() {
+        mul.apply(base_damage.saturating_add(additive))
+    } else {
+        let (n, d) = parts.value_rational(base_damage);
+        let floored = n.div_euclid(d);
+        i32::try_from(floored).unwrap_or(if floored > 0 { i32::MAX } else { i32::MIN })
+    };
 
     // Step 4: cap (Intangible's `min(damage, 1)`-ish).
     let after_cap = after_mul.min(cap);
@@ -11575,21 +11619,33 @@ pub fn modify_damage_parts(state: &CombatState, ctx: &DamageCtx) -> DamageParts 
     let dealt_by_player_or_osty = matches!(ctx.dealer, CreatureRef::Player)
         || matches!(ctx.dealer, CreatureRef::Enemy(uid) if state.player.pet_uid == Some(uid));
     let mut enchant_mul = DamageMul::ONE;
+    let mut pre_add = 0_i32;
+    let mut pre_mul = DamageMul::ONE;
     if dealt_by_player_or_osty {
         if let Some(card) = crate::card_effects::resolving_card_inst(state) {
             {
                 let powered = ctx.props.is_powered();
-                additive =
-                    additive.saturating_add(crate::enchantment_hooks::enchant_damage_additive_for(
-                        card,
-                        powered,
-                        state.game_version,
-                    ));
+                let enchant_add = crate::enchantment_hooks::enchant_damage_additive_for(
+                    card,
+                    powered,
+                    state.game_version,
+                );
                 // Favored/Instinct/Corrupted multiplicative (×100 fixed-point).
                 let x100 =
                     crate::enchantment_hooks::enchant_damage_multiplicative_x100(card, powered);
-                if x100 != 100 {
-                    enchant_mul = enchant_mul.compose(DamageMul::new(i64::from(x100), 100));
+                if state.game_version >= crate::GameVersion::V0_111_0 {
+                    // `Hook.ModifyDamage` applies the enchantment to the base before the
+                    // listeners' additive (Strength): `(base * 1.5) + Strength`, not `(base +
+                    // Strength) * 1.5`.
+                    pre_add = enchant_add;
+                    if x100 != 100 {
+                        pre_mul = DamageMul::new(i64::from(x100), 100);
+                    }
+                } else {
+                    additive = additive.saturating_add(enchant_add);
+                    if x100 != 100 {
+                        enchant_mul = enchant_mul.compose(DamageMul::new(i64::from(x100), 100));
+                    }
                 }
             }
         }
@@ -11611,7 +11667,13 @@ pub fn modify_damage_parts(state: &CombatState, ctx: &DamageCtx) -> DamageParts 
     // player/Osty card source carries a multiplicative enchantment.
     let mul = power_mul.compose(relic_mul).compose(enchant_mul);
 
-    DamageParts { additive, mul, cap }
+    DamageParts {
+        additive,
+        mul,
+        cap,
+        pre_add,
+        pre_mul,
+    }
 }
 
 /// Which powers `Hook.AfterModifyingDamageAmount` would fire on for this hit —
@@ -11686,13 +11748,9 @@ pub fn damage_amount_flashes(
     }
 
     // Cap stage: `num` starts at the post-multiplicative amount, as a rational.
-    let DamageParts {
-        additive,
-        mul,
-        cap: folded_cap,
-    } = modify_damage_parts(state, ctx);
-    let after_add = i128::from(base_damage.saturating_add(additive));
-    let (mut num_n, mut num_d) = (after_add * i128::from(mul.num), i128::from(mul.den));
+    let parts = modify_damage_parts(state, ctx);
+    let folded_cap = parts.cap;
+    let (mut num_n, mut num_d) = parts.value_rational(base_damage);
     debug_assert!(num_d > 0, "DamageMul::den is constructed positive");
     let mut running_min = i32::MAX;
     for &(uid, owner) in &rows {
