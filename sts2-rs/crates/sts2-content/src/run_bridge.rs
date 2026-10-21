@@ -554,7 +554,16 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
             continue;
         };
         if let Some(r) = combat.relics.iter().find(|r| r.kind == kind) {
-            rs.relic_counters.insert(relic_id, r.counter);
+            // v0.111.0 `PaelsTears.AfterCombatEnd` clears `_hadLeftoverEnergy`: the leftover-energy latch
+            // never survives into the next fight (a fight that ends mid-turn with energy unspent).
+            let counter = if rs.game_version >= sts2_core::GameVersion::V0_111_0
+                && kind == sts2_core::RelicKind::PaelsTears
+            {
+                0
+            } else {
+                r.counter
+            };
+            rs.relic_counters.insert(relic_id, counter);
         }
     }
 
@@ -1592,6 +1601,32 @@ mod tests {
             Some(&4),
             "decremented counter flushed back to run"
         );
+    }
+
+    /// v0.111.0 `PaelsTears.AfterCombatEnd` clears the leftover-energy latch, so it does not flush back
+    /// into the next fight; v0.107.1 carried it over.
+    #[test]
+    fn exit_combat_clears_the_paels_tears_latch_on_v0111_only() {
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, 0),
+            (sts2_core::GameVersion::V0_107_1, 1),
+        ] {
+            let mut rs = fresh_run();
+            rs.game_version = version;
+            rs.relics.push(sts2_core::RelicId::PaelsTears);
+            let mut state = enter_combat(&rs, select_first(act1_normal_pool()));
+            for r in &mut state.relics {
+                if r.kind == sts2_core::RelicKind::PaelsTears {
+                    r.counter = 1;
+                }
+            }
+            exit_combat(&mut rs, &state);
+            assert_eq!(
+                rs.relic_counters.get(&sts2_core::RelicId::PaelsTears),
+                Some(&want),
+                "{version:?}"
+            );
+        }
     }
 
     #[test]
