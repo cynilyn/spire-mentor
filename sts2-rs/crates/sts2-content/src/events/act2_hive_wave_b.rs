@@ -702,28 +702,25 @@ fn symbiote_approach(state: &mut RunState) -> EventOutcome {
     // pick-1 → `CardCmd.Enchant<Corrupted>(card, 1)`. Queue the interactive
     // enchant pick (the run loop surfaces it as a `card_select`); the grid
     // auto-takes at <=1 eligible, so fall through to an immediate enchant then.
-    use sts2_core::cards::EnchantmentId;
-    let eligible = state
-        .master_deck
-        .iter()
-        .filter(|c| symbiote_can_enchant(c))
-        .count();
+    use sts2_core::cards::{CardType, EnchantmentId};
+    // v0.111.0 `Corrupted.CanEnchantCardType`: Attacks only.
+    let attack_only = state.game_version >= sts2_core::GameVersion::V0_111_0;
+    let can = move |c: &sts2_core::cards::Card| {
+        symbiote_can_enchant(c) && (!attack_only || c.card_type == CardType::Attack)
+    };
+    let eligible = state.master_deck.iter().filter(|c| can(c)).count();
     if state.interactive_card_transform && eligible > 1 {
         state
             .pending_deck_enchants
             .push(sts2_core::PendingDeckEnchant {
                 enchantment: EnchantmentId::Corrupted,
                 amount: 1,
-                type_restriction: None,
+                type_restriction: attack_only.then_some(CardType::Attack),
                 secondary_type: None,
             });
         EventOutcome::finished("Pick a card to enchant with Corrupted.")
     } else {
-        if let Some(card) = state
-            .master_deck
-            .iter_mut()
-            .find(|c| symbiote_can_enchant(c))
-        {
+        if let Some(card) = state.master_deck.iter_mut().find(|c| can(c)) {
             card.enchantments.push((EnchantmentId::Corrupted, 1));
         }
         EventOutcome::finished("Enchanted a card with Corrupted.")
@@ -1786,6 +1783,35 @@ mod tests {
         );
         // No reward-queue placeholder — these are deck card_selects, not rewards.
         assert!(rs.pending_rewards.is_empty());
+    }
+
+    /// v0.111.0 `Corrupted.CanEnchantCardType`: Symbiote's enchant pick offers Attacks only.
+    #[test]
+    fn symbiote_enchant_pick_is_attack_only_on_v0111() {
+        use sts2_core::cards::{CardId, CardType};
+        crate::cards::dispatch::ensure_installed();
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, Some(CardType::Attack)),
+            (sts2_core::GameVersion::V0_107_1, None),
+        ] {
+            let mut rs = fresh();
+            rs.game_version = version;
+            rs.interactive_card_transform = true;
+            for id in [
+                CardId::StrikeIronclad,
+                CardId::StrikeIronclad,
+                CardId::DefendIronclad,
+            ] {
+                rs.master_deck
+                    .push(crate::cards::spec_index::card_pod_from_id(id, false).unwrap());
+            }
+            run(&SYMBIOTE, "approach", &mut rs);
+            assert_eq!(rs.pending_deck_enchants.len(), 1, "{version:?}");
+            assert_eq!(
+                rs.pending_deck_enchants[0].type_restriction, want,
+                "{version:?}"
+            );
+        }
     }
 
     /// The machine EATS the potion and pays in upgraded cards of one matched
