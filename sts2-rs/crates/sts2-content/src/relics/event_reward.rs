@@ -2370,6 +2370,16 @@ fn listener_sword_of_stone_run(rs: &mut RunState, ctx: &CombatVictoryRunCtx) -> 
     if !run_owns(rs, RelicId::SwordOfStone) {
         return EffectResult::NotImplemented;
     }
+    // v0.111.0: the run loop mirrors the combat-side counter back into `relic_counters` after every
+    // fight, where the combat-side listener has already counted this Elite; only the turn into
+    // Jade (the 5th Elite, `ElitesDefeated >= Elites`) is left to do here.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        if rs.relic_counters.get(&RelicId::SwordOfStone).copied() == Some(0) {
+            let _ = rs.transform_relic(RelicId::SwordOfStone, RelicId::SwordOfJade);
+            return EffectResult::Resolved;
+        }
+        return EffectResult::NotImplemented;
+    }
     // RunState carries relic counters out-of-band on
     // `RunState.relic_counters` (a BTreeMap, since `RunState.relics`
     // is just `Vec<RelicId>` — the run-side surface doesn't have the

@@ -2325,6 +2325,13 @@ impl RunManager {
         // after the relic listeners above (FishingRod's random upgrade, …).
         if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
             let _ = self.run_state.tick_guilty_after_combat_end();
+            // v0.111.0: the run-side `AfterCombatVictory` listeners (WarHammer's four upgrades on an Elite,
+            // SwordOfStone's turn into Jade) had no caller in the run loop.
+            let is_elite = self.combat.as_ref().is_some_and(|c| c.is_elite());
+            let _ = crate::run_effects::dispatch_after_combat_victory_run(
+                &mut self.run_state,
+                &crate::run_effects::CombatVictoryRunCtx { is_elite },
+            );
         }
         // Event→combat resume (bead `sts2-rs-ck9z6`, GH #166): if this fight
         // was launched from an event option (`EnterCombatWithoutExitingEvent`),
@@ -8984,6 +8991,45 @@ mod tests {
         assert_eq!(rm.phase(), Phase::RunOver, "second boss win ends the run");
         assert!(rm.run_state.is_over);
         assert!(rm.run_state.player_won);
+    }
+
+    /// v0.111.0: a won Elite fight dispatches the run-side `AfterCombatVictory` listeners
+    /// (WarHammer / SwordOfStone had no caller); v0.107.1 keeps skipping them.
+    #[test]
+    fn won_elite_fires_run_side_victory_listeners_on_v0111_only() {
+        use crate::card_effects::EffectResult;
+        use crate::run_effects::{
+            register_after_combat_victory_run, AfterCombatVictoryRunFn, CombatVictoryRunCtx,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static HITS: AtomicUsize = AtomicUsize::new(0);
+        fn listener(rs: &mut RunState, ctx: &CombatVictoryRunCtx) -> EffectResult {
+            if ctx.is_elite && rs.relics.contains(&RelicId::DataDisk) {
+                HITS.fetch_add(1, Ordering::SeqCst);
+            }
+            EffectResult::Resolved
+        }
+        register_after_combat_victory_run(RelicId::DataDisk, listener as AfterCombatVictoryRunFn);
+        for (version, want) in [
+            (crate::GameVersion::V0_111_0, 1),
+            (crate::GameVersion::V0_107_1, 0),
+        ] {
+            let mut rm = RunManager::new(0, CharacterId::Ironclad);
+            rm.run_state.game_version = version;
+            rm.run_state.relics.push(RelicId::DataDisk);
+            rm.run_state.current_room =
+                Some(crate::runstate::Room::new(crate::runstate::RoomType::Elite));
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                is_elite: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let before = HITS.load(Ordering::SeqCst);
+            let _ = rm.exit_combat_and_transition();
+            assert_eq!(HITS.load(Ordering::SeqCst) - before, want, "{version:?}");
+        }
     }
 
     /// Below A10 the act-3 boss win stays terminal even with a map
