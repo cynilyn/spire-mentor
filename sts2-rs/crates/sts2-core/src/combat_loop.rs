@@ -1890,6 +1890,53 @@ pub(crate) fn run_turn_start_relic_tail(
     finish_turn_start_tail(state)
 }
 
+/// C# `WhisperingEarring.AfterAutoPrePlayPhaseEnteredLate`: on the player's first
+/// turn the relic plays cards from the hand on its own -- up to 13, each the first
+/// card in hand order that `CanPlay()`, energy paid as for a normal play, an
+/// `AnyEnemy` card aimed at the first hittable enemy -- until nothing is playable,
+/// the combat ends or the turn changes. Card selections it triggers are answered by
+/// `VakuuCardSelector` (`options.Take(maxSelect)`). v0.111.0 only; before that the
+/// relic's play loop was not modelled.
+fn whispering_earring_turn_one(state: &mut CombatState) {
+    if state.game_version < crate::GameVersion::V0_111_0
+        || state.turn_number() != 1
+        || !state.relics.owns(crate::RelicKind::WhisperingEarring)
+    {
+        return;
+    }
+    for _ in 0..13 {
+        if state.is_over || state.phase != CombatPhase::PlayerPlayPhase {
+            break;
+        }
+        // The first hand card with a legal play; its lowest legal target.
+        let mut best: Option<(u8, Option<u8>)> = None;
+        for action in crate::legal_actions(state) {
+            if let crate::Action::PlayCard { hand_index, target } = action {
+                best = match best {
+                    None => Some((hand_index, target)),
+                    Some((bi, bt)) if hand_index < bi || (hand_index == bi && target < bt) => {
+                        Some((hand_index, target))
+                    }
+                    keep => keep,
+                };
+            }
+        }
+        let Some((hand_index, target)) = best else {
+            break;
+        };
+        let _ = crate::apply(state, crate::Action::PlayCard { hand_index, target });
+        // `VakuuCardSelector`: take the first `maxSelect` options of any selection.
+        for _ in 0..16 {
+            let Some(pc) = state.pending_choice.as_ref() else {
+                break;
+            };
+            let take = usize::from(pc.max_select).min(pc.options.len());
+            let picks: Vec<u8> = (0..take).map(|i| i as u8).collect();
+            let _ = crate::resolve_choice_action(state, &picks, false);
+        }
+    }
+}
+
 /// Turn-start tail (steps 10-11) shared by the normal cluster path and the
 /// Mayhem `mayhem_phase` resume: combat-end re-check, phase advance to
 /// `PlayerPlayPhase`, the `before_play_phase_start` relic dispatch, and a final
@@ -1926,6 +1973,10 @@ fn finish_turn_start_tail(state: &mut CombatState) -> StepResult {
 
     // Step 11: advance phase.
     state.phase = CombatPhase::PlayerPlayPhase;
+
+    // v0.111.0 `WhisperingEarring.AfterAutoPrePlayPhaseEnteredLate`: the last
+    // AutoPrePlay hook of turn 1, after Mayhem and the other auto-plays.
+    whispering_earring_turn_one(state);
 
     // Bead `sts2-rs-ummci`: relic-side `before_play_phase_start` dispatch.
     // Fires once per player turn at the play-phase boundary (after the
