@@ -3952,10 +3952,14 @@ impl RunManager {
         let requires_block =
             front.is_some_and(|e| e.enchantment == crate::cards::EnchantmentId::Nimble);
         // Soul's Power only enchants cards that carry Exhaust (`SoulsPower.cs`): a keyword gate core cannot read.
-        let keyword_gate = front
-            .filter(|e| e.enchantment == crate::cards::EnchantmentId::SoulsPower)
-            .and_then(|e| crate::lookup_card_can_enchant().map(|f| (f, e.enchantment)));
+        // v0.111.0: every enchantment's own `CanEnchant` (card-type restrictions of Corrupted /
+        // Sharp / Momentum / Instinct / Vigorous / Imbued, the Basic gate of Spiral / Tezcatara's
+        // Ember, ...) goes through the content gate, not just Soul's Power's Exhaust one.
         let version = self.run_state.game_version;
+        let all_gate = version >= crate::GameVersion::V0_111_0;
+        let keyword_gate = front
+            .filter(|e| all_gate || e.enchantment == crate::cards::EnchantmentId::SoulsPower)
+            .and_then(|e| crate::lookup_card_can_enchant().map(|f| (f, e.enchantment)));
         self.run_state
             .master_deck
             .iter()
