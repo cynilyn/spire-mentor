@@ -4587,9 +4587,20 @@ fn listener_nutritious_soup(rs: &mut RunState) -> EffectResult {
                 | CardId::StrikeNecrobinder
         )
     };
+    // v0.111.0: `CardCmd.Enchant<TezcatarasEmber>` runs `OnEnchant` (cost -> 0,
+    // Eternal), not just the bare enchantment.
+    let on_enchant = rs.game_version >= sts2_core::GameVersion::V0_111_0;
     for card in &mut rs.master_deck {
         if is_basic_strike(card.card_id) {
-            card.set_enchantment(EnchantmentId::TezcatarasEmber, 1);
+            if on_enchant {
+                let _ = crate::enchantments::apply_static_enchantment(
+                    card,
+                    EnchantmentId::TezcatarasEmber,
+                    1,
+                );
+            } else {
+                card.set_enchantment(EnchantmentId::TezcatarasEmber, 1);
+            }
         }
     }
     EffectResult::Resolved
@@ -8875,6 +8886,32 @@ mod tests {
             .master_deck
             .iter()
             .all(|c| c.card_id == CardId::StrikeIronclad));
+    }
+
+    /// v0.111.0: the soup's enchant runs `OnEnchant` -- the Strike's cost drops to 0
+    /// and it turns Eternal; v0.107.1 only records the enchantment.
+    #[test]
+    fn nutritious_soup_zeroes_the_strike_cost_on_v0111_only() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        for (version, cost) in [
+            (sts2_core::GameVersion::V0_111_0, 0),
+            (sts2_core::GameVersion::V0_107_1, 1),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            let mut c = sts2_core::cards::Card::pod_defaults();
+            c.card_id = CardId::StrikeIronclad;
+            c.cost = 1;
+            rs.master_deck.push(c);
+            rs.relics.push(RelicId::NutritiousSoup);
+            rs.last_obtained_relic = Some(RelicId::NutritiousSoup);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            let card = &rs.master_deck[0];
+            assert_eq!(card.enchantment(EnchantmentId::TezcatarasEmber), 1);
+            assert_eq!(card.cost, cost, "{version:?}");
+        }
     }
 
     /// Bead `sts2-rs-w9vf8`: NutritiousSoup's `after_obtained` listener
