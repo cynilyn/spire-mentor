@@ -792,6 +792,11 @@ pub fn shop_inventory(rm: &RunManager) -> Value {
         set(&mut cd, "idx", idx);
         if let Some(c) = &e.card {
             set(&mut cd, "id", format!("{:?}", c.card_id));
+            // v0.111.0: the egg relics upgrade a stocked card of their type (see
+            // `apply_merchant_card_hooks`); an additive key, present only when true.
+            if c.upgraded {
+                set(&mut cd, "upgraded", true);
+            }
         }
         set(&mut cd, "price", price_of(e.price));
         set(&mut cd, "on_sale", e.on_sale);
