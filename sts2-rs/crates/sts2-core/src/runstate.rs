@@ -1531,6 +1531,14 @@ pub struct RunState {
     /// cleared on every map generation and when the quest completes.
     pub spoils_quest_coord: Option<crate::map::MapCoord>,
 
+    /// Rooms entered on the current map point (C# `CurrentRoomCount`): 1 for the first room, +1 for each further room
+    /// stacked on the same coord (an event room re-entered after the map move, an event's fight).
+    pub rooms_at_point: u32,
+
+    /// While `Some(tag)`, the interactive removal offer is restricted to Basic-rarity cards carrying `tag` (v0.111.0
+    /// Amalgamator, `Amalgamator.cs:69-80`); cleared when the removal batch drains.
+    pub removal_basic_tag: Option<crate::cards::CardTag>,
+
     /// Cards to append to [`Self::master_deck`] AFTER the current batch of
     /// interactive [`Self::pending_deck_removals`] fully drains (i.e. when
     /// the count next hits 0). Models C# events that do
@@ -2067,6 +2075,8 @@ impl Default for RunState {
             pending_deck_removals: 0,
             paels_stash_pending: None,
             spoils_quest_coord: None,
+            rooms_at_point: 0,
+            removal_basic_tag: None,
             pending_post_removal_cards: Vec::new(),
             pending_post_removal_hp_loss: 0,
             pending_post_removal_max_hp_gain: 0,
@@ -2580,6 +2590,16 @@ impl RunState {
         if let (Some(coord), Some(mpt)) = (room.map_coord, room.map_point_type) {
             let _ = self.add_visited_coord(coord, Some(mpt), Some(room_type));
         }
+        // C# `RunState.CurrentRoomCount` (`_currentRooms.Count`): rooms stacked on the current map point (an event
+        // that then fights, or the event room entered again after the map move already entered it). Entering the
+        // same map coord again is a further room; any other room starts a new point.
+        let same_point = room.map_coord.is_some()
+            && room.map_coord == self.current_room.and_then(|r| r.map_coord);
+        self.rooms_at_point = if same_point {
+            self.rooms_at_point.saturating_add(1)
+        } else {
+            1
+        };
         self.current_room = Some(room);
         let _ = crate::run_effects::dispatch_after_room_entered(self, room_type);
     }
@@ -3101,6 +3121,14 @@ impl RunState {
             .count()
     }
 
+    /// `true` for a Basic-rarity card carrying `tag` (Amalgamator's `IsValid(tag, c)` minus `IsRemovable`, which the
+    /// removal offer applies on its own).
+    #[must_use]
+    pub fn is_basic_tagged(&self, card: &Card, tag: crate::cards::CardTag) -> bool {
+        let rank = crate::lookup_card_rarity_rank();
+        card.has_tag(tag) && rank.map_or(true, |f| f(card.card_id, self.game_version) == 1)
+    }
+
     /// Master-deck indices in C# `CardSelectCmd.FromDeckForRemoval` offer order
     /// (`CardSelectCmd.cs:405-409`): Curse-type cards sorted to the FRONT via
     /// the stable key `(Type != Curse) ? deck.IndexOf(c) : -999999999`,
@@ -3132,6 +3160,11 @@ impl RunState {
             .filter(|&i| removable.map_or(true, |f| f(&self.master_deck[i])))
             // Pael's Tooth's `FromDeckForRemoval(filter: IsUpgradable)`.
             .filter(|&i| self.paels_stash_pending.is_none() || self.master_deck[i].is_upgradable())
+            // Amalgamator's `FromDeckForRemoval(filter: IsValid(tag))`: removable Basic cards carrying the tag.
+            .filter(|&i| {
+                self.removal_basic_tag
+                    .map_or(true, |tag| self.is_basic_tagged(&self.master_deck[i], tag))
+            })
             .collect();
         // Stable sort: Curse → key 0 (front, deck order preserved), else key 1
         // (deck order). `sort_by_key` is stable, matching C#'s OrderBy.

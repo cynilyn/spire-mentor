@@ -2984,7 +2984,14 @@ fn push_deck_card(rs: &mut RunState, card_id: sts2_core::cards::CardId) {
         card.base_block = spec.base_block;
         card.target_type = spec.target_type;
     }
-    rs.master_deck.push(card);
+    // v0.111.0: C# adds these through `CardPileCmd.Add(card, PileType.Deck)` (PaelsHorn's Relax, a curse a relic
+    // hands out, ...), which runs `ModifyCardBeingAddedToDeck` and `AfterCardChangedPiles` -- so a held LuckyFysh
+    // pays its 15 gold per card. Earlier builds append silently.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
+    } else {
+        rs.master_deck.push(card);
+    }
 }
 
 /// Enchant up to `max_count` eligible cards in `rs.master_deck` with
@@ -3022,7 +3029,7 @@ fn enchantable_candidate_card_ids(
         .collect()
 }
 
-fn enchant_eligible_deck_cards(
+pub(crate) fn enchant_eligible_deck_cards(
     rs: &mut RunState,
     ench: sts2_core::cards::EnchantmentId,
     amount: i32,
@@ -3087,7 +3094,7 @@ fn enchant_card_type_restriction(
 /// interactive, or when `candidates <= count` so every eligible card is
 /// enchanted regardless of the pick — matching the SelfHelpBook/Wood
 /// Carvings `eligible > 1` convention generalized to `count`.
-fn try_queue_interactive_enchant(
+pub(crate) fn try_queue_interactive_enchant(
     rs: &mut RunState,
     ench: sts2_core::cards::EnchantmentId,
     amount: i32,
@@ -8064,6 +8071,31 @@ mod tests {
         assert_eq!(rs.master_deck.len(), before_len + PAELS_HORN_CARDS);
         let added = &rs.master_deck[before_len..];
         assert!(added.iter().all(|c| c.card_id == CardId::Relax));
+    }
+
+    /// `PaelsHorn.AfterObtained` adds its Relax cards through `CardPileCmd.Add(.., Deck)`, so a held LuckyFysh pays
+    /// 15 gold per card on v0.111.0; v0.107.1 appends them silently.
+    #[test]
+    fn relic_added_cards_fire_the_deck_add_hooks_on_v0111_only() {
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        for (version, per_card) in [
+            (sts2_core::GameVersion::V0_111_0, 15),
+            (sts2_core::GameVersion::V0_107_1, 0),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::LuckyFysh);
+            let gold = rs.gold;
+            rs.relics.push(RelicId::PaelsHorn);
+            rs.last_obtained_relic = Some(RelicId::PaelsHorn);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(
+                rs.gold,
+                gold + PAELS_HORN_CARDS as i32 * per_card,
+                "{version:?}"
+            );
+        }
     }
 
     /// Bead `sts2-rs-a49q3`: PaelsHorn listener is noop without

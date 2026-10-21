@@ -345,15 +345,52 @@ fn amalgamator_remove_basic_tagged(
 // `Reward::Card(empty)` push surfaced an unrelated random 3-card reward
 // pick and never removed the Strikes (wrong deck + extra step). Bead
 // `sts2-rs-RP28`.
+/// v0.111.0, interactive hosts: `CardSelectCmd.FromDeckForRemoval(prefs(.., 2), filter: IsValid(tag))` is a real pick of
+/// 2 among the removable Basic `tag` cards. Queue it as the standard removal card_select (restricted by
+/// `removal_basic_tag`) with the Ultimate card appended once the batch drains. Returns `false` when there is no choice to
+/// make (at most 2 eligible cards: all of them go) or the host is not interactive.
+fn amalgamator_queue_pick(
+    state: &mut RunState,
+    tag: sts2_core::cards::CardTag,
+    ultimate: sts2_core::cards::CardId,
+) -> bool {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 || !state.interactive_card_removal {
+        return false;
+    }
+    let removable = sts2_core::lookup_card_removable();
+    let eligible = state
+        .master_deck
+        .iter()
+        .filter(|c| state.is_basic_tagged(c, tag) && removable.map_or(true, |f| f(c)))
+        .count();
+    if eligible <= 2 {
+        return false;
+    }
+    state.removal_basic_tag = Some(tag);
+    state.pending_deck_removals += 2;
+    if let Some(card) = crate::cards::spec_index::card_pod_from_id(ultimate, false) {
+        state.pending_post_removal_cards.push(card);
+    }
+    true
+}
+
 fn amalgamator_combine_strikes(state: &mut RunState) -> EventOutcome {
-    amalgamator_remove_basic_tagged(state, sts2_core::cards::CardTag::Strike, 2);
-    bugslayer_add_card(state, sts2_core::cards::CardId::UltimateStrike);
+    use sts2_core::cards::{CardId, CardTag};
+    if amalgamator_queue_pick(state, CardTag::Strike, CardId::UltimateStrike) {
+        return EventOutcome::finished("Pick 2 Strikes to combine into an Ultimate Strike.");
+    }
+    amalgamator_remove_basic_tagged(state, CardTag::Strike, 2);
+    bugslayer_add_card(state, CardId::UltimateStrike);
     EventOutcome::finished("Removed 2 Strikes, added Ultimate Strike.")
 }
 
 fn amalgamator_combine_defends(state: &mut RunState) -> EventOutcome {
-    amalgamator_remove_basic_tagged(state, sts2_core::cards::CardTag::Defend, 2);
-    bugslayer_add_card(state, sts2_core::cards::CardId::UltimateDefend);
+    use sts2_core::cards::{CardId, CardTag};
+    if amalgamator_queue_pick(state, CardTag::Defend, CardId::UltimateDefend) {
+        return EventOutcome::finished("Pick 2 Defends to combine into an Ultimate Defend.");
+    }
+    amalgamator_remove_basic_tagged(state, CardTag::Defend, 2);
+    bugslayer_add_card(state, CardId::UltimateDefend);
     EventOutcome::finished("Removed 2 Defends, added Ultimate Defend.")
 }
 
@@ -1461,9 +1498,23 @@ fn grave_confront(state: &mut RunState) -> EventOutcome {
     // the Souls-Power enchant needs an enchant-selection surface (not yet wired)
     // so it's left unimplemented rather than faked with a phantom card-add —
     // dropping the phantom keeps deck size correct. Bead `sts2-rs-RP27`.
-    if let Some(card) =
-        crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
-    {
+    let decay = crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false);
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // v0.111.0: both steps run -- `AddCurseToDeck<Decay>` (a `CardPileCmd.Add`, so the deck-add hooks fire), then
+        // `FromDeckForEnchantment(SoulsPower, 1)` over the cards `SoulsPower.CanEnchant` accepts (they carry Exhaust):
+        // a real pick when more than one qualifies (the grid auto-takes at <= 1), then `Enchant<SoulsPower>`.
+        if let Some(card) = decay {
+            state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
+        }
+        let ench = sts2_core::cards::EnchantmentId::SoulsPower;
+        if !crate::relics::shop_event::try_queue_interactive_enchant(state, ench, 1, 1) {
+            let _ = crate::relics::shop_event::enchant_eligible_deck_cards(state, ench, 1, 1);
+        }
+        return EventOutcome::finished(
+            "Added Decay to the deck; enchanted a card with Soul's Power.",
+        );
+    }
+    if let Some(card) = decay {
         state.master_deck.push(card);
     }
     EventOutcome::finished("Added Decay to the deck (Soul's Power enchant deferred).")
@@ -2726,6 +2777,98 @@ mod tests {
             rs.pending_rewards,
             vec![Reward::RemoveCard { count: 1 }],
             "dark door is a removal, not a card reward"
+        );
+    }
+
+    /// v0.111.0 `Amalgamator.CombineStrikes` is a real `FromDeckForRemoval(2, IsValid(Strike))` pick in an interactive
+    /// host: the removal card_select offers only the removable Basic Strikes, and the Ultimate Strike lands once the two
+    /// picks are made. v0.107.1 (and a non-interactive host) removes the first two at once.
+    #[test]
+    fn amalgamator_interactive_pick_offers_only_basic_strikes_on_v0111_only() {
+        use sts2_core::cards::{CardId, CardTag};
+        crate::relics::dispatch::ensure_installed();
+        for (version, queued) in [
+            (sts2_core::GameVersion::V0_111_0, true),
+            (sts2_core::GameVersion::V0_107_1, false),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.interactive_card_removal = true;
+            rs.master_deck.clear();
+            for id in [
+                CardId::StrikeIronclad,
+                CardId::DefendIronclad,
+                CardId::StrikeIronclad,
+                CardId::Bash,
+                CardId::StrikeIronclad,
+            ] {
+                rs.master_deck
+                    .push(crate::cards::spec_index::card_pod_from_id(id, false).expect("spec"));
+            }
+            let outcome = (AMALGAMATOR.options[0].handler)(&mut rs);
+            assert!(outcome.finished);
+            if queued {
+                assert_eq!(rs.pending_deck_removals, 2, "{version:?}");
+                assert_eq!(rs.removal_basic_tag, Some(CardTag::Strike));
+                assert_eq!(rs.pending_post_removal_cards.len(), 1);
+                let offered: Vec<_> = rs
+                    .removal_offer_order()
+                    .iter()
+                    .map(|&i| rs.master_deck[i].card_id)
+                    .collect();
+                assert_eq!(
+                    offered,
+                    vec![CardId::StrikeIronclad; 3],
+                    "only the Basic Strikes"
+                );
+            } else {
+                assert_eq!(rs.pending_deck_removals, 0, "{version:?}");
+                assert!(rs
+                    .master_deck
+                    .iter()
+                    .any(|c| c.card_id == CardId::UltimateStrike));
+            }
+        }
+    }
+
+    /// v0.111.0 `GraveOfTheForgotten.Confront`: `AddCurseToDeck<Decay>` THEN `FromDeckForEnchantment(SoulsPower, 1)`.
+    /// With one Exhaust card the grid auto-takes and enchants it; with several an interactive host gets the pick.
+    /// v0.107.1 keeps adding only the Decay.
+    #[test]
+    fn grave_confront_enchants_an_exhaust_card_with_souls_power_on_v0111_only() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        crate::relics::dispatch::ensure_installed();
+        let mk = |id| crate::cards::spec_index::card_pod_from_id(id, false).expect("spec");
+        for version in [
+            sts2_core::GameVersion::V0_111_0,
+            sts2_core::GameVersion::V0_107_1,
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.master_deck = vec![mk(CardId::StrikeIronclad), mk(CardId::Offering)];
+            (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
+            assert_eq!(
+                rs.master_deck.last().map(|c| c.card_id),
+                Some(CardId::Decay)
+            );
+            let enchanted = rs
+                .master_deck
+                .iter()
+                .filter(|c| c.enchantment(EnchantmentId::SoulsPower) == 1)
+                .count();
+            let want = usize::from(version == sts2_core::GameVersion::V0_111_0);
+            assert_eq!(enchanted, want, "{version:?}");
+        }
+
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.interactive_card_transform = true;
+        rs.master_deck = vec![mk(CardId::Offering), mk(CardId::Offering)];
+        (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
+        assert_eq!(
+            rs.pending_deck_enchants.len(),
+            1,
+            "a real pick among two Exhaust cards"
         );
     }
 

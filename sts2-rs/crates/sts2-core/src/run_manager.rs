@@ -3632,6 +3632,9 @@ impl RunManager {
             staged.push(removed);
         }
         self.run_state.pending_deck_removals -= 1;
+        if self.run_state.pending_deck_removals == 0 {
+            self.run_state.removal_basic_tag = None;
+        }
         // Pael's Tooth: once the batch drains, store the staged cards ordered
         // by ordinal `Id.Entry` (`PaelsTooth.AfterObtained`'s `OrderBy`).
         if self.run_state.pending_deck_removals == 0 {
@@ -4983,6 +4986,22 @@ impl RunManager {
                 self.phase = Phase::MapChoice;
             }
             O::SmithAwaitingChoice => {}
+        }
+        // v0.111.0: the rest-site heal rewards (Tiny Mailbox's two potions, Dream Catcher's card, ...) are offered and
+        // claimed at once by `ExecuteRestSiteHeal`'s `OfferCustom`, so their `Rewards` rolls happen here, not at the
+        // next reward screen. A card reward they open is shown before the map.
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && self.phase == Phase::MapChoice
+            && !self.run_state.pending_rewards.is_empty()
+        {
+            let opened = self.drain_pending_rewards();
+            if opened
+                || !self.run_state.relic_rewards.is_empty()
+                || !self.run_state.pending_card_selects.is_empty()
+            {
+                self.phase = Phase::CardReward;
+                self.advance_after_card_reward();
+            }
         }
         outcome
     }
