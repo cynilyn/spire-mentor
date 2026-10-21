@@ -4800,16 +4800,18 @@ fn fur_coat_mark_rooms(rs: &mut RunState, act_map: &mut sts2_core::map::ActMap) 
     if existing_marks >= combats {
         return EffectResult::Resolved;
     }
+    let v0111 = rs.game_version >= sts2_core::GameVersion::V0_111_0;
     let mut candidates: Vec<MapCoord> = act_map
         .room_points()
         .iter()
         .filter(|p| matches!(p.point_type, MapPointType::Monster | MapPointType::Elite))
+        // v0.111.0 walks `GetAllMapPoints`, the live grid: path pruning leaves ghost nodes in `points`.
+        .filter(|p| !v0111 || act_map.grid.contains_key(&p.coord))
         .map(|p| MapCoord::new(p.col(), p.row()))
         .collect();
     if candidates.is_empty() {
         return EffectResult::NotImplemented;
     }
-    let v0111 = rs.game_version >= sts2_core::GameVersion::V0_111_0;
     if v0111 {
         candidates.sort_by_key(|c| (c.col, c.row));
     }
