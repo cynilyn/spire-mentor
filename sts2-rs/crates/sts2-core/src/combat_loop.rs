@@ -8216,6 +8216,20 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         }
     }
 
+    // v0.111.0 `CardModel.OnPlayWrapper` ends with `CombatManager.CheckForEmptyHand` (CardModel.cs:1636): once a
+    // hand-played card has reached its result pile, an empty hand fires `Hook.AfterHandEmptied` (Unceasing Top
+    // draws a card) -- unless the combat is over or ending.
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && state.phase == CombatPhase::PlayerPlayPhase
+        && state.player.hand.is_empty()
+        && !combat_is_ending(state)
+    {
+        let _ = crate::relic_effects::dispatch_after_hand_emptied(
+            state,
+            &crate::hooks::CombatLifecycleCtx::default(),
+        );
+    }
+
     // ── Combat-end check ─────────────────────────────────────────────────
     // Strike may have killed the last enemy → CombatWon.
     check_combat_end(state)

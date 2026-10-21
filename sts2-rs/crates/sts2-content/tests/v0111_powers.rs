@@ -1025,3 +1025,60 @@ fn draw_after_the_last_enemy_dies_moves_nothing_on_v0111_only() {
         assert_eq!(state.player.hand.len(), want, "{version:?}");
     }
 }
+
+/// Vexing Puzzlebox's card is free THIS TURN (`SetToFreeThisTurn`), not for the whole combat: v0.111.0 marks it
+/// `FreeThisTurn` and leaves its cost, v0.107.1 zeroed the cost for good.
+#[test]
+fn vexing_puzzlebox_card_is_free_this_turn_on_v0111_only() {
+    for (version, free_var, zero_cost) in [
+        (GameVersion::V0_111_0, 1, false),
+        (GameVersion::V0_107_1, 0, true),
+    ] {
+        let (mut state, _) = fresh(version);
+        sts2_content::relics::dispatch::ensure_installed();
+        state.round = 1;
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::VexingPuzzlebox,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let before = state.player.hand.len();
+        let _ = sts2_core::relic_effects::dispatch_after_side_turn_start(&mut state, Side::Player);
+        assert_eq!(state.player.hand.len(), before + 1, "{version:?}");
+        let uid = *state.player.hand.last().expect("generated card");
+        let card = &state.cards[uid.0.get() as usize - 1];
+        assert_eq!(
+            card.combat_var(sts2_core::cards::VarKey::FreeThisTurn),
+            free_var,
+            "{version:?}"
+        );
+        if zero_cost {
+            assert_eq!(card.cost, 0, "{version:?}");
+        }
+    }
+}
+
+/// Playing the last card of the hand fires `AfterHandEmptied` once the card is in its pile: Unceasing Top draws
+/// a card (v0.111.0 `CheckForEmptyHand`); v0.107.1 never dispatched the hook.
+#[test]
+fn unceasing_top_draws_after_the_hand_empties_on_v0111_only() {
+    for (version, want) in [(GameVersion::V0_111_0, 1), (GameVersion::V0_107_1, 0)] {
+        let (mut state, _) = fresh(version);
+        sts2_content::relics::dispatch::ensure_installed();
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::UnceasingTop,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        let filler = add_to_hand(&mut state, CardId::StrikeIronclad);
+        state.player.hand.retain(|u| *u != filler);
+        state.player.draw.push(filler);
+        add_to_hand(&mut state, CardId::DefendIronclad);
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+        assert_eq!(state.player.hand.len(), want, "{version:?}");
+    }
+}
