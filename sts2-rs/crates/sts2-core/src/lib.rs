@@ -6623,8 +6623,16 @@ impl CombatState {
             options.truncate(usize::from(u8::MAX));
         }
         let len_u8 = u8::try_from(options.len()).expect("len capped at 255 above");
-        let max_clamped = max_select.min(len_u8).max(1);
-        let min_clamped = min_select.min(max_clamped);
+        // v0.111.0: C# keeps the card's own `MaxSelect` even when fewer cards are offered
+        // (Purity 3 with 2 cards, Neow's Fury 2 with 1): the screen stays open after the last
+        // candidate is picked until the player confirms. Clipping the max made the pick confirm
+        // itself, so the cap now only keeps the `u8` index space honest.
+        let max_clamped = if self.game_version >= GameVersion::V0_111_0 {
+            max_select.max(1)
+        } else {
+            max_select.min(len_u8).max(1)
+        };
+        let min_clamped = min_select.min(max_clamped).min(len_u8);
         // Pile tracer (STS2_TRACE_PILES): emit the option list in PRESENTATION
         // ORDER so it diffs against the C# `SELECTTRACE` (the headless
         // `GetSelectedCards` order). For a draw-pile select C# re-sorts by
