@@ -1761,6 +1761,15 @@ pub(crate) fn run_turn_start_relic_tail(
     // `side_turn_start_fired` gate is retained for the `AfterPlayerTurnStart`
     // walk-resume path (always `false` there); Mayhem's own suspend resumes via
     // `mayhem_phase` above and never re-enters this point (bead `sts2-rs-o0rz3`).
+    // v0.111.0: `Hook.IterateCombatHookListeners` yields nothing once the combat is ending, and the
+    // turn-start damage above (MercuryHourglass, RollingBoulder) can be the killing blow, so settle
+    // the combat end first -- a Crossbow must not still draw its Attack on a won combat.
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && !state.is_over
+        && !side_turn_start_fired
+    {
+        let _ = check_combat_end(state);
+    }
     if !side_turn_start_fired && !state.is_over {
         fire_after_side_turn_start(state);
     }
@@ -12180,6 +12189,63 @@ mod tests {
             turret.block, 25,
             "Rampart grants its 25 block AFTER the hourglass damage lands",
         );
+    }
+
+    /// v0.111.0: when the turn-start damage (MercuryHourglass) is the killing blow, the combat is over
+    /// before `Hook.AfterSideTurnStart`, whose listener walk yields nothing on an ending combat -- so
+    /// HappyFlower never counts that turn. v0.107.1 still ran the hooks.
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn turn_start_kill_by_hourglass_skips_after_side_turn_start_on_v0111_only() {
+        crate::relic_effects::install_default_registry();
+        for (version, want_counter) in [
+            (crate::GameVersion::V0_111_0, 2),
+            (crate::GameVersion::V0_107_1, 3),
+        ] {
+            let mut state = CombatState {
+                rng: crate::dotnet_rng::Rng::new(0_i32),
+                game_version: version,
+                ..Default::default()
+            };
+            state.phase = CombatPhase::PlayerTurnStart;
+            state.round = 2;
+            state.player.current_hp = 50;
+            state.player.max_hp = 50;
+            let enemy_id = NonZeroU32::new(10).expect("non-zero");
+            state.creatures.push(Creature {
+                id: enemy_id,
+                current_hp: 3,
+                max_hp: 30,
+                block: 0,
+                powers: SmallVec::new(),
+                species: Some(MonsterKind::Nibbit),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                monster_id: crate::MonsterId("Nibbit"),
+                ai: None,
+            });
+            state.enemy_uids.push(CreatureUid(enemy_id));
+            let _ = state.init_player_creature();
+            for (i, kind, counter) in [
+                (100_u32, crate::RelicKind::MercuryHourglass, 0),
+                (101, crate::RelicKind::HappyFlower, 2),
+            ] {
+                state.relics.push(crate::Relic {
+                    id: NonZeroU32::new(i).expect("non-zero"),
+                    kind,
+                    counter,
+                    is_wax: false,
+                    is_melted: false,
+                });
+            }
+            start_player_turn(&mut state);
+            let counter = state
+                .relics
+                .iter()
+                .find(|r| r.kind == crate::RelicKind::HappyFlower)
+                .map(|r| r.counter);
+            assert_eq!(counter, Some(want_counter), "{version:?}");
+        }
     }
 
     /// Bead `sts2-rs-axdgh`: FestivePopper (round-1, 9 Unpowered damage) is the
