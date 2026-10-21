@@ -2046,10 +2046,20 @@ fn trial_guilty(state: &mut RunState) -> EventOutcome {
         }
         _ => {
             trial_add_curse(state, CardId::Doubt);
+            // C# `NondescriptGuilty`: two `CardReward`s of `ForNonCombatWithDefaultOdds` (base odds, no
+            // pity, `NoUpgradeRoll`), both populated by `OfferCustom` before the first is shown, so
+            // roll them here in order rather than lazily when each screen opens.
             for _ in 0..2 {
+                let options =
+                    crate::cards::spec_index::roll_character_reward_options_no_upgrade(state, 3);
+                let cards: Vec<sts2_core::Card> = options
+                    .into_iter()
+                    .filter_map(|id| crate::cards::spec_index::card_pod_from_id(id, false))
+                    .collect();
+                let cards = state.offer_card_slate(cards, true);
                 state
                     .pending_rewards
-                    .push(Reward::Card(CardReward::empty()));
+                    .push(Reward::Card(CardReward::from_cards(&cards)));
             }
         }
     }

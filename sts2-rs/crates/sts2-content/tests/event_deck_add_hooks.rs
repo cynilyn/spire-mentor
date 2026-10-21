@@ -97,3 +97,33 @@ fn trial_accept_opens_a_judgment_page_on_v0111_only() {
     old.enter_event_room(EventId::Trial);
     assert!(resolve(&mut old, "accept").expect("event active").finished);
 }
+
+/// The Nondescript judgment's two card rewards are populated up front (`OfferCustom`) and draw no upgrade
+/// float (`ForNonCombatWithDefaultOdds` sets `NoUpgradeRoll`): 6 draws each, 12 in all (v0.111.0).
+#[test]
+fn trial_nondescript_guilty_rolls_both_card_rewards_without_upgrade_floats() {
+    use sts2_content::events::dispatch::resolve;
+    sts2_content::relics::dispatch::ensure_installed();
+    let mut seen = false;
+    for seed in 1..60u64 {
+        let mut rs = RunState::new();
+        rs.game_version = GameVersion::V0_111_0;
+        rs.rng = sts2_core::run_rng_set::RunRngSet::new_for(GameVersion::V0_111_0, seed);
+        rs.enter_event_room(EventId::Trial);
+        let _ = resolve(&mut rs, "accept").expect("event active");
+        let before = rs.rng.rewards.counter();
+        let _ = resolve(&mut rs, "guilty").expect("event active");
+        if rs.pending_rewards.len() != 2 {
+            continue;
+        }
+        seen = true;
+        assert_eq!(rs.rng.rewards.counter() - before, 12, "seed {seed}");
+        for r in &rs.pending_rewards {
+            let sts2_core::Reward::Card(c) = r else {
+                panic!("card reward expected");
+            };
+            assert_eq!(c.options.len(), 3, "seed {seed}");
+        }
+    }
+    assert!(seen, "the Nondescript page is reachable");
+}
