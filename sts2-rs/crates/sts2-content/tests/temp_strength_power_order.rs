@@ -211,3 +211,69 @@ fn plain_enlightenment_cost_cap_expires_on_v0111_only() {
         assert_eq!(state.cards[1].cost, after_restore, "{version:?}");
     }
 }
+
+/// Philosopher's Stone's `AfterCreatureAddedToCombat` leg: an enemy summoned into a combat
+/// already under way gets +1 Strength (v0.111.0); one spawned during setup does not (the
+/// room-entry leg covers those).
+#[test]
+fn philosophers_stone_strengthens_summons_on_v0111_only() {
+    use sts2_core::CombatPhase;
+    let strength = |version: GameVersion, phase: CombatPhase| -> i32 {
+        let (mut state, _) = board(version, CardId::StrikeIronclad, TargetType::Enemy);
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(100).expect("non-zero"),
+            kind: sts2_core::RelicKind::PhilosophersStone,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        state.relics.ensure_plan();
+        state.phase = phase;
+        let uid = state.spawn_enemy(MonsterKind::Nibbit);
+        let creature = state
+            .creatures
+            .iter()
+            .find(|c| c.id == uid.0)
+            .expect("spawned");
+        creature
+            .powers
+            .iter()
+            .filter_map(|p| state.powers.iter().find(|q| q.id == p.0))
+            .filter(|p| p.kind == PowerKind::Strength)
+            .map(|p| p.amount)
+            .sum()
+    };
+    assert_eq!(
+        strength(GameVersion::V0_111_0, CombatPhase::EnemyTurnExec),
+        1
+    );
+    assert_eq!(strength(GameVersion::V0_111_0, CombatPhase::Setup), 0);
+    assert_eq!(
+        strength(GameVersion::V0_107_1, CombatPhase::EnemyTurnExec),
+        0
+    );
+}
+
+/// Brilliant Scarf: the fifth card of a turn costs 0 (`TryModifyEnergyCostInCombatLate`),
+/// so every hand card reads 0 once four have been played (v0.111.0).
+#[test]
+fn brilliant_scarf_zeroes_the_fifth_card_cost_on_v0111_only() {
+    let cost = |version: GameVersion, plays: i32| -> i32 {
+        let (mut state, _) = board(version, CardId::StrikeIronclad, TargetType::Enemy);
+        let uid = state.player.play.pop().expect("strike in play");
+        state.player.hand.push(uid);
+        state.cards[0].cost = 2;
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(100).expect("non-zero"),
+            kind: sts2_core::RelicKind::BrilliantScarf,
+            counter: plays,
+            is_wax: false,
+            is_melted: false,
+        });
+        state.relics.ensure_plan();
+        sts2_core::hooks::effective_card_cost(&state, uid)
+    };
+    assert_eq!(cost(GameVersion::V0_111_0, 4), 0);
+    assert_eq!(cost(GameVersion::V0_111_0, 3), 2);
+    assert_eq!(cost(GameVersion::V0_107_1, 4), 2);
+}

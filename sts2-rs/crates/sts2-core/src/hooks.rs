@@ -13059,6 +13059,31 @@ pub fn effective_card_cost_inst_with_mask(
     card_uid: CardUid,
     mods_present: bool,
 ) -> i32 {
+    let cost = effective_card_cost_inst_with_mask_base(state, card, card_uid, mods_present);
+    // v0.111.0 `BrilliantScarf.TryModifyEnergyCostInCombatLate`: once four cards have been
+    // played this turn (`CardsPlayedThisTurn == Cards(5) - 1`) every card in hand (or being
+    // played) costs an absolute 0. A Late modifier, so it overrides the walk above.
+    if cost > 0
+        && state.game_version >= crate::GameVersion::V0_111_0
+        && !card.is_x_cost()
+        && state.relics.owns(crate::RelicKind::BrilliantScarf)
+        && state
+            .relics
+            .iter()
+            .any(|r| r.kind == crate::RelicKind::BrilliantScarf && !r.is_melted && r.counter == 4)
+        && (state.player.hand.contains(&card_uid) || state.player.play.contains(&card_uid))
+    {
+        return 0;
+    }
+    cost
+}
+
+fn effective_card_cost_inst_with_mask_base(
+    state: &CombatState,
+    card: &crate::cards::Card,
+    card_uid: CardUid,
+    mods_present: bool,
+) -> i32 {
     // Bead `sts2-rs-c68o`: per-card `FreeThisTurn` rider zeroes the cost
     // BEFORE the modify_card_cost listener walk. Set by `InfernalBlade` on
     // the random Attack it spawns into hand; cleared by end-of-turn cleanup
