@@ -1351,7 +1351,19 @@ pub fn dispatch_modify_rest_site_options(
     if is_empty_modify_rest_site_options() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_modify_rest_site_options();
+    let mut listeners = listeners_modify_rest_site_options();
+    // v0.111.0: `Hook.ModifyRestSiteOptions` walks the player's relics in the order
+    // they were obtained (`Player.Relics`), so Shovel's Dig precedes Girya's Lift if
+    // the Shovel came first. The registry iterates in relic-id order instead.
+    if run_state.game_version >= crate::GameVersion::V0_111_0 {
+        listeners.sort_by_key(|(id, _)| {
+            run_state
+                .relics
+                .iter()
+                .position(|r| r == id)
+                .unwrap_or(usize::MAX)
+        });
+    }
     let mut any_resolved = false;
     for (_id, f) in listeners {
         if f(run_state, options) == EffectResult::Resolved {
