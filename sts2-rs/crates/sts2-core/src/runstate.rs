@@ -1526,6 +1526,11 @@ pub struct RunState {
     /// `Id.Entry` into [`Self::paels_tooth_stored`].
     pub paels_stash_pending: Option<Vec<crate::cards::Card>>,
 
+    /// v0.111.0: how many cards have gone through [`Self::add_card_to_deck_with_hooks`]
+    /// (the deck-add hooks: eggs, Lucky Fysh ...). Lets a caller that appends cards to the
+    /// deck directly tell which of them already had the hooks run.
+    pub deck_add_hooks_fired: u32,
+
     /// v0.111.0: the map point carrying the SpoilsMap quest (the act-2
     /// treasure node of a map generated while the card was in the deck);
     /// cleared on every map generation and when the quest completes.
@@ -2074,6 +2079,7 @@ impl Default for RunState {
             interactive_card_removal: false,
             pending_deck_removals: 0,
             paels_stash_pending: None,
+            deck_add_hooks_fired: 0,
             spoils_quest_coord: None,
             rooms_at_point: 0,
             removal_basic_tag: None,
@@ -4595,6 +4601,7 @@ impl RunState {
             source,
         };
         self.master_deck.push(card);
+        self.deck_add_hooks_fired = self.deck_add_hooks_fired.saturating_add(1);
         let _ = crate::run_effects::dispatch_on_card_added_to_deck(self, &ctx);
     }
 

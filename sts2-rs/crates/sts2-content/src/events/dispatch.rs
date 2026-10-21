@@ -160,6 +160,35 @@ pub fn present(state: &RunState) -> Option<Vec<EventOptionInfo>> {
     Some(opts)
 }
 
+/// v0.111.0: cards an event handler appended straight to the deck go through the
+/// deck-add hooks C#'s `CardPileCmd.Add(card, Deck)` runs (`ModifyCardBeingAddedToDeck`:
+/// the eggs' upgrade; `AfterCardChangedPiles`: Lucky Fysh's gold, ...). Most handlers still
+/// `master_deck.push` directly, so the hooks are run here for the cards that did not already
+/// pass through [`RunState::add_card_to_deck_with_hooks`] (counted by `deck_add_hooks_fired`).
+fn fire_deck_add_hooks_for_event_cards(state: &mut RunState, len_before: usize, fired_before: u32) {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return;
+    }
+    let added = state.master_deck.len().saturating_sub(len_before);
+    let hooked = state.deck_add_hooks_fired.saturating_sub(fired_before) as usize;
+    let unhooked = added.saturating_sub(hooked);
+    if unhooked == 0 {
+        return;
+    }
+    let start = state.master_deck.len() - unhooked;
+    for i in start..state.master_deck.len() {
+        let mut card = state.master_deck[i].clone();
+        state.modify_card_being_added_to_deck(&mut card);
+        let ctx = sts2_core::run_effects::CardAddedRunCtx {
+            card_id: card.card_id,
+            card_type: card.card_type,
+            source: sts2_core::relic_effects::AddSource::Other,
+        };
+        state.master_deck[i] = card;
+        let _ = sts2_core::run_effects::dispatch_on_card_added_to_deck(state, &ctx);
+    }
+}
+
 /// Resolve a choice for the event currently active in
 /// [`RunState::current_event`] by `option_id`. Applies the matching
 /// handler, clears `current_event` on a finished outcome, and
@@ -171,11 +200,13 @@ pub fn resolve(state: &mut RunState, option_id: &str) -> Option<EventOutcome> {
     let id = state.current_event?;
     let spec = spec_for(id);
     let opt = spec.options.iter().find(|o| o.option_id == option_id)?;
+    let (deck_len, hooks_fired) = (state.master_deck.len(), state.deck_add_hooks_fired);
     let outcome = (opt.handler)(state);
     // Bead sts2-rs-bv816: declarative effects fire BEFORE the
     // current_event slot is cleared so a hypothetical mid-chain
     // hook reading current_event still sees the right id.
     apply_event_effects(state, &outcome.effects);
+    fire_deck_add_hooks_for_event_cards(state, deck_len, hooks_fired);
     if outcome.finished {
         state.exit_event_room();
     }
@@ -201,8 +232,10 @@ pub fn resolve_by_index(state: &mut RunState, option_idx: usize) -> Option<Event
         .options
         .iter()
         .find(|o| o.option_id == info.option_id)?;
+    let (deck_len, hooks_fired) = (state.master_deck.len(), state.deck_add_hooks_fired);
     let outcome = (opt.handler)(state);
     apply_event_effects(state, &outcome.effects);
+    fire_deck_add_hooks_for_event_cards(state, deck_len, hooks_fired);
     if outcome.finished {
         state.exit_event_room();
     }
