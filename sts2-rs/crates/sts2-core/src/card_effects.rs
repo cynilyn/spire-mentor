@@ -3956,6 +3956,12 @@ pub fn card_exhausts_inst(card: &Card) -> bool {
 /// pile instead of the exhaust pile. v0.111.0 only (v0.107.1 behaviour stays as shipped).
 #[must_use]
 pub fn card_exhausts_for(state: &crate::CombatState, card: &Card) -> bool {
+    // v0.111.0 `SoulsPower.OnEnchant` removes the Exhaust keyword (Grave of the Forgotten).
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && card.has_enchantment(crate::cards::EnchantmentId::SoulsPower)
+    {
+        return false;
+    }
     card_exhausts_inst(card)
         || (state.game_version >= crate::GameVersion::V0_111_0
             && card.has_enchantment(crate::cards::EnchantmentId::Goopy))
