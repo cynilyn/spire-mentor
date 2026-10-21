@@ -164,7 +164,7 @@ fn normality_vetoes_an_auto_played_attack_on_v0111_only() {
         let strike = state.player.play.pop().expect("strike in play");
         state.player.hand.push(strike);
         let uid = CardUid::new(2).expect("non-zero uid");
-        let mut normality = state.cards[0].clone();
+        let mut normality = state.cards[0];
         normality.uid = uid;
         normality.card_id = CardId::Normality;
         normality.card_type = CardType::Curse;
@@ -194,7 +194,7 @@ fn plain_enlightenment_cost_cap_expires_on_v0111_only() {
     for (version, after_restore) in [(GameVersion::V0_111_0, 3), (GameVersion::V0_107_1, 1)] {
         let (mut state, _) = board(version, CardId::Enlightenment, TargetType::Self_);
         let hand = {
-            let mut c = state.cards[0].clone();
+            let mut c = state.cards[0];
             c.uid = CardUid::new(2).expect("non-zero uid");
             c.card_id = CardId::StrikeIronclad;
             c.card_type = CardType::Attack;

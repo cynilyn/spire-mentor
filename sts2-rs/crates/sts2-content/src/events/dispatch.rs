@@ -177,7 +177,7 @@ fn fire_deck_add_hooks_for_event_cards(state: &mut RunState, len_before: usize, 
     }
     let start = state.master_deck.len() - unhooked;
     for i in start..state.master_deck.len() {
-        let mut card = state.master_deck[i].clone();
+        let mut card = state.master_deck[i];
         state.modify_card_being_added_to_deck(&mut card);
         let ctx = sts2_core::run_effects::CardAddedRunCtx {
             card_id: card.card_id,
