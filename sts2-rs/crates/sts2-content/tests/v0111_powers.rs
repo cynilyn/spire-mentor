@@ -944,3 +944,24 @@ fn fur_coat_room_spawns_enemies_at_one_hp() {
     assert_eq!(hp.0, 1);
     assert!(hp.1 > 1);
 }
+
+/// A card generated after the killing blow is never added to a pile (v0.111.0 `AddGeneratedCardsToCombat`
+/// needs the combat in progress); v0.107.1 still dropped it into the discard pile.
+#[test]
+fn generated_card_after_the_last_enemy_dies_reaches_no_pile_on_v0111_only() {
+    for (version, want) in [(GameVersion::V0_111_0, 0), (GameVersion::V0_107_1, 1)] {
+        let (mut state, enemy) = fresh(version);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+            c.current_hp = 0;
+        }
+        let card = sts2_core::lookup_card_factory()
+            .and_then(|f| f(CardId::StrikeIronclad, false))
+            .expect("card factory has the card");
+        let _ = sts2_core::card_effects::spawn_card_into_pile(
+            &mut state,
+            card,
+            sts2_core::card_effects::PileKind::Discard,
+        );
+        assert_eq!(state.player.discard.len(), want, "{version:?}");
+    }
+}

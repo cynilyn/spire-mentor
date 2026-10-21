@@ -2069,6 +2069,14 @@ where
     None
 }
 
+/// v0.111.0 `CardPileCmd.AddGeneratedCardsToCombat` returns at once unless `CombatManager.IsInProgress`:
+/// a card generated after the killing blow (Anger's copy, a Status from an OnPlay) is never added, so it
+/// reaches no pile, rolls no cost (Snecko Eye / Confused) and fires no generation hook.
+fn generation_blocked(state: &CombatState) -> bool {
+    state.game_version >= crate::GameVersion::V0_111_0
+        && crate::combat_loop::combat_is_ending(state)
+}
+
 /// Allocate a fresh [`CardUid`] in `state.cards` for the supplied `card`
 /// POD and enqueue it into `pile`. Returns the assigned `CardUid` so the
 /// caller can bookkeep (tests, attached-power references).
@@ -2121,6 +2129,10 @@ pub fn spawn_card_into_pile_with_origin(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
+    if generation_blocked(state) {
+        state.cards.push(card);
+        return uid;
+    }
     // C# `CardModel.DeckVersion == null` for combat-generated cards — the
     // marker deck-scoped pickers (ThievingHopper steal) filter on.
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
@@ -2170,6 +2182,10 @@ pub fn spawn_card_into_draw_pile_random(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
+    if generation_blocked(state) {
+        state.cards.push(card);
+        return uid;
+    }
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
@@ -2757,6 +2773,10 @@ pub fn spawn_card_into_draw_pile_bottom(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
+    if generation_blocked(state) {
+        state.cards.push(card);
+        return uid;
+    }
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
@@ -2818,6 +2838,10 @@ pub fn spawn_card_into_hand_with_origin(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
+    if generation_blocked(state) {
+        state.cards.push(card);
+        return uid;
+    }
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
     card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).

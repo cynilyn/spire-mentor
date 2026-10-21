@@ -3246,6 +3246,8 @@ mod tests {
             let mut combat =
                 combat_with_monster(sts2_core::MonsterKind::TestSubject, "TestSubject");
             combat.game_version = version;
+            // a living player: generation needs the combat still in progress
+            combat.player.current_hp = 50;
             let owner = sts2_core::CreatureUid::new(1).expect("nz");
             let (hand, discard) = (combat.player.hand.len(), combat.player.discard.len());
             test_subject_burning_growl_effect(&mut combat, owner);
