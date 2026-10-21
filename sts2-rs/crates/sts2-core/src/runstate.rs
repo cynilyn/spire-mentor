@@ -753,6 +753,8 @@ pub struct PendingDeckTransform {
     /// `WhisperingHollow.Hug` fires `CreatureCmd.Damage(9, Unblockable)`
     /// only AFTER the picked card transforms. `0` = none.
     pub post_hp_loss: i32,
+    /// Upgrade the rolled replacement (C# `Astrolabe`: `CardCmd.Upgrade(newCard)` before the transform).
+    pub upgrade_result: bool,
 }
 
 /// One queued interactive deck-enchant pick (see

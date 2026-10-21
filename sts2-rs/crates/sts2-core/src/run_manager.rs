@@ -4016,8 +4016,12 @@ impl RunManager {
             self.run_state.master_deck.push(replacement);
         } else if let Some(roll) = self.callbacks.roll_transform_replacement {
             let original = self.run_state.master_deck[deck_idx].card_id;
-            if let Some(replacement) = roll(&mut self.run_state, original, entry.event_stream_roll)
+            if let Some(mut replacement) =
+                roll(&mut self.run_state, original, entry.event_stream_roll)
             {
+                if entry.upgrade_result {
+                    replacement.upgrade_for(self.run_state.game_version);
+                }
                 self.run_state.master_deck.remove(deck_idx);
                 self.run_state.master_deck.push(replacement);
             }

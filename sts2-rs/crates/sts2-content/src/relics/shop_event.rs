@@ -3774,6 +3774,19 @@ fn listener_astrolabe(rs: &mut RunState) -> EffectResult {
     if rs.master_deck.is_empty() {
         return EffectResult::Resolved;
     }
+    // v0.111.0 `Astrolabe.AfterObtained`: the player picks 3 deck cards (`FromDeckForTransformation`), each is
+    // transformed (`CreateRandomCardForTransform`, `Rng.Niche`) and upgraded. Hosts that surface deck picks
+    // get the real prompt; the others keep the random stand-in below.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 && rs.interactive_card_transform {
+        for _ in 0..ASTROLABE_CARDS.min(rs.master_deck.len()) {
+            rs.pending_deck_transforms
+                .push(sts2_core::runstate::PendingDeckTransform {
+                    upgrade_result: true,
+                    ..Default::default()
+                });
+        }
+        return EffectResult::Resolved;
+    }
     // Candidate set: deck indices whose cards are transformable.
     // Python skips curses/statuses; the Rust master_deck does not
     // currently hold curses, so the filter degrades to "all indices"
@@ -12225,6 +12238,34 @@ mod tests {
         let belt_before = s.player.potions.clone();
         let _ = dispatch_before_combat_start(&mut s);
         assert_eq!(s.player.potions, belt_before, "full belt must be untouched");
+    }
+
+    /// v0.111.0 Astrolabe lets the player pick its 3 deck cards (queued as upgrading deck transforms) on a host
+    /// that surfaces deck picks; v0.107.1 keeps the random stand-in.
+    #[test]
+    fn astrolabe_queues_three_picks_on_an_interactive_v0111_host() {
+        use sts2_core::cards::CardId;
+        use sts2_core::run_effects::dispatch_after_obtained;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        for (version, want_queued) in [
+            (sts2_core::GameVersion::V0_111_0, 3),
+            (sts2_core::GameVersion::V0_107_1, 0),
+        ] {
+            let mut rs = RunState::new().with_rewards_seed(0xa57_201ab);
+            rs.game_version = version;
+            rs.interactive_card_transform = true;
+            for _ in 0..10 {
+                let mut c = sts2_core::Card::pod_defaults();
+                c.card_id = CardId::StrikeIronclad;
+                rs.master_deck.push(c);
+            }
+            rs.relics.push(RelicId::Astrolabe);
+            rs.last_obtained_relic = Some(RelicId::Astrolabe);
+            let _ = dispatch_after_obtained(&mut rs);
+            assert_eq!(rs.pending_deck_transforms.len(), want_queued, "{version:?}");
+            assert!(rs.pending_deck_transforms.iter().all(|t| t.upgrade_result));
+        }
     }
 
     /// Bead `sts2-rs-70anj.3.9`: Astrolabe transforms ASTROLABE_CARDS (=3)
