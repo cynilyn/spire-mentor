@@ -1207,7 +1207,12 @@ pub(crate) fn finish_player_turn_setup(state: &mut CombatState) -> StepResult {
     // fires here (combat.py round-1 Imbued auto-play site). The
     // dispatcher early-outs when the draw pile carries no
     // enchantments; the per-card stub is a no-op at this surface bead.
-    crate::enchantment_hooks::dispatch_after_player_turn_start(state);
+    // v0.111.0: Imbued's auto-play is `AfterAutoPrePlayPhaseEntered` (Imbued.cs:15), so it runs from
+    // `finish_turn_start_tail`, after the relic `AfterPlayerTurnStart` bus (a Gambling Chip prompt) and
+    // `AfterSideTurnStart`.
+    if state.game_version < crate::GameVersion::V0_111_0 {
+        crate::enchantment_hooks::dispatch_after_player_turn_start(state);
+    }
 
     // ── `AfterPlayerTurnStart` auto-play cluster (single ordered walk) ──────
     //
@@ -1951,6 +1956,11 @@ fn whispering_earring_turn_one(state: &mut CombatState) {
 /// `PlayerPlayPhase`, the `before_play_phase_start` relic dispatch, and a final
 /// combat-end re-check. Bead `sts2-rs-181`.
 fn finish_turn_start_tail(state: &mut CombatState) -> StepResult {
+    // v0.111.0 `Imbued.AfterAutoPrePlayPhaseEntered`: the first-turn auto-play of Imbued cards (see the
+    // note at the old call site in `run_after_player_turn_start_cluster`).
+    if state.game_version >= crate::GameVersion::V0_111_0 && !state.is_over {
+        crate::enchantment_hooks::dispatch_after_player_turn_start(state);
+    }
     // Step 10: combat-end check. Hooks / turn-start auto-plays fired
     // between steps 5-9 may have downed the last enemy. Use the FULL
     // `check_combat_end` (not a bare `is_over` read): a turn-start

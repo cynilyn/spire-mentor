@@ -6803,6 +6803,12 @@ impl CombatState {
         // draw gate (`cards::draw_via_state`) + the `draw_suspending`
         // skip-reshuffle-when-ending idiom (PARITY86); reads no RNG either way.
         // While combat is LIVE `combat_is_ending` is false → normal reshuffle.
+        // v0.111.0 `CardPileCmd.DrawInternal` returns an empty draw at its head when the combat is over or ending
+        // (CardPileCmd.cs:955): nothing moves, so no Confused / Snecko cost roll and no on-draw rider fires.
+        if self.game_version >= GameVersion::V0_111_0 && crate::combat_loop::combat_is_ending(self)
+        {
+            return 0;
+        }
         let n = if crate::combat_loop::combat_is_ending(self) {
             n.min(i32::try_from(self.player.draw.len()).unwrap_or(i32::MAX))
         } else {

@@ -965,3 +965,63 @@ fn generated_card_after_the_last_enemy_dies_reaches_no_pile_on_v0111_only() {
         assert_eq!(state.player.discard.len(), want, "{version:?}");
     }
 }
+
+/// Imbued's first-turn auto-play is `AfterAutoPrePlayPhaseEntered`: it comes after the Gambling Chip prompt
+/// (relic `AfterPlayerTurnStart`), so no Block is on the player while the prompt is open (v0.111.0).
+#[test]
+fn imbued_auto_play_waits_for_the_gambling_chip_prompt_on_v0111() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    sts2_content::relics::dispatch::ensure_installed();
+    state.round = 1;
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::GamblingChip,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let uid = add_to_hand(&mut state, CardId::DefendIronclad);
+    state.cards[uid.0.get() as usize - 1]
+        .add_enchantment(sts2_core::cards::EnchantmentId::Imbued, 1);
+    state.player.hand.retain(|u| *u != uid);
+    for _ in 0..6 {
+        let filler = add_to_hand(&mut state, CardId::StrikeIronclad);
+        state.player.hand.retain(|u| *u != filler);
+        state.player.draw.push(filler);
+    }
+    state.player.draw.push(uid);
+    state.phase = CombatPhase::PlayerTurnStart;
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+    assert!(
+        state.pending_choice.is_some(),
+        "the Gambling Chip prompt is open"
+    );
+    assert_eq!(state.player.block, 0, "Imbued has not played yet");
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::SmallVec::new(),
+        },
+    );
+    assert_eq!(
+        state.player.block, 5,
+        "Imbued Defend played after the prompt"
+    );
+}
+
+/// A card-effect draw after the killing blow moves nothing (v0.111.0 `DrawInternal` returns early on an
+/// ending combat); v0.107.1 still drew.
+#[test]
+fn draw_after_the_last_enemy_dies_moves_nothing_on_v0111_only() {
+    for (version, want) in [(GameVersion::V0_111_0, 0), (GameVersion::V0_107_1, 1)] {
+        let (mut state, enemy) = fresh(version);
+        let uid = add_to_hand(&mut state, CardId::StrikeIronclad);
+        state.player.hand.retain(|u| *u != uid);
+        state.player.draw.push(uid);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+            c.current_hp = 0;
+        }
+        let _ = state.draw_into_hand_card_effect(1);
+        assert_eq!(state.player.hand.len(), want, "{version:?}");
+    }
+}
