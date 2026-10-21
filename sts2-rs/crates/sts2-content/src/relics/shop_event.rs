@@ -1565,9 +1565,24 @@ fn listener_tanxs_whistle(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::TanxsWhistle) {
         return EffectResult::NotImplemented;
     }
-    let mut card = sts2_core::cards::Card::pod_defaults();
-    card.card_id = sts2_core::cards::CardId::Whistle;
-    card.upgraded = false;
+    let card = if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // The v0.111.0 card costs 2 and deals 33 damage. Use its full spec
+        // instead of the generic POD's cost 1 and zero damage.
+        let Some(card) = crate::cards::v0111::card_pod_for(
+            sts2_core::cards::CardId::Whistle,
+            false,
+            rs.game_version,
+        ) else {
+            return EffectResult::NotImplemented;
+        };
+        card
+    } else {
+        // Preserve the v0.107.1 listener's existing POD behavior.
+        let mut card = sts2_core::cards::Card::pod_defaults();
+        card.card_id = sts2_core::cards::CardId::Whistle;
+        card.upgraded = false;
+        card
+    };
     rs.master_deck.push(card);
     EffectResult::Resolved
 }
@@ -5802,18 +5817,39 @@ mod tests {
     /// `TanxsWhistle::after_obtained` adds 1 unupgraded `Whistle` to
     /// the run-side master deck.
     #[test]
-    fn listener_tanxs_whistle_adds_whistle_to_master_deck_on_obtain() {
+    fn listener_tanxs_whistle_preserves_legacy_and_uses_v0111_whistle_spec() {
         use sts2_core::runstate::RunState;
+        crate::cards::dispatch::ensure_installed();
         crate::relics::dispatch::ensure_installed();
+        for (version, cost, damage) in [
+            (sts2_core::GameVersion::V0_107_1, 1, 0),
+            (sts2_core::GameVersion::V0_111_0, 2, 33),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::TanxsWhistle);
+            rs.last_obtained_relic = Some(RelicId::TanxsWhistle);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(rs.master_deck.len(), 1, "{version:?}");
+            let added = &rs.master_deck[0];
+            assert_eq!(added.card_id, sts2_core::cards::CardId::Whistle);
+            assert!(!added.upgraded);
+            assert_eq!(added.cost, cost, "{version:?}");
+            assert_eq!(added.base_damage, damage, "{version:?}");
+            assert_eq!(added.card_type, sts2_core::cards::CardType::Attack);
+            assert_eq!(added.target_type, sts2_core::cards::TargetType::Enemy);
+            assert_eq!(added.base_block, 0);
+            assert!(sts2_core::card_effects::card_exhausts_inst(added));
+        }
 
-        let mut rs = RunState::new();
-        rs.relics.push(RelicId::TanxsWhistle);
-        rs.last_obtained_relic = Some(RelicId::TanxsWhistle);
-        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        assert_eq!(rs.master_deck.len(), 1);
-        let added = &rs.master_deck[0];
-        assert_eq!(added.card_id, sts2_core::cards::CardId::Whistle);
-        assert!(!added.upgraded);
+        let upgraded = crate::cards::v0111::card_pod_for(
+            sts2_core::cards::CardId::Whistle,
+            true,
+            sts2_core::GameVersion::V0_111_0,
+        )
+        .expect("upgraded Whistle spec");
+        assert_eq!(upgraded.cost, 2);
+        assert_eq!(upgraded.base_damage, 44);
     }
 
     /// Bead `sts2-rs-70anj.4` (Wave 4 body-fill, batch 2):
