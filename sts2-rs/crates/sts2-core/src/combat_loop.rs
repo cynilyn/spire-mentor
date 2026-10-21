@@ -9781,7 +9781,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
         energy_spent: 0,
     };
     if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
-        let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+        let _ = dispatch_after_auto_played_relics(state, &played_ctx);
     }
     let hook_played_ctx = CardCtx {
         card_id: Some(top_card_id),
@@ -9906,7 +9906,7 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
                 .card_plays_finished_this_turn
                 .saturating_add(1);
             if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
-                let _ = crate::relic_effects::dispatch_after_card_played(state, &played_ctx);
+                let _ = dispatch_after_auto_played_relics(state, &played_ctx);
             }
             hooks::dispatch_after_card_played(state, &hook_played_ctx);
             // Bead `sts2-rs-50un1`: each auto-play replay is its own C#
@@ -20144,4 +20144,17 @@ mod tests {
         super::dispatch_after_death_listeners(&mut state);
         assert!(state.combat_log.newly_dead_this_turn.is_empty());
     }
+}
+
+/// `relic_effects::dispatch_after_card_played` for an AUTO-PLAYED card: raises
+/// [`crate::TurnEvents::resolving_auto_play`] so a listener can tell it apart (C# `cardPlay.IsAutoPlay`,
+/// which `BrilliantScarf.AfterCardPlayed` skips).
+fn dispatch_after_auto_played_relics(
+    state: &mut CombatState,
+    ctx: &crate::relic_effects::CardEventCtx,
+) -> crate::EffectResult {
+    let prev = std::mem::replace(&mut state.combat_log.resolving_auto_play, true);
+    let out = crate::relic_effects::dispatch_after_card_played(state, ctx);
+    state.combat_log.resolving_auto_play = prev;
+    out
 }

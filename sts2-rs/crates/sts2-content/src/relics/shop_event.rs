@@ -2159,6 +2159,12 @@ fn listener_brilliant_scarf_card_played(
     state: &mut CombatState,
     _ctx: &CardEventCtx,
 ) -> EffectResult {
+    // v0.111.0 `BrilliantScarf.AfterCardPlayed` skips `cardPlay.IsAutoPlay`.
+    if state.game_version >= sts2_core::GameVersion::V0_111_0
+        && state.combat_log.resolving_auto_play
+    {
+        return EffectResult::NotImplemented;
+    }
     for relic in &mut state.relics {
         if relic.is_melted {
             continue;
@@ -11085,6 +11091,40 @@ mod tests {
             .find(|r| !r.is_melted && r.kind == RelicKind::BrilliantScarf)
             .map_or(99, |r| r.counter);
         assert_eq!(counter_after_reset, 0);
+    }
+
+    /// `BrilliantScarf.AfterCardPlayed` skips auto-plays from v0.111.0 on.
+    #[test]
+    fn listener_brilliant_scarf_skips_auto_plays_on_v0111_only() {
+        use sts2_core::cards::CardId;
+        use sts2_core::relic_effects::{dispatch_after_card_played, CardEventCtx};
+        crate::relics::dispatch::ensure_installed();
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, 1),
+            (sts2_core::GameVersion::V0_107_1, 2),
+        ] {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            equip_relic(&mut state, RelicKind::BrilliantScarf);
+            let ctx = CardEventCtx {
+                card_id: CardId::StrikeIronclad,
+                card_uid: None,
+                target: None,
+                card_tags: sts2_core::cards::CardTags::NONE,
+                energy_spent: 0,
+            };
+            let _ = dispatch_after_card_played(&mut state, &ctx);
+            state.combat_log.resolving_auto_play = true;
+            let _ = dispatch_after_card_played(&mut state, &ctx);
+            let counter = state
+                .relics
+                .iter()
+                .find(|r| !r.is_melted && r.kind == RelicKind::BrilliantScarf)
+                .map_or(99, |r| r.counter);
+            assert_eq!(counter, want, "{version:?}");
+        }
     }
 
     #[test]

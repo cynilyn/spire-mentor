@@ -855,3 +855,37 @@ fn diamond_diadem_power_is_inert_v0111() {
         );
     }
 }
+
+/// A Stomp played as the turn's 3rd Attack under Juggling: the copy keeps the cost it was cloned with
+/// (the discount for this very Attack does not reach it).
+fn juggled_stomp_copy_cost(version: GameVersion) -> Option<i8> {
+    let (mut state, _) = fresh(version);
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Juggling, 1);
+    for pid in state.player_power_uids() {
+        if let Some(pw) = state.powers.get_mut_by_id(pid.0) {
+            if pw.kind == PowerKind::Juggling {
+                pw.counter = 2;
+            }
+        }
+    }
+    let uid = add_to_hand(&mut state, CardId::Stomp);
+    let idx = uid.0.get() as usize - 1;
+    state.cards[idx].cost = 1;
+    state.cards[idx].set_combat_var(sts2_core::cards::VarKey::StompCostReductionThisTurn, 2);
+    state.player.cards_played_this_turn[sts2_core::cards::CardType::Attack.index()] = 2;
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    state
+        .player
+        .hand
+        .iter()
+        .map(|u| &state.cards[u.0.get() as usize - 1])
+        .find(|c| c.card_id == CardId::Stomp)
+        .map(|c| c.cost)
+}
+
+#[test]
+fn juggled_stomp_copy_keeps_its_cloned_cost_on_v0111_only() {
+    assert_eq!(juggled_stomp_copy_cost(GameVersion::V0_111_0), Some(1));
+    assert_ne!(juggled_stomp_copy_cost(GameVersion::V0_107_1), Some(1));
+}
