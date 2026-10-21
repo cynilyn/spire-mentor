@@ -1,0 +1,816 @@
+[
+ {
+  "monster": "Aeonglass",
+  "state": "EBB_MOVE",
+  "cs_move": "EBB_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Aeonglass.cs:106",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "Aeonglass",
+  "state": "INCREASING_INTENSITY_MOVE",
+  "cs_move": "INCREASING_INTENSITY_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Aeonglass.cs:108",
+  "kinds": [
+   "StatusCard",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "AxeRubyRaider",
+  "state": "SWING_1",
+  "cs_move": "SWING_1",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/AxeRubyRaider.cs:35",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "AxeRubyRaider",
+  "state": "SWING_2",
+  "cs_move": "SWING_2",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/AxeRubyRaider.cs:36",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "Axebot",
+  "state": "BOOT_UP",
+  "cs_move": "BOOT_UP_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Axebot.cs:95",
+  "kinds": [
+   "Defend",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "Axebot",
+  "state": "HAMMER_UPPERCUT",
+  "cs_move": "HAMMER_UPPERCUT_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Axebot.cs:97",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "BowlbugEgg",
+  "state": "BITE",
+  "cs_move": "BITE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/BowlbugEgg.cs:62",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "CeremonialBeast",
+  "state": "PLOW",
+  "cs_move": "PLOW_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/CeremonialBeast.cs:147",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "CeremonialBeast",
+  "state": "CRUSH",
+  "cs_move": "CRUSH_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/CeremonialBeast.cs:154",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "Crusher",
+  "state": "BUG_STING",
+  "cs_move": "BUG_STING_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Crusher.cs:98",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "Crusher",
+  "state": "GUARDED_STRIKE",
+  "cs_move": "GUARDED_STRIKE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Crusher.cs:100",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "CubexConstruct",
+  "state": "REPEATER",
+  "cs_move": "REPEATER_BLAST_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/CubexConstruct.cs:115",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "DecimillipedeSegment",
+  "state": "BULK",
+  "cs_move": "BULK_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/DecimillipedeSegment.cs:150",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "DecimillipedeSegment",
+  "state": "CONSTRICT",
+  "cs_move": "CONSTRICT_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/DecimillipedeSegment.cs:151",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "Fabricator",
+  "state": "FABRICATING_STRIKE",
+  "cs_move": "FABRICATING_STRIKE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Fabricator.cs:57",
+  "kinds": [
+   "Attack",
+   "Summon"
+  ]
+ },
+ {
+  "monster": "FakeMerchantMonster",
+  "state": "THROW_RELIC",
+  "cs_move": "THROW_RELIC_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/FakeMerchantMonster.cs:52",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "Flyconid",
+  "state": "FRAIL_SPORES",
+  "cs_move": "FRAIL_SPORES_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Flyconid.cs:33",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "Fogmog",
+  "state": "SWIPE",
+  "cs_move": "SWIPE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Fogmog.cs:42",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "Fogmog",
+  "state": "SWIPE_RANDOM",
+  "cs_move": "SWIPE_RANDOM_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Fogmog.cs:43",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "FossilStalker",
+  "state": "TACKLE",
+  "cs_move": "TACKLE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/FossilStalker.cs:54",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "FrogKnight",
+  "state": "TONGUE_LASH",
+  "cs_move": "TONGUE_LASH",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/FrogKnight.cs:72",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "GlobeHead",
+  "state": "SHOCKING_SLAP",
+  "cs_move": "SHOCKING_SLAP",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/GlobeHead.cs:53",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "GlobeHead",
+  "state": "GALVANIC_BURST",
+  "cs_move": "GALVANIC_BURST",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/GlobeHead.cs:54",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "GremlinMerc",
+  "state": "DOUBLE_SMASH",
+  "cs_move": "DOUBLE_SMASH_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/GremlinMerc.cs:62",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "GremlinMerc",
+  "state": "HEHE",
+  "cs_move": "HEHE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/GremlinMerc.cs:63",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "HauntedShip",
+  "state": "HAUNT_MOVE",
+  "cs_move": "HAUNT_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/HauntedShip.cs:44",
+  "kinds": [
+   "Debuff",
+   "StatusCard"
+  ]
+ },
+ {
+  "monster": "InfestedPrism",
+  "state": "RADIATE",
+  "cs_move": "RADIATE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/InfestedPrism.cs:66",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "InfestedPrism",
+  "state": "PULSATE",
+  "cs_move": "PULSATE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/InfestedPrism.cs:68",
+  "kinds": [
+   "Attack",
+   "Buff",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "KinPriest",
+  "state": "ORB_OF_FRAILTY_MOVE",
+  "cs_move": "ORB_OF_FRAILTY_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/KinPriest.cs:112",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "KinPriest",
+  "state": "ORB_OF_WEAKNESS_MOVE",
+  "cs_move": "ORB_OF_WEAKNESS_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/KinPriest.cs:113",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "KnowledgeDemon",
+  "state": "PONDER",
+  "cs_move": "PONDER_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/KnowledgeDemon.cs:129",
+  "kinds": [
+   "Attack",
+   "Heal",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "LagavulinMatriarch",
+  "state": "SLASH2",
+  "cs_move": "SLASH2_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LagavulinMatriarch.cs:165",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "LagavulinMatriarch",
+  "state": "SOUL_SIPHON",
+  "cs_move": "SOUL_SIPHON_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LagavulinMatriarch.cs:167",
+  "kinds": [
+   "Debuff",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "LivingFog",
+  "state": "ADVANCED_GAS",
+  "cs_move": "ADVANCED_GAS_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LivingFog.cs:64",
+  "kinds": [
+   "Attack",
+   "CardDebuff"
+  ]
+ },
+ {
+  "monster": "LivingFog",
+  "state": "BLOAT",
+  "cs_move": "BLOAT_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LivingFog.cs:65",
+  "kinds": [
+   "Attack",
+   "Summon"
+  ]
+ },
+ {
+  "monster": "LivingShield",
+  "state": "SMASH",
+  "cs_move": "SMASH_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LivingShield.cs:43",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "LouseProgenitor",
+  "state": "WEB_CANNON_MOVE",
+  "cs_move": "WEB_CANNON_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LouseProgenitor.cs:76",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "LouseProgenitor",
+  "state": "CURL_AND_GROW_MOVE",
+  "cs_move": "CURL_AND_GROW_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/LouseProgenitor.cs:78",
+  "kinds": [
+   "Defend",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "MagiKnight",
+  "state": "FIRST_POWER_SHIELD",
+  "cs_move": "POWER_SHIELD_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/MagiKnight.cs:60",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "MechaKnight",
+  "state": "FLAMETHROWER",
+  "cs_move": "FLAMETHROWER_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/MechaKnight.cs:85",
+  "kinds": [
+   "Attack",
+   "StatusCard"
+  ]
+ },
+ {
+  "monster": "MechaKnight",
+  "state": "WINDUP",
+  "cs_move": "WINDUP_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/MechaKnight.cs:86",
+  "kinds": [
+   "Defend",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "Myte",
+  "state": "SUCK_MOVE",
+  "cs_move": "SUCK_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Myte.cs:51",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "Nibbit",
+  "state": "SLICE",
+  "cs_move": "SLICE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Nibbit.cs:72",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "Ovicopter",
+  "state": "TENDERIZER_MOVE",
+  "cs_move": "TENDERIZER_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Ovicopter.cs:64",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "OwlMagistrate",
+  "state": "VERDICT",
+  "cs_move": "VERDICT",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/OwlMagistrate.cs:98",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "PunchConstruct",
+  "state": "FAST_PUNCH",
+  "cs_move": "FAST_PUNCH_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/PunchConstruct.cs:86",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "Queen",
+  "state": "BURN_BRIGHT_FOR_ME_MOVE",
+  "cs_move": "BURN_BRIGHT_FOR_ME_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Queen.cs:138",
+  "kinds": [
+   "Buff",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "Seapunk",
+  "state": "BUBBLE_BURP",
+  "cs_move": "BUBBLE_BURP_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Seapunk.cs:56",
+  "kinds": [
+   "Buff",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "SkulkingColony",
+  "state": "INERTIA_MOVE",
+  "cs_move": "INERTIA_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SkulkingColony.cs:64",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "SlimedBerserker",
+  "state": "LEECHING_HUG_MOVE",
+  "cs_move": "LEECHING_HUG_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SlimedBerserker.cs:53",
+  "kinds": [
+   "Debuff",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "SlitheringStrangler",
+  "state": "TWACK",
+  "cs_move": "THWACK",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SlitheringStrangler.cs:43",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "SludgeSpinner",
+  "state": "OIL_SPRAY",
+  "cs_move": "OIL_SPRAY_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SludgeSpinner.cs:41",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "SludgeSpinner",
+  "state": "RAGE",
+  "cs_move": "RAGE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SludgeSpinner.cs:43",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "SlumberingBeetle",
+  "state": "ROLL_OUT_MOVE",
+  "cs_move": "ROLL_OUT_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SlumberingBeetle.cs:113",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "SnappingJaxfruit",
+  "state": "ENERGY_ORB_MOVE",
+  "cs_move": "ENERGY_ORB_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SnappingJaxfruit.cs:47",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "SoulFysh",
+  "state": "GAZE",
+  "cs_move": "GAZE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SoulFysh.cs:115",
+  "kinds": [
+   "Attack",
+   "StatusCard"
+  ]
+ },
+ {
+  "monster": "SoulFysh",
+  "state": "SCREAM",
+  "cs_move": "SCREAM_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SoulFysh.cs:117",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "SoulNexus",
+  "state": "DRAIN_LIFE_MOVE",
+  "cs_move": "DRAIN_LIFE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/SoulNexus.cs:68",
+  "kinds": [
+   "Attack",
+   "DebuffStrong"
+  ]
+ },
+ {
+  "monster": "Stabbot",
+  "state": "STAB",
+  "cs_move": "STAB_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Stabbot.cs:42",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "TerrorEel",
+  "state": "ThrashMove",
+  "cs_move": "THRASH_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TerrorEel.cs:72",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TestSubject",
+  "state": "RESPAWN",
+  "cs_move": "RESPAWN_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TestSubject.cs:193",
+  "kinds": [
+   "Heal",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TestSubject",
+  "state": "SKULL_BASH",
+  "cs_move": "SKULL_BASH_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TestSubject.cs:198",
+  "kinds": [
+   "Attack",
+   "Debuff"
+  ]
+ },
+ {
+  "monster": "TestSubject",
+  "state": "BURNING_GROWL",
+  "cs_move": "BURNING_GROWL_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TestSubject.cs:202",
+  "kinds": [
+   "StatusCard",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TheAdversaryMkOne",
+  "state": "BARRAGE",
+  "cs_move": "BARRAGE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheAdversaryMkOne.cs:40",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TheAdversaryMkThree",
+  "state": "BARRAGE",
+  "cs_move": "BARRAGE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheAdversaryMkThree.cs:42",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TheAdversaryMkTwo",
+  "state": "BARRAGE",
+  "cs_move": "BARRAGE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheAdversaryMkTwo.cs:44",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TheForgotten",
+  "state": "MIASMA",
+  "cs_move": "MIASMA",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheForgotten.cs:45",
+  "kinds": [
+   "Debuff",
+   "Defend",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TheInsatiable",
+  "state": "LIQUIFY_GROUND",
+  "cs_move": "LIQUIFY_GROUND_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheInsatiable.cs:96",
+  "kinds": [
+   "Buff",
+   "StatusCard"
+  ]
+ },
+ {
+  "monster": "TheLost",
+  "state": "DEBILITATING_SMOG",
+  "cs_move": "DEBILITATING_SMOG",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheLost.cs:39",
+  "kinds": [
+   "Debuff",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "TheObscura",
+  "state": "HARDENING_STRIKE_MOVE",
+  "cs_move": "HARDENING_STRIKE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/TheObscura.cs:65",
+  "kinds": [
+   "Attack",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "ThievingHopper",
+  "state": "THIEVERY_MOVE",
+  "cs_move": "THIEVERY_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/ThievingHopper.cs:163",
+  "kinds": [
+   "Attack",
+   "CardDebuff"
+  ]
+ },
+ {
+  "monster": "Tunneler",
+  "state": "BURROW_MOVE",
+  "cs_move": "BURROW_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Tunneler.cs:73",
+  "kinds": [
+   "Buff",
+   "Defend"
+  ]
+ },
+ {
+  "monster": "Vantom",
+  "state": "DISMEMBER",
+  "cs_move": "DISMEMBER_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Vantom.cs:119",
+  "kinds": [
+   "Attack",
+   "StatusCard"
+  ]
+ },
+ {
+  "monster": "VineShambler",
+  "state": "GRASPING_VINES",
+  "cs_move": "GRASPING_VINES_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/VineShambler.cs:47",
+  "kinds": [
+   "Attack",
+   "CardDebuff"
+  ]
+ },
+ {
+  "monster": "WaterfallGiant",
+  "state": "STOMP",
+  "cs_move": "STOMP_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/WaterfallGiant.cs:196",
+  "kinds": [
+   "Attack",
+   "Debuff",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "WaterfallGiant",
+  "state": "RAM",
+  "cs_move": "RAM_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/WaterfallGiant.cs:197",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "WaterfallGiant",
+  "state": "SIPHON",
+  "cs_move": "SIPHON_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/WaterfallGiant.cs:198",
+  "kinds": [
+   "Heal",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "WaterfallGiant",
+  "state": "PRESSURE_GUN",
+  "cs_move": "PRESSURE_GUN_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/WaterfallGiant.cs:199",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "WaterfallGiant",
+  "state": "PRESSURE_UP",
+  "cs_move": "PRESSURE_UP_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/WaterfallGiant.cs:200",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ },
+ {
+  "monster": "Wriggler",
+  "state": "WRIGGLE",
+  "cs_move": "WRIGGLE_MOVE",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/Wriggler.cs:56",
+  "kinds": [
+   "Buff",
+   "StatusCard"
+  ]
+ },
+ {
+  "monster": "CubexConstruct",
+  "state": "REPEATER_2",
+  "cs_move": "REPEATER_BLAST_MOVE_2",
+  "cs_ref": "MegaCrit.Sts2.Core.Models.Monsters/CubexConstruct.cs:116",
+  "kinds": [
+   "Attack",
+   "Buff"
+  ]
+ }
+]

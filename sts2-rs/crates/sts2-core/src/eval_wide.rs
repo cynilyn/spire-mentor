@@ -843,7 +843,8 @@ pub fn eval_features_wide(state: &CombatState) -> [f32; WIDE_FEATURE_DIM] {
                     kind: PowerKind::Weak,
                     amount: 0,
                 }
-                | Intent::DebuffStrong,
+                | Intent::DebuffStrong
+                | Intent::CardDebuff,
             ) => (0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
             Some(Intent::Defend { block: 0 }) => (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
             Some(Intent::Buff { .. }) if crate::intent_one_hot_fix() => {
@@ -985,7 +986,7 @@ pub fn eval_features_wide(state: &CombatState) -> [f32; WIDE_FEATURE_DIM] {
                 Intent::Attack { damage } => (0usize, damage),
                 Intent::MultiAttack { damage, hits } => (0, damage * i32::from(hits)),
                 Intent::Buff { .. } => (1, 0),
-                Intent::Debuff { .. } | Intent::DebuffStrong => (2, 0),
+                Intent::Debuff { .. } | Intent::DebuffStrong | Intent::CardDebuff => (2, 0),
                 Intent::Defend { .. } => (3, 0),
                 _ => (4, 0),
             };
