@@ -2652,8 +2652,15 @@ fn test_subject_burning_growl_effect(state: &mut CombatState, owner: CreatureUid
         test_subject::BURNING_GROWL_BURN_COUNT_DEADLY,
         test_subject::BURNING_GROWL_BURN_COUNT,
     );
+    // v0.111.0 `TestSubject.cs:332`: the Burns go to the DISCARD pile
+    // (`AddToCombatAndPreview<Burn>(targets, PileType.Discard, ..)`), not the hand.
+    let pile = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        PileKind::Discard
+    } else {
+        PileKind::Hand
+    };
     for _ in 0..burns {
-        let _ = crate::cards::status::spawn_burn(state, PileKind::Hand);
+        let _ = crate::cards::status::spawn_burn(state, pile);
     }
 }
 
@@ -3225,6 +3232,32 @@ mod tests {
                 combat.cards[uid.0.get() as usize - 1].card_id,
                 CardId::Burn,
                 "spawned cards are Burn"
+            );
+        }
+    }
+
+    /// v0.111.0 `TestSubject.cs:332`: BURNING_GROWL puts its Burns in the DISCARD pile.
+    #[test]
+    fn test_subject_burning_growl_burns_go_to_discard_on_v0111_only() {
+        for (version, in_discard) in [
+            (sts2_core::GameVersion::V0_111_0, 3),
+            (sts2_core::GameVersion::V0_107_1, 0),
+        ] {
+            let mut combat =
+                combat_with_monster(sts2_core::MonsterKind::TestSubject, "TestSubject");
+            combat.game_version = version;
+            let owner = sts2_core::CreatureUid::new(1).expect("nz");
+            let (hand, discard) = (combat.player.hand.len(), combat.player.discard.len());
+            test_subject_burning_growl_effect(&mut combat, owner);
+            assert_eq!(
+                combat.player.discard.len() - discard,
+                in_discard,
+                "{version:?}"
+            );
+            assert_eq!(
+                combat.player.hand.len() - hand,
+                3 - in_discard,
+                "{version:?}"
             );
         }
     }
