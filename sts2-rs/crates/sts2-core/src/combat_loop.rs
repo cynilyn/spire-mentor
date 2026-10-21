@@ -9718,6 +9718,13 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
     let top_card_type = top_card.card_type;
     let top_card_tags = top_card.tags;
 
+    // v0.111.0: an auto-play runs the same `CardModel.OnPlayWrapper` as a hand play, so the card's
+    // enchantment `OnPlay` (Corrupted's self-damage, Adroit, Swift, Sown, Momentum) follows its own
+    // `OnPlay` (CardModel.cs:1930-1943). A play that was skipped (no target alive) has no `OnPlay`.
+    if state.game_version >= crate::GameVersion::V0_111_0 && !skip_dispatch {
+        crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
+    }
+
     // Bead `sts2-rs-rnyme` follow-up: record this auto-play in the
     // combat-wide counter NOW — after the on-play dispatch + inline choice
     // resolution, before `AfterCardPlayed` — mirroring C#
@@ -9790,6 +9797,10 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
         card_type: Some(top_card_type),
     };
     hooks::dispatch_after_card_played(state, &hook_played_ctx);
+    if state.game_version >= crate::GameVersion::V0_111_0 && !skip_dispatch {
+        // The enchantment `AfterCardPlayed` leg (first-play markers), as on a hand play.
+        crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
+    }
 
     // Bead `sts2-rs-50un1`: C# `CardCmd.AutoPlay` runs the full `OnPlayWrapper`,
     // whose `AfterCardPlayed` fires `RupturePower.AfterCardPlayed` — applying

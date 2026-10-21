@@ -911,3 +911,20 @@ fn corrupted_multiplier_applies_before_strength_on_v0111_only() {
         assert_eq!(hooks::modify_damage(&state, 6, &ctx), want, "{version:?}");
     }
 }
+
+/// An auto-played card (Havoc) runs its enchantment `OnPlay` too: a Corrupted Strike costs the player 2 HP
+/// (v0.111.0 only).
+#[test]
+fn auto_played_corrupted_card_hurts_its_owner_on_v0111_only() {
+    for (version, want_hp) in [(GameVersion::V0_111_0, 78), (GameVersion::V0_107_1, 80)] {
+        let (mut state, _) = fresh(version);
+        add_to_hand(&mut state, CardId::Havoc);
+        let strike = add_to_hand(&mut state, CardId::StrikeIronclad);
+        let idx = strike.0.get() as usize - 1;
+        state.cards[idx].add_enchantment(sts2_core::cards::EnchantmentId::Corrupted, 1);
+        state.player.hand.retain(|u| *u != strike);
+        state.player.draw.push(strike);
+        let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+        assert_eq!(state.player.current_hp, want_hp, "{version:?}");
+    }
+}
