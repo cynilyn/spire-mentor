@@ -39,11 +39,17 @@ pub(crate) fn play_setup_strike(
     } else {
         base
     };
-    apply_power_to_player(state, PowerKind::SetupStrike, amt);
     // C# `TemporaryStrengthPower.BeforeApplied`: applying SETUP_STRIKE also
     // grants the equivalent real Strength for the turn (removed at turn-end
-    // by the SetupStrike `after_turn_end` arm).
-    apply_power_to_player(state, PowerKind::Strength, amt);
+    // by the SetupStrike `after_turn_end` arm). On v0.111.0 the Strength is
+    // added first (BeforeApplied precedes the list add): [Strength, SetupStrike].
+    if crate::cards::v0111::is_v0111(state.game_version) {
+        apply_power_to_player(state, PowerKind::Strength, amt);
+        apply_power_to_player(state, PowerKind::SetupStrike, amt);
+    } else {
+        apply_power_to_player(state, PowerKind::SetupStrike, amt);
+        apply_power_to_player(state, PowerKind::Strength, amt);
+    }
     EffectResult::Resolved
 }
 

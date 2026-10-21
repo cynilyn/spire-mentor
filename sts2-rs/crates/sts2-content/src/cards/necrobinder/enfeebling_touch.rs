@@ -42,6 +42,12 @@ pub(crate) fn play_enfeebling_touch(
     // (parity fuzz seed 85: an Artifact-warded CHOMPER ended with
     // EnfeeblingTouch(8) in Rust vs `[]` in C#). Mirrors the sibling
     // DarkShackles port. Bead `sts2-rs-enfeebling-artifact`.
+    if crate::cards::v0111::strength_leg_first(state, t) {
+        // v0.111.0 list order [Strength, EnfeeblingTouch] (BeforeApplied first).
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, -strength_loss);
+        apply_power_to_enemy(state, t, PowerKind::EnfeeblingTouch, strength_loss);
+        return EffectResult::Resolved;
+    }
     let before = creature_power_amount(state, t, PowerKind::EnfeeblingTouch);
     apply_power_to_enemy(state, t, PowerKind::EnfeeblingTouch, strength_loss);
     let after = creature_power_amount(state, t, PowerKind::EnfeeblingTouch);

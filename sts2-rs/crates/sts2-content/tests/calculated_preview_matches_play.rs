@@ -308,3 +308,75 @@ fn precise_cut_face_does_not_count_itself() {
         "the number must not change as the card leaves your hand to resolve"
     );
 }
+
+/// A card in HAND shows the number it will deal, including card-keyed relic additives: Strike Dummy's +3 on
+/// Strike-tagged attacks (`StrikeDummy.cs`) belongs on Perfected Strike's face (a hand card is read as if played;
+/// before v0.111.0 it was not, so the face omitted the relic).
+#[test]
+fn hand_face_includes_strike_dummy_on_v0111_only() {
+    sts2_content::relics::dispatch::ensure_installed();
+    sts2_core::relic_effects::ensure_installed();
+    content_dispatch::install_default_registry();
+    let place = |version: sts2_core::GameVersion, relic: bool| {
+        let (mut state, enemy) = busy_board();
+        state.game_version = version;
+        // A real player creature: Strike Dummy only fires for a hit dealt by the owner's creature.
+        let pid = NonZeroU32::new(50).expect("non-zero");
+        state.creatures.push(Creature {
+            id: pid,
+            current_hp: 80,
+            max_hp: 80,
+            block: 0,
+            powers: SmallVec::new(),
+            species: None,
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Player"),
+            ai: None,
+        });
+        state.player.creature_uid = Some(CreatureUid(pid));
+        if relic {
+            state.relics.push(sts2_core::Relic {
+                id: NonZeroU32::new(100).expect("non-zero"),
+                kind: sts2_core::RelicKind::StrikeDummy,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+            state.relics.ensure_plan();
+        }
+        let uid = push_card(&mut state, CardId::PerfectedStrike, 6);
+        let idx = uid.0.get() as usize - 1;
+        state.cards[idx].tags = CardTags::NONE.with(sts2_core::cards::CardTag::Strike);
+        state.player.hand.push(uid);
+        (state, enemy, idx)
+    };
+
+    // v0.111.0: hand face == the hit, and the relic is in it.
+    let (state, enemy, idx) = place(sts2_core::GameVersion::V0_111_0, true);
+    let face = calculated_value(&state, &state.cards[idx], Some(enemy)).expect("face");
+    let (bare, _, bidx) = place(sts2_core::GameVersion::V0_111_0, false);
+    let bare_face = calculated_value(&bare, &bare.cards[bidx], Some(enemy)).expect("face");
+    assert!(
+        face > bare_face,
+        "Strike Dummy must raise the hand face ({face} vs {bare_face})"
+    );
+    let (mut played, enemy, pidx) = place(sts2_core::GameVersion::V0_111_0, true);
+    let puid = played.cards[pidx].uid;
+    played.player.hand.retain(|u| *u != puid);
+    played.player.play.push(puid);
+    let before = played.creatures[0].current_hp;
+    assert_eq!(
+        dispatch(&mut played, CardId::PerfectedStrike, Some(enemy)),
+        EffectResult::Resolved
+    );
+    assert_eq!(before - played.creatures[0].current_hp, face);
+
+    // v0.107.1: the hand face is unchanged by the relic.
+    let (old, enemy, oidx) = place(sts2_core::GameVersion::V0_107_1, true);
+    let (old_bare, _, obidx) = place(sts2_core::GameVersion::V0_107_1, false);
+    assert_eq!(
+        calculated_value(&old, &old.cards[oidx], Some(enemy)),
+        calculated_value(&old_bare, &old_bare.cards[obidx], Some(enemy)),
+    );
+}

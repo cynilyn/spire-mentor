@@ -33,8 +33,14 @@ pub(crate) fn play_mangle(state: &mut CombatState, target: Option<CreatureUid>) 
     // zeroed ManglePower amount makes `Sign * amount = -0` a no-op).
     // Bead `sts2-rs-q6bix`.
     let absorbed_by_artifact = target_has_active_artifact(state, t);
+    // v0.111.0: `BeforeApplied` runs before the power is added to the list, so
+    // the creature's power list order is [Strength, ManglePower].
+    let strength_first = !absorbed_by_artifact && crate::cards::v0111::is_v0111(state.game_version);
+    if strength_first {
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, -amt);
+    }
     apply_power_to_enemy(state, t, PowerKind::ManglePower, amt);
-    if !absorbed_by_artifact {
+    if !absorbed_by_artifact && !strength_first {
         // BeforeApplied: -StrengthLoss Strength to the target (signed apply,
         // since `apply_power_to_enemy` rejects non-positive amounts).
         apply_power_signed_to_creature(state, t, PowerKind::Strength, -amt);

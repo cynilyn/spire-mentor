@@ -2864,6 +2864,21 @@ const fn merchant_relic_cost(r: sts2_core::runstate::RelicRarity) -> i32 {
     }
 }
 
+/// C# `MerchantCardEntry` runs `Hook.ModifyMerchantCardCreationResults` over
+/// every stocked card (character and colorless rows) as it is filled, so
+/// relics such as Frozen Egg / Molten Egg / Toxic Egg / Fresnel Lens change
+/// what the shop shows. v0.111.0 only; v0.107.1 keeps the unmodified card.
+fn apply_merchant_card_hooks(
+    rs: &mut RunState,
+    mut card: sts2_core::cards::Card,
+    is_colorless: bool,
+) -> sts2_core::cards::Card {
+    if super::v0111::is_v0111(rs.game_version) {
+        rs.modify_merchant_card_creation_results(&mut card, is_colorless);
+    }
+    card
+}
+
 /// Roll one character-card merchant slot on the run's two streams in C#
 /// `CardFactory.CreateForMerchant(player, options, CardType)` order:
 /// rarity (`Rewards`, with `GetNextAllowedRarity` escalation), pick
@@ -2915,6 +2930,7 @@ fn merchant_roll_character_card_slot(
         chosen.insert(id);
         super::v0111::card_pod_for(id, false, version)
     });
+    let card = card.map(|c| apply_merchant_card_hooks(rs, c, false));
     ShopCardEntry {
         rarity,
         card_type: want_type,
@@ -2954,6 +2970,7 @@ fn merchant_roll_colorless_card_slot(
         chosen.insert(id);
         super::v0111::card_pod_for(id, false, version)
     });
+    let card = card.map(|c| apply_merchant_card_hooks(rs, c, true));
     ShopCardEntry {
         rarity,
         card_type: CardType::Skill,
@@ -4521,6 +4538,30 @@ mod tests {
             ShopRelicRarity::Shop,
             "third relic slot is the Shop bucket",
         );
+    }
+
+    /// `MerchantCardEntry` runs `ModifyMerchantCardCreationResults` over every
+    /// stocked card, so a Frozen Egg owner is offered upgraded Powers (v0.111.0
+    /// only; v0.107.1 keeps the plain card).
+    #[test]
+    fn frozen_egg_upgrades_shop_powers_on_v0111_only() {
+        use sts2_core::relics::RelicId;
+        use sts2_core::GameVersion;
+        crate::relics::dispatch::ensure_installed();
+        let upgraded_powers = |version: GameVersion| -> usize {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::FrozenEgg);
+            let inv = generate_merchant_inventory(&mut rs, CharacterId::Ironclad);
+            inv.cards
+                .iter()
+                .chain(inv.colorless_cards.iter())
+                .filter_map(|e| e.card.as_ref())
+                .filter(|c| c.card_type == CardType::Power && c.upgraded)
+                .count()
+        };
+        assert!(upgraded_powers(GameVersion::V0_111_0) >= 1);
+        assert_eq!(upgraded_powers(GameVersion::V0_107_1), 0);
     }
 
     /// The Courier restock must consume the SAME per-slot `Shops` / `Rewards`

@@ -73,6 +73,19 @@ const fn class_str_from_character(c: Option<CharacterId>) -> &'static str {
     }
 }
 
+/// The damage number the card's face carries now. v0.111.0 Rampage grows its own `DamageVar.BaseValue` by `Increase`
+/// after every play (`Rampage.cs`: `Damage.BaseValue += Increase`), so a replayed copy shows 15, 20, ... where the
+/// engine keeps the growth in `VarKey::RampageDamage` on top of the printed base. Earlier builds emit the printed base.
+fn displayed_base_damage(state: &CombatState, card: &Card) -> i32 {
+    if card.card_id == sts2_core::cards::CardId::Rampage
+        && state.game_version >= sts2_core::GameVersion::V0_111_0
+    {
+        card.base_damage
+            .saturating_add(card.combat_var(sts2_core::cards::VarKey::RampageDamage))
+    } else {
+        card.base_damage
+    }
+}
 /// Serialize a single [`Card`] runtime POD into the wire-format
 /// `CardSpec` dict.
 ///
@@ -122,6 +135,12 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
     // `{Block}` template vars in card descriptions. Additive (not in
     // REQUIRED_CARDSPEC_KEYS); 0 for cards that deal/block neither.
     set(&mut d, "base_damage", card.base_damage);
+    // The face damage when it differs from the printed base (v0.111.0 Rampage after replays). `base_damage` stays the
+    // printed base because state import reads it back next to `combat_vars`, which already carries the growth.
+    let face_damage = displayed_base_damage(state, card);
+    if face_damage != card.base_damage {
+        set(&mut d, "face_damage", face_damage);
+    }
     set(&mut d, "base_block", card.base_block);
     // The card face's runtime-calculated value (Ashen Strike's 6 becomes
     // 6 + 3 x <cards in the Exhaust Pile>), for the ~40 cards that state
@@ -688,6 +707,13 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                 if !merged.iter().any(|u| u.0 == uid.0) {
                     merged.push(*uid);
                 }
+            }
+            // v0.111.0: C# `Creature._powers` is the single application-ordered list (`List.Add`; stacking keeps the
+            // slot, a removed power that returns goes to the end). Power-arena ids are allocated in application
+            // order, so ascending id restores it across the two surfaces; the Creature-first union above put a
+            // card-granted Strength after a Shrink the monster applied later.
+            if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+                merged.sort_by_key(|u| u.0);
             }
             merged
         }
@@ -1359,7 +1385,7 @@ pub fn card_damage_preview(state: &CombatState) -> Vec<BTreeMap<usize, i32>> {
     for card_uid in &state.player.hand {
         let mut entry = BTreeMap::new();
         if let Some(card) = state.cards.iter().find(|c| c.uid == *card_uid) {
-            let base = card.base_damage;
+            let base = displayed_base_damage(state, card);
             let card_id = card.card_id;
             if base > 0 {
                 let staged = staged_for_play(state, *card_uid);
@@ -1452,6 +1478,32 @@ mod tests {
             .push(sts2_core::Power::new(pid, sts2_core::PowerKind::Pyre, 2));
         state.player.powers.push(sts2_core::PowerUid(pid));
         combat_state_to_value(&state).expect("serializes")
+    }
+
+    /// v0.111.0 Rampage grows its own `DamageVar` after every play (`Rampage.cs`), so the face shows 10 + 5 per play;
+    /// `base_damage` stays the printed base (state import reads it back beside `combat_vars`). v0.107.1 adds no key.
+    #[test]
+    fn rampage_face_damage_follows_its_plays_on_v0111_only() {
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, Some(15)),
+            (sts2_core::GameVersion::V0_107_1, None),
+        ] {
+            let state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            let mut card = Card::pod_defaults();
+            card.card_id = sts2_core::cards::CardId::Rampage;
+            card.base_damage = 10;
+            card.set_combat_var(sts2_core::cards::VarKey::RampageDamage, 5);
+            let v = card_to_value(&state, &card);
+            assert_eq!(v["base_damage"], 10, "{version:?}");
+            assert_eq!(
+                v.get("face_damage").and_then(Value::as_i64),
+                want,
+                "{version:?}"
+            );
+        }
     }
 
     #[test]

@@ -21,6 +21,12 @@ pub(crate) fn play_piercing_wail(state: &mut CombatState, _t: Option<CreatureUid
         if !alive {
             continue;
         }
+        if crate::cards::v0111::strength_leg_first(state, uid) {
+            // v0.111.0 list order [Strength, PiercingWail] (BeforeApplied first).
+            apply_power_signed_to_creature(state, uid, PowerKind::Strength, -loss);
+            apply_power_to_enemy(state, uid, PowerKind::PiercingWail, loss);
+            continue;
+        }
         let prev = power_amount_on_creature(state, uid, PowerKind::PiercingWail);
         apply_power_to_enemy(state, uid, PowerKind::PiercingWail, loss);
         let now = power_amount_on_creature(state, uid, PowerKind::PiercingWail);

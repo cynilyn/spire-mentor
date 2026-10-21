@@ -38,6 +38,31 @@ pub fn is_v0111(version: GameVersion) -> bool {
     version >= GameVersion::V0_111_0
 }
 
+/// `true` when a temporary-Strength debuff card should add its companion
+/// Strength change BEFORE the marker power. C# `PowerCmd.Apply` runs
+/// `TemporaryStrengthPower.BeforeApplied` (which applies the Strength) before
+/// the marker is added to the creature's power list, so the list order is
+/// [Strength, marker]. Only when the debuff certainly lands (no active
+/// Artifact on the target) can the Strength be applied ahead of the marker.
+#[must_use]
+pub(crate) fn strength_leg_first(
+    state: &sts2_core::CombatState,
+    target: sts2_core::CreatureUid,
+) -> bool {
+    if !is_v0111(state.game_version) {
+        return false;
+    }
+    let Some(creature) = state.creatures.iter().find(|c| c.id == target.0) else {
+        return false;
+    };
+    !creature.powers.iter().any(|uid| {
+        state
+            .powers
+            .iter()
+            .any(|p| p.id == uid.0 && p.kind == sts2_core::PowerKind::Artifact && p.amount > 0)
+    })
+}
+
 /// The [`CardSpec`] of `spec.id` in game build `version`. Identity for
 /// v0.107.1 and for every card whose metadata did not change.
 #[must_use]

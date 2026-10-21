@@ -25,6 +25,12 @@ pub(crate) fn play_dark_shackles(
     // Apply DarkShackles first; if Artifact (or another ModifyPowerAmountReceived
     // listener) blocks it, the amount on the creature will NOT increase and we
     // must NOT apply the Strength drain (C# BeforeApplied receives 0 → no-op).
+    if crate::cards::v0111::strength_leg_first(state, t) {
+        // v0.111.0 list order [Strength, DarkShackles] (BeforeApplied first).
+        apply_power_signed_to_creature(state, t, PowerKind::Strength, -amt);
+        apply_power_to_creature(state, t, PowerKind::DarkShackles, amt);
+        return EffectResult::Resolved;
+    }
     let before = power_amount_on_creature(state, t, PowerKind::DarkShackles);
     apply_power_to_creature(state, t, PowerKind::DarkShackles, amt);
     let after = power_amount_on_creature(state, t, PowerKind::DarkShackles);

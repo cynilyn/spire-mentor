@@ -44,8 +44,13 @@ pub(crate) fn play_crush_under(state: &mut CombatState, _t: Option<CreatureUid>)
         // with 2 extra powers and its Artifact untouched). Bead
         // `sts2-rs-crush-under-artifact`.
         let warded = enemy_has_artifact(state, uid);
+        // v0.111.0 list order [Strength, CrushUnder] (BeforeApplied first).
+        let strength_first = !warded && crate::cards::v0111::is_v0111(state.game_version);
+        if strength_first {
+            add_power_to_enemy_signed(state, uid, PowerKind::Strength, -strength_loss);
+        }
         apply_power_to_enemy(state, uid, PowerKind::CrushUnder, strength_loss);
-        if !warded {
+        if !warded && !strength_first {
             add_power_to_enemy_signed(state, uid, PowerKind::Strength, -strength_loss);
         }
     }

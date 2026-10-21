@@ -273,10 +273,10 @@ pub fn calculated_value(
     };
     let raw = f(state, card, target);
     Some(match kind {
-        ValueKind::Damage => modified_damage(state, raw, CreatureRef::Player, target),
+        ValueKind::Damage => modified_damage(state, card, raw, CreatureRef::Player, target),
         // No living Osty means no hit at all, so the face shows nothing to fold.
         ValueKind::OstyDamage => match sts2_core::card_effects::osty_dealer_ref(state) {
-            Some(dealer) => modified_damage(state, raw, dealer, target),
+            Some(dealer) => modified_damage(state, card, raw, dealer, target),
             None => raw.max(0),
         },
         ValueKind::Block => sts2_core::hooks::modify_block(
@@ -312,13 +312,36 @@ pub fn calculated_value(
 /// Intangible would have read "Deal 1 damage." on a card about to deal 24.
 fn modified_damage(
     state: &CombatState,
+    card: &Card,
     raw: i32,
     dealer: CreatureRef,
     target: Option<CreatureUid>,
 ) -> i32 {
+    let target_ref = target.map_or_else(|| absent_creature(state), CreatureRef::Enemy);
+    // v0.111.0: the face is read as if the card were mid-dispatch, like the game's `UpdateCardPreview` with global
+    // hooks -- the card on the play pile -- so every card-sourced modifier applies: relic additives that key on the
+    // card (Strike Dummy's +3 on Strike-tagged attacks), enchantment additives/multipliers, play-gated listeners.
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        if let CreatureRef::Enemy(target_uid) = target_ref {
+            let mut staged = state.clone();
+            if let Some(pos) = staged.player.hand.iter().position(|&u| u == card.uid) {
+                staged.player.hand.remove(pos);
+                staged.player.play.push(card.uid);
+            }
+            return sts2_core::damage::compute_modified_damage(
+                &staged,
+                dealer,
+                target_uid,
+                raw,
+                sts2_core::hooks::ValueProps::MOVE,
+                Some(card.card_id),
+            )
+            .max(0);
+        }
+    }
     let ctx = sts2_core::hooks::DamageCtx {
         dealer,
-        target: target.map_or_else(|| absent_creature(state), CreatureRef::Enemy),
+        target: target_ref,
         props: sts2_core::hooks::ValueProps::MOVE,
     };
     sts2_core::hooks::modify_damage(state, raw, &ctx).max(0)
