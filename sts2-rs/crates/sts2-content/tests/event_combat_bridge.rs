@@ -513,19 +513,34 @@ fn lantern_key_fight_win_grants_room_rewards_and_the_key() {
 
         let gained = rm.run_state.gold - gold_before;
         assert!((10..=20).contains(&gained), "Monster gold, got {gained}");
-        assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
-        assert!(rm
-            .run_state
-            .master_deck
-            .iter()
-            .any(|c| c.card_id == sts2_core::cards::CardId::LanternKey));
+        let key_count = |rm: &RunManager| {
+            rm.run_state
+                .master_deck
+                .iter()
+                .filter(|c| c.card_id == sts2_core::cards::CardId::LanternKey)
+                .count()
+        };
         assert_eq!(rm.phase(), Phase::CardReward);
         assert_eq!(rm.card_reward_options().len(), 3, "{version:?}");
         assert!(!rm
             .card_reward_options()
             .contains(&sts2_core::cards::CardId::LanternKey));
         assert!(rm.run_state.current_event.is_none());
-        rm.take_action(RunAction::PickCardReward { idx: None });
+        if version == sts2_core::GameVersion::V0_111_0 {
+            // `TheLanternKey.cs:52`: a skippable SpecialCardReward, not added on its own.
+            assert_eq!(rm.run_state.master_deck.len(), deck_before);
+            assert_eq!(key_count(&rm), 0);
+            rm.take_action(RunAction::PickCardReward { idx: None });
+            assert_eq!(rm.phase(), Phase::CardReward, "then the special reward");
+            assert_eq!(rm.card_reward_kind(), "special_card");
+            rm.take_action(RunAction::PickCardReward { idx: Some(0) });
+            assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
+            assert_eq!(key_count(&rm), 1);
+        } else {
+            assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
+            assert_eq!(key_count(&rm), 1);
+            rm.take_action(RunAction::PickCardReward { idx: None });
+        }
         assert_eq!(rm.phase(), Phase::MapChoice);
     }
 }

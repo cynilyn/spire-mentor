@@ -2657,7 +2657,8 @@ impl RunManager {
                         let _ = self.run_state.drain_relic_rewards_directly();
                     }
                 }
-                Reward::Card(cr) if !cr.options.is_empty() => {
+                // A `SpecialCardReward` (v0.111.0) stays a pending, skippable reward; the other extras are auto-collected.
+                Reward::Card(cr) if !cr.options.is_empty() && cr.special.is_none() => {
                     for (i, &card_id) in cr.options.iter().enumerate() {
                         let upgraded = cr.upgraded.get(i).copied().unwrap_or(false);
                         let card = cr.special.unwrap_or_else(|| {
@@ -10574,6 +10575,64 @@ mod tests {
 
         rm.take_action(RunAction::PickCardReward { idx: None });
         assert_eq!(rm.phase(), Phase::MapChoice);
+    }
+
+    /// v0.111.0 `TheLanternKey.cs:52`: the knight's LanternKey is a `SpecialCardReward` -- skippable, not added on
+    /// its own. After the room's card reward the special screen opens; taking it adds the card, declining leaves it.
+    fn lantern_key_special_flow(take: bool) -> (usize, usize, &'static str) {
+        fn stage(rs: &mut RunState, _idx: usize) -> bool {
+            rs.game_version = crate::GameVersion::V0_111_0;
+            let mut card = crate::Card::pod_defaults();
+            card.card_id = crate::cards::CardId::LanternKey;
+            rs.event_combat = Some(EventCombatRequest::no_resume(
+                EventEncounter::MysteriousKnight,
+                EventId::TheLanternKey,
+                vec![crate::runstate::Reward::Card(
+                    crate::runstate::CardReward::special_card(card),
+                )],
+            ));
+            true
+        }
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_content_callbacks(dense_vegetation_callbacks(stage));
+        rm.run_state.game_version = crate::GameVersion::V0_111_0;
+        rm.run_state.enter_event_room(EventId::TheLanternKey);
+        rm.set_phase(Phase::Event);
+        let deck_before = rm.run_state.master_deck.len();
+        win_event_fight(&mut rm);
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert_eq!(
+            rm.card_reward_kind(),
+            "card",
+            "the room's own card reward comes first"
+        );
+        assert_eq!(
+            rm.run_state.master_deck.len(),
+            deck_before,
+            "nothing auto-added"
+        );
+        rm.take_action(RunAction::PickCardReward { idx: None });
+        assert_eq!(rm.phase(), Phase::CardReward, "then the special reward");
+        let kind = rm.card_reward_kind();
+        rm.take_action(RunAction::PickCardReward {
+            idx: if take { Some(0) } else { None },
+        });
+        assert_eq!(rm.phase(), Phase::MapChoice);
+        let has_key = rm
+            .run_state
+            .master_deck
+            .iter()
+            .filter(|c| c.card_id == crate::cards::CardId::LanternKey)
+            .count();
+        (deck_before, has_key, kind)
+    }
+
+    #[test]
+    fn lantern_key_special_reward_can_be_taken_or_declined_v0111() {
+        assert_eq!(lantern_key_special_flow(true).1, 1);
+        let (_, declined, kind) = lantern_key_special_flow(false);
+        assert_eq!(declined, 0);
+        assert_eq!(kind, "special_card");
     }
 
     /// GH #817: FakeMerchant's fight grants its room rewards with the

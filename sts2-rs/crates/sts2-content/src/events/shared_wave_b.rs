@@ -1307,12 +1307,23 @@ fn the_lantern_key_keep_key(state: &mut RunState) -> EventOutcome {
 /// the event finishes once the fight resolves. Returns a NOT-finished
 /// outcome so the dispatcher keeps the event room open across the combat.
 fn the_lantern_key_fight(state: &mut RunState) -> EventOutcome {
+    // v0.111.0: `TheLanternKey.cs:52` builds `new SpecialCardReward(CreateCard<LanternKey>)` -- a skippable reward
+    // the player takes (the card joins the deck) or declines. Earlier builds auto-collect the card.
+    let reward = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        let card = crate::cards::spec_index::card_pod_from_id(CardId::LanternKey, false)
+            .unwrap_or_else(|| {
+                let mut c = sts2_core::cards::Card::pod_defaults();
+                c.card_id = CardId::LanternKey;
+                c
+            });
+        CardReward::special_card(card)
+    } else {
+        CardReward::from_options(vec![CardId::LanternKey])
+    };
     state.event_combat = Some(EventCombatRequest::no_resume(
         EventEncounter::MysteriousKnight,
         EventId::TheLanternKey,
-        vec![Reward::Card(CardReward::from_options(vec![
-            CardId::LanternKey,
-        ]))],
+        vec![Reward::Card(reward)],
     ));
     EventOutcome {
         finished: false,
