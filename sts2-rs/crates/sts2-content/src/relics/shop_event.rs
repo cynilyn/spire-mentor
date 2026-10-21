@@ -298,6 +298,10 @@ pub fn install_pool() {
         RelicId::DingyRug,
         listener_dingy_rug as ModifyCardRewardCreationOptionsRunFn,
     );
+    register_modify_card_reward_creation_options(
+        RelicId::PrismaticGem,
+        listener_prismatic_gem as ModifyCardRewardCreationOptionsRunFn,
+    );
     // Bead `sts2-rs-psf9`: real `after_obtained` listener for Orrery.
     // Python `shop_event.py::Orrery.after_obtained` loops `CARDS = 5`
     // calls to `owner.offer_card_reward()`. Rust's `RelicReward` /
@@ -2554,6 +2558,64 @@ fn listener_pumpkin_candle_rest_site_options(
         return EffectResult::NotImplemented;
     }
     options.push(RestSiteOption::Kindle);
+    EffectResult::Resolved
+}
+
+/// v0.111.0 PrismaticGem.cs:28-46 widens card rewards to every unlocked
+/// character pool, ahead of the original pool.
+fn listener_prismatic_gem(
+    rs: &mut RunState,
+    opts: &mut CardRewardGenerationOptions,
+) -> EffectResult {
+    if rs.game_version < sts2_core::GameVersion::V0_111_0
+        || !rs.owns_active_relic(RelicId::PrismaticGem)
+        || !opts.allow_card_pool_modifications
+        || (opts.has_custom_card_pool && !rs.owns_active_relic(RelicId::DingyRug))
+        || (opts.character_ids.is_empty()
+            && !opts.use_default_character_pool
+            && !opts.has_custom_card_pool)
+    {
+        return EffectResult::NotImplemented;
+    }
+
+    // v0.111.0 PrismaticGem.cs:28-46 prepends the unlocked character
+    // pools in ModelDb.AllCharacters order (ModelDb.cs:113-121).
+    use sts2_core::potions::CharacterId;
+    let mut pools = vec![
+        CharacterId::Ironclad,
+        CharacterId::Silent,
+        CharacterId::Regent,
+        CharacterId::Necrobinder,
+        CharacterId::Defect,
+    ];
+    for character in &opts.character_ids {
+        if !pools.contains(character) {
+            pools.push(*character);
+        }
+    }
+    if opts.has_custom_card_pool {
+        // DingyRug has already materialized the original character pool plus
+        // Colorless into custom_card_ids. C# unions PrismaticGem's character
+        // pools ahead of that slate, retaining Colorless at the end.
+        use crate::cards::spec_index::{is_multiplayer_only, specs_for_character, specs_in};
+        let mut ids = Vec::new();
+        for character in &pools {
+            for spec in specs_in(specs_for_character(*character), rs.game_version) {
+                if !is_multiplayer_only(spec.id) && !ids.contains(&spec.id) {
+                    ids.push(spec.id);
+                }
+            }
+        }
+        for id in &opts.custom_card_ids {
+            if !ids.contains(id) {
+                ids.push(*id);
+            }
+        }
+        opts.custom_card_ids = ids;
+    } else {
+        opts.character_ids = pools;
+        opts.use_default_character_pool = false;
+    }
     EffectResult::Resolved
 }
 
@@ -6968,6 +7030,134 @@ mod tests {
         assert!(
             !rs.relic_counters.contains_key(&RelicId::PumpkinCandle),
             "PumpkinCandle counter must not be written when the relic is unowned",
+        );
+    }
+
+    #[test]
+    fn prismatic_gem_widens_v0111_reward_pool_in_game_order() {
+        use sts2_core::potions::CharacterId;
+        use sts2_core::runstate::{CardRewardGenerationOptions, RunState};
+
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.relics.push(RelicId::PrismaticGem);
+        let mut opts = CardRewardGenerationOptions::default();
+        let result = sts2_core::run_effects::dispatch_modify_card_reward_creation_options(
+            &mut rs, &mut opts,
+        );
+        assert_eq!(result, EffectResult::Resolved);
+        assert_eq!(
+            opts.character_ids,
+            vec![
+                CharacterId::Ironclad,
+                CharacterId::Silent,
+                CharacterId::Regent,
+                CharacterId::Necrobinder,
+                CharacterId::Defect,
+            ]
+        );
+        assert!(!opts.use_default_character_pool);
+        assert!(!opts.include_colorless);
+    }
+
+    #[test]
+    fn prismatic_gem_preserves_v0107_and_nonwidening_pools() {
+        use sts2_core::runstate::{CardRewardGenerationOptions, RunState};
+
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::PrismaticGem);
+        let mut opts = CardRewardGenerationOptions::default();
+        assert_eq!(
+            listener_prismatic_gem(&mut rs, &mut opts),
+            EffectResult::NotImplemented
+        );
+        assert!(opts.character_ids.is_empty());
+        assert!(opts.use_default_character_pool);
+
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        for mut opts in [
+            CardRewardGenerationOptions {
+                allow_card_pool_modifications: false,
+                ..Default::default()
+            },
+            CardRewardGenerationOptions {
+                use_default_character_pool: false,
+                include_colorless: true,
+                ..Default::default()
+            },
+            CardRewardGenerationOptions {
+                has_custom_card_pool: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                listener_prismatic_gem(&mut rs, &mut opts),
+                EffectResult::NotImplemented
+            );
+            assert!(opts.character_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn prismatic_gem_unions_character_pools_before_dingy_rug_colorless() {
+        use crate::cards::spec_index::{specs_for_character, specs_in};
+        use sts2_core::potions::CharacterId;
+        use sts2_core::runstate::{CardRewardGenerationOptions, RunState};
+
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.character_id = CharacterId::Ironclad;
+        rs.relics.extend([RelicId::DingyRug, RelicId::PrismaticGem]);
+
+        // The older build retains DingyRug's Ironclad + Colorless slate.
+        rs.game_version = sts2_core::GameVersion::V0_107_1;
+        let old = rs.modify_card_reward_creation_options(CardRewardGenerationOptions::default());
+        assert!(old.has_custom_card_pool);
+        let silent = specs_in(specs_for_character(CharacterId::Silent), rs.game_version)
+            .next()
+            .unwrap()
+            .id;
+        assert!(!old.custom_card_ids.contains(&silent));
+
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        let current =
+            rs.modify_card_reward_creation_options(CardRewardGenerationOptions::default());
+        assert!(current.has_custom_card_pool);
+        let pools = [
+            CharacterId::Ironclad,
+            CharacterId::Silent,
+            CharacterId::Regent,
+            CharacterId::Necrobinder,
+            CharacterId::Defect,
+        ];
+        let mut last = 0;
+        for character in pools {
+            let id = specs_in(specs_for_character(character), rs.game_version)
+                .next()
+                .unwrap()
+                .id;
+            let pos = current
+                .custom_card_ids
+                .iter()
+                .position(|&c| c == id)
+                .unwrap();
+            assert!(pos >= last, "character pools must keep ModelDb order");
+            last = pos;
+        }
+        let colorless = current
+            .custom_card_ids
+            .iter()
+            .position(|&c| c == sts2_core::cards::CardId::Discovery)
+            .unwrap();
+        assert!(colorless > last);
+        assert_eq!(
+            current.custom_card_ids.len(),
+            current
+                .custom_card_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
         );
     }
 
