@@ -299,6 +299,21 @@ pub fn morphic_grove_allowed(state: &RunState) -> bool {
     state.gold >= 100 && state.master_deck.len() >= 2
 }
 
+/// v0.111.0 `EventCombatSynchronizer.InitializeForEvent`: an event whose
+/// layout is `Combat` (TheLanternKey, TheArchitect, PunchOff) creates the
+/// encounter's creatures for the layout when it STARTS, each one rolling its
+/// unique max HP off `Rng.Niche` (`CombatState.CreateCreature` ->
+/// `SetUniqueMonsterHpValue`), whether or not the fight ever happens. The option
+/// model resolves one option per visit, so the reads are made when it does.
+pub(crate) fn combat_layout_event_creature_rolls(state: &mut RunState, creatures: usize) {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return;
+    }
+    for _ in 0..creatures {
+        let _ = state.rng.niche.next_int(0, 2);
+    }
+}
+
 /// `FakeMerchant`: C# act 2+ (`CurrentActIndex < 1 → false`), single
 /// player, and `Gold >= 100 || Potions.Any(FoulPotion)`.
 #[must_use]
@@ -912,6 +927,35 @@ mod tests {
         rs.gold = 100;
         rs.master_deck.pop();
         assert!(!morphic_grove_allowed(&rs)); // 1 card (kills second `>=`→`<`, `&&`→`||`)
+    }
+
+    /// v0.111.0: a combat-layout event rolls its creatures' HP off `Niche` when it
+    /// starts (LanternKey 1, Architect 1, PunchOff 2); v0.107.1 does not.
+    #[test]
+    fn combat_layout_events_spend_niche_reads_on_v0111_only() {
+        use super::dispatch::spec_for;
+        for (id, opt, want) in [
+            (EventId::TheLanternKey, 0, 1),
+            (EventId::TheLanternKey, 1, 1),
+            (EventId::TheArchitect, 0, 1),
+            (EventId::PunchOff, 0, 2),
+            (EventId::PunchOff, 1, 2),
+        ] {
+            for (version, n) in [
+                (sts2_core::GameVersion::V0_111_0, want),
+                (sts2_core::GameVersion::V0_107_1, 0),
+            ] {
+                let mut rs = RunState::new();
+                rs.game_version = version;
+                let before = rs.rng.niche.counter();
+                let _ = (spec_for(id).options[opt].handler)(&mut rs);
+                assert_eq!(
+                    rs.rng.niche.counter() - before,
+                    n,
+                    "{id:?} option {opt} {version:?}"
+                );
+            }
+        }
     }
 
     #[test]

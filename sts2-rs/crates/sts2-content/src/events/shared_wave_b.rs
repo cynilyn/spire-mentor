@@ -1276,6 +1276,7 @@ pub const TEZCATARA: EventSpec = EventSpec {
 pub const THE_LANTERN_KEY_RETURN_GOLD: i32 = 100;
 
 fn the_lantern_key_return_key(state: &mut RunState) -> EventOutcome {
+    super::combat_layout_event_creature_rolls(state, 1);
     state.gain_gold(THE_LANTERN_KEY_RETURN_GOLD);
     EventOutcome::finished(format!("Gained {THE_LANTERN_KEY_RETURN_GOLD} gold."))
 }
@@ -1286,6 +1287,7 @@ fn the_lantern_key_return_key(state: &mut RunState) -> EventOutcome {
 /// Returning a not-finished outcome keeps the run-loop in `Phase::Event`
 /// (multi-page integration, bead `sts2-rs-m3n0g.3`).
 fn the_lantern_key_keep_key(state: &mut RunState) -> EventOutcome {
+    super::combat_layout_event_creature_rolls(state, 1);
     state.event_state.page = 1;
     EventOutcome {
         finished: false,

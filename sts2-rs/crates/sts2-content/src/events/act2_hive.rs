@@ -509,11 +509,29 @@ fn fake_merchant_stock(state: &RunState) -> Vec<RelicId> {
         .collect()
 }
 
+/// v0.111.0 `FakeMerchant.BeforeEventStarted`: each of the six stocked
+/// `MerchantRelicEntry` constructors runs `CalcCost`, one `Shops.NextFloat(0.85,
+/// 1.15)` apiece. The option model resolves exactly one option per visit, so the
+/// six reads are made when that option resolves -- the same end state as C#
+/// reading them at event entry.
+fn fake_merchant_roll_prices(state: &mut RunState) {
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return;
+    }
+    for _ in 0..FAKE_MERCHANT_STOCK_SIZE {
+        let _ = state.rng.shops.next_float_range(
+            sts2_core::shop::MERCHANT_RELIC_PRICE_VARIANCE_MIN,
+            sts2_core::shop::MERCHANT_RELIC_PRICE_VARIANCE_MAX,
+        );
+    }
+}
+
 /// `Buy a Relic`: purchase one stocked fake relic for 50 gold. The custom C#
 /// merchant UI lets the player pick any of the 6 displayed; the option-model
 /// purchases the first stocked (shuffle-order) entry. Mirrors the
 /// `MerchantRelicEntry` buy → `RelicCmd.Obtain`.
 fn fake_merchant_buy(state: &mut RunState) -> EventOutcome {
+    fake_merchant_roll_prices(state);
     state.gold = state.gold.saturating_sub(FAKE_MERCHANT_BUY_COST);
     let stock = fake_merchant_stock(state);
     let relic = stock.first().copied().unwrap_or(RelicId::FakeAnchor);
@@ -541,6 +559,7 @@ fn fake_merchant_buy(state: &mut RunState) -> EventOutcome {
 /// resolution) — matching a fresh C# `FoulPotionThrown` where nothing was
 /// purchased.
 fn fake_merchant_throw_foul(state: &mut RunState) -> EventOutcome {
+    fake_merchant_roll_prices(state);
     // Consume the thrown FoulPotion if the player holds one (C# throws the
     // held potion; the event is gated on having a FoulPotion or 100 gold).
     if let Some(pos) = state
@@ -568,7 +587,8 @@ fn fake_merchant_throw_foul(state: &mut RunState) -> EventOutcome {
     }
 }
 
-fn fake_merchant_leave(_state: &mut RunState) -> EventOutcome {
+fn fake_merchant_leave(state: &mut RunState) -> EventOutcome {
+    fake_merchant_roll_prices(state);
     EventOutcome::finished("Left the fake merchant.")
 }
 
@@ -1566,6 +1586,28 @@ mod tests {
         let outcome = (FAKE_MERCHANT.options[2].handler)(&mut rs);
         assert!(outcome.finished);
         assert_eq!(rs.gold, 200);
+    }
+
+    /// v0.111.0: resolving any option spends the six `Shops` floats the stocked
+    /// `MerchantRelicEntry` constructors read at event entry; v0.107.1 spends none.
+    #[test]
+    fn fake_merchant_resolution_spends_six_shops_reads_on_v0111_only() {
+        for opt in 0..FAKE_MERCHANT.options.len() {
+            for (version, want) in [
+                (sts2_core::GameVersion::V0_111_0, 6),
+                (sts2_core::GameVersion::V0_107_1, 0),
+            ] {
+                let mut rs = rs_with_gold(200);
+                rs.game_version = version;
+                let before = rs.rng.shops.counter();
+                let _ = (FAKE_MERCHANT.options[opt].handler)(&mut rs);
+                assert_eq!(
+                    rs.rng.shops.counter() - before,
+                    want,
+                    "option {opt} {version:?}"
+                );
+            }
+        }
     }
 
     // ── FieldOfManSizedHoles ───────────────────────────────────────

@@ -38,7 +38,8 @@ use super::{
 /// finished — the run-loop driver short-circuits before the option
 /// is actually presentable in pool play. Port pin:
 /// `act3.py:41-47`.
-fn the_architect_proceed(_state: &mut RunState) -> EventOutcome {
+fn the_architect_proceed(state: &mut RunState) -> EventOutcome {
+    super::combat_layout_event_creature_rolls(state, 1);
     EventOutcome::finished("The Architect emerges.")
 }
 

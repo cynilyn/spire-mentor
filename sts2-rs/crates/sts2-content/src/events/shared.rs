@@ -1867,6 +1867,7 @@ pub const PAEL: EventSpec = EventSpec {
 // ── PunchOff ─────────────────────────────────────────────────────────
 
 fn punchoff_nab(state: &mut RunState) -> EventOutcome {
+    super::combat_layout_event_creature_rolls(state, 2);
     // C# `PunchOff.Nab` (`PunchOff.cs:108-119`): `AddCurseToDeck<Injury>` (one
     // specific Injury curse added directly to the deck) THEN a `RelicReward`.
     // The old `Reward::Card(empty)` surfaced a random 3-card ADD choice instead
@@ -1885,6 +1886,7 @@ fn punchoff_nab(state: &mut RunState) -> EventOutcome {
 }
 
 fn punchoff_take_them(state: &mut RunState) -> EventOutcome {
+    super::combat_layout_event_creature_rolls(state, 2);
     // C# `PunchOff.TakeThem`/`Fight` (`PunchOff.cs:121-137`): enters a combat
     // whose rewards are `RelicReward` + `PotionReward` — there is NO card
     // reward. The old `Reward::Card(empty)` fabricated a 3-card choice the game
