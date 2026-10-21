@@ -1135,7 +1135,14 @@ fn apply_damage_with_final_impl(
     // `target_ref` is always `CreatureRef::Enemy`, so the enemy-target
     // dispatches skip the player-target lanes' kinds in their liveness test
     // (J06).
-    hooks::dispatch_after_damage_received_enemy_target(state, &ctx, hp_loss);
+    // v0.111.0 `CreatureCmd.Damage`: `AfterDamageReceived` is skipped for a
+    // target that was killed by this very hit (`WasTargetKilled && IsDead`) --
+    // a Personal Hive that dies to a Twin Strike does not flood Dazed.
+    let killed_by_this_hit = state.game_version >= crate::GameVersion::V0_111_0
+        && state.creatures[creature_idx].current_hp <= 0;
+    if !killed_by_this_hit {
+        hooks::dispatch_after_damage_received_enemy_target(state, &ctx, hp_loss);
+    }
     // Bead `sts2-rs-ybtmu`: pass the post-block `unblocked` residual (not
     // pre-block `final_damage`) so the Envenom / PaperCuts arms gate on C#'s
     // `UnblockedDamage > 0` — a fully-blocked powered hit triggers neither.

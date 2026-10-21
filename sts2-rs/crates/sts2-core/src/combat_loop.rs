@@ -8657,6 +8657,32 @@ pub fn player_should_play_blocked(state: &CombatState, card: &crate::cards::Card
             return true;
         }
     }
+    // v0.111.0 `Normality.ShouldPlay` / `Enthralled.ShouldPlay`: while the
+    // curse sits in the Hand it vetoes plays -- Normality once three plays have
+    // STARTED this turn, Enthralled for every card but itself. `CardCmd.AutoPlay`
+    // runs the same hook, so a Stampede/Havoc pick that is vetoed goes to the
+    // result pile without rolling a target. (Manual plays are already gated in
+    // `legal_actions`.)
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        let curse_in_hand = |id: crate::cards::CardId| {
+            state.player.hand.iter().any(|uid| {
+                state
+                    .cards
+                    .get(uid.0.get() as usize - 1)
+                    .is_some_and(|c| c.card_id == id)
+            })
+        };
+        if state.player.card_plays_started_this_turn >= 3
+            && curse_in_hand(crate::cards::CardId::Normality)
+        {
+            return true;
+        }
+        if card.card_id != crate::cards::CardId::Enthralled
+            && curse_in_hand(crate::cards::CardId::Enthralled)
+        {
+            return true;
+        }
+    }
     false
 }
 
