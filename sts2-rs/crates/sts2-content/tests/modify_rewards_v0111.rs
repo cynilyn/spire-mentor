@@ -142,3 +142,55 @@ fn rewards_stream_after_the_room_is_shifted_by_exactly_the_extra_reward() {
         "picking reads nothing more"
     );
 }
+
+/// C# CardReward.OnRelicObtained re-runs the new Egg's late hook after the
+/// Elite card slate has populated. RT0_62 offers Tremble / Perfected Strike /
+/// Shrug It Off and gains Toxic Egg from that same Elite reward set.
+#[test]
+fn newly_obtained_toxic_egg_upgrades_populated_elite_options_v0111_only() {
+    use sts2_core::cards::CardId;
+    use sts2_core::runstate::RoomType;
+    use sts2_core::{CharacterId, CombatState, RelicRarity, RunState};
+
+    fn fixed_options(rs: &mut RunState) -> Vec<CardId> {
+        rs.card_reward_upgraded_flags = vec![false; 3];
+        vec![CardId::Tremble, CardId::PerfectedStrike, CardId::ShrugItOff]
+    }
+
+    sts2_content::relics::dispatch::ensure_installed();
+    for version in VERSIONS {
+        let mut callbacks = sts2_content::run_callbacks::ironclad_content_callbacks();
+        callbacks.generate_card_reward_options = Some(fixed_options);
+        let mut rm = RunManager::new(62, CharacterId::Ironclad)
+            .with_game_version(version)
+            .with_content_callbacks(callbacks);
+        rm.run_state.direct_event_relic_grant = true;
+        let mut bag = std::collections::BTreeMap::new();
+        for rarity in [
+            RelicRarity::Common,
+            RelicRarity::Uncommon,
+            RelicRarity::Rare,
+        ] {
+            bag.insert(rarity, vec![RelicId::ToxicEgg]);
+        }
+        rm.run_state
+            .populate_relic_grab_bag_by_rarity(bag, Vec::new(), Vec::new());
+        rm.debug_enter_combat(CombatState::default(), RoomType::Elite);
+        assert_eq!(rm.resolve_combat_fast(0.0, true), ActionResult::Advanced);
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert!(rm.run_state.relics.contains(&RelicId::ToxicEgg));
+        assert_eq!(
+            rm.card_reward_options(),
+            &[CardId::Tremble, CardId::PerfectedStrike, CardId::ShrugItOff]
+        );
+        assert_eq!(
+            rm.card_reward_upgraded_flags(),
+            if version >= GameVersion::V0_111_0 {
+                &[true, false, true][..]
+            } else {
+                &[false, false, false][..]
+            },
+            "{version:?}"
+        );
+    }
+}

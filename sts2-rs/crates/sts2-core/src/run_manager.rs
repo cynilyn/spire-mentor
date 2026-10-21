@@ -2543,12 +2543,64 @@ impl RunManager {
                 self.run_state.offer_random_relic_rewards(1, &[None]);
             }
             self.apply_modify_rewards(reward_room_type);
+            let relic_count_before_grants = self.run_state.relics.len();
             self.run_state.drain_relic_rewards_directly();
+            self.apply_new_egg_relics_to_open_card_reward(relic_count_before_grants);
         } else {
             self.apply_modify_rewards(reward_room_type);
         }
         self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
         ActionResult::Advanced
+    }
+
+    /// A populated C# CardReward subscribes to RelicObtained and applies the
+    /// newly gained relic's option hooks (CardReward.cs:98-105,140-154).
+    /// Elite relics are claimed after the card slate is rolled, so an Egg
+    /// gained from this same reward set must upgrade its matching options.
+    /// Keep this bridge to the three Egg late hooks: mid-hook relics need the
+    /// original CardCreationOptions and are not represented by this callback.
+    fn apply_new_egg_relics_to_open_card_reward(&mut self, prior_relic_count: usize) {
+        if self.run_state.game_version < crate::GameVersion::V0_111_0
+            || self.card_reward_options.is_empty()
+        {
+            return;
+        }
+        let new_eggs: Vec<_> = self.run_state.relics[prior_relic_count..]
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(
+                    id,
+                    crate::RelicId::FrozenEgg
+                        | crate::RelicId::MoltenEgg
+                        | crate::RelicId::ToxicEgg
+                )
+            })
+            .collect();
+        if new_eggs.is_empty() {
+            return;
+        }
+        let mut cards: Vec<_> = self
+            .card_reward_options
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                let upgraded = self.card_reward_upgraded.get(i).copied().unwrap_or(false);
+                crate::build_card_for_version(id, upgraded, self.run_state.game_version)
+                    .unwrap_or_else(|| {
+                        let mut card = crate::cards::Card::pod_defaults();
+                        card.card_id = id;
+                        card.upgraded = upgraded;
+                        card
+                    })
+            })
+            .collect();
+        for id in new_eggs {
+            if let Some(hook) = crate::run_effects::lookup_modify_card_reward_options_late(id) {
+                let _ = hook(&mut self.run_state, &mut cards);
+            }
+        }
+        self.card_reward_upgraded = cards.iter().map(|card| card.upgraded).collect();
     }
 
     /// `Hook.ModifyRewards` over a combat room's reward set, v0.111.0 only
