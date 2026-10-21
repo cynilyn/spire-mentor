@@ -1325,7 +1325,15 @@ pub fn pending_choice_to_value(pc: &PendingChoice, state: &CombatState) -> Value
         .collect();
     d.insert("cards".to_owned(), Value::Array(cards_list));
     set(&mut d, "min_select", pc.min_select);
-    set(&mut d, "max_select", pc.max_select);
+    // v0.111.0 `Guards.cs:24` asks `FromHand(prefs(prompt, 0, 999999999))`; the engine keeps the hand size as its
+    // working bound, the screen reports the card's own number like the real game.
+    if state.game_version >= sts2_core::GameVersion::V0_111_0
+        && pc.kind == sts2_core::ChoiceKind::TransformInHandToMinionSacrifice
+    {
+        set(&mut d, "max_select", 999_999_999_u32);
+    } else {
+        set(&mut d, "max_select", pc.max_select);
+    }
     set(&mut d, "can_skip", pc.can_skip);
     Value::Object(d)
 }
