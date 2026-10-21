@@ -1070,11 +1070,38 @@ pub(crate) fn resume_after_relic_hand_draw_select(
     // `SetupPlayerTurn` gates the Innate floor on `TurnNumber == 1`
     // (CombatManager.cs:910), the player's turn number.
     if state.turn_number() == 1 {
+        // v0.111.0 `SetupPlayerTurn` (CombatManager.cs:668-672): cards whose
+        // enchantment `ShouldStartAtBottomOfDrawPile` (Imbued) are moved to the
+        // bottom first, in pile order, and are excluded from the Innate move.
+        let bottom_uids: smallvec::SmallVec<[crate::CardUid; 4]> =
+            if state.game_version >= crate::GameVersion::V0_111_0 {
+                state
+                    .player
+                    .draw
+                    .iter()
+                    .copied()
+                    .filter(|uid| {
+                        state
+                            .cards
+                            .get(uid.0.get() as usize - 1)
+                            .is_some_and(|c| c.has_enchantment(crate::cards::EnchantmentId::Imbued))
+                    })
+                    .collect()
+            } else {
+                smallvec::SmallVec::new()
+            };
+        for uid in &bottom_uids {
+            if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
+                let u = state.player.draw.remove(pos);
+                state.player.draw.push(u);
+            }
+        }
         let innate_uids: smallvec::SmallVec<[crate::CardUid; 8]> = state
             .player
             .draw
             .iter()
             .copied()
+            .filter(|uid| !bottom_uids.contains(uid))
             .filter(|uid| {
                 let idx = uid.0.get() as usize - 1;
                 state
