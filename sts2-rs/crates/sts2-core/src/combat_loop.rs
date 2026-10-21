@@ -3780,6 +3780,15 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
 
     debug_assert_eq!(state.phase, CombatPhase::EnemyTurnExec);
 
+    // v0.111.0: C# fires `AfterDeath` the moment a creature dies, so a death during the
+    // player's turn (a card, thorns, an end-of-turn effect) has already changed a witness's
+    // pending move -- Queen's BurnBright -> Enrage when the Torch Head Amalgam falls -- before
+    // anyone acts. Here the carrier was only drained after an enemy's own move, one move late;
+    // drain it before the acting enemies' intents are snapshotted.
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        dispatch_after_death_listeners(state);
+    }
+
     // Step 2: snapshot alive-enemy (uid, intent) pairs. We collect into a
     // SmallVec to release the immutable borrow on `state.creatures` and
     // `state.enemy_uids` before the mutable per-enemy perform loop.

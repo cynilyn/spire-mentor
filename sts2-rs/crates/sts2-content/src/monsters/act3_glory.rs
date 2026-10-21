@@ -2435,12 +2435,21 @@ fn queen_after_death(
     let Some(owner_idx) = state.creatures.iter().position(|c| c.id == owner.0) else {
         return;
     };
-    let Some(ai) = state.creatures[owner_idx].ai.as_mut() else {
+    let immediate = state.game_version >= sts2_core::GameVersion::V0_111_0;
+    let creature = &mut state.creatures[owner_idx];
+    let Some(ai) = creature.ai.as_mut() else {
         return;
     };
     ai.set_counter(1);
     if ai.current_state_id() == "BURN_BRIGHT_FOR_ME_MOVE" {
-        ai.force_next_state("ENRAGE_MOVE");
+        if immediate {
+            // C# `SetMoveImmediate(EnragedState)`: the telegraphed move itself is replaced, so
+            // she Enrages THIS coming turn instead of burning once more.
+            ai.force_current_state("ENRAGE_MOVE");
+            creature.intent = ai.current_move().intents.first().copied();
+        } else {
+            ai.force_next_state("ENRAGE_MOVE");
+        }
     }
 }
 
@@ -4274,6 +4283,83 @@ mod tests {
             Some("ENRAGE_MOVE"),
             "BURN_BRIGHT → ENRAGE short-circuit",
         );
+    }
+
+    /// Bead `sts2-rs-6g4v4` (m70xg.3): the Queen's `AfterDeath` listener
+    /// flips her per-instance `HasAmalgamDied` counter when a
+    /// `TorchHeadAmalgam` enters `newly_dead_this_turn`, and — if her
+    /// resolved next move is `BURN_BRIGHT_FOR_ME_MOVE` — short-circuits
+    /// the graph to `ENRAGE_MOVE` via `force_next_state`. Mirrors C#
+    /// `Queen.cs:213-225 AfterDeath` (`SetMoveImmediate(EnragedState)`).
+    #[test]
+    fn queen_after_death_replaces_the_pending_move_at_once_on_v0111() {
+        use std::num::NonZeroU32;
+
+        use smallvec::SmallVec;
+        use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, PowerUid};
+
+        let mut combat = CombatState {
+            game_version: sts2_core::GameVersion::V0_111_0,
+            ..CombatState::default()
+        };
+        let queen_uid = CreatureUid(NonZeroU32::new(1).expect("nz"));
+        let amalgam_uid = CreatureUid(NonZeroU32::new(2).expect("nz"));
+
+        let mut queen_ai = create_queen_ai();
+        // Walk the AI to BURN_BRIGHT_FOR_ME_MOVE so the listener's
+        // `SetMoveImmediate` branch fires.
+        assert_eq!(
+            run_three_moves(&mut queen_ai),
+            vec![
+                "PUPPET_STRINGS_MOVE",
+                "YOURE_MINE_MOVE",
+                "BURN_BRIGHT_FOR_ME_MOVE",
+            ]
+        );
+        assert_eq!(queen_ai.current_state_id(), "BURN_BRIGHT_FOR_ME_MOVE");
+        assert_eq!(queen_ai.counter(), 0);
+
+        combat.creatures.push(Creature {
+            id: queen_uid.0,
+            current_hp: 200,
+            max_hp: 200,
+            block: 0,
+            powers: SmallVec::<[PowerUid; 8]>::new(),
+            species: Some(sts2_core::MonsterKind::Queen),
+            monster_id: MonsterId("Queen"),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            ai: Some(queen_ai),
+        });
+        combat.creatures.push(Creature {
+            id: amalgam_uid.0,
+            current_hp: 0,
+            max_hp: 199,
+            block: 0,
+            powers: SmallVec::<[PowerUid; 8]>::new(),
+            species: Some(sts2_core::MonsterKind::TorchHeadAmalgam),
+            monster_id: MonsterId("TorchHeadAmalgam"),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            ai: None,
+        });
+        combat.enemy_uids.push(queen_uid);
+        combat.enemy_uids.push(amalgam_uid);
+
+        super::queen_after_death(&mut combat, amalgam_uid, queen_uid);
+
+        let queen = combat
+            .creatures
+            .iter()
+            .find(|c| c.id == queen_uid.0)
+            .expect("queen present");
+        let ai = queen.ai.as_ref().expect("queen has ai");
+        assert_eq!(ai.counter(), 1, "HasAmalgamDied counter flips to 1");
+        // v0.111.0: `SetMoveImmediate` replaces the telegraphed move itself, so she Enrages
+        // on the very next enemy turn; the telegraph follows.
+        assert_eq!(ai.current_state_id(), "ENRAGE_MOVE");
+        assert_eq!(ai.forced_next_state(), None);
+        assert_eq!(queen.intent, ai.current_move().intents.first().copied());
     }
 
     /// Negative path for `sts2-rs-6g4v4`: the listener ignores deaths of
