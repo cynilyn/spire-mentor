@@ -25,7 +25,7 @@ use std::collections::HashSet;
 
 use sts2_content::cards::dispatch as card_dispatch;
 use sts2_content::cards::ironclad_basic::ironclad_starter_deck;
-use sts2_content::monster_dispatch::{build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition};
+use sts2_content::monster_dispatch::{MonsterSpawnArgs, SpawnPosition};
 #[cfg(test)]
 use sts2_core::cards::CardType;
 use sts2_core::cards::{Card, PileKind, VarKey};
@@ -3797,6 +3797,8 @@ pub struct MonsterMoveInfo {
     pub id: &'static str,
     pub initial: bool,
     pub intent: Option<sts2_core::Intent>,
+    /// The move's whole declared intent list (head first), as `MoveState.intents` carries it.
+    pub intents: Vec<sts2_core::Intent>,
 }
 
 /// Every `Move` state of `kind`'s AI, in state-table order.
@@ -3812,6 +3814,19 @@ pub struct MonsterMoveInfo {
 ///
 /// An unknown monster name (PascalCase or UPPER_SNAKE both accepted).
 pub fn monster_moves_impl(kind: &str, ascension: u8) -> Result<Vec<MonsterMoveInfo>, String> {
+    monster_moves_for_version_impl(kind, ascension, sts2_core::GameVersion::V0_107_1)
+}
+
+/// [`monster_moves_impl`] for game build `version` (v0.111.0 swaps in reworked move machines).
+///
+/// # Errors
+///
+/// An unknown monster name.
+pub fn monster_moves_for_version_impl(
+    kind: &str,
+    ascension: u8,
+    version: sts2_core::GameVersion,
+) -> Result<Vec<MonsterMoveInfo>, String> {
     let species = crate::state_dict::monster_kind_from_python_name(kind)
         .ok_or_else(|| format!("unknown monster {kind:?}"))?;
     let position = SpawnPosition {
@@ -3820,7 +3835,13 @@ pub fn monster_moves_impl(kind: &str, ascension: u8) -> Result<Vec<MonsterMoveIn
         back: false,
         index: 0,
     };
-    let ai = build_ai_with_ascension(species, MonsterSpawnArgs::default(), position, ascension);
+    let ai = sts2_content::monster_dispatch::build_ai_for_version(
+        species,
+        MonsterSpawnArgs::default(),
+        position,
+        ascension,
+        version,
+    );
     let out = ai
         .states
         .iter()
@@ -3829,6 +3850,7 @@ pub fn monster_moves_impl(kind: &str, ascension: u8) -> Result<Vec<MonsterMoveIn
                 id,
                 initial: ai.initial == *id,
                 intent: mv.intents.first().copied(),
+                intents: mv.intents.iter().copied().collect(),
             }),
             _ => None,
         })
@@ -3840,10 +3862,16 @@ pub fn monster_moves_impl(kind: &str, ascension: u8) -> Result<Vec<MonsterMoveIn
 ///
 /// `intent` is the bare wire intent (`{kind, amount?, times?}`) or `None`.
 #[pyfunction]
-#[pyo3(signature = (kind, ascension = 0))]
-fn monster_moves(py: Python<'_>, kind: &str, ascension: u8) -> PyResult<Vec<Py<PyDict>>> {
-    let moves =
-        monster_moves_impl(kind, ascension).map_err(pyo3::exceptions::PyValueError::new_err)?;
+#[pyo3(signature = (kind, ascension = 0, game_version = None))]
+fn monster_moves(
+    py: Python<'_>,
+    kind: &str,
+    ascension: u8,
+    game_version: Option<&str>,
+) -> PyResult<Vec<Py<PyDict>>> {
+    let version = parse_game_version(game_version)?;
+    let moves = monster_moves_for_version_impl(kind, ascension, version)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let mut out = Vec::with_capacity(moves.len());
     for mv in moves {
         let d = PyDict::new(py);
@@ -3861,6 +3889,14 @@ fn monster_moves(py: Python<'_>, kind: &str, ascension: u8) -> PyResult<Vec<Py<P
             }
             None => d.set_item("intent", py.None())?,
         }
+        let mut all = Vec::with_capacity(mv.intents.len());
+        for i in &mv.intents {
+            all.push(crate::value_to_pydict(
+                py,
+                &sts2_wire::emit::combat::bare_intent_to_value(*i),
+            )?);
+        }
+        d.set_item("intents", all)?;
         out.push(d.unbind());
     }
     Ok(out)
@@ -3947,6 +3983,7 @@ fn list_encounters(py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
 #[cfg(test)]
 mod sandbox_catalog_tests {
     use super::*;
+    use sts2_content::monster_dispatch::build_ai_with_ascension;
 
     #[test]
     fn monster_moves_lists_forceable_move_states() {

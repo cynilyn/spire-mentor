@@ -1805,12 +1805,11 @@ pub fn parse_intent<V: WireValue>(
             }
             Intent::DeathBlow { damage }
         }
-        // Wire kinds with no 1-to-1 Rust enum at this pin. `Hidden` and
-        // `Unknown` are the game's own "you may not see this" telegraphs,
-        // so collapsing them loses nothing; `CardDebuff` has no variant
-        // yet. Surfacing as `Unknown` keeps the enemy turn ticking rather
-        // than sitting inert (the bug `2rp7` fixes).
-        "CardDebuff" | "Hidden" | "Unknown" => Intent::Unknown,
+        // `Hidden` and `Unknown` are the game's own "you may not see this" telegraphs, so
+        // collapsing them loses nothing; surfacing as `Unknown` keeps the enemy turn ticking
+        // rather than sitting inert (the bug `2rp7` fixes).
+        "CardDebuff" => Intent::CardDebuff,
+        "Hidden" | "Unknown" => Intent::Unknown,
         other => {
             return Err(schema_err(
                 format!("{path}.kind"),

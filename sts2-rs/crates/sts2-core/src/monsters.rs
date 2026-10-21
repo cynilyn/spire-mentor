@@ -2460,6 +2460,11 @@ pub enum Intent {
     /// `project_dead_enemy_array_removal_divergence`). Bead
     /// `sts2-rs-8f336`.
     Escape,
+    /// `IntentType.CardDebuff` — C# `CardDebuffIntent`: the move debuffs the player's CARDS
+    /// (ThievingHopper THIEVERY steals one, VineShambler tangles, Queen PUPPET_STRINGS, LivingFog
+    /// ADVANCED_GAS). Telegraph only, like [`Self::Debuff`], and treated exactly like it by every
+    /// engine rule (`kind()` is `Debuff`); it exists so the wire names the icon the world shows.
+    CardDebuff,
 }
 
 impl Intent {
@@ -2483,6 +2488,7 @@ impl Intent {
             Intent::Heal => "HEAL",
             Intent::DeathBlow { .. } => "DEATH_BLOW",
             Intent::Escape => "ESCAPE",
+            Intent::CardDebuff => "CARD_DEBUFF",
         }
     }
 
@@ -2519,7 +2525,7 @@ impl Intent {
             Intent::MultiAttack { .. } => IntentKindTag::MultiAttack,
             Intent::Defend { .. } => IntentKindTag::Defend,
             Intent::Buff { .. } => IntentKindTag::Buff,
-            Intent::Debuff { .. } => IntentKindTag::Debuff,
+            Intent::Debuff { .. } | Intent::CardDebuff => IntentKindTag::Debuff,
             Intent::DebuffStrong => IntentKindTag::DebuffStrong,
             Intent::Sleep => IntentKindTag::Sleep,
             Intent::Stun => IntentKindTag::Stun,

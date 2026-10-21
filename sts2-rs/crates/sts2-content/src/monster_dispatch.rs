@@ -560,7 +560,60 @@ pub fn build_ai_for_version(
     crate::ascension_scaling::apply_ascension_attack_scaling(&mut ai, kind, ascension);
     // v0.111.0 re-valued moves (no-op for v0.107.1), GH #796.
     crate::ascension_scaling::apply_v0111_attack_values(&mut ai, kind, ascension, version);
+    if v0111 {
+        apply_v0111_intent_declarations(&mut ai, kind);
+    }
     ai
+}
+
+/// v0.111.0 telegraph declarations the ported movesets under-declared (R1/intents). The wire now
+/// telegraphs a move's whole `intents` list, so each list must match the C# `MoveState(...)` ctor.
+/// Only the TELEGRAPH changes: the non-head halves are performed by each move's `effect_fn`, and
+/// `perform_intent` still keys on `intents.first()`, which none of these edits changes (a
+/// `CardDebuff` head is dispatched exactly like the `Debuff` it replaces). v0.107.1 builds never
+/// get here, so that engine stays byte-identical (its recorded MCTS sweeps read these lists).
+///
+/// Audit: `logs/engine/rust_resume/intents/audit.txt` (every C# 0.111.0 `MoveState`, 333 moves,
+/// against these tables).
+fn apply_v0111_intent_declarations(ai: &mut MonsterAi, kind: MonsterKind) {
+    use sts2_core::monster_ai::MonsterState;
+    use sts2_core::Intent;
+    // (move state id, edit)
+    enum Edit {
+        Append(Intent),
+        ReplaceAt(usize, Intent),
+        Truncate(usize),
+    }
+    let edits: &[(&str, Edit)] = match kind {
+        // `ThievingHopper.cs:164`: SingleAttackIntent + CardDebuffIntent.
+        MonsterKind::ThievingHopper => &[("THIEVERY_MOVE", Edit::Append(Intent::CardDebuff))],
+        // `LivingFog.cs`: SingleAttackIntent + CardDebuffIntent (the Smoggy rider is the effect).
+        MonsterKind::LivingFog => &[("ADVANCED_GAS", Edit::ReplaceAt(1, Intent::CardDebuff))],
+        // `VineShambler.cs`: SingleAttackIntent + CardDebuffIntent (the Tangled rider is the effect).
+        MonsterKind::VineShambler => &[("GRASPING_VINES", Edit::ReplaceAt(1, Intent::CardDebuff))],
+        // `Queen.cs:135-136`: PUPPET_STRINGS = CardDebuffIntent; YOU_ARE_MINE = ONE DebuffIntent.
+        MonsterKind::Queen => &[
+            (
+                "PUPPET_STRINGS_MOVE",
+                Edit::ReplaceAt(0, Intent::CardDebuff),
+            ),
+            ("YOURE_MINE_MOVE", Edit::Truncate(1)),
+        ],
+        // `Nibbit.cs:72`: SingleAttackIntent + DefendIntent (the 5/6 block is the effect).
+        MonsterKind::Nibbit => &[("SLICE", Edit::Append(Intent::Defend { block: 5 }))],
+        _ => return,
+    };
+    let states = std::sync::Arc::make_mut(&mut ai.states);
+    for (id, edit) in edits {
+        let Some(MonsterState::Move(m)) = states.get_mut(id) else {
+            panic!("{kind:?} has no move state {id}");
+        };
+        match edit {
+            Edit::Append(i) => m.intents.push(*i),
+            Edit::ReplaceAt(at, i) => m.intents[*at] = *i,
+            Edit::Truncate(n) => m.intents.truncate(*n),
+        }
+    }
 }
 
 #[cfg(test)]

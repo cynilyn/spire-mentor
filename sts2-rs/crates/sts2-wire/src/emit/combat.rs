@@ -448,6 +448,7 @@ pub fn bare_intent_to_value(intent: Intent) -> Value {
         Intent::Defend { .. } => "Defend",
         Intent::Buff { .. } => "Buff",
         Intent::Debuff { .. } => "Debuff",
+        Intent::CardDebuff => "CardDebuff",
         Intent::DebuffStrong => "DebuffStrong",
         Intent::Sleep => "Sleep",
         Intent::Stun => "Stun",
@@ -932,52 +933,41 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
             powers_to_value(&c.powers, &state.powers, "$.encounter.powers")?,
         );
         // `intents` carries the creature's currently-telegraphed move so
-        // display consumers (workbench combat panel) can render it. We emit a
-        // 0-or-1 element list: `Creature.intent` is a single `Option<Intent>`.
+        // display consumers (workbench combat panel) can render it. C#
+        // `MoveState` takes `params AbstractIntent[]`
+        // (`MonsterMoveStateMachine/MoveState.cs:48-53`) and the world telegraphs
+        // the whole list (`TerrorEel.cs:72`: `[Attack x3, Buff]`). While the
+        // primed `c.intent` is still the head of the AI's current move, emit that
+        // move's WHOLE declared list (v0.111.0, R1/intents); otherwise (a stunned/unknown
+        // telegraph, a creature without a DSL AI) fall back to the 0-or-1 element
+        // list `Creature.intent` carries. Observation only: the non-head halves
+        // are performed by each move's `effect_fn`, and `parse_enemy` still reads
+        // just `intents[0]`, so simulation and round-trip are unchanged.
         // `intent_history` stays empty: the parser only needs the current
         // intent, and Rust's `IntentHistory` shape is private and dropped on
         // the rebuild path (round-trip equiv ignores it).
-        //
-        // ── KNOWN GAP: multi-intent moves are truncated here ──────────────
-        // C# `MoveState` takes `params AbstractIntent[]`
-        // (`../sts2-wiki/decompiled/v0.107.1/MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine/MoveState.cs:48-53`)
-        // and real movesets use it — e.g. `TerrorEel.cs:72`
-        // `new MoveState("THRASH_MOVE", ThrashMove, new MultiAttackIntent(...),
-        // new BuffIntent())`. The world therefore telegraphs `[Attack x3,
-        // Buff]` where this emits `[Attack x3]`.
-        //
-        // The engine's DSL ALREADY models the list —
-        // `monster_ai::MoveState.intents` is a `SmallVec<[Intent; 4]>` and 44
-        // content moves declare two or three — but every consumer collapses it
-        // to `intents.first()` (`combat_loop::perform_intent`, the intent
-        // priming in `hooks`, `parse_enemy`). Widening the wire alone
-        // would be half a fix: a 2026-08 census over the 12-seed live corpus
-        // (`logs/diag/mirror_d1.jsonl`) found 153 world records with a
-        // multi-intent telegraph, of which only 34 sit on a move this repo
-        // declares with a matching intent count. The other 119 span ~26 moves
-        // (Aeonglass EBB/INCREASING_INTENSITY, Stabbot STAB, every
-        // DecimillipedeSegment BULK/CONSTRICT, Queen BURN_BRIGHT_FOR_ME,
-        // MechaKnight WINDUP, Ovicopter TENDERIZER, Axebot BOOT_UP/
-        // HAMMER_UPPERCUT, CubexConstruct REPEATER_BLAST, Nibbit SLICE,
-        // GlobeHead SHOCKING_SLAP/GALVANIC_BURST, TheLost DEBILITATING_SMOG,
-        // KnowledgeDemon PONDER, InfestedPrism PULSATE, TestSubject RESPAWN,
-        // …) whose CONTENT declaration is itself short — so emitting the tail
-        // today would trade a silent truncation for a loud divergence class
-        // dominated by under-declared movesets, taint those sweep runs
-        // (`STS2_MIRROR_OBSERVE`), and still not carry the real telegraph.
-        //
-        // The faithful fix is: (1) audit those ~26 movesets against their C#
-        // `MoveState` ctors, (2) emit the whole `current_move().intents` list
-        // when the primed `c.intent` is still its head, (3) teach
-        // `parse_enemy` to keep the tail. Simulation is NOT affected by the
-        // gap — the non-head halves are performed by each move's `effect_fn`,
-        // not by the intent — so this is a telegraph-fidelity item, not a
-        // combat-correctness one. See `wire_emits_only_the_primed_head_intent`
-        // in `sts2-py/src/state_dict.rs`, which pins the current shape so a
-        // change here is deliberate.
+        // v0.107.1 keeps the single-element wire its recorded goldens pin (and names a
+        // `CardDebuff` icon `Debuff`, as that build's wire did).
+        let multi = state.game_version >= sts2_core::GameVersion::V0_111_0;
         let mut intents = Vec::new();
         if let Some(intent) = c.intent {
-            intents.push(intent_to_value(intent, state, CreatureUid(c.id)));
+            let full =
+                c.ai.as_ref()
+                    .and_then(|ai| ai.current_move_opt())
+                    .filter(|mv| multi && mv.intents.first().copied() == Some(intent));
+            let list: Vec<Intent> = match full {
+                Some(mv) => mv.intents.iter().copied().collect(),
+                None => vec![intent],
+            };
+            for i in list {
+                let mut v = intent_to_value(i, state, CreatureUid(c.id));
+                if !multi && i == Intent::CardDebuff {
+                    if let Value::Object(o) = &mut v {
+                        set(o, "kind", "Debuff");
+                    }
+                }
+                intents.push(v);
+            }
         }
         m.insert("intents".to_owned(), Value::Array(intents));
         m.insert("intent_history".to_owned(), Value::Array(Vec::new()));

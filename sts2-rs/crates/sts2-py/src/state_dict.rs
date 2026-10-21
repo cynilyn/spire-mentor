@@ -1647,23 +1647,21 @@ mod tests {
         });
     }
 
-    /// KNOWN GAP pin — see the long comment on the `intents` emit in
-    /// `state_to_dict`. A C# `MoveState` carries `params AbstractIntent[]`
-    /// (`../sts2-wiki/decompiled/v0.107.1/MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine/MoveState.cs:48-53`)
-    /// and `TerrorEel.cs:72` uses two — `MultiAttackIntent(3, 3)` and
-    /// `BuffIntent()` — so the world telegraphs `[Attack x3, Buff]`.
+    /// The wire `intents` list of a TerrorEel parked on THRASH_MOVE, as `(kind, times)` per element.
     ///
-    /// The engine's DSL already models BOTH (`create_terror_eel_ai`'s
-    /// `ThrashMove` declares them), but the wire only carries the primed head.
-    /// This test asserts exactly that asymmetry, so widening the wire is a
-    /// deliberate act taken together with the ~26 under-declared movesets the
-    /// census in that comment enumerates — not an accident.
-    #[test]
-    fn wire_emits_only_the_primed_head_intent() {
+    /// A C# `MoveState` carries `params AbstractIntent[]` (`MoveState.cs:48-53`) and `TerrorEel.cs:72`
+    /// uses two — `MultiAttackIntent(3, 3)` and `BuffIntent()` — so the world telegraphs
+    /// `[Attack x3, Buff]`. The engine's DSL declares both.
+    fn terror_eel_thrash_wire_intents(
+        version: sts2_core::GameVersion,
+    ) -> Vec<(String, Option<i32>)> {
         use pyo3::types::PyList;
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
-            let mut state = CoreCombatState::default();
+            let mut state = CoreCombatState {
+                game_version: version,
+                ..CoreCombatState::default()
+            };
             state.player.current_hp = 70;
             state.player.max_hp = 70;
             state.init_player_creature();
@@ -1688,8 +1686,7 @@ mod tests {
             assert_eq!(
                 declared.len(),
                 2,
-                "content declares BOTH C# intents (TerrorEel.cs:72: \
-                 MultiAttackIntent + BuffIntent)"
+                "content declares BOTH C# intents (TerrorEel.cs:72:                  MultiAttackIntent + BuffIntent)"
             );
             creature.intent = declared.first().copied();
 
@@ -1707,41 +1704,42 @@ mod tests {
                 .unwrap()
                 .downcast_into::<PyList>()
                 .unwrap();
+            intents
+                .iter()
+                .map(|i| {
+                    let i = i.downcast_into::<PyDict>().unwrap();
+                    let kind = i
+                        .get_item("kind")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap();
+                    let times = i
+                        .get_item("times")
+                        .unwrap()
+                        .map(|t| t.extract::<i32>().unwrap());
+                    (kind, times)
+                })
+                .collect()
+        })
+    }
 
-            // The gap: one element on the wire, two in the move.
-            assert_eq!(
-                intents.len(),
-                1,
-                "KNOWN GAP — the wire truncates a multi-intent move to its \
-                 primed head; widening it requires the moveset audit described \
-                 at the emit site"
-            );
-            // The head that DOES ship is the move's first intent — the C#
-            // `MultiAttackIntent(ThrashDamage=3, ThrashRepeat=3)`, which the
-            // wire spells `kind: "Attack"` + `times: 3`. The `BuffIntent`
-            // second half is what goes missing.
-            let head = intents
-                .get_item(0)
-                .unwrap()
-                .downcast_into::<PyDict>()
-                .unwrap();
-            assert_eq!(
-                head.get_item("kind")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "Attack"
-            );
-            assert_eq!(
-                head.get_item("times")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<i32>()
-                    .unwrap(),
-                3
-            );
-        });
+    /// v0.111.0 telegraphs the whole move: `[Attack x3, Buff]`.
+    #[test]
+    fn wire_emits_every_declared_intent_v0111() {
+        assert_eq!(
+            terror_eel_thrash_wire_intents(sts2_core::GameVersion::V0_111_0),
+            vec![("Attack".to_owned(), Some(3)), ("Buff".to_owned(), None)]
+        );
+    }
+
+    /// v0.107.1 keeps the single-element wire its recorded goldens pin.
+    #[test]
+    fn wire_emits_only_the_primed_head_intent_v0107_unchanged() {
+        assert_eq!(
+            terror_eel_thrash_wire_intents(sts2_core::GameVersion::V0_107_1),
+            vec![("Attack".to_owned(), Some(3))]
+        );
     }
 
     #[test]

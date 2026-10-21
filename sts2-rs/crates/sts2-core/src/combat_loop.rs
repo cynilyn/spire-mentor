@@ -4428,6 +4428,7 @@ fn perform_intent(
             | Intent::Buff { .. }
             // Debuff: apply weak/strength-down debuff to the player.
             | Intent::Debuff { .. }
+            | Intent::CardDebuff
             // DebuffStrong: apply Vulnerable + Weak (e.g. SlimeBoss spawn).
             | Intent::DebuffStrong
             // Sleep: skip turn (Lagavulin pre-wake).
