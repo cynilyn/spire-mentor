@@ -2011,7 +2011,20 @@ pub fn juggling_before_card_played_v0111(
     }
     if let Some(amount) = clone_amount {
         crate::event_log::flash_player_power(state, PowerKind::Juggling);
+        let before = state.cards.len();
         clone_card_to_hand(state, card_uid, amount, false);
+        // The Stomp discount for the Attack being played (the third one) runs right after this hook
+        // and reaches every Stomp in the arena, but C# applies it to the cards that existed when the
+        // Attack was played, so a copy made here keeps the cost it was cloned with.
+        for idx in before..state.cards.len() {
+            let copy = &mut state.cards[idx];
+            if copy.card_id == crate::cards::CardId::Stomp && copy.cost > 0 {
+                let var = crate::cards::VarKey::StompCostReductionThisTurn;
+                let banked = copy.combat_var(var);
+                copy.cost += 1;
+                copy.set_combat_var(var, (banked - 1).max(0));
+            }
+        }
     }
 }
 
