@@ -165,8 +165,16 @@ pub fn present(state: &RunState) -> Option<Vec<EventOptionInfo>> {
 /// the eggs' upgrade; `AfterCardChangedPiles`: Lucky Fysh's gold, ...). Most handlers still
 /// `master_deck.push` directly, so the hooks are run here for the cards that did not already
 /// pass through [`RunState::add_card_to_deck_with_hooks`] (counted by `deck_add_hooks_fired`).
-fn fire_deck_add_hooks_for_event_cards(state: &mut RunState, len_before: usize, fired_before: u32) {
-    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+fn fire_deck_add_hooks_for_event_cards(
+    state: &mut RunState,
+    len_before: usize,
+    fired_before: u32,
+    relics_before: usize,
+) {
+    // A handler that also gained or lost a relic (Neow, the Ancients) pushes cards and relics
+    // in an order this post-hoc pass cannot recover, so only the card-only events are hooked.
+    if state.game_version < sts2_core::GameVersion::V0_111_0 || state.relics.len() != relics_before
+    {
         return;
     }
     let added = state.master_deck.len().saturating_sub(len_before);
@@ -200,13 +208,17 @@ pub fn resolve(state: &mut RunState, option_id: &str) -> Option<EventOutcome> {
     let id = state.current_event?;
     let spec = spec_for(id);
     let opt = spec.options.iter().find(|o| o.option_id == option_id)?;
-    let (deck_len, hooks_fired) = (state.master_deck.len(), state.deck_add_hooks_fired);
+    let (deck_len, hooks_fired, relic_count) = (
+        state.master_deck.len(),
+        state.deck_add_hooks_fired,
+        state.relics.len(),
+    );
     let outcome = (opt.handler)(state);
     // Bead sts2-rs-bv816: declarative effects fire BEFORE the
     // current_event slot is cleared so a hypothetical mid-chain
     // hook reading current_event still sees the right id.
     apply_event_effects(state, &outcome.effects);
-    fire_deck_add_hooks_for_event_cards(state, deck_len, hooks_fired);
+    fire_deck_add_hooks_for_event_cards(state, deck_len, hooks_fired, relic_count);
     if outcome.finished {
         state.exit_event_room();
     }
@@ -232,10 +244,14 @@ pub fn resolve_by_index(state: &mut RunState, option_idx: usize) -> Option<Event
         .options
         .iter()
         .find(|o| o.option_id == info.option_id)?;
-    let (deck_len, hooks_fired) = (state.master_deck.len(), state.deck_add_hooks_fired);
+    let (deck_len, hooks_fired, relic_count) = (
+        state.master_deck.len(),
+        state.deck_add_hooks_fired,
+        state.relics.len(),
+    );
     let outcome = (opt.handler)(state);
     apply_event_effects(state, &outcome.effects);
-    fire_deck_add_hooks_for_event_cards(state, deck_len, hooks_fired);
+    fire_deck_add_hooks_for_event_cards(state, deck_len, hooks_fired, relic_count);
     if outcome.finished {
         state.exit_event_room();
     }
