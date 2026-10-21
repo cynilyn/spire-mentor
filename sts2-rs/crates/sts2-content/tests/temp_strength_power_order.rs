@@ -186,3 +186,28 @@ fn normality_vetoes_an_auto_played_attack_on_v0111_only() {
     let (dmg, rolls) = run(GameVersion::V0_107_1);
     assert!(dmg > 0 && rolls == 1, "{dmg} {rolls}");
 }
+
+/// The plain Enlightenment lowers hand costs only for the turn (`SetThisTurnOrUntilPlayed`):
+/// the cost is back at the next turn start. v0.107.1 left the lowered cost in place.
+#[test]
+fn plain_enlightenment_cost_cap_expires_on_v0111_only() {
+    for (version, after_restore) in [(GameVersion::V0_111_0, 3), (GameVersion::V0_107_1, 1)] {
+        let (mut state, _) = board(version, CardId::Enlightenment, TargetType::Self_);
+        let hand = {
+            let mut c = state.cards[0].clone();
+            c.uid = CardUid::new(2).expect("non-zero uid");
+            c.card_id = CardId::StrikeIronclad;
+            c.card_type = CardType::Attack;
+            c.target_type = TargetType::Enemy;
+            c.cost = 3;
+            c
+        };
+        let uid = hand.uid;
+        state.cards.push(hand);
+        state.player.hand.push(uid);
+        dispatch(&mut state, CardId::Enlightenment, None);
+        assert_eq!(state.cards[1].cost, 1, "{version:?}");
+        state.restore_snecko_costs_for_turn_start();
+        assert_eq!(state.cards[1].cost, after_restore, "{version:?}");
+    }
+}
