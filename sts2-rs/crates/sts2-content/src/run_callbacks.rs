@@ -62,6 +62,7 @@ pub fn ironclad_content_callbacks() -> ContentCallbacks {
         resolve_event_at: Some(crate::events::dispatch::resolve_event_at_callback),
         event_option_count: Some(crate::events::dispatch::event_option_count_callback),
         bind_pending_event: Some(crate::events::dispatch::bind_pending_event_callback),
+        pick_event_for_room: Some(crate::events::dispatch::pick_event_for_room_callback),
         // Stocked merchant inventory: fills the payload-less slots core's
         // `shop::generate_shop_inventory` rolls (price + rarity only) with
         // concrete cards/relics/potions from the run's pools, so the shop

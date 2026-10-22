@@ -407,6 +407,9 @@ pub struct ContentCallbacks {
     /// Idempotent and RNG-free. Called through
     /// [`RunManager::bind_pending_event`] (GH #841).
     pub bind_pending_event: Option<fn(rs: &mut RunState)>,
+    /// v0.111.0 map entry: select and bind the event before `enter_room`
+    /// fires room-enter listeners. The callback must not enter the room.
+    pub pick_event_for_room: Option<fn(rs: &mut RunState)>,
     /// Build the active [`crate::shop::ShopInventory`] for the shop
     /// room the player just entered. Invoked once on Shop-room entry;
     /// the returned inventory is owned by the [`RunManager`] until
@@ -563,6 +566,7 @@ impl core::fmt::Debug for ContentCallbacks {
             .field("resolve_event_at", &self.resolve_event_at.is_some())
             .field("event_option_count", &self.event_option_count.is_some())
             .field("bind_pending_event", &self.bind_pending_event.is_some())
+            .field("pick_event_for_room", &self.pick_event_for_room.is_some())
             .field(
                 "generate_shop_inventory",
                 &self.generate_shop_inventory.is_some(),
@@ -1948,6 +1952,13 @@ impl RunManager {
         {
             self.run_state.tick_dowsing_quests_v0111();
         }
+        if resolved == crate::runstate::RoomType::Event
+            && self.run_state.game_version >= crate::GameVersion::V0_111_0
+        {
+            if let Some(pick) = self.callbacks.pick_event_for_room {
+                pick(&mut self.run_state);
+            }
+        }
         self.run_state
             .enter_room(crate::runstate::Room::at(coord, point_type, resolved));
         // Dispatch by resolved room type.
@@ -1977,12 +1988,6 @@ impl RunManager {
                 self.phase = Phase::Event;
                 if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
                     self.bind_pending_event();
-                    // `enter_event_room` used by the binder drops the map
-                    // coordinate. Restore it for the next map choice.
-                    if let Some(room) = self.run_state.current_room.as_mut() {
-                        room.map_coord = Some(coord);
-                        room.map_point_type = Some(point_type);
-                    }
                 }
                 ActionResult::Advanced
             }

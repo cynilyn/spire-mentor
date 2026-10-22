@@ -659,6 +659,75 @@ fn fake_merchant_legacy_event_path_stays_version_gated() {
     assert_eq!(rm.run_state.gold, 150);
 }
 
+#[test]
+fn event_is_picked_before_one_room_entry_and_maw_bank_gold() {
+    use sts2_core::map::{ActMap, MapPointType};
+
+    fn enter_event(gold: i32, version: sts2_core::GameVersion) -> RunManager {
+        sts2_content::relics::dispatch::ensure_installed();
+        let mut rm = sts2_content::run_callbacks::new_run_manager_for_character(
+            7,
+            sts2_core::CharacterId::Ironclad,
+        )
+        .with_game_version(version);
+        let mut map = ActMap::new(1);
+        let start = map.get_or_create(0, 0);
+        let event = map.get_or_create(0, 1);
+        map.start = Some(start);
+        map.point_mut(event).point_type = MapPointType::Ancient;
+        map.add_child(start, event);
+        rm.run_state.current_act_map = Some(map);
+        rm.run_state.current_room = None;
+        rm.run_state.act_index = 2;
+        rm.run_state.total_floor = 7;
+        rm.run_state.generated_rooms.clear();
+        rm.run_state.acts[1].event_ids_shuffled = vec!["FakeMerchant", "SlipperyBridge"];
+        rm.run_state.gold = gold;
+        rm.run_state.relics.push(RelicId::MawBank);
+        assert_eq!(
+            rm.take_action(RunAction::Move { col: 0 }),
+            ActionResult::Advanced
+        );
+        rm
+    }
+
+    let skipped = enter_event(88, sts2_core::GameVersion::V0_111_0);
+    assert_eq!(
+        skipped.run_state.current_event,
+        Some(EventId::SlipperyBridge)
+    );
+    assert_eq!(skipped.run_state.gold, 100);
+    assert_eq!(skipped.run_state.rooms_at_point, 1);
+    assert_eq!(skipped.phase(), Phase::Event);
+
+    let fake = enter_event(100, sts2_core::GameVersion::V0_111_0);
+    assert_eq!(fake.run_state.current_event, Some(EventId::FakeMerchant));
+    assert_eq!(fake.run_state.gold, 112);
+    assert_eq!(fake.run_state.rooms_at_point, 1);
+    assert_eq!(fake.run_state.rng.shops.counter(), 6);
+    assert_eq!(fake.phase(), Phase::Shop);
+
+    let legacy = enter_event(100, sts2_core::GameVersion::V0_107_1);
+    assert_eq!(legacy.phase(), Phase::Event);
+    assert_eq!(legacy.run_state.current_event, None);
+    assert_eq!(legacy.run_state.rng.shops.counter(), 0);
+}
+
+#[test]
+fn external_event_binder_does_not_reenter_an_entered_room_v0111() {
+    let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_111_0);
+    rm.run_state.exit_event_room();
+    rm.run_state.generated_rooms.clear();
+    rm.run_state.acts[0].event_ids_shuffled = vec!["LostWisp"];
+    rm.run_state.relics.push(RelicId::MawBank);
+    rm.run_state.gold = 88;
+    let rooms = rm.run_state.rooms_at_point;
+    rm.bind_pending_event();
+    assert_eq!(rm.run_state.current_event, Some(EventId::LostWisp));
+    assert_eq!(rm.run_state.rooms_at_point, rooms);
+    assert_eq!(rm.run_state.gold, 88);
+}
+
 /// C# `DenseVegetation.Rest` awaits `PlayerCmd.MimicRestSiteHeal`, whose
 /// `ExecuteRestSiteHeal` offers Dream Catcher's card reward
 /// (`RewardsCmd.OfferCustom`) BEFORE `SetEventState` shows FIGHT. The card
