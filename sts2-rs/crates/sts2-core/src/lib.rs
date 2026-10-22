@@ -3133,6 +3133,10 @@ pub struct TurnEvents {
     /// per drawn Status card in [`Self::invoke_card_drawn_for_newly_drawn`];
     /// cleared each player turn in [`Self::reset_per_turn`].
     pub status_cards_drawn_this_turn: u32,
+    /// v0.111.0 `HellraiserPower.infiniteAutoPlaysThisTurn`: drawn Strikes auto-played while no hittable
+    /// non-infinite enemy exists (vacuously true on an empty board). Capped at 9 per turn; reset by a
+    /// draw that sees a live enemy and each player turn in [`Self::reset_per_turn`].
+    pub hellraiser_vacuous_autoplays_this_turn: u32,
     /// `true` once the PLAYER has applied `DoomPower` to any creature during
     /// the current player turn. C# Necrobinder `DeathsDoor.cs`'s
     /// `WasDoomAppliedThisTurn` scans `History.Entries.OfType<PowerReceivedEntry>()`
@@ -3441,6 +3445,7 @@ impl TurnEvents {
     pub fn reset_per_turn(&mut self) {
         self.cards_drawn_by_effect_this_turn = 0;
         self.status_cards_drawn_this_turn = 0;
+        self.hellraiser_vacuous_autoplays_this_turn = 0;
         self.doom_applied_by_player_this_turn = false;
         self.osty_attacks_this_turn = 0;
         self.cards_exhausted_this_turn = 0;
@@ -7283,12 +7288,18 @@ impl CombatState {
         // draw routes through the per-card [`Self::draw_suspending`] loop,
         // which calls this fn once per single drawn card, so this reflects
         // every prior auto-play's kills.
-        let has_alive_enemy = has_hellraiser
+        let enemy_alive_now = has_hellraiser
             && self.enemy_uids.iter().any(|uid| {
                 self.creatures
                     .iter()
                     .any(|c| c.id == uid.0 && c.current_hp > 0)
             });
+        // v0.111.0 `HellraiserPower.AfterCardDrawnEarly` no longer needs a hittable enemy: with none,
+        // `HittableEnemies.All(infinite)` is vacuously true, so the drawn Strike is still handed to
+        // `CardCmd.AutoPlay` (which sends a targetless AnyEnemy card to its result pile) until the
+        // per-turn cap of 9 is reached.
+        let hellraiser_v0111 = has_hellraiser && self.game_version >= crate::GameVersion::V0_111_0;
+        let has_alive_enemy = has_hellraiser && (hellraiser_v0111 || enemy_alive_now);
 
         // Bead `sts2-rs-lj36b`: ConfusedPower.AfterCardDrawn (Snecko Eye /
         // FAKE_SNECKO_EYE). C# `ConfusedPower.cs::AfterCardDrawn` re-rolls
@@ -7634,7 +7645,18 @@ impl CombatState {
                 }
             }
             if has_alive_enemy && is_strike {
-                auto_play_uids.push(uid);
+                let mut play = true;
+                if hellraiser_v0111 {
+                    if enemy_alive_now {
+                        self.combat_log.hellraiser_vacuous_autoplays_this_turn = 0;
+                    } else {
+                        play = self.combat_log.hellraiser_vacuous_autoplays_this_turn < 9;
+                        self.combat_log.hellraiser_vacuous_autoplays_this_turn += 1;
+                    }
+                }
+                if play {
+                    auto_play_uids.push(uid);
+                }
             }
         }
         for _ in 0..automation_flashes {

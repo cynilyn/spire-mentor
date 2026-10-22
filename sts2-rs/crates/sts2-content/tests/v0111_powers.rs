@@ -1224,3 +1224,27 @@ fn bone_tea_does_not_upgrade_spoils_map_v0111() {
     assert!(state.cards[strike.0.get() as usize - 1].upgraded);
     assert_eq!(state.relics[0].counter, 0);
 }
+
+#[test]
+fn hellraiser_autoplays_drawn_strikes_on_an_empty_board_up_to_the_cap_v0111() {
+    // HellraiserPower.cs:34-60 (v0.111.0): `HittableEnemies.All(infinite)` is vacuously true with no
+    // hittable enemy, so each drawn Strike still goes to `CardCmd.AutoPlay`, which sends a targetless
+    // AnyEnemy card to its result pile; the per-turn infinite-play cap is 9.
+    for (version, want_discard, want_hand) in [
+        (GameVersion::V0_111_0, 9, 1),
+        (GameVersion::V0_107_1, 0, 10),
+    ] {
+        let (mut state, _) = fresh(version);
+        state.enemy_uids.clear();
+        let p = player_uid(&state);
+        give(&mut state, p, PowerKind::Hellraiser, 1);
+        for _ in 0..10 {
+            let uid = add_to_hand(&mut state, CardId::StrikeIronclad);
+            state.player.hand.retain(|u| *u != uid);
+            state.player.draw.push(uid);
+        }
+        sts2_core::cards::draw_via_state(&mut state, 10);
+        assert_eq!(state.player.discard.len(), want_discard, "{version:?}");
+        assert_eq!(state.player.hand.len(), want_hand, "{version:?}");
+    }
+}
