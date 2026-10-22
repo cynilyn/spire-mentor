@@ -418,6 +418,10 @@ pub struct ContentCallbacks {
     /// / `potion_kind` slots from the character + colorless pools.
     /// Bead `sts2-rs-if6ry` (W3).
     pub generate_shop_inventory: Option<fn(rs: &mut RunState) -> crate::shop::ShopInventory>,
+    /// FakeMerchant's custom EventRoom inventory (six fake relics). Kept
+    /// separate from normal merchant generation so its RNG and stock differ.
+    pub generate_fake_merchant_inventory:
+        Option<fn(rs: &mut RunState) -> crate::shop::ShopInventory>,
     /// Re-populate a single merchant slot after a successful purchase
     /// when the player owns `TheCourier` (C#
     /// `MerchantEntry.OnTryPurchaseWrapper` →
@@ -1080,6 +1084,16 @@ impl RunManager {
                 bind(&mut self.run_state);
             }
         }
+        if self.phase == Phase::Event
+            && self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && self.run_state.current_event == Some(crate::events::EventId::FakeMerchant)
+        {
+            self.shop_inventory = self
+                .callbacks
+                .generate_fake_merchant_inventory
+                .map(|f| f(&mut self.run_state));
+            self.phase = Phase::Shop;
+        }
     }
 
     /// Access the wired callbacks (mostly for tests).
@@ -1501,7 +1515,8 @@ impl RunManager {
                 // MembershipCard the removal / cheap entries were withheld
                 // while the player held enough gold). v0.111.0 only.
                 let relics_now = self.run_state.active_relics();
-                let discounted = self.run_state.game_version >= crate::GameVersion::V0_111_0;
+                let discounted = self.run_state.game_version >= crate::GameVersion::V0_111_0
+                    && self.run_state.current_event != Some(crate::events::EventId::FakeMerchant);
                 let cost_of = |price: i32| {
                     if discounted {
                         crate::shop::merchant_price_with_modifiers(&relics_now, price)
@@ -1557,7 +1572,10 @@ impl RunManager {
                         }
                     }
                 }
-                if !inv.removal_used && gold >= cost_of(inv.removal_cost) {
+                if self.run_state.current_event != Some(crate::events::EventId::FakeMerchant)
+                    && !inv.removal_used
+                    && gold >= cost_of(inv.removal_cost)
+                {
                     // v0.107.1 shop removal is `CardSelectCmd.FromDeckForRemoval`
                     // with NO extra filter (`OneOffSynchronizer.DoMerchantCard
                     // Removal` → `CardModel.IsRemovable`: `Type != Quest &&
@@ -1709,6 +1727,9 @@ impl RunManager {
             (Phase::BossRelic, RunAction::PickBossRelic { idx }) => self.do_boss_relic_pick(idx),
             (Phase::Shop, RunAction::LeaveShop) => {
                 self.shop_inventory = None;
+                if self.run_state.current_event == Some(crate::events::EventId::FakeMerchant) {
+                    self.run_state.exit_event_room();
+                }
                 self.phase = Phase::MapChoice;
                 ActionResult::Advanced
             }
@@ -1954,6 +1975,15 @@ impl RunManager {
             crate::runstate::RoomType::Treasure => self.resolve_treasure_room(),
             crate::runstate::RoomType::Event => {
                 self.phase = Phase::Event;
+                if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+                    self.bind_pending_event();
+                    // `enter_event_room` used by the binder drops the map
+                    // coordinate. Restore it for the next map choice.
+                    if let Some(room) = self.run_state.current_room.as_mut() {
+                        room.map_coord = Some(coord);
+                        room.map_point_type = Some(point_type);
+                    }
+                }
                 ActionResult::Advanced
             }
             crate::runstate::RoomType::Unknown => ActionResult::InvalidForPhase,
@@ -3570,6 +3600,9 @@ impl RunManager {
     /// the streams aligned with C# `RestockAfterPurchase` for any later
     /// shop visit. No-op without Courier or when the callback is unwired.
     fn restock_slot_if_courier(&mut self, slot: crate::shop::ShopSlot) {
+        if self.run_state.current_event == Some(crate::events::EventId::FakeMerchant) {
+            return;
+        }
         if !self
             .run_state
             .owns_active_relic(crate::relics::RelicId::TheCourier)

@@ -585,15 +585,78 @@ fn fake_merchant_fight_win_grants_300_gold_relics_and_card_reward() {
     }
 }
 
-/// FakeMerchant's `Buy` still finishes the event straight to the map.
+/// v0.111.0 FakeMerchant exposes six relics in a persistent EventRoom shop.
 #[test]
-fn fake_merchant_buy_still_finishes_the_event() {
+fn fake_merchant_shop_allows_multiple_purchases_before_leave() {
     let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_111_0);
     rm.run_state.gold = 200;
-    choose(&mut rm, "buy");
-    assert_eq!(rm.run_state.gold, 150);
+    let shops_before = rm.run_state.rng.shops.counter();
+    rm.bind_pending_event();
+    assert_eq!(rm.phase(), Phase::Shop);
+    assert_eq!(rm.run_state.rng.shops.counter() - shops_before, 6);
+    let offered = rm
+        .shop_inventory()
+        .expect("fake relic inventory")
+        .relics
+        .clone();
+    assert_eq!(offered.len(), 6);
+    assert!(offered.iter().all(|entry| entry.relic_id.is_some()));
+    for idx in 0..2 {
+        let price = offered[idx].price;
+        let gold = rm.run_state.gold;
+        assert_eq!(
+            rm.take_action(RunAction::ShopBuyRelic { idx }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.gold, gold - price);
+        assert_eq!(rm.phase(), Phase::Shop);
+        assert_eq!(rm.run_state.current_event, Some(EventId::FakeMerchant));
+        assert!(rm
+            .run_state
+            .relics
+            .contains(&offered[idx].relic_id.unwrap()));
+        assert_eq!(rm.run_state.rng.shops.counter() - shops_before, 6);
+    }
+    assert_eq!(rm.take_action(RunAction::LeaveShop), ActionResult::Advanced);
     assert!(rm.run_state.current_event.is_none());
     assert_eq!(rm.phase(), Phase::MapChoice);
+}
+
+#[test]
+fn fake_merchant_event_room_ignores_normal_shop_discounts_and_restock() {
+    let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_111_0);
+    rm.run_state.gold = 200;
+    rm.run_state
+        .relics
+        .extend([RelicId::TheCourier, RelicId::MembershipCard]);
+    rm.bind_pending_event();
+    let first = rm.shop_inventory().unwrap().relics[0];
+    let before = rm.run_state.gold;
+    assert_eq!(
+        rm.take_action(RunAction::ShopBuyRelic { idx: 0 }),
+        ActionResult::Advanced
+    );
+    assert_eq!(rm.run_state.gold, before - first.price);
+    assert_eq!(rm.shop_inventory().unwrap().relics[0].relic_id, None);
+    assert_eq!(rm.shop_inventory().unwrap().relics[0].price, first.price);
+    assert!(!rm
+        .get_available_actions()
+        .contains(&RunAction::ShopBuyRelic { idx: 0 }));
+    assert!(!rm
+        .get_available_actions()
+        .iter()
+        .any(|action| matches!(action, RunAction::ShopRemoveCard { .. })));
+}
+
+#[test]
+fn fake_merchant_legacy_event_path_stays_version_gated() {
+    let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_107_1);
+    rm.run_state.gold = 200;
+    rm.bind_pending_event();
+    assert_eq!(rm.phase(), Phase::Event);
+    choose(&mut rm, "buy");
+    assert_eq!(rm.phase(), Phase::MapChoice);
+    assert_eq!(rm.run_state.gold, 150);
 }
 
 /// C# `DenseVegetation.Rest` awaits `PlayerCmd.MimicRestSiteHeal`, whose

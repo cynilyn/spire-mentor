@@ -778,7 +778,14 @@ pub fn shop_inventory(rm: &RunManager) -> Value {
     // (Courier / MembershipCard) over the rolled base while in the
     // shop, so the displayed cost is discounted for the owner.
     let relics = rm.run_state.active_relics();
-    let price_of = |base: i32| sts2_core::shop::merchant_price_with_modifiers(&relics, base);
+    let fake_merchant = rm.run_state.current_event == Some(sts2_core::EventId::FakeMerchant);
+    let price_of = |base: i32| {
+        if fake_merchant {
+            base
+        } else {
+            sts2_core::shop::merchant_price_with_modifiers(&relics, base)
+        }
+    };
     let mut d = obj();
 
     let mut cards = Vec::new();
@@ -836,8 +843,13 @@ pub fn shop_inventory(rm: &RunManager) -> Value {
     }
     d.insert("potions".to_owned(), Value::Array(potion_rows));
 
-    set(&mut d, "removal_cost", price_of(inv.removal_cost));
-    set(&mut d, "removal_used", inv.removal_used);
+    if fake_merchant {
+        d.insert("removal_cost".to_owned(), Value::Null);
+        set(&mut d, "removal_used", false);
+    } else {
+        set(&mut d, "removal_cost", price_of(inv.removal_cost));
+        set(&mut d, "removal_used", inv.removal_used);
+    }
     Value::Object(d)
 }
 
@@ -1204,6 +1216,32 @@ mod tests {
             .with_act1(ActVariant::Overgrowth);
         initialize_run_setup(&mut rm);
         rm
+    }
+
+    #[test]
+    fn fake_merchant_wire_has_six_relics_no_removal_and_keeps_sold_price() {
+        use sts2_core::run_manager::{ActionResult, RunAction};
+        let mut rm = ironclad_seed_0()
+            .with_game_version(sts2_core::GameVersion::V0_111_0)
+            .with_neow_start();
+        rm.run_state
+            .enter_event_room(sts2_core::EventId::FakeMerchant);
+        rm.run_state.gold = 200;
+        rm.run_state.relics.push(sts2_core::RelicId::MembershipCard);
+        rm.bind_pending_event();
+        let before = shop_inventory(&rm);
+        assert_eq!(before["removal_cost"], Value::Null);
+        assert_eq!(before["relics"].as_array().unwrap().len(), 6);
+        let price = before["relics"][0]["price"].as_i64().unwrap();
+        assert!((43..=58).contains(&price));
+        assert_eq!(
+            rm.take_action(RunAction::ShopBuyRelic { idx: 0 }),
+            ActionResult::Advanced
+        );
+        let after = shop_inventory(&rm);
+        assert_eq!(after["relics"][0]["price"], price);
+        assert_eq!(after["relics"][0]["available"], false);
+        assert_eq!(after["relics"][0]["id"], Value::Null);
     }
 
     fn keys(v: &Value) -> Vec<&str> {
