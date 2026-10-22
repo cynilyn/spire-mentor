@@ -3161,6 +3161,12 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     let _ = dispatch_if_live(state, live, crate::EffectResult::NotImplemented, |state| {
         crate::relic_effects::dispatch_after_turn_end(state, Side::Player)
     });
+    if state.game_version >= crate::GameVersion::V0_111_0 && combat_is_ending(state) {
+        match check_combat_end(state) {
+            StepResult::Advanced => {}
+            ended => return ended,
+        }
+    }
 
     // C# `SmoggyPower.AfterSideTurnEnd` (`SmoggyPower.cs:47-62`): the owner
     // (always the player at this pin) participates in this side turn, so every
@@ -3206,6 +3212,19 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     // hook surface existed); the draw-pile-top gate is engine-resolvable
     // without one, so it is wired directly here.
     auto_play_i_am_invincible_from_draw_top(state);
+
+    // `DisintegrationPower.AfterSideTurnEndLate` runs after all early
+    // listeners, including relics. A lethal ParryingShield hit above ends
+    // combat before this self-damage can occur (RT0_36).
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        if combat_is_ending(state) {
+            match check_combat_end(state) {
+                StepResult::Advanced => {}
+                ended => return ended,
+            }
+        }
+        hooks::dispatch_after_turn_end_late(state, &TurnSideCtx { side: Side::Player });
+    }
 
     // Step 8: combat-end re-check. This is the Rust analogue of C#'s single
     // `await CheckWinCondition();` (`CombatManager.cs:963`) — fired ONCE,
@@ -11582,6 +11601,55 @@ mod tests {
 
             let result = start_player_turn(&mut state);
             assert_eq!(result, expected_result);
+            assert_eq!(state.player.current_hp, expected_hp, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn parrying_shield_victory_precedes_disintegration_late_v0111() {
+        crate::relic_effects::ensure_installed();
+        for (version, expected_hp) in [
+            (crate::GameVersion::V0_107_1, 49),
+            (crate::GameVersion::V0_111_0, 50),
+        ] {
+            let mut state = state_with_cultists(1);
+            state.game_version = version;
+            state.phase = CombatPhase::PlayerEndTurnPhaseOne;
+            state.round = 2;
+            state.player.current_hp = 50;
+            state.player.max_hp = 80;
+            state.player.block = 20;
+            let enemy = state.enemy_uids[0];
+            state
+                .creatures
+                .iter_mut()
+                .find(|c| c.id == enemy.0)
+                .expect("enemy")
+                .current_hp = 1;
+            let player = state.init_player_creature();
+            let power_id = NonZeroU32::new(1).expect("power uid");
+            state.powers.push(crate::Power::new(
+                power_id,
+                crate::PowerKind::Disintegration,
+                21,
+            ));
+            state.player.powers.push(crate::PowerUid(power_id));
+            state
+                .creatures
+                .iter_mut()
+                .find(|c| c.id == player.0)
+                .expect("player creature")
+                .powers
+                .push(crate::PowerUid(power_id));
+            state.relics.push(crate::Relic {
+                id: NonZeroU32::new(1).expect("relic uid"),
+                kind: crate::RelicKind::ParryingShield,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+
+            assert_eq!(end_player_turn_phase_two(&mut state), StepResult::CombatWon);
             assert_eq!(state.player.current_hp, expected_hp, "{version:?}");
         }
     }
