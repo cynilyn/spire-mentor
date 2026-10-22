@@ -57,7 +57,7 @@ fn win_monster_fight(version: GameVersion, relics: &[RelicId]) -> RunManager {
     rm
 }
 
-/// v0.111.0: the LanternKey is a skippable `SpecialCardReward` that opens after the room's card reward(s); decline it.
+/// v0.111.0: the LanternKey is a skippable `SpecialCardReward` that opens before the room's card rewards; decline it.
 fn skip_special(rm: &mut RunManager) {
     if rm.phase() == Phase::CardReward && rm.card_reward_kind() == "special_card" {
         skip(rm);
@@ -77,18 +77,17 @@ fn prayer_wheel_adds_a_second_card_reward_on_v0111_only() {
     for version in VERSIONS {
         let mut plain = win_monster_fight(version, &[]);
         let mut wheel = win_monster_fight(version, &[RelicId::PrayerWheel]);
+        skip_special(&mut plain);
+        skip_special(&mut wheel);
         assert_eq!(plain.card_reward_options().len(), 3);
         skip(&mut plain);
-        skip_special(&mut plain);
         assert_eq!(plain.phase(), Phase::MapChoice, "{version:?}: one reward");
         skip(&mut wheel);
-        skip_special(&mut wheel);
         if version >= GameVersion::V0_111_0 {
             assert_eq!(wheel.phase(), Phase::CardReward, "second card screen");
             assert_eq!(wheel.card_reward_options().len(), 3);
             skip(&mut wheel);
         }
-        skip_special(&mut wheel);
         assert_eq!(wheel.phase(), Phase::MapChoice, "{version:?}");
         let extra = wheel.run_state.rng.rewards.counter() - plain.run_state.rng.rewards.counter();
         let want = if version >= GameVersion::V0_111_0 {
@@ -136,6 +135,8 @@ fn rewards_stream_after_the_room_is_shifted_by_exactly_the_extra_reward() {
     );
     skip(&mut wheel);
     skip(&mut wheel);
+    skip(&mut wheel);
+    assert_eq!(wheel.phase(), Phase::MapChoice);
     assert_eq!(
         wheel.run_state.rng.rewards.counter(),
         before,

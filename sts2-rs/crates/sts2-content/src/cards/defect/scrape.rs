@@ -33,7 +33,12 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
                 // v0.111.0: `GetWithModifiers(CostModifiers.All) != 0 ||
                 // CostsX` — the GLOBAL cost modifiers count too (decomp
                 // Scrape.cs:32).
-                card.is_x_cost()
+                // CardEnergyCost.GetWithModifiers returns the negative base
+                // unchanged for unplayable statuses; Rust's generic effective
+                // cost helper clamps it to zero. Scrape must discard those
+                // statuses too (RT0_73: Infection).
+                card.cost < 0
+                    || card.is_x_cost()
                     || sts2_core::hooks::effective_card_cost_inst(state, card, uid) != 0
             } else {
                 card.cost != 0

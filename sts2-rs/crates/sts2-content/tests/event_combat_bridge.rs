@@ -497,8 +497,8 @@ const VERSIONS: [sts2_core::GameVersion; 2] = [
 
 /// C# `TheLanternKey.Fight` → MysteriousKnight in a Monster `CombatRoom`:
 /// the win grants Monster gold (10-20), the card reward, and the
-/// `SpecialCardReward(LanternKey)` extra, which the headless auto-collects
-/// before the card reward it presents.
+/// `SpecialCardReward(LanternKey)` extra. v0.111.0 offers the special card
+/// first (RewardsSetIndex 4), followed by the ordinary card reward (5).
 #[test]
 fn lantern_key_fight_win_grants_room_rewards_and_the_key() {
     for version in VERSIONS {
@@ -521,22 +521,28 @@ fn lantern_key_fight_win_grants_room_rewards_and_the_key() {
                 .count()
         };
         assert_eq!(rm.phase(), Phase::CardReward);
-        assert_eq!(rm.card_reward_options().len(), 3, "{version:?}");
-        assert!(!rm
-            .card_reward_options()
-            .contains(&sts2_core::cards::CardId::LanternKey));
         assert!(rm.run_state.current_event.is_none());
         if version == sts2_core::GameVersion::V0_111_0 {
             // `TheLanternKey.cs:52`: a skippable SpecialCardReward, not added on its own.
             assert_eq!(rm.run_state.master_deck.len(), deck_before);
             assert_eq!(key_count(&rm), 0);
-            rm.take_action(RunAction::PickCardReward { idx: None });
-            assert_eq!(rm.phase(), Phase::CardReward, "then the special reward");
             assert_eq!(rm.card_reward_kind(), "special_card");
+            assert_eq!(
+                rm.card_reward_options(),
+                &[sts2_core::cards::CardId::LanternKey]
+            );
             rm.take_action(RunAction::PickCardReward { idx: Some(0) });
             assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
             assert_eq!(key_count(&rm), 1);
+            assert_eq!(rm.phase(), Phase::CardReward, "then the ordinary reward");
+            assert_eq!(rm.card_reward_kind(), "card");
+            assert_eq!(rm.card_reward_options().len(), 3);
+            rm.take_action(RunAction::PickCardReward { idx: None });
         } else {
+            assert_eq!(rm.card_reward_options().len(), 3);
+            assert!(!rm
+                .card_reward_options()
+                .contains(&sts2_core::cards::CardId::LanternKey));
             assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
             assert_eq!(key_count(&rm), 1);
             rm.take_action(RunAction::PickCardReward { idx: None });
@@ -585,15 +591,147 @@ fn fake_merchant_fight_win_grants_300_gold_relics_and_card_reward() {
     }
 }
 
-/// FakeMerchant's `Buy` still finishes the event straight to the map.
+/// v0.111.0 FakeMerchant exposes six relics in a persistent EventRoom shop.
 #[test]
-fn fake_merchant_buy_still_finishes_the_event() {
+fn fake_merchant_shop_allows_multiple_purchases_before_leave() {
     let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_111_0);
     rm.run_state.gold = 200;
-    choose(&mut rm, "buy");
-    assert_eq!(rm.run_state.gold, 150);
+    let shops_before = rm.run_state.rng.shops.counter();
+    rm.bind_pending_event();
+    assert_eq!(rm.phase(), Phase::Shop);
+    assert_eq!(rm.run_state.rng.shops.counter() - shops_before, 6);
+    let offered = rm
+        .shop_inventory()
+        .expect("fake relic inventory")
+        .relics
+        .clone();
+    assert_eq!(offered.len(), 6);
+    assert!(offered.iter().all(|entry| entry.relic_id.is_some()));
+    for idx in 0..2 {
+        let price = offered[idx].price;
+        let gold = rm.run_state.gold;
+        assert_eq!(
+            rm.take_action(RunAction::ShopBuyRelic { idx }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.gold, gold - price);
+        assert_eq!(rm.phase(), Phase::Shop);
+        assert_eq!(rm.run_state.current_event, Some(EventId::FakeMerchant));
+        assert!(rm
+            .run_state
+            .relics
+            .contains(&offered[idx].relic_id.unwrap()));
+        assert_eq!(rm.run_state.rng.shops.counter() - shops_before, 6);
+    }
+    assert_eq!(rm.take_action(RunAction::LeaveShop), ActionResult::Advanced);
     assert!(rm.run_state.current_event.is_none());
     assert_eq!(rm.phase(), Phase::MapChoice);
+}
+
+#[test]
+fn fake_merchant_event_room_ignores_normal_shop_discounts_and_restock() {
+    let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_111_0);
+    rm.run_state.gold = 200;
+    rm.run_state
+        .relics
+        .extend([RelicId::TheCourier, RelicId::MembershipCard]);
+    rm.bind_pending_event();
+    let first = rm.shop_inventory().unwrap().relics[0];
+    let before = rm.run_state.gold;
+    assert_eq!(
+        rm.take_action(RunAction::ShopBuyRelic { idx: 0 }),
+        ActionResult::Advanced
+    );
+    assert_eq!(rm.run_state.gold, before - first.price);
+    assert_eq!(rm.shop_inventory().unwrap().relics[0].relic_id, None);
+    assert_eq!(rm.shop_inventory().unwrap().relics[0].price, first.price);
+    assert!(!rm
+        .get_available_actions()
+        .contains(&RunAction::ShopBuyRelic { idx: 0 }));
+    assert!(!rm
+        .get_available_actions()
+        .iter()
+        .any(|action| matches!(action, RunAction::ShopRemoveCard { .. })));
+}
+
+#[test]
+fn fake_merchant_legacy_event_path_stays_version_gated() {
+    let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_107_1);
+    rm.run_state.gold = 200;
+    rm.bind_pending_event();
+    assert_eq!(rm.phase(), Phase::Event);
+    choose(&mut rm, "buy");
+    assert_eq!(rm.phase(), Phase::MapChoice);
+    assert_eq!(rm.run_state.gold, 150);
+}
+
+#[test]
+fn event_is_picked_before_one_room_entry_and_maw_bank_gold() {
+    use sts2_core::map::{ActMap, MapPointType};
+
+    fn enter_event(gold: i32, version: sts2_core::GameVersion) -> RunManager {
+        sts2_content::relics::dispatch::ensure_installed();
+        let mut rm = sts2_content::run_callbacks::new_run_manager_for_character(
+            7,
+            sts2_core::CharacterId::Ironclad,
+        )
+        .with_game_version(version);
+        let mut map = ActMap::new(1);
+        let start = map.get_or_create(0, 0);
+        let event = map.get_or_create(0, 1);
+        map.start = Some(start);
+        map.point_mut(event).point_type = MapPointType::Ancient;
+        map.add_child(start, event);
+        rm.run_state.current_act_map = Some(map);
+        rm.run_state.current_room = None;
+        rm.run_state.act_index = 2;
+        rm.run_state.total_floor = 7;
+        rm.run_state.generated_rooms.clear();
+        rm.run_state.acts[1].event_ids_shuffled = vec!["FakeMerchant", "SlipperyBridge"];
+        rm.run_state.gold = gold;
+        rm.run_state.relics.push(RelicId::MawBank);
+        assert_eq!(
+            rm.take_action(RunAction::Move { col: 0 }),
+            ActionResult::Advanced
+        );
+        rm
+    }
+
+    let skipped = enter_event(88, sts2_core::GameVersion::V0_111_0);
+    assert_eq!(
+        skipped.run_state.current_event,
+        Some(EventId::SlipperyBridge)
+    );
+    assert_eq!(skipped.run_state.gold, 100);
+    assert_eq!(skipped.run_state.rooms_at_point, 1);
+    assert_eq!(skipped.phase(), Phase::Event);
+
+    let fake = enter_event(100, sts2_core::GameVersion::V0_111_0);
+    assert_eq!(fake.run_state.current_event, Some(EventId::FakeMerchant));
+    assert_eq!(fake.run_state.gold, 112);
+    assert_eq!(fake.run_state.rooms_at_point, 1);
+    assert_eq!(fake.run_state.rng.shops.counter(), 6);
+    assert_eq!(fake.phase(), Phase::Shop);
+
+    let legacy = enter_event(100, sts2_core::GameVersion::V0_107_1);
+    assert_eq!(legacy.phase(), Phase::Event);
+    assert_eq!(legacy.run_state.current_event, None);
+    assert_eq!(legacy.run_state.rng.shops.counter(), 0);
+}
+
+#[test]
+fn external_event_binder_does_not_reenter_an_entered_room_v0111() {
+    let mut rm = run_in_event(EventId::FakeMerchant, sts2_core::GameVersion::V0_111_0);
+    rm.run_state.exit_event_room();
+    rm.run_state.generated_rooms.clear();
+    rm.run_state.acts[0].event_ids_shuffled = vec!["LostWisp"];
+    rm.run_state.relics.push(RelicId::MawBank);
+    rm.run_state.gold = 88;
+    let rooms = rm.run_state.rooms_at_point;
+    rm.bind_pending_event();
+    assert_eq!(rm.run_state.current_event, Some(EventId::LostWisp));
+    assert_eq!(rm.run_state.rooms_at_point, rooms);
+    assert_eq!(rm.run_state.gold, 88);
 }
 
 /// C# `DenseVegetation.Rest` awaits `PlayerCmd.MimicRestSiteHeal`, whose

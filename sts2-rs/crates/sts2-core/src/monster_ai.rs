@@ -605,6 +605,32 @@ impl MonsterAi {
         self.forced_next_state = None;
     }
 
+    /// C# `Creature.StunInternal` resumes the last *telegraphed* move after
+    /// the no-op stun. Our state log records performed moves instead, so use
+    /// the current telegraph (or the prior stun's follow-up if stunned twice).
+    pub fn stun_immediate(&mut self) {
+        fn no_effect(_: &mut CombatState, _: CreatureUid) {}
+        let resume = if self.current == "STUNNED" {
+            match self.states.get("STUNNED") {
+                Some(MonsterState::Move(state)) => state.follow_up.unwrap_or(self.initial),
+                _ => self.initial,
+            }
+        } else {
+            self.current
+        };
+        std::sync::Arc::make_mut(&mut self.states).insert(
+            "STUNNED",
+            MonsterState::Move(MoveState {
+                id: "STUNNED",
+                effect: no_effect,
+                intents: smallvec::smallvec![Intent::Stun],
+                follow_up: Some(resume),
+                must_perform_once: true,
+            }),
+        );
+        self.force_current_state("STUNNED");
+    }
+
     /// Restore the current move-state from a serialized [`current_state_id`]
     /// string. Looks the runtime `target` up among this AI's own move-state
     /// ids (which are `&'static str`) and, when found, forces it as the
@@ -1325,6 +1351,20 @@ mod tests {
         ai.on_move_performed();
         let m = ai.roll_move_seeded(2);
         assert_eq!(m.id, "B");
+    }
+
+    #[test]
+    fn stun_resumes_telegraphed_move_even_after_previous_move() {
+        let mut ai = make_linear_chain();
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(1).id, "B");
+        assert_eq!(ai.state_log.last(), Some(&"A"));
+
+        ai.stun_immediate();
+        assert_eq!(ai.current_move().id, "STUNNED");
+        ai.stun_immediate();
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(1).id, "B");
     }
 
     #[test]

@@ -732,6 +732,8 @@ impl EnchantCardsReward {
 /// `CardCmd.TransformTo<Peck/ToricToughness>` — no RNG read).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PendingDeckTransform {
+    /// Claws offers an optional 0..6 pick confirmed as one screen.
+    pub claws_choice: bool,
     /// Restrict the pick pool to Basic-rarity deck cards (rarity resolved
     /// via the registered [`crate::lookup_card_rarity_rank`] fn; falls
     /// back to the whole deck when unregistered, e.g. raw-core tests).

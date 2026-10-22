@@ -1187,6 +1187,12 @@ impl Card {
         if version.is_default() {
             return self.upgrade();
         }
+        // v0.111.0 quest cards such as SpoilsMap override MaxUpgradeLevel to
+        // zero. BoneTea calls CardCmd.Upgrade on every card in the opening
+        // hand, but the command must leave these cards unchanged.
+        if self.is_quest() {
+            return false;
+        }
         // A card minted by a v0.107.1-only path first takes this build's
         // base values, so the build's delta lands on the build's base.
         self.normalize_for_version(version);

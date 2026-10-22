@@ -919,7 +919,13 @@ pub fn buy_relic(
     if !is_shop_entry_available(entry.price) {
         return ShopPurchaseOutcome::SoldOut;
     }
-    let price = merchant_price_with_modifiers(&run_state.active_relics(), entry.price);
+    let price = if run_state.current_event == Some(crate::events::EventId::FakeMerchant) {
+        // `MerchantEntry.Cost` runs price hooks only in a MerchantRoom.
+        // FakeMerchant's inventory is in an EventRoom.
+        entry.price
+    } else {
+        merchant_price_with_modifiers(&run_state.active_relics(), entry.price)
+    };
     if run_state.gold < price {
         return ShopPurchaseOutcome::CannotAfford;
     }
@@ -931,7 +937,13 @@ pub fn buy_relic(
     run_state.last_obtained_relic = Some(relic_id);
     let _ = crate::run_effects::dispatch_after_obtained(run_state);
     run_state.last_obtained_relic = None;
-    inv.relics[index].price = SHOP_ENTRY_SOLD_OUT_PRICE;
+    if run_state.current_event == Some(crate::events::EventId::FakeMerchant) {
+        // `MerchantRelicEntry.ClearAfterPurchase` clears Model but keeps
+        // `_cost`, so the sold slot retains its displayed price.
+        inv.relics[index].relic_id = None;
+    } else {
+        inv.relics[index].price = SHOP_ENTRY_SOLD_OUT_PRICE;
+    }
     let _ = crate::run_effects::dispatch_on_item_purchased(run_state, price);
     ShopPurchaseOutcome::Bought
 }

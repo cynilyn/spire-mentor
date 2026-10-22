@@ -2129,6 +2129,12 @@ pub fn spawn_card_into_pile_with_origin(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
+    // DampenPower tracks the exact cards it downgraded, not future clones.
+    // A generated Anger copy inherits its current (downgraded) upgrade level
+    // but must not inherit the original card's restore-on-remove marker.
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        card.set_combat_var(crate::cards::VarKey::DampenDowngradedMarker, 0);
+    }
     if generation_blocked(state) {
         state.cards.push(card);
         return uid;
@@ -2224,6 +2230,13 @@ pub fn fire_card_generation_listeners(
     pile: PileKind,
     added_by_player: bool,
 ) {
+    // C# CardPileCmd.AddGeneratedCardToCombat logs a CardGeneratedEntry for
+    // every player-created destination, including Discard (Anger's copy).
+    // Supermassive counts those entries, not only cards created into Hand.
+    if state.game_version >= crate::GameVersion::V0_111_0 && added_by_player {
+        state.player.generated_cards_this_combat =
+            state.player.generated_cards_this_combat.saturating_add(1);
+    }
     // Event log (C# `CardGeneratedEntry`). This is the shared funnel every
     // combat-generated card passes through, so it is also the one place that
     // sees a monster's inflicted Slimed / Wound — the move row above it says
@@ -6146,6 +6159,70 @@ mod tests {
             state.count_player_generated_cards_this_combat(),
             before_overflow + 1,
         );
+    }
+
+    #[test]
+    fn v111_player_generated_discard_cards_count_for_supermassive() {
+        let mut state = CombatState::default();
+        state.game_version = crate::GameVersion::V0_111_0;
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        let _ = state.init_player_creature();
+        let enemy_id = NonZeroU32::new(900).expect("non-zero");
+        state.creatures.push(Creature {
+            id: enemy_id,
+            current_hp: 40,
+            max_hp: 40,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(MonsterKind::Nibbit),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Nibbit"),
+            ai: None,
+        });
+        state.enemy_uids.push(CreatureUid(enemy_id));
+        for _ in 0..2 {
+            let _ = spawn_card_into_pile_with_origin(
+                &mut state,
+                placeholder_card(crate::cards::CardId::Anger),
+                PileKind::Discard,
+                true,
+            );
+        }
+        assert_eq!(state.count_player_generated_cards_this_combat(), 2);
+        let _ = spawn_card_into_pile_with_origin(
+            &mut state,
+            placeholder_card(crate::cards::CardId::Burn),
+            PileKind::Discard,
+            false,
+        );
+        assert_eq!(state.count_player_generated_cards_this_combat(), 2);
+
+        let mut legacy = CombatState::default();
+        legacy.player.current_hp = 80;
+        legacy.player.max_hp = 80;
+        let _ = legacy.init_player_creature();
+        legacy.creatures.push(Creature {
+            id: enemy_id,
+            current_hp: 40,
+            max_hp: 40,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(MonsterKind::Nibbit),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: MonsterId("Nibbit"),
+            ai: None,
+        });
+        legacy.enemy_uids.push(CreatureUid(enemy_id));
+        let _ = spawn_card_into_pile_with_origin(
+            &mut legacy,
+            placeholder_card(crate::cards::CardId::Anger),
+            PileKind::Discard,
+            true,
+        );
+        assert_eq!(legacy.count_player_generated_cards_this_combat(), 0);
     }
 
     /// Bead `sts2-rs-v7mp`: `deal_damage_to_all_alive_enemies` hits

@@ -4644,6 +4644,19 @@ fn listener_claws(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::Claws) {
         return EffectResult::NotImplemented;
     }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 && rs.interactive_card_transform {
+        if let Some(maul) = crate::cards::spec_index::card_pod_from_id(CardId::Maul, false) {
+            for _ in 0..CLAWS_CARDS {
+                rs.pending_deck_transforms
+                    .push(sts2_core::PendingDeckTransform {
+                        claws_choice: true,
+                        fixed_target: Some(maul),
+                        ..Default::default()
+                    });
+            }
+        }
+        return EffectResult::Resolved;
+    }
     let mut transformed = 0_usize;
     for card in &mut rs.master_deck {
         if transformed >= CLAWS_CARDS {
@@ -4703,6 +4716,12 @@ fn listener_nutritious_soup(rs: &mut RunState) -> EffectResult {
     for card in &mut rs.master_deck {
         if is_basic_strike(card.card_id) {
             if on_enchant {
+                // EnchantmentModel.CanEnchant rejects a card that already has
+                // another enchantment. RT0_84's first Strike has Sharp(2),
+                // so C# leaves it at cost 1 while enchanting the other four.
+                if card.enchantments.iter().any(|(_, amount)| *amount > 0) {
+                    continue;
+                }
                 let _ = crate::enchantments::apply_static_enchantment(
                     card,
                     EnchantmentId::TezcatarasEmber,
@@ -9142,6 +9161,53 @@ mod tests {
         assert_eq!(n_maul, CLAWS_CARDS);
     }
 
+    #[test]
+    fn claws_v0111_waits_for_optional_deck_selection() {
+        use sts2_core::cards::CardId;
+        use sts2_core::run_manager::{ActionResult, RunAction, RunManager};
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, sts2_core::CharacterId::Ironclad);
+        rm.run_state.game_version = sts2_core::GameVersion::V0_111_0;
+        rm.run_state.interactive_card_transform = true;
+        rm.run_state.master_deck = vec![
+            crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false).unwrap(),
+            crate::cards::spec_index::card_pod_from_id(CardId::DefendIronclad, true).unwrap(),
+        ];
+        rm.run_state.relics.push(RelicId::Claws);
+        rm.run_state.last_obtained_relic = Some(RelicId::Claws);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rm.run_state);
+        assert_eq!(rm.run_state.pending_deck_transforms.len(), CLAWS_CARDS);
+        assert_eq!(rm.run_state.master_deck[0].card_id, CardId::StrikeIronclad);
+        assert!(rm
+            .get_available_actions()
+            .contains(&RunAction::TransformDeckCard { idx: 2 }));
+
+        let mut none = rm.clone();
+        assert_eq!(
+            none.take_action(RunAction::TransformDeckCard { idx: 2 }),
+            ActionResult::Advanced
+        );
+        assert!(none.run_state.pending_deck_transforms.is_empty());
+        assert!(none
+            .run_state
+            .master_deck
+            .iter()
+            .all(|card| card.card_id != CardId::Maul));
+
+        assert_eq!(
+            rm.take_action(RunAction::TransformDeckCard { idx: 1 }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.master_deck[1].card_id, CardId::Maul);
+        assert!(rm.run_state.master_deck[1].upgraded);
+        assert_eq!(
+            rm.take_action(RunAction::TransformDeckCard { idx: 2 }),
+            ActionResult::Advanced
+        );
+        assert!(rm.run_state.pending_deck_transforms.is_empty());
+        assert_eq!(rm.run_state.master_deck[0].card_id, CardId::StrikeIronclad);
+    }
+
     /// Bead `sts2-rs-scds8`: a Claws transform must REBUILD the instance from
     /// Maul's spec, not just flip `card_id` — otherwise a non-Enemy source
     /// (target_type None, base_damage 0) becomes a malformed Maul that
@@ -9250,6 +9316,38 @@ mod tests {
             assert_eq!(card.enchantment(EnchantmentId::TezcatarasEmber), 1);
             assert_eq!(card.cost, cost, "{version:?}");
         }
+    }
+
+    #[test]
+    fn nutritious_soup_skips_a_sharp_enchanted_strike_v0111() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        for sharp in [true, false] {
+            let mut card = sts2_core::cards::Card::pod_defaults();
+            card.card_id = CardId::StrikeIronclad;
+            card.cost = 1;
+            if sharp {
+                card.set_enchantment(EnchantmentId::Sharp, 2);
+            }
+            rs.master_deck.push(card);
+        }
+        rs.relics.push(RelicId::NutritiousSoup);
+        rs.last_obtained_relic = Some(RelicId::NutritiousSoup);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.master_deck[0].cost, 1);
+        assert_eq!(rs.master_deck[0].enchantment(EnchantmentId::Sharp), 2);
+        assert_eq!(
+            rs.master_deck[0].enchantment(EnchantmentId::TezcatarasEmber),
+            0
+        );
+        assert_eq!(rs.master_deck[1].cost, 0);
+        assert_eq!(
+            rs.master_deck[1].enchantment(EnchantmentId::TezcatarasEmber),
+            1
+        );
     }
 
     /// Bead `sts2-rs-w9vf8`: NutritiousSoup's `after_obtained` listener

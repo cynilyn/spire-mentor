@@ -62,12 +62,14 @@ pub fn ironclad_content_callbacks() -> ContentCallbacks {
         resolve_event_at: Some(crate::events::dispatch::resolve_event_at_callback),
         event_option_count: Some(crate::events::dispatch::event_option_count_callback),
         bind_pending_event: Some(crate::events::dispatch::bind_pending_event_callback),
+        pick_event_for_room: Some(crate::events::dispatch::pick_event_for_room_callback),
         // Stocked merchant inventory: fills the payload-less slots core's
         // `shop::generate_shop_inventory` rolls (price + rarity only) with
         // concrete cards/relics/potions from the run's pools, so the shop
         // is buyable instead of perpetually sold-out. Bead `sts2-rs-64mq2`
         // (follow-up to the `sts2-rs-if6ry` structure-only slice).
         generate_shop_inventory: Some(generate_shop_inventory),
+        generate_fake_merchant_inventory: Some(generate_fake_merchant_inventory),
         // Courier restock: re-roll a bought slot on the run's Shops/Rewards
         // streams read-for-read with the initial merchant roll, so a later
         // shop visit stays aligned (parity sweep 2026-07-07 run-shop-gold).
@@ -1367,6 +1369,22 @@ pub fn generate_treasure_relic_pools(
 pub fn generate_shop_inventory(rs: &mut RunState) -> sts2_core::shop::ShopInventory {
     let character = rs.character_id;
     crate::cards::spec_index::generate_merchant_inventory(rs, character)
+}
+
+/// C# `FakeMerchant.BeforeEventStarted`: six fixed fake relics, shuffled by
+/// the event RNG; each `MerchantRelicEntry` rolls its own Shops price.
+pub fn generate_fake_merchant_inventory(rs: &mut RunState) -> sts2_core::shop::ShopInventory {
+    let mut inv = sts2_core::shop::ShopInventory::empty();
+    for relic_id in crate::events::act2_hive::fake_merchant_stock(rs) {
+        let factor = rs.rng.shops.next_float_range(0.85, 1.15);
+        let price = (50.0 * factor).round_ties_even() as i32;
+        inv.relics.push(sts2_core::shop::ShopRelicEntry {
+            relic_rarity: sts2_core::shop::ShopRelicRarity::Shop,
+            relic_id: Some(relic_id),
+            price,
+        });
+    }
+    inv
 }
 
 /// Default relic grab-bag pools for an Ironclad run. Back-compat shim

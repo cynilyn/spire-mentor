@@ -510,6 +510,15 @@ impl PyRunManager {
         u32::try_from(self.inner.run_state.pending_deck_transforms.len()).unwrap_or(u32::MAX)
     }
 
+    #[getter]
+    fn pending_claws_choice(&self) -> bool {
+        self.inner
+            .run_state
+            .pending_deck_transforms
+            .first()
+            .is_some_and(|entry| entry.claws_choice)
+    }
+
     /// Number of master-deck cards the player still owes an interactive
     /// ENCHANT pick for (Wood Carvings' Snake → Slither). While `> 0` the
     /// legal action set is `enchant_deck_card` picks indexed into

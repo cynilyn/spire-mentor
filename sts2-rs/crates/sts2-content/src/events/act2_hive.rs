@@ -500,7 +500,7 @@ const FAKE_MERCHANT_STOCK_SIZE: usize = 6;
 /// so this consumes NO shared run RNG and is deterministic — re-derivable per
 /// option handler, which is all the option-model needs (each FakeMerchant
 /// visit resolves exactly one option: buy XOR throw-foul XOR leave).
-fn fake_merchant_stock(state: &RunState) -> Vec<RelicId> {
+pub(crate) fn fake_merchant_stock(state: &RunState) -> Vec<RelicId> {
     let mut idx: Vec<usize> = (0..FAKE_MERCHANT_INVENTORY.len()).collect();
     state.rng.named(FAKE_MERCHANT_STREAM).shuffle(&mut idx);
     idx.truncate(FAKE_MERCHANT_STOCK_SIZE);

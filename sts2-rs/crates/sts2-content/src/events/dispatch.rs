@@ -549,7 +549,7 @@ pub fn resolve_event_at_callback(state: &mut RunState, idx: usize) -> bool {
         let Some(event_id) = pick_event(state, None) else {
             return false;
         };
-        state.enter_event_room(event_id);
+        bind_picked_event(state, event_id);
     }
     resolve_by_index(state, idx).is_some()
 }
@@ -565,15 +565,48 @@ pub fn event_option_count_callback(state: &RunState) -> usize {
     present(state).map_or(0, |opts| opts.len())
 }
 
-/// `bind_pending_event` callback for [`sts2_core::run_manager::ContentCallbacks`].
-///
-/// Rolls the pending room's event and enters it, as `PpoRunEnv`'s
-/// `materialize_event` does (GH #302, #841). No-op once an event is bound.
+/// Bind an event selected by either the map-entry or external-binder path.
+/// An already-entered v0.111.0 EventRoom must keep its one room-enter effect.
+fn bind_picked_event(state: &mut RunState, id: EventId) {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0
+        && state
+            .current_room
+            .is_some_and(|room| room.room_type == sts2_core::RoomType::Event)
+    {
+        // The map already entered this EventRoom. Re-entering it would fire
+        // MawBank and other AfterRoomEntered listeners a second time.
+        state.current_event = Some(id);
+        state.event_state = sts2_core::events::MultiPageEventState::default();
+    } else {
+        state.enter_event_room(id);
+    }
+}
+
+/// `bind_pending_event` callback for external callers that entered an event
+/// room without selecting its event yet. No-op once the event is bound.
 pub fn bind_pending_event_callback(state: &mut RunState) {
     if state.current_event.is_none() {
         if let Some(id) = pick_event(state, None) {
-            state.enter_event_room(id);
+            bind_picked_event(state, id);
         }
+    }
+}
+
+/// Select at map-entry time, before `enter_room` awards MawBank gold and
+/// advances the map floor. The legacy pick-time floor gate expected Rust's
+/// post-entry floor count, one higher than it is here, so expose that count
+/// only while evaluating `IsAllowed`; restore it before entering the room.
+pub fn pick_event_for_room_callback(state: &mut RunState) {
+    if state.current_event.is_some() {
+        return;
+    }
+    let floor_before = state.total_floor;
+    state.total_floor = floor_before.saturating_add(1);
+    let picked = pick_event(state, None);
+    state.total_floor = floor_before;
+    if let Some(id) = picked {
+        state.current_event = Some(id);
+        state.event_state = sts2_core::events::MultiPageEventState::default();
     }
 }
 
