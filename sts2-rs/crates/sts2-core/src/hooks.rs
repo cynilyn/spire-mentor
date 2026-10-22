@@ -16570,24 +16570,20 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
             player_uids.sort_unstable_by_key(|u| u.0);
             let rest = iter_power_listeners(state)
                 .filter(|l| !matches!(l, ListenerRef::Power(u) if player_uids.contains(u)));
-            let mut late: SmallVec<[Effect; 2]> = SmallVec::new();
             for listener in player_uids
                 .iter()
                 .copied()
                 .map(ListenerRef::Power)
                 .chain(rest)
             {
-                if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
-                    let is_late = matches!(listener, ListenerRef::Power(u)
-                        if state.powers.get_by_id(u.0).is_some_and(|p| p.kind == PowerKind::Disintegration));
-                    if is_late {
-                        late.extend(listener_effects);
-                    } else {
+                let is_late = matches!(listener, ListenerRef::Power(u)
+                    if state.powers.get_by_id(u.0).is_some_and(|p| p.kind == PowerKind::Disintegration));
+                if !is_late {
+                    if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
                         effects.extend(listener_effects);
                     }
                 }
             }
-            effects.extend(late);
         } else {
             for listener in iter_power_listeners(state) {
                 if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
@@ -16717,6 +16713,28 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
             }
         }
     }
+}
+
+/// v0.111.0 `AfterSideTurnEndLate` follows the complete early power and relic
+/// walk. In particular, ParryingShield can win combat before Disintegration
+/// deals its self-damage.
+pub fn dispatch_after_turn_end_late(state: &mut CombatState, ctx: &TurnSideCtx) {
+    if ctx.side != Side::Player || state.game_version < crate::GameVersion::V0_111_0 {
+        return;
+    }
+    let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
+    for uid in state.player_power_uids() {
+        if state
+            .powers
+            .get_by_id(uid.0)
+            .is_some_and(|p| p.kind == PowerKind::Disintegration)
+        {
+            if let Some(listener_effects) = after_turn_end(state, ListenerRef::Power(uid), ctx) {
+                effects.extend(listener_effects);
+            }
+        }
+    }
+    apply_effects(state, &effects);
 }
 
 /// Alive enemies carrying a live instance of `kind`, in `enemy_uids` order.
