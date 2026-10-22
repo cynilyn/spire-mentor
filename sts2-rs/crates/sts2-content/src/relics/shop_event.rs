@@ -4689,6 +4689,12 @@ fn listener_nutritious_soup(rs: &mut RunState) -> EffectResult {
     for card in &mut rs.master_deck {
         if is_basic_strike(card.card_id) {
             if on_enchant {
+                // EnchantmentModel.CanEnchant rejects a card that already has
+                // another enchantment. RT0_84's first Strike has Sharp(2),
+                // so C# leaves it at cost 1 while enchanting the other four.
+                if card.enchantments.iter().any(|(_, amount)| *amount > 0) {
+                    continue;
+                }
                 let _ = crate::enchantments::apply_static_enchantment(
                     card,
                     EnchantmentId::TezcatarasEmber,
@@ -9225,6 +9231,38 @@ mod tests {
             assert_eq!(card.enchantment(EnchantmentId::TezcatarasEmber), 1);
             assert_eq!(card.cost, cost, "{version:?}");
         }
+    }
+
+    #[test]
+    fn nutritious_soup_skips_a_sharp_enchanted_strike_v0111() {
+        use sts2_core::cards::{CardId, EnchantmentId};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        for sharp in [true, false] {
+            let mut card = sts2_core::cards::Card::pod_defaults();
+            card.card_id = CardId::StrikeIronclad;
+            card.cost = 1;
+            if sharp {
+                card.set_enchantment(EnchantmentId::Sharp, 2);
+            }
+            rs.master_deck.push(card);
+        }
+        rs.relics.push(RelicId::NutritiousSoup);
+        rs.last_obtained_relic = Some(RelicId::NutritiousSoup);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.master_deck[0].cost, 1);
+        assert_eq!(rs.master_deck[0].enchantment(EnchantmentId::Sharp), 2);
+        assert_eq!(
+            rs.master_deck[0].enchantment(EnchantmentId::TezcatarasEmber),
+            0
+        );
+        assert_eq!(rs.master_deck[1].cost, 0);
+        assert_eq!(
+            rs.master_deck[1].enchantment(EnchantmentId::TezcatarasEmber),
+            1
+        );
     }
 
     /// Bead `sts2-rs-w9vf8`: NutritiousSoup's `after_obtained` listener
