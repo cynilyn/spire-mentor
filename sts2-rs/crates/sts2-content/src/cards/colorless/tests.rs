@@ -1773,6 +1773,45 @@ fn k2rzs_metamorphosis_base_generates_three_attacks() {
     );
 }
 
+#[test]
+fn metamorphosis_generated_attacks_are_free_this_combat_v0111() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    for (version, free) in [
+        (sts2_core::GameVersion::V0_111_0, true),
+        (sts2_core::GameVersion::V0_107_1, false),
+    ] {
+        let (mut state, _enemy) = fresh_state(CardId::Metamorphosis, 0, 0);
+        state.game_version = version;
+        let _ = push_player(&mut state);
+        state.player.character = Some(CharacterId::Ironclad);
+        let cards_before = state.cards.len();
+        let draw_before = state.player.draw.len();
+        lookup(CardId::Metamorphosis).expect("registered")(&mut state, None);
+        assert_eq!(state.player.draw.len() - draw_before, 3);
+        let costs: Vec<i8> = state
+            .cards
+            .iter()
+            .skip(cards_before)
+            .map(|card| {
+                assert_eq!(card.combat_var(VarKey::StarCostFreeThisCombat) != 0, free);
+                card.cost
+            })
+            .collect();
+        if free {
+            assert_eq!(costs, [0, 0, 0]);
+            for card in state.cards.iter().skip(cards_before) {
+                assert_eq!(sts2_core::hooks::effective_card_cost(&state, card.uid), 0);
+            }
+        } else {
+            assert!(
+                costs.iter().any(|&cost| cost > 0),
+                "legacy native costs: {costs:?}"
+            );
+        }
+    }
+}
+
 /// Power + Expertise rider → Strength +2 and Dexterity +2 on self.
 #[test]
 fn play_mad_science_power_expertise_buffs_self() {
