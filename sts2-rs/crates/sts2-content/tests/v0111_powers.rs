@@ -1114,6 +1114,40 @@ fn unceasing_top_repeats_after_hellraiser_autoplays_the_drawn_strike_v0111() {
 }
 
 #[test]
+fn unceasing_top_waits_for_battle_trance_hellraiser_draw_v0111() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    sts2_content::relics::dispatch::ensure_installed();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::UnceasingTop,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Hellraiser, 1);
+    let strike = add_to_hand(&mut state, CardId::StrikeIronclad);
+    let defend_a = add_to_hand(&mut state, CardId::DefendIronclad);
+    let defend_b = add_to_hand(&mut state, CardId::DefendIronclad);
+    for uid in [strike, defend_a, defend_b] {
+        state.player.hand.retain(|u| *u != uid);
+        state.player.draw.push(uid);
+    }
+    let discard_card = add_to_hand(&mut state, CardId::DefendIronclad);
+    state.player.hand.retain(|u| *u != discard_card);
+    state.player.discard.push(discard_card);
+    add_to_hand(&mut state, CardId::BattleTrance);
+
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    assert_eq!(state.player.hand.as_slice(), &[defend_a, defend_b]);
+    assert!(
+        state.player.draw.is_empty(),
+        "no nested Top draw or reshuffle"
+    );
+    assert!(state.player.discard.contains(&discard_card));
+}
+
+#[test]
 fn unceasing_top_draws_after_stampede_autoplay_at_turn_end_v0111() {
     let (mut state, _) = fresh(GameVersion::V0_111_0);
     sts2_content::relics::dispatch::ensure_installed();
