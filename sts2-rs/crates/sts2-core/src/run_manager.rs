@@ -2401,6 +2401,11 @@ impl RunManager {
                 let card_options = self.enter_card_reward_phase();
                 self.apply_modify_rewards(reward_room_type);
                 self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
+                if self.run_state.game_version >= crate::GameVersion::V0_111_0
+                    && self.run_state.direct_event_relic_grant
+                {
+                    self.run_state.drain_relic_rewards_directly();
+                }
                 return ActionResult::Advanced;
             }
             // Act-1/2 boss kill: grant the combat card reward FIRST (3
@@ -2450,6 +2455,11 @@ impl RunManager {
             let card_options = self.enter_card_reward_phase();
             self.apply_modify_rewards(reward_room_type);
             self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
+            if self.run_state.game_version >= crate::GameVersion::V0_111_0
+                && self.run_state.direct_event_relic_grant
+            {
+                self.run_state.drain_relic_rewards_directly();
+            }
             return ActionResult::Advanced;
         }
         // Normal / Elite combat win → combat rewards + CardReward.
@@ -2552,12 +2562,23 @@ impl RunManager {
             }
             self.apply_modify_rewards(reward_room_type);
             let relic_count_before_grants = self.run_state.relics.len();
-            self.run_state.drain_relic_rewards_directly();
-            self.apply_new_egg_relics_to_open_card_reward(relic_count_before_grants);
+            if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+                self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
+                self.run_state.drain_relic_rewards_directly();
+                self.apply_new_egg_relics_to_open_card_reward(relic_count_before_grants);
+            } else {
+                self.run_state.drain_relic_rewards_directly();
+                self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
+            }
         } else {
             self.apply_modify_rewards(reward_room_type);
+            self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
+            if self.run_state.game_version >= crate::GameVersion::V0_111_0
+                && self.run_state.direct_event_relic_grant
+            {
+                self.run_state.drain_relic_rewards_directly();
+            }
         }
-        self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
         ActionResult::Advanced
     }
 
@@ -2652,15 +2673,9 @@ impl RunManager {
                     ) =>
                 {
                     self.run_state.offer_random_relic_rewards(1, &[None]);
-                    if self.run_state.direct_event_relic_grant {
-                        let _ = self.run_state.drain_relic_rewards_directly();
-                    }
                 }
                 Reward::Relic(rr) => {
                     self.run_state.offer_relic_rewards(rr.relic_id, 1);
-                    if self.run_state.direct_event_relic_grant {
-                        let _ = self.run_state.drain_relic_rewards_directly();
-                    }
                 }
                 Reward::Card(cr) if cr.options.is_empty() && cr.room_context.is_some() => {
                     self.run_state.card_reward_context_override = cr.room_context;
@@ -6833,6 +6848,92 @@ mod tests {
                 assert!(seen.is_empty(), "{version}: no hook");
             }
         }
+    }
+
+    #[test]
+    fn boss_extra_relic_is_claimed_after_reward_offered_hook_v0111() {
+        use std::cell::RefCell;
+        thread_local! {
+            static OWNED_AT_HOOK: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+        }
+        fn add_candy(
+            rs: &mut RunState,
+            rewards: &mut Vec<crate::runstate::Reward>,
+            room: crate::runstate::RoomType,
+        ) -> crate::card_effects::EffectResult {
+            if room != crate::runstate::RoomType::Boss
+                || !rs.owns_active_relic(crate::RelicId::LavaRock)
+            {
+                return crate::card_effects::EffectResult::NotImplemented;
+            }
+            rewards.push(crate::runstate::Reward::Relic(
+                crate::runstate::RelicReward::new(crate::RelicId::LastingCandy),
+            ));
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn observe(
+            rs: &mut RunState,
+            _set: &crate::run_effects::CombatRewardsSet,
+        ) -> crate::card_effects::EffectResult {
+            OWNED_AT_HOOK.with(|seen| {
+                seen.borrow_mut()
+                    .push(rs.owns_active_relic(crate::RelicId::LastingCandy));
+            });
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+            vec![crate::cards::CardId::Bash]
+        }
+        crate::run_effects::register_modify_rewards(crate::RelicId::LavaRock, add_candy);
+        crate::run_effects::register_before_combat_reward_offered(crate::RelicId::Anchor, observe);
+        OWNED_AT_HOOK.with(|seen| seen.borrow_mut().clear());
+        let cb = ContentCallbacks {
+            generate_card_reward_options: Some(cards),
+            ..ContentCallbacks::default()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.game_version = crate::GameVersion::V0_111_0;
+        rm.run_state.direct_event_relic_grant = true;
+        rm.run_state.relics.push(crate::RelicId::LavaRock);
+        rm.run_state.act_index = 1;
+        rm.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Boss));
+        rm.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        rm.set_phase(Phase::Combat);
+
+        assert_eq!(rm.exit_combat_and_transition(), ActionResult::Advanced);
+        OWNED_AT_HOOK.with(|seen| assert_eq!(*seen.borrow(), vec![false]));
+        assert!(rm.run_state.relics.contains(&crate::RelicId::LastingCandy));
+        assert_eq!(rm.phase(), Phase::CardReward);
+
+        OWNED_AT_HOOK.with(|seen| seen.borrow_mut().clear());
+        let mut legacy =
+            RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(ContentCallbacks {
+                generate_card_reward_options: Some(cards),
+                ..ContentCallbacks::default()
+            });
+        legacy.run_state.game_version = crate::GameVersion::V0_107_1;
+        legacy.run_state.direct_event_relic_grant = true;
+        legacy.run_state.relics.push(crate::RelicId::LavaRock);
+        legacy.run_state.act_index = 1;
+        legacy.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Boss));
+        legacy.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        legacy.set_phase(Phase::Combat);
+        assert_eq!(legacy.exit_combat_and_transition(), ActionResult::Advanced);
+        OWNED_AT_HOOK.with(|seen| assert!(seen.borrow().is_empty()));
+        assert!(!legacy
+            .run_state
+            .relics
+            .contains(&crate::RelicId::LastingCandy));
     }
 
     #[test]
