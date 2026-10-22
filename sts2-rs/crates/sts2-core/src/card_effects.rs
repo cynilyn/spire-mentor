@@ -186,6 +186,21 @@ pub fn deal_damage_to_all_alive_enemies(
     props: ValueProps,
     card: Option<CardId>,
 ) -> i32 {
+    deal_damage_to_all_alive_enemies_counting_kills(state, base, props, card).0
+}
+
+/// [`deal_damage_to_all_alive_enemies`] that also returns how many of its hits
+/// killed their target: C# `results.Count(r => r.WasTargetKilled)`
+/// (`EchoingSlash.cs:34`), read off each hit's
+/// [`damage::DamageOutcome::was_target_killed`] rather than from who is alive
+/// afterwards, so a target revived inside the hit (the pressurized Waterfall
+/// Giant) still counts. Returns `(total hp loss, kills)`.
+pub fn deal_damage_to_all_alive_enemies_counting_kills(
+    state: &mut CombatState,
+    base: i32,
+    props: ValueProps,
+    card: Option<CardId>,
+) -> (i32, usize) {
     // Snapshot the iteration set up-front. Subsequent listener fan-out
     // (e.g. on_damage_received → Thorns reflection → Combust) can mutate
     // `state.enemy_uids` between iterations; the Python pin reads
@@ -231,6 +246,7 @@ pub fn deal_damage_to_all_alive_enemies(
         precomputed.push((uid, dmg));
     }
     let mut total = 0_i32;
+    let mut kills = 0_usize;
     for (target_uid, final_damage) in precomputed {
         // Per-iteration alive recheck: a previous iteration may have
         // killed a chained-listener target (or this very target through
@@ -243,17 +259,17 @@ pub fn deal_damage_to_all_alive_enemies(
         if !alive {
             continue;
         }
-        let hp_loss = damage::apply_damage_with_final(
+        let outcome = damage::apply_damage_with_final(
             state,
             CreatureRef::Player,
             target_uid,
             final_damage,
             props,
-        )
-        .hp_loss;
-        total = total.saturating_add(hp_loss);
+        );
+        total = total.saturating_add(outcome.hp_loss);
+        kills += usize::from(outcome.was_target_killed);
     }
-    total
+    (total, kills)
 }
 
 /// Resolve the player's Osty pet to the [`CreatureRef`] used as the **dealer**

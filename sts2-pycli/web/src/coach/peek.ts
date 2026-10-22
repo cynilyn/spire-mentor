@@ -1,6 +1,7 @@
 // Peek (P, Coach style): the AI's pick for the CURRENT decision, as one line —
 // the next action only, never the ranked list or its scores.
 import type { Score } from "../api";
+import { enemyLabeller } from "../enemyLabels";
 
 interface NamedEnemy {
   index?: number;
@@ -15,7 +16,12 @@ export function peekLabelFromScores(scores: Score[], enemies: NamedEnemy[] = [])
   const label = best.stable_idx === -1 ? "end turn" : best.action;
   if (best.target_index == null || enemies.length < 2) return label;
   const target = enemies.find((e) => e.index === best.target_index);
-  return target?.name ? `${label} (${target.name})` : label;
+  if (!target?.name) return label;
+  // Numbered like the nameplate: "Bash (Two-Tailed Rat #2)" says WHICH rat.
+  const named = enemies.filter(
+    (e): e is { index: number; name: string } => e.index != null && e.name != null,
+  );
+  return `${label} (${enemyLabeller(named)(best.target_index)})`;
 }
 
 interface Option {

@@ -1258,17 +1258,13 @@ fn auto_play_collect_suspending(
                 return Some(ap);
             }
         }
-        let Some(&top_uid) = state.player.draw.first() else {
+        if state.player.draw.is_empty() {
             break;
-        };
-        state.player.draw.remove(0);
-        // Bead `sts2-rs-09x5n`: this is a raw physical-top pop that bypasses
-        // `cards::pop_next_card`, so it must clear any stale `pinned_top`
-        // entry itself — otherwise a later `pop_next_card` sees a non-empty
-        // `pinned_top` and short-circuits to a deterministic `draw.remove(0)`
-        // for what may now be a heterogeneous unknown draw, silently
-        // suppressing a chance node.
-        cards::unpin(&mut state.player, top_uid);
+        }
+        // GH #785: the physical top, via `pop_top_card` — under BeliefDraw a
+        // chance event over the unknown middle (not its lowest-uid card),
+        // and the popped card's pin is cleared.
+        let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
         state.player.play.push(top_uid);
         ap.collected.push(top_uid);
         ap.remaining -= 1;
@@ -1738,11 +1734,13 @@ pub(crate) fn run_turn_start_relic_tail(
         fire_after_side_turn_start(state);
     }
 
-    // GH #791 note for whoever wires `AfterHandEmptied` (UnceasingTop, today
-    // never dispatched in either build): v0.111.0 `RunAutoPrePlayPhase` runs
-    // `CheckForEmptyHand` right here, on entering AutoPrePlay and before any
-    // `AfterAutoPrePlayPhaseEntered*` listener (decomp CombatManager.cs:868);
-    // v0.107.1 has no check at this point. Gate that call on the version.
+    // v0.111.0 `RunAutoPrePlayPhase` runs `CheckForEmptyHand` right here, on
+    // entering AutoPrePlay and before any `AfterAutoPrePlayPhaseEntered*`
+    // listener (decomp CombatManager.cs:868); v0.107.1 has no check at this
+    // point (GH #806).
+    if state.game_version >= crate::GameVersion::V0_111_0 && !state.is_over {
+        check_for_empty_hand(state);
+    }
     //
     // ── Bombardment AutoPrePlay(Early) exhaust-pile auto-play ──────────────
     //
@@ -2119,6 +2117,29 @@ pub fn end_player_turn_phase_one(state: &mut CombatState) -> StepResult {
 /// C#'s `await` returns — the batch previously ran to completion regardless of
 /// a surfaced select, and everything here ran ahead of the player's answer.
 fn end_player_turn_phase_one_after_auto_post_play_stampede(state: &mut CombatState) -> StepResult {
+    // `IAmInvincible.AfterAutoPostPlayPhaseEntered`: a copy on draw-top
+    // auto-plays as the turn enters AutoPostPlay — after Stampede (powers come
+    // first in the listener snapshot), before Howl (draw-pile cards precede
+    // exhaust-pile cards), and before `BeforeTurnEnd` and the hand flush
+    // (CombatManager.EndPlayerTurnPhaseOneInternal, identical in both builds).
+    // So FakeOrichalcum's very-early `Block == 0` check below sees its block,
+    // and the card lands in discard before the flush (GH #806).
+    //
+    // Under BeliefDraw (GH #785) the rider PEEKS the hidden top and may leave
+    // a sampled card PINNED there (`cards::peek_top_card_if`). Everything
+    // after this point — `BeforeTurnEnd`, `DoTurnEnd`, `BeforeFlush` (the
+    // Well-Laid Plans retain), the enemy turn (Knowledge Demon's curse) — can
+    // surface a choice, and a decision node there would read the exact top
+    // card off the pin. So the pin is dropped right here, before any of them
+    // runs (`cards::drop_sampled_top_pin`).
+    if let Some(sampled) = auto_play_i_am_invincible_from_draw_top(state) {
+        cards::drop_sampled_top_pin(&mut state.player, sampled);
+    }
+    match check_combat_end(state) {
+        StepResult::Advanced => {}
+        end => return end,
+    }
+
     // v0.107.1 `HowlFromBeyond.AfterAutoPostPlayPhaseEntered`: a Howl resting in
     // the EXHAUST pile auto-plays at the START of end-of-turn processing — C#
     // enters `PlayerTurnPhase.AutoPostPlay` and fires this hook BEFORE
@@ -2392,6 +2413,66 @@ fn run_rest_of_end_turn_chain(state: &mut CombatState) -> StepResult {
     StepResult::Advanced
 }
 
+/// The exhaust listeners for a card the end-of-turn ethereal rule just moved
+/// to the exhaust pile (`CardCmd.Exhaust(card, causedByEthereal: true)`).
+/// Shared by the DoTurnEnd ethereal sweep and the turn-end-in-hand wrapper's
+/// ethereal branch (C# `CardModel.OnTurnEndInHandWrapper`, CardModel.cs:1691-1694).
+fn dispatch_ethereal_exhaust(state: &mut CombatState, uid: crate::CardUid) {
+    // Bead `sts2-rs-zlx.1`: construct the typed `CardCtx` payload up
+    // front so the hooks bus and the relic-effects bus see the same
+    // exhausted card identity. Both buses are drained from here.
+    let exhaust_idx = uid.0.get() as usize - 1;
+    let exhausted_card = &state.cards[exhaust_idx];
+    let card_id = exhausted_card.card_id;
+    let card_tags = exhausted_card.tags;
+    let card_type = exhausted_card.card_type;
+    let hook_ctx = CardCtx {
+        card_id: Some(card_id),
+        card_uid: Some(uid),
+        card_tags,
+        card_type: Some(card_type),
+    };
+    // Bead `sts2-rs-umouk`: this is the end-of-turn ethereal sweep, so
+    // `caused_by_ethereal = true` — DarkEmbrace defers its draw to
+    // AfterTurnEnd instead of drawing per-card here.
+    hooks::dispatch_after_card_exhausted(state, &hook_ctx, true);
+    // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
+    // Bead `sts2-rs-6ynt.3.3` activated the predicate above so this
+    // path now fires for real ETHEREAL hand cards (Dazed, Void,
+    // AscendersBane, Clumsy).
+    let exhaust_ctx = crate::relic_effects::CardEventCtx {
+        card_id,
+        card_uid: Some(uid),
+        target: None,
+        card_tags,
+        energy_spent: 0,
+    };
+    // Relic-side `caused_by_ethereal` marker (JossPaper defers its
+    // exhaust credit to AfterTurnEnd; see the field's doc-comment).
+    state.combat_log.exhaust_sweep_ethereal = true;
+    let _ = crate::relic_effects::dispatch_after_card_exhausted(state, &exhaust_ctx);
+    state.combat_log.exhaust_sweep_ethereal = false;
+}
+
+/// C# `CardModel.HasTurnEndInHandEffect`: the cards that override it to
+/// `true` (identical set in v0.107.1 and v0.111.0, minus the test-only mock).
+pub(crate) const fn has_turn_end_in_hand_effect(id: cards::CardId) -> bool {
+    matches!(
+        id,
+        cards::CardId::Beckon
+            | cards::CardId::Burn
+            | cards::CardId::BadLuck
+            | cards::CardId::Debt
+            | cards::CardId::Decay
+            | cards::CardId::Doubt
+            | cards::CardId::Regret
+            | cards::CardId::Shame
+            | cards::CardId::Toxic
+            | cards::CardId::Infection
+            | cards::CardId::Wither
+    )
+}
+
 /// Run the player end-turn phase 2: resolve end-of-turn hand
 /// (ethereal expel + retain + flush) + per-pile `end_of_turn_cleanup`
 /// + fire `after_turn_end(PLAYER)` + final combat-end check.
@@ -2512,6 +2593,16 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
             state.cards.get(idx).is_some_and(|c| {
+                // GH #806: C# `CombatManager.DoTurnEnd` sorts the hand with
+                // `if (card.HasTurnEndInHandEffect) turnEndCards.Add(card);
+                // else if (Ethereal && ShouldEtherealTrigger) list.Add(card);`
+                // (v0.107.1 CombatManager.cs:1230-1240, v0.111.0 1616-1626).
+                // A turn-end-in-hand card is never swept here even when it is
+                // Ethereal (a Hexed Burn); its `OnTurnEndInHandWrapper` runs
+                // the effect and exhausts it afterwards (Step 3 below).
+                if has_turn_end_in_hand_effect(c.card_id) {
+                    return false;
+                }
                 // Bead `sts2-rs-ad53n`: per-instance `EtherealThisCombat`
                 // slot (set by MusicBox-style clone spawners) takes
                 // priority over the static CardId-keyed registry so a
@@ -2538,40 +2629,7 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
             crate::cards::PileKind::Exhaust,
         )
         .expect("uid was just observed in hand pile");
-        // Bead `sts2-rs-zlx.1`: construct the typed `CardCtx` payload up
-        // front so the hooks bus and the relic-effects bus see the same
-        // exhausted card identity. Both buses are drained from here.
-        let exhaust_idx = uid.0.get() as usize - 1;
-        let exhausted_card = &state.cards[exhaust_idx];
-        let card_id = exhausted_card.card_id;
-        let card_tags = exhausted_card.tags;
-        let card_type = exhausted_card.card_type;
-        let hook_ctx = CardCtx {
-            card_id: Some(card_id),
-            card_uid: Some(uid),
-            card_tags,
-            card_type: Some(card_type),
-        };
-        // Bead `sts2-rs-umouk`: this is the end-of-turn ethereal sweep, so
-        // `caused_by_ethereal = true` — DarkEmbrace defers its draw to
-        // AfterTurnEnd instead of drawing per-card here.
-        hooks::dispatch_after_card_exhausted(state, &hook_ctx, true);
-        // Bead `sts2-rs-j87`: parallel relic-effects bus drain.
-        // Bead `sts2-rs-6ynt.3.3` activated the predicate above so this
-        // path now fires for real ETHEREAL hand cards (Dazed, Void,
-        // AscendersBane, Clumsy).
-        let exhaust_ctx = crate::relic_effects::CardEventCtx {
-            card_id,
-            card_uid: Some(uid),
-            target: None,
-            card_tags,
-            energy_spent: 0,
-        };
-        // Relic-side `caused_by_ethereal` marker (JossPaper defers its
-        // exhaust credit to AfterTurnEnd; see the field's doc-comment).
-        state.combat_log.exhaust_sweep_ethereal = true;
-        let _ = crate::relic_effects::dispatch_after_card_exhausted(state, &exhaust_ctx);
-        state.combat_log.exhaust_sweep_ethereal = false;
+        dispatch_ethereal_exhaust(state, uid);
     }
 
     // Step 3: turn-end-in-hand effects (BURN / BECKON / BAD_LUCK / DEBT
@@ -2625,22 +2683,10 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
             // legacy unit-test fixtures push hand UIDs without a parallel
             // `state.cards` entry; `.get()` keeps those callers panic-free.
             let idx = uid.0.get() as usize - 1;
-            state.cards.get(idx).is_some_and(|card| {
-                matches!(
-                    card.card_id,
-                    cards::CardId::Beckon
-                        | cards::CardId::Burn
-                        | cards::CardId::BadLuck
-                        | cards::CardId::Debt
-                        | cards::CardId::Decay
-                        | cards::CardId::Doubt
-                        | cards::CardId::Regret
-                        | cards::CardId::Shame
-                        | cards::CardId::Toxic
-                        | cards::CardId::Infection
-                        | cards::CardId::Wither
-                )
-            })
+            state
+                .cards
+                .get(idx)
+                .is_some_and(|card| has_turn_end_in_hand_effect(card.card_id))
         })
         .collect();
     let cards_in_hand_at_turn_end: i32 = i32::try_from(state.player.hand.len()).unwrap_or(i32::MAX);
@@ -2710,7 +2756,23 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
         // ethereal at this pin, so the C# `if Ethereal { Exhaust }` branch
         // is structurally dead — the raw discard add is the only reachable
         // path. Bead `sts2-rs-p9sda` follow-up.
-        if state.player.play.contains(&uid) {
+        //
+        // GH #806: the Ethereal branch is reachable — Hex makes every card
+        // Ethereal, and Step 2 no longer sweeps turn-end-in-hand cards (C#'s
+        // `else if`). `OnTurnEndInHandWrapper` then exhausts the card
+        // (`causedByEthereal: true`) instead of discarding it.
+        let ethereal_now = state.player.play.contains(&uid)
+            && card_is_ethereal_at_play(state, &state.cards[uid.0.get() as usize - 1]);
+        if ethereal_now {
+            cards::move_card(
+                &mut state.player,
+                uid,
+                cards::PileKind::Play,
+                cards::PileKind::Exhaust,
+            )
+            .expect("uid was just placed in play pile");
+            dispatch_ethereal_exhaust(state, uid);
+        } else if state.player.play.contains(&uid) {
             cards::move_card(
                 &mut state.player,
                 uid,
@@ -3067,9 +3129,8 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     // `ConsumingShadowPower.AfterTurnEnd` (`ConsumingShadowPower.cs`): on the
     // owner's (player's) side turn end, if the orb queue is non-empty, evoke
     // the LAST orb once per power stack (`for i in 0..Amount: OrbCmd.EvokeLast`).
-    // Wired directly here (like the Plasma turn-start / IAmInvincible riders
-    // above) rather than via the `after_turn_end` Effect channel, because an orb
-    // evoke is a multi-step state mutation (deal/heal/block/energy + slot
+    // Wired directly here (like the Plasma turn-start rider) rather than via
+    // the `after_turn_end` Effect channel, because an orb evoke is a multi-step state mutation (deal/heal/block/energy + slot
     // removal) that the declarative `Effect` surface cannot express. Fires
     // AFTER `passive_tick` (phase one) has already grown each Dark orb's stored
     // evoke value, matching C#'s BeforeTurnEnd-passives-then-AfterTurnEnd-powers
@@ -3085,20 +3146,6 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
             }
         }
     }
-
-    // `IAmInvincible.AfterTurnEnd` (Regent rare, `IAmInvincible.cs`): when
-    // THIS card sits on top of the owner's draw pile at the player's
-    // turn-end, it auto-plays the top of the draw pile (itself), gaining its
-    // block. This is a per-card-instance `AfterTurnEnd` rider gated on
-    // draw-pile-top; the net observable is a `while draw-top is IAmInvincible:
-    // auto-play it` loop (each play moves the card to discard, exposing the
-    // next copy if one happens to be beneath it). Fires here in phase two
-    // AFTER the hand flush, matching C# `EndPlayerTurnPhaseTwoInternal`'s
-    // `Hook.AfterTurnEnd` at `CombatManager.cs:1066`. Bead
-    // `sts2-rs-8z4u4` previously DESCOPED this rider (no per-card turn-end
-    // hook surface existed); the draw-pile-top gate is engine-resolvable
-    // without one, so it is wired directly here.
-    auto_play_i_am_invincible_from_draw_top(state);
 
     // Step 8: combat-end re-check. This is the Rust analogue of C#'s single
     // `await CheckWinCondition();` (`CombatManager.cs:963`) — fired ONCE,
@@ -3152,16 +3199,14 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
         // v0.111.0: AmbergrisPower spends one stack per extra turn taken
         // (decomp AmbergrisPower.cs:23). No-op before v0.111.0.
         hooks::ambergris_after_taking_extra_turn_v0111(state);
-        // v0.111.0: `SwitchSides` increments the extra-turn player's
-        // `TurnNumber` but not `RoundNumber` (CombatManager.cs:1866-1888), so
-        // the turn-number gates see turn 2 on an extra turn taken in round 1.
-        // v0.107.1 keeps the turn number equal to the round (bit-identical).
-        if state.game_version >= crate::GameVersion::V0_111_0 {
-            state.combat_log.extra_turns_taken_this_combat = state
-                .combat_log
-                .extra_turns_taken_this_combat
-                .saturating_add(1);
-        }
+        // `SwitchSides` increments the extra-turn player's `TurnNumber` but
+        // not `RoundNumber` (v0.111.0 CombatManager.cs:1866-1888, v0.107.1
+        // :1390-1424, same body), so the turn-number gates see turn 2 on an
+        // extra turn taken in round 1. Both builds (GH #806).
+        state.combat_log.extra_turns_taken_this_combat = state
+            .combat_log
+            .extra_turns_taken_this_combat
+            .saturating_add(1);
         state.phase = CombatPhase::PlayerTurnStart;
         return StepResult::Advanced;
     }
@@ -3459,9 +3504,9 @@ pub fn enemy_turn_start(state: &mut CombatState) -> StepResult {
         };
     }
 
-    // v0.111.0: an extra player turn skips the enemy side (see
-    // [`extra_player_turn_pending_v0111`]).
-    if extra_player_turn_pending_v0111(state) {
+    // An extra player turn skips the enemy side (see
+    // [`extra_player_turn_pending`]).
+    if extra_player_turn_pending(state) {
         return StepResult::Advanced;
     }
 
@@ -3694,9 +3739,9 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
         };
     }
 
-    // v0.111.0: an extra player turn skips the enemy side (see
-    // [`extra_player_turn_pending_v0111`]).
-    if extra_player_turn_pending_v0111(state) {
+    // An extra player turn skips the enemy side (see
+    // [`extra_player_turn_pending`]).
+    if extra_player_turn_pending(state) {
         return StepResult::Advanced;
     }
 
@@ -3835,7 +3880,7 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
         }
     }
 
-    // Step 3+: the perform walk, the `on_move_performed` walk and the phase
+    // Step 3+: the perform walk (with per-monster `on_move_performed`) and the phase
     // advance live in [`run_enemy_perform_walk`] so a mid-turn blocking player
     // choice (KnowledgeDemon CURSE_OF_KNOWLEDGE) can suspend and resume the
     // walk at the monster it stopped on.
@@ -3848,9 +3893,12 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
 /// `acting` is the `(uid, intent)` roster snapshot taken at `enemy_turn_exec`
 /// entry (see its Step-2 rationale for why it is snapshotted rather than
 /// re-queried). Monsters `[0, start_index)` have already performed; the walk
-/// resumes at `start_index` and, once every monster has acted, runs the
-/// `on_move_performed` walk over the WHOLE snapshot and advances the phase to
-/// `EnemyTurnEnd`.
+/// resumes at `start_index`, marks each monster's move performed around it —
+/// [`crate::monster_ai::MonsterAi::begin_move`] before the body (C#
+/// MoveState.cs:57) and
+/// [`crate::monster_ai::MonsterAi::on_move_performed_state`] right after it
+/// (C# MonsterModel.cs:587) — and once every monster has acted advances the
+/// phase to `EnemyTurnEnd`.
 ///
 /// **Mid-walk suspension.** C#'s monster move bodies are `async Task`s that can
 /// `await` a blocking player choice: `KnowledgeDemon.CurseOfKnowledge`
@@ -3869,9 +3917,10 @@ pub fn enemy_turn_exec(state: &mut CombatState) -> StepResult {
 /// `after_death` dispatch) rather than immediately after `perform_intent`:
 /// both are inert bookkeeping for the curse move (it deals no damage and the
 /// history is not observable on the wire), and the AI state machine — which IS
-/// observable, via the telegraphed intent — is only advanced by the
-/// `on_move_performed` walk BELOW the loop, so a suspended state still reports
-/// the curse move as the monster's current move exactly like C#.
+/// observable, via the telegraphed intent — is only advanced by the boundary
+/// roll in `enemy_turn_end` (`on_move_performed` only flags the move, it does
+/// not change the current state), so a suspended state still reports the curse
+/// move as the monster's current move exactly like C#.
 fn run_enemy_perform_walk(
     state: &mut CombatState,
     acting_enemies: smallvec::SmallVec<[(CreatureUid, Option<Intent>); 8]>,
@@ -3892,9 +3941,62 @@ fn run_enemy_perform_walk(
     // multi-state monsters collapse to their turn-0 intent forever.
     let mut slot = start_index;
     while slot < acting_enemies.len() {
-        let (enemy_uid, intent) = acting_enemies[slot];
+        let (enemy_uid, snapshot_intent) = acting_enemies[slot];
         slot += 1;
+        // C# `Creature.TakeTurn` → `MonsterModel.PerformMove` reads
+        // `NextMove` when THIS monster's turn comes (MonsterModel.cs:583), not
+        // at the start of the enemy side. A monster stunned earlier in this
+        // same walk (a Corpse Slug devouring an ally that Thorns killed during
+        // the ally's own move) must perform the stun, not its stale telegraph
+        // — so re-read the live telegraph, which every stun/force path
+        // re-points. The snapshot only fixes WHO acts, and in what order.
+        // Issue #806.
+        let live = crate::creature_by_id(&state.creatures, enemy_uid.0);
+        let intent = live.map_or(snapshot_intent, |c| c.intent);
+        // The move that is about to run: C# marks THAT `MoveState` performed
+        // (MoveState.cs:57), even if a stun replaces the machine's current
+        // state while it runs.
+        let performed_state = live
+            .and_then(|c| c.ai.as_ref())
+            .map(crate::monster_ai::MonsterAi::current_state_id);
+        // ...and it marks it BEFORE the move body runs: `MoveState.PerformMove`
+        // sets `_performedAtLeastOnce` (MoveState.cs:57) and only then awaits
+        // the body (:59). So while the body runs the move already counts as
+        // performed — a stun it triggers on its own monster passes
+        // `SetMoveImmediate`'s `CanTransitionAway` guard (MonsterModel.cs:564)
+        // even on a first must-perform move — and a state forced during the
+        // body starts unperformed (`OnExitState`, MoveState.cs:62-65: the
+        // Waterfall Giant's thorns-death revive onto ABOUT_TO_BLOW, #830).
+        // The post-move half is `on_move_performed_state` below.
+        if let Some(idx) = crate::creature_pos(&state.creatures, enemy_uid.0) {
+            let c = &state.creatures[idx];
+            if c.current_hp > 0 || is_acting_reattach_corpse(state, c) {
+                if let Some(ai) = state.creatures[idx].ai.as_mut() {
+                    ai.begin_move();
+                }
+            }
+        }
         let result = perform_intent(state, enemy_uid, intent);
+        // `MoveStateMachine.OnMovePerformed(move)` runs right after the move
+        // (MonsterModel.cs:587), so finish it now rather than after the whole
+        // walk: a stun landing on this monster LATER in the walk (another
+        // ally dies) must find its just-performed move flagged, and must
+        // itself stay unperformed. Same survivor filter the old post-walk
+        // pass used (alive, or an acting Reattach corpse).
+        if let (Some(performed), Some(idx)) = (
+            performed_state,
+            crate::creature_pos(&state.creatures, enemy_uid.0),
+        ) {
+            let acted = {
+                let c = &state.creatures[idx];
+                c.current_hp > 0 || is_acting_reattach_corpse(state, c)
+            };
+            if acted {
+                if let Some(ai) = state.creatures[idx].ai.as_mut() {
+                    ai.on_move_performed_state(performed);
+                }
+            }
+        }
         if matches!(result, StepResult::CombatWon | StepResult::CombatLost) {
             // Even on combat-end, the just-performed intent's history
             // bookkeeping is moot — combat won't roll another intent.
@@ -3941,7 +4043,7 @@ fn run_enemy_perform_walk(
         {
             // Cloned rather than moved: the walk is inside a loop, so the
             // snapshot must stay live for the (possible) next iteration and
-            // for the `on_move_performed` walk below. Only paid on suspend.
+            // for the resumed walk. Only paid on suspend.
             state.pending_enemy_exec_resume = Some(crate::PendingEnemyExecResume {
                 acting: acting_enemies.clone(),
                 next_index: slot,
@@ -3950,40 +4052,11 @@ fn run_enemy_perform_walk(
         }
     }
 
-    // Bead sts2-rs-iod: For DSL-driven enemies (those with a
-    // `MonsterAi`), record the just-performed move into `ai.state_log`
-    // so the upcoming step-4 roll sees the correct history. Mirrors
-    // Python's `state_machine.on_move_performed()` at
-    // `sts2-rl-agent@01c094d:sts2_env/monsters/state_machine.py:67-71`,
-    // called from `combat.py` between the perform loop and the next
-    // `roll_move`. Without this, `ai.current` and `ai.state_log` stay
-    // frozen after the first turn and Rust diverges from Python from
-    // turn 1 onwards. Collect indices first to avoid the same borrow
-    // conflict the step-4 loop guards against.
-    //
-    // Bead `sts2-rs-z4jsg`: walk ONLY the enemies that actually
-    // performed (the `acting_enemies` snapshot), not every alive
-    // ai-driven enemy. A monster summoned mid-turn (Ovicopter's
-    // ToughEggs, Fabricator bots, Fogmog's illusion) has performed
-    // nothing, and a phantom `on_move_performed` both poisons its
-    // `state_log` and sets `performed_first_move` — which makes the
-    // step-4 roll TRANSITION AWAY from its never-performed initial
-    // move (the eggs skipped HATCH_MOVE straight to NIBBLE). C# only
-    // advances the machine from `PerformMove` → `OnMovePerformed`.
-    let ai_indices: smallvec::SmallVec<[usize; 8]> = acting_enemies
-        .iter()
-        .filter_map(|(uid, _)| {
-            crate::creature_pos(&state.creatures, uid.0).filter(|&i| {
-                let c = &state.creatures[i];
-                (c.current_hp > 0 || is_acting_reattach_corpse(state, c)) && c.ai.is_some()
-            })
-        })
-        .collect();
-    for idx in ai_indices {
-        if let Some(ai) = state.creatures[idx].ai.as_mut() {
-            ai.on_move_performed();
-        }
-    }
+    // The `on_move_performed` analogue now runs per monster around its move,
+    // inside the walk above: `begin_move` before the body (MoveState.cs:57,
+    // #830) and `on_move_performed_state` right after it (MonsterModel.cs:587,
+    // issue #806). It still walks only the monsters that actually performed
+    // (bead `sts2-rs-z4jsg`: a mid-turn summon has performed nothing).
 
     // Step 4: roll the next intent for each surviving enemy. We collect
     // the alive-enemy creature indices first to avoid borrow conflicts
@@ -4267,7 +4340,7 @@ fn perform_intent(
     match intent {
         Some(Intent::Attack { damage }) => {
             let suck = attacker_suck_amount(state, enemy_uid);
-            let hp_before = (suck > 0).then(|| player_side_hp(state));
+            let hp_before = (suck > 0).then(|| suck_witness(state));
             let result = apply_damage_to_player(state, dealer, damage, props, None);
             if let Some(end) = result {
                 return end;
@@ -4279,7 +4352,7 @@ fn perform_intent(
             // C# `SuckPower.AfterAttack` fires in the same post-command
             // window; a single-hit attack has one `Results` hit-list.
             let sucked_hits =
-                i32::from(hp_before.is_some_and(|before| player_side_hp(state) < before));
+                i32::from(hp_before.is_some_and(|before| suck_hit_landed(state, before)));
             apply_suck_strength(state, enemy_uid, suck, sucked_hits);
             if let Some(effect) = attack_effect_fn {
                 effect(state, enemy_uid);
@@ -4299,7 +4372,7 @@ fn perform_intent(
         // (HasExploded flag in C#) runs in the same order.
         Some(Intent::DeathBlow { damage }) => {
             let suck = attacker_suck_amount(state, enemy_uid);
-            let hp_before = (suck > 0).then(|| player_side_hp(state));
+            let hp_before = (suck > 0).then(|| suck_witness(state));
             let result = apply_damage_to_player(state, dealer, damage, props, None);
             if let Some(end) = result {
                 return end;
@@ -4310,7 +4383,7 @@ fn perform_intent(
             // command completes). No current DeathBlow monster carries Suck;
             // kept for hook-parity symmetry with the `Attack` arm.
             let sucked_hits =
-                i32::from(hp_before.is_some_and(|before| player_side_hp(state) < before));
+                i32::from(hp_before.is_some_and(|before| suck_hit_landed(state, before)));
             apply_suck_strength(state, enemy_uid, suck, sucked_hits);
             if let Some(effect) = attack_effect_fn {
                 effect(state, enemy_uid);
@@ -4386,12 +4459,12 @@ fn perform_intent(
                 // `UnblockedDamage > 0`. Tally the realised per-hit HP delta
                 // here; the Strength is applied ONCE after the chain, so
                 // later hits of this same attack are NOT inflated.
-                let hp_before = (suck > 0).then(|| player_side_hp(state));
+                let hp_before = (suck > 0).then(|| suck_witness(state));
                 let result = apply_damage_to_player(state, dealer, damage, props, None);
                 if let Some(end) = result {
                     return end;
                 }
-                if hp_before.is_some_and(|before| player_side_hp(state) < before) {
+                if hp_before.is_some_and(|before| suck_hit_landed(state, before)) {
                     sucked_hits += 1;
                 }
             }
@@ -4633,6 +4706,29 @@ fn player_side_hp(state: &CombatState) -> i32 {
     hp
 }
 
+/// Before-hit snapshot for [`suck_hit_landed`]: the player-side HP sum and
+/// the player's realised-HP-loss hit counter.
+fn suck_witness(state: &CombatState) -> (i32, u32) {
+    (
+        player_side_hp(state),
+        state.combat_log.unblocked_damage_received_this_combat,
+    )
+}
+
+/// Did this hit have `UnblockedDamage > 0` (`SuckPower.cs:37`)? C# reads the
+/// `DamageResult`, which `LoseHpInternal` fills before any death prevention
+/// (Creature.cs:453), so a lethal hit that FairyInABottle then revives still
+/// counts even though the player ends with MORE HP than before (GH #806,
+/// 0.107 Ironclad seed 330 / 0.111 Ironclad seed 334). The HP-sum delta alone
+/// misses that case; the player's hit counter (bumped from the pre-revive
+/// write in [`apply_damage_to_player`]) catches it, and the sum still covers
+/// a hit absorbed by the Osty pet.
+fn suck_hit_landed(state: &CombatState, before: (i32, u32)) -> bool {
+    let (hp_before, hits_before) = before;
+    player_side_hp(state) < hp_before
+        || state.combat_log.unblocked_damage_received_this_combat > hits_before
+}
+
 /// Post-attack half of C# `SuckPower.AfterAttack` (`SuckPower.cs:42-46`):
 /// `if (num > 0) { … PowerCmd.Apply<StrengthPower>(…, Amount * num, …) }` —
 /// one Strength apply per ATTACK COMMAND, after the whole hit chain, never
@@ -4700,16 +4796,21 @@ pub(crate) fn clear_player_powers_on_death(state: &mut CombatState) {
             }
         }
     }
-    if ids.is_empty() {
-        return;
-    }
-    state.powers.retain(|p| !ids.contains(&p.id));
-    state.player.powers.clear();
-    if let Some(uid) = state.player.creature_uid {
-        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
-            c.powers.clear();
+    if !ids.is_empty() {
+        state.powers.retain(|p| !ids.contains(&p.id));
+        state.player.powers.clear();
+        if let Some(uid) = state.player.creature_uid {
+            if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+                c.powers.clear();
+            }
         }
     }
+    // GH #806: a dying player takes its Osty with it — C#
+    // `KillWithoutCheckingWinCondition` runs `if (player.IsOstyAlive) await
+    // Kill(player.Osty, force)` right after the player's powers are removed
+    // (v0.107.1 CreatureCmd.cs:545-552; identical in v0.111.0). No-op when
+    // there is no live Osty.
+    state.kill_osty();
 }
 
 /// C# `FairyInABottle` automatic death-prevention.
@@ -4946,6 +5047,68 @@ pub fn preview_damage_to_player_modifiers(
             props,
         },
     )
+}
+
+/// The attack enemy `enemy` is telegraphing, as the game displays it:
+/// `(per_hit, hits)`, or `None` when it telegraphs no attack (or does not
+/// exist).
+///
+/// `per_hit` is [`preview_damage_to_player`] of the intent's base number —
+/// the very call the wire makes for `effective_amount`, which is C#
+/// `AttackIntent.GetSingleDamage`: `Hook.ModifyDamage(…, target = the
+/// player, dealer = the monster, ValueProp.Move, ModifyDamageHookType.All,
+/// CardPreviewMode.None)`, truncated and floored at 0. `hits` is the
+/// intent's `Repeats` (1 for a single attack or a death blow), and the
+/// displayed total is `per_hit × hits` (`MultiAttackIntent.GetTotalDamage`).
+/// `Intent::damage` is the move table's BASE number, so the two differ on
+/// every board where the dealer holds Strength / Weak / Shrink, the player
+/// is Vulnerable, or a Kaiser Crab arm stands at the player's back.
+///
+/// Read-only: the pipeline takes `&CombatState`, flashes nothing,
+/// decrements no counter and draws no randomness.
+///
+/// What the number includes is exactly what `ModifyDamage` folds for a
+/// player target:
+/// - the dealer's additive and multiplicative powers (Strength, Weak,
+///   Shrink, …) and the player's (Vulnerable, …);
+/// - Surrounded's ×1.5 back attack, read at the CURRENT facing;
+/// - damage relics (the relic additive fold and multiplicative channel);
+/// - target-side caps: the player's Intangible (C#
+///   `IntangiblePower.ModifyDamageCap` = 1, which is how the game paints a
+///   1 on an Intangible player's intents).
+///
+/// What it does NOT include, because the game applies it only when a hit
+/// lands (`ModifyHpLost` and later, after the preview):
+/// - Block (the number is pre-block by definition);
+/// - Buffer, Tungsten Rod's −1, Beating Remnant's per-turn cap, and the
+///   Necrobinder's Osty soaking the hit (`DieForYouPower`);
+/// - anything that changes the board before the enemy acts: cards played
+///   later this turn (a Surrounded facing flip, a Weak applied), start-of-
+///   enemy-turn effects (Ritual Strength), or one enemy buffing another
+///   ahead of its own attack in the same enemy turn.
+#[must_use]
+pub fn effective_intent_damage(state: &CombatState, enemy: CreatureUid) -> Option<(i32, u8)> {
+    effective_intent_of(state, crate::creature_by_id(&state.creatures, enemy.0)?)
+}
+
+/// [`effective_intent_damage`] of a creature already looked up.
+#[must_use]
+pub fn effective_intent_of(state: &CombatState, creature: &crate::Creature) -> Option<(i32, u8)> {
+    let intent = creature.intent?;
+    let (Intent::Attack { damage }
+    | Intent::MultiAttack { damage, .. }
+    | Intent::DeathBlow { damage }) = intent
+    else {
+        return None;
+    };
+    let per_hit = preview_damage_to_player(
+        state,
+        CreatureRef::Enemy(CreatureUid(creature.id)),
+        damage,
+        ValueProps::MOVE,
+        None,
+    );
+    Some((per_hit, intent.hits()))
 }
 
 pub fn apply_damage_to_player(
@@ -5621,9 +5784,9 @@ pub fn enemy_turn_end(state: &mut CombatState) -> StepResult {
         };
     }
 
-    // v0.111.0: an extra player turn skips the enemy side (see
-    // [`extra_player_turn_pending_v0111`]).
-    if extra_player_turn_pending_v0111(state) {
+    // An extra player turn skips the enemy side (see
+    // [`extra_player_turn_pending`]).
+    if extra_player_turn_pending(state) {
         return StepResult::Advanced;
     }
 
@@ -6167,22 +6330,21 @@ pub fn end_turn_dispatch_from(state: &mut CombatState, first: usize) -> StepResu
     StepResult::Advanced
 }
 
-/// v0.111.0: `end_player_turn_phase_two` granted an extra player turn and left
-/// the phase at [`CombatPhase::PlayerTurnStart`]. C#'s
-/// `SwitchFromPlayerToEnemySide` then keeps `CurrentSide` on the player
-/// (`SwitchSides`, decomp CombatManager.cs:1866-1880) and the turn loop runs
+/// `end_player_turn_phase_two` granted an extra player turn and left the phase
+/// at [`CombatPhase::PlayerTurnStart`]. C#'s `SwitchFromPlayerToEnemySide`
+/// then keeps `CurrentSide` on the player (`SwitchSides`, decomp v0.111.0
+/// CombatManager.cs:1866-1880, v0.107.1 :1390-1410) and the turn loop runs
 /// the player side again without an enemy turn or a round increment. The
 /// [`end_turn_dispatch`] chain still calls the three enemy phases, so each
 /// returns at once and [`start_player_turn`] runs the extra turn. Doing it in
 /// the phase fns keeps the `end_turn_phase` / `end_turn_dispatch_from` split
 /// equal to the whole chain.
 ///
-/// v0.107.1 is left as it was: there, the PaelsEye extra turn re-enters
-/// `PlayerTurnStart` and the chain runs the enemy phases anyway (a pre-existing
-/// gap kept for bit-identity; v0.111.0's AmbergrisPower made it reachable).
-fn extra_player_turn_pending_v0111(state: &CombatState) -> bool {
-    state.game_version >= crate::GameVersion::V0_111_0
-        && state.phase == CombatPhase::PlayerTurnStart
+/// The C# is the same in v0.107.1, where the PaelsEye extra turn used to
+/// re-enter `PlayerTurnStart` and still run the enemy phases; both builds now
+/// skip them (GH #806).
+fn extra_player_turn_pending(state: &CombatState) -> bool {
+    state.phase == CombatPhase::PlayerTurnStart
 }
 
 /// Is a diagnostic armed that records OUTSIDE `state` while a combat step
@@ -7016,6 +7178,7 @@ pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) ->
     // so an Attack-type card that deals zero hits (X-cost Whirlwind at X=0) must
     // not consume the buff.
     state.player.powered_hits_at_card_play_start = state.player.powered_hits_this_turn;
+    state.combat_log.osty_attacks_at_card_play_start = state.combat_log.osty_attacks_this_turn;
     state.player.attack_command_suppressed_this_play = false;
 
     // C# `History.CardPlayStartedEntry` — recorded before `OnPlay` runs, so
@@ -7266,6 +7429,21 @@ fn consume_rebound_stack(state: &mut CombatState) {
     );
 }
 
+/// C# `CombatManager.CheckForEmptyHand` (v0.107.1 CombatManager.cs:890-896):
+/// fire `Hook.AfterHandEmptied` when the player's hand is empty. Called only
+/// from the top-level sites C# checks — the end of a hand play, the end of a
+/// potion use, and (v0.111.0) AutoPrePlay entry — never from a play nested
+/// inside another card or potion effect (C# `IsExecutingCardOrPotionEffect`).
+/// UnceasingTop is the only listener (GH #806).
+pub(crate) fn check_for_empty_hand(state: &mut CombatState) {
+    if state.player.hand.is_empty() {
+        let _ = crate::relic_effects::dispatch_after_hand_emptied(
+            state,
+            &hooks::CombatLifecycleCtx::default(),
+        );
+    }
+}
+
 pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> StepResult {
     let CardPlayFinish {
         card,
@@ -7450,6 +7628,13 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     // any state changes those listeners produced.
     crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
 
+    // GH #806: C# `Hook.AfterCardPlayed` ends with every `AfterCardPlayedLate`
+    // (Hook.cs:431-437) INSIDE `OnPlayWrapper`'s per-play loop, before the card
+    // reaches its result pile (CardModel.cs:1957-1990) — so a RightHandHand that
+    // is itself being played is still in Play, and MakeItSo checks its Skill
+    // count once per replay. Fired here per play, not once after routing.
+    crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+
     // ── OneTwoPunch replay loop (bead `sts2-rs-76t5`) ────────────────────
     // Replay the card `extra_plays` additional times (mirrors the
     // `for _ in range(play_count - 1)` arm of Python's
@@ -7567,6 +7752,8 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
         if card.card_type == crate::cards::CardType::Skill {
             state.discount_pinpoint_on_skill_played();
         }
+        // Per-replay `AfterCardPlayedLate` (see the initial-play site).
+        crate::card_effects::fire_late_effects(state, &hook_played_ctx);
         if state.is_over {
             break;
         }
@@ -7699,6 +7886,8 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
                     .ethereal_cards_played_this_combat
                     .saturating_add(1);
             }
+            // Per-replay `AfterCardPlayedLate` (see the initial-play site).
+            crate::card_effects::fire_late_effects(state, &hook_played_ctx);
             // (EchoForm now grants a single extra play, so there is no replay
             // loop to break out of on a combat-ending replay — the cleanup
             // below already no-ops on an empty board.)
@@ -8010,19 +8199,16 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     // `move_card` returned `Err` swallowed by `let _`) but masked the
     // intent of the cleanup block.
 
-    // ── Late-effect sweep ────────────────────────────────────────────────
-    // Bead `sts2-rs-j9x8`: walk every card in every pile (Hand /
-    // Draw / Discard / Exhaust / Play) and fire any registered
-    // late-effect for that card's `CardId`. Mirrors Python's
-    // `_fire_after_card_played_late(played_card)` at
-    // `sts2-rl-agent@01c094d:sts2_env/core/combat.py:907`. First
-    // consumer is MakeItSo (Regent Rare): when N Skills have been
-    // played this turn, the watched MakeItSo card is moved from
-    // Discard / Exhaust back to Hand. The sweep is one level deeper
-    // than `after_card_played` (which is power/relic listener side);
-    // late-effects key off the *watched* card's identity rather than
-    // a power's owner, so the dispatch site differs.
-    crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+    // (The `AfterCardPlayedLate` sweep — `fire_late_effects`, bead
+    // `sts2-rs-j9x8` — now runs per play inside the play loop above, before
+    // routing; GH #806.)
+
+    // C# `CardModel.OnPlayWrapper` ends with `CheckForEmptyHand` once the card
+    // has reached its result pile (v0.107.1 CardModel.cs:1993). A play that
+    // parked a choice resumes through here again, so wait for it.
+    if state.pending_choice.is_none() && !state.is_over {
+        check_for_empty_hand(state);
+    }
 
     // ── VoidForm-style end-turn-after-current-play rider ─────────────────
     // Bead `sts2-rs-3guy`: if the resolved card handler called the Rust
@@ -8228,57 +8414,161 @@ pub fn auto_play_card_from_draw_top(state: &mut CombatState, force_exhaust: bool
             resolve_inline_auto_play_choices(state);
         }
     }
-    let Some(&top_uid) = state.player.draw.first() else {
+    if state.player.draw.is_empty() {
         return false;
-    };
+    }
     // Pop the top of draw and push it onto the Play pile, preserving any
-    // currently-resolving card underneath (e.g. Havoc itself).
-    state.player.draw.remove(0);
-    // Bead `sts2-rs-09x5n`: raw physical-top pop, bypasses
-    // `cards::pop_next_card` — clear a stale pin on `top_uid` so a later
-    // `pop_next_card` doesn't short-circuit to a deterministic pop for a
-    // now-possibly-heterogeneous draw and skip a chance node.
-    cards::unpin(&mut state.player, top_uid);
+    // currently-resolving card underneath (e.g. Havoc itself). GH #785:
+    // `pop_top_card` makes the top a chance event over the unknown middle
+    // under BeliefDraw (a pinned top — Headbutt, Imbued — stays
+    // deterministic) and clears the popped card's pin.
+    let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
     state.player.play.push(top_uid);
     resolve_auto_played_card(state, top_uid, force_exhaust);
     true
 }
 
-/// `IAmInvincible.AfterTurnEnd` rider: while the top of the player's draw
-/// pile is an `IAmInvincible`, auto-play it (gaining its block). Mirrors C#
-/// `IAmInvincible.cs::AfterTurnEnd` — `if drawPile.FirstOrDefault() == this {
-/// AutoPlayFromDrawPile(1, Top, forceExhaust: false) }`. The C# hook is
-/// per-card-instance, but because each play removes the card from draw, the
-/// observable net is a top-of-pile loop: a single copy plays once, and stacked
-/// copies each fire as they become the new top. Combat-end aware. No reshuffle:
-/// the C# auto-play is gated on the card already being on draw-top, so an empty
-/// draw pile is a no-op (we never trigger `ShuffleIfNecessary`).
-fn auto_play_i_am_invincible_from_draw_top(state: &mut CombatState) {
-    // Bound the loop by the live draw-pile size to guarantee termination even
-    // if a future on-play effect ever re-inserts a card on top.
-    let mut budget = state.player.draw.len();
-    while budget > 0 {
-        budget -= 1;
+/// `IAmInvincible.AfterAutoPostPlayPhaseEntered` (`IAmInvincible.cs:29-39`,
+/// identical in v0.107.1 and v0.111.0): `if (drawPile.FirstOrDefault() ==
+/// this) AutoPlayFromDrawPile(1, Top, forceExhaust: false)`.
+///
+/// The hook is per card INSTANCE. `Hook.AfterAutoPostPlayPhaseEntered`
+/// (Hook.cs:1054-1067) walks a listener list that `IterateHookListeners`
+/// snapshots up front (CombatState.cs: powers, relics, potions, orbs, then the
+/// cards of Hand, Draw, Discard, Exhaust, Play in pile order), so each copy is
+/// asked once. A copy that Nostalgia puts back on draw-top after its play is
+/// NOT asked again (GH #806, Regent seed 191 at v0.111.0), while a second copy
+/// beneath it, later in the snapshot, does play once it becomes the top.
+/// No reshuffle: an empty draw pile is a no-op.
+///
+/// **BeliefDraw (GH #785).** Under [`crate::PlayerCombatState::deferred_draw_order`]
+/// the draw pile's unknown middle is kept uid-sorted, so its vector order is
+/// not the physical order the snapshot walks, and "is this copy on top?" is a
+/// chance event. The copies in the unknown middle are therefore asked the way
+/// the C# snapshot asks them, top-down, not one by one in uid order:
+/// [`cards::peek_top_card_if`] samples the physical top (one shuffle-stream
+/// read: the search's chance node) and pins it; while that top is a middle
+/// copy not yet asked, it plays (the pinned card pops with no RNG read), and
+/// the first top that is not one ends the walk, because every middle copy
+/// still unasked then sits below a card that does not move. Asking them in
+/// uid order instead would let a lower-uid copy say "not me" before the copy
+/// above it played: two copies in an n-card middle would both play with
+/// probability 1/(n(n-1)) instead of C#'s 2/(n(n-1)).
+/// Every other copy (hand, a pinned top, the known bottom, discard, exhaust,
+/// play) keeps the per-copy check, which `peek_top_card_if` answers without
+/// RNG because its position is known (a copy outside the unknown middle can
+/// only be on top when the pile says so).
+///
+/// With the flag clear there is no unknown middle: every copy takes the
+/// per-copy check, `peek_top_card_if` is `draw.first() == Some(&uid)` with no
+/// RNG read, and `pop_top_card` is `draw.remove(0)` plus `unpin` — exactly
+/// the #894 loop, byte for byte.
+///
+/// Returns the card a BeliefDraw peek SAMPLED onto the top and left PINNED
+/// there because it was not a copy to play (always `None` with the flag
+/// clear). That pin names a hidden card — the player only learned "the top
+/// is not an I Am Invincible" — so the caller must drop it with
+/// [`cards::drop_sampled_top_pin`] before anything can surface a choice.
+fn auto_play_i_am_invincible_from_draw_top(state: &mut CombatState) -> Option<crate::CardUid> {
+    let listeners: smallvec::SmallVec<[crate::CardUid; 4]> = state
+        .player
+        .hand
+        .iter()
+        .chain(state.player.draw.iter())
+        .chain(state.player.discard.iter())
+        .chain(state.player.exhaust.iter())
+        .chain(state.player.play.iter())
+        .copied()
+        .filter(|uid| {
+            let idx = uid.0.get() as usize - 1;
+            state
+                .cards
+                .get(idx)
+                .is_some_and(|c| c.card_id == cards::CardId::IAmInvincible)
+        })
+        .collect();
+    // GH #785: the copies in the draw pile's unknown middle (none with the
+    // flag clear).
+    let middle_copies: smallvec::SmallVec<[crate::CardUid; 4]> = if state.player.deferred_draw_order
+    {
+        let middle = cards::unknown_middle_uids(&state.player);
+        listeners
+            .iter()
+            .copied()
+            .filter(|u| middle.contains(u))
+            .collect()
+    } else {
+        smallvec::SmallVec::new()
+    };
+    let mut middle_walked = false;
+    let mut sampled_pin: Option<crate::CardUid> = None;
+    for uid in listeners {
         if state.is_over {
-            return;
+            break;
         }
-        let Some(&top_uid) = state.player.draw.first() else {
-            return;
-        };
-        let top_idx = top_uid.0.get() as usize - 1;
-        let is_invincible = state
-            .cards
-            .get(top_idx)
-            .is_some_and(|c| c.card_id == cards::CardId::IAmInvincible);
-        if !is_invincible {
-            return;
+        if middle_copies.contains(&uid) {
+            // The unknown-middle copies are asked as one top-down walk at the
+            // first of them (they are contiguous in the snapshot's draw
+            // segment); see the doc above.
+            if !middle_walked {
+                middle_walked = true;
+                let mut asked: smallvec::SmallVec<[crate::CardUid; 4]> = smallvec::SmallVec::new();
+                while !state.is_over {
+                    let Some(top) = peek_i_am_invincible_top(
+                        state,
+                        |u| middle_copies.contains(&u) && !asked.contains(&u),
+                        &mut sampled_pin,
+                    ) else {
+                        break;
+                    };
+                    asked.push(top);
+                    auto_play_peeked_i_am_invincible(state, top);
+                }
+            }
+            continue;
         }
-        state.player.draw.remove(0);
-        // Bead `sts2-rs-09x5n`: raw physical-top pop, bypasses
-        // `cards::pop_next_card` — see `auto_play_card_from_draw_top`.
-        cards::unpin(&mut state.player, top_uid);
-        state.player.play.push(top_uid);
-        resolve_auto_played_card(state, top_uid, false);
+        if peek_i_am_invincible_top(state, |u| u == uid, &mut sampled_pin).is_none() {
+            continue;
+        }
+        auto_play_peeked_i_am_invincible(state, uid);
+    }
+    // Still the pinned top? (A later copy's play would have popped it.)
+    sampled_pin
+        .filter(|&u| state.player.draw.first() == Some(&u) && state.player.pinned_top.contains(&u))
+}
+
+/// One I Am Invincible "am I on top?" check: [`cards::peek_top_card_if`] on
+/// the shuffle stream. When the peek had to SAMPLE the top (it read RNG) and
+/// the sampled card is not a match, that card is now the pinned top and is
+/// recorded in `sampled_pin` for [`auto_play_i_am_invincible_from_draw_top`]
+/// to hand back. GH #785 / #894.
+fn peek_i_am_invincible_top(
+    state: &mut CombatState,
+    pred: impl Fn(crate::CardUid) -> bool,
+    sampled_pin: &mut Option<crate::CardUid>,
+) -> Option<crate::CardUid> {
+    let before = state.run_rng.shuffle.counter();
+    let hit = cards::peek_top_card_if(&mut state.player, &mut state.run_rng.shuffle, pred);
+    if hit.is_none() && state.run_rng.shuffle.counter() != before {
+        *sampled_pin = state.player.draw.first().copied();
+    }
+    hit
+}
+
+/// Auto-play the I Am Invincible copy `uid` that a peek just found on top
+/// (`AutoPlayFromDrawPile(1, Top, ..)`). The peeked card is the known top, so
+/// [`cards::pop_top_card`] takes it with no RNG read and clears its pin (with
+/// the BeliefDraw flag clear: `draw.remove(0)` plus `unpin`, the #894 pop).
+fn auto_play_peeked_i_am_invincible(state: &mut CombatState, uid: crate::CardUid) {
+    let top = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
+    debug_assert_eq!(top, uid, "the peeked copy is the popped top");
+    state.player.play.push(top);
+    resolve_auto_played_card(state, top, false);
+    // A top-level auto-play ends with `CardModel.OnPlayWrapper`'s
+    // `CheckForEmptyHand` (CardModel.cs:1993): this hook runs outside any
+    // card/potion effect, so UnceasingTop can draw here.
+    if !state.is_over {
+        check_for_empty_hand(state);
     }
 }
 
@@ -8448,13 +8738,12 @@ pub fn auto_play_n_from_draw_top(state: &mut CombatState, count: i32, force_exha
                 resolve_inline_auto_play_choices(state);
             }
         }
-        let Some(&top_uid) = state.player.draw.first() else {
+        if state.player.draw.is_empty() {
             break;
-        };
-        state.player.draw.remove(0);
-        // Bead `sts2-rs-09x5n`: raw physical-top pop, bypasses
-        // `cards::pop_next_card` — see `auto_play_card_from_draw_top`.
-        cards::unpin(&mut state.player, top_uid);
+        }
+        // GH #785: the physical top via `pop_top_card` — see
+        // `auto_play_card_from_draw_top`.
+        let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
         state.player.play.push(top_uid);
         // Mark this card as a batch-pending play: it now sits on the Play pile
         // (phase 1) but its own play has NOT started, so the Nostalgia
@@ -8858,6 +9147,7 @@ pub(crate) fn resolve_auto_played_card_at_target(
     // Cascade) is an Attack-type card that deals zero hits — it must NOT consume
     // Vigor (seed 3057).
     state.player.powered_hits_at_card_play_start = state.player.powered_hits_this_turn;
+    state.combat_log.osty_attacks_at_card_play_start = state.combat_log.osty_attacks_this_turn;
     state.player.attack_command_suppressed_this_play = false;
 
     // UNPLAYABLE cards (curses / status — Burn, Dazed, Wound, Slimed,
@@ -12488,14 +12778,15 @@ mod tests {
     //
     // `auto_play_card_from_draw_top` / `auto_play_n_from_draw_top` /
     // `auto_play_i_am_invincible_from_draw_top` / `auto_play_collect_suspending`
-    // all pop the physical draw-top via a raw `draw.remove(0)`, bypassing
-    // `cards::pop_next_card` (and its paired `cards::unpin` call). If the
-    // popped card happened to be pinned (Headbutt/ThinkingAhead/Innate/
-    // Nostalgia/ShiningStrike all place KNOWN cards at draw-top), the pin
-    // must be cleared here too — otherwise `pinned_top` stays non-empty
-    // after the card has already left the draw pile, and the NEXT
-    // `pop_next_card` wrongly takes the "player-known" deterministic branch
-    // for what is now an ordinary unknown middle segment.
+    // all pop the physical draw-top. They used to do it with a raw
+    // `draw.remove(0)` and a hand-written `cards::unpin`; since GH #785 they
+    // go through `cards::pop_top_card`, which does both. If the popped card
+    // happened to be pinned (Headbutt/ThinkingAhead/Innate/Nostalgia/
+    // ShiningStrike all place KNOWN cards at draw-top), the pin must not
+    // survive it — otherwise `pinned_top` stays non-empty after the card has
+    // already left the draw pile, and the NEXT `pop_next_card` wrongly takes
+    // the "player-known" deterministic branch for what is now an ordinary
+    // unknown middle segment.
 
     /// Build a `deferred_draw_order` state with `top_id` PINNED to
     /// physical draw-top and a 2-card heterogeneous middle behind it —
@@ -12669,6 +12960,532 @@ mod tests {
             "no Stratagem grid-select opened; the collect should complete"
         );
         assert_pin_cleared_and_next_draw_is_chance(&mut state);
+    }
+
+    // ── Top-of-draw consumers under BeliefDraw (GH #785) ───────────────
+    //
+    // Under `deferred_draw_order` the unknown middle is kept uid-sorted, so
+    // its `draw[0]` is a fixed stand-in (the lowest uid). The consumers below
+    // used to take that stand-in with no RNG read: no chance node, and a
+    // biased card. They now resolve "the top card" as the chance event it is.
+
+    /// Cards `ids[i]` get uid `i + 1`; the draw pile holds them in uid order
+    /// (the canonical layout of an unpinned deferred pile), unpinned.
+    fn state_with_draw_cards(ids: &[crate::cards::CardId], deferred: bool) -> CombatState {
+        let mut state = CombatState {
+            rng: crate::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        state.player.deferred_draw_order = deferred;
+        for (i, &id) in ids.iter().enumerate() {
+            let uid = CardUid::new(u32::try_from(i + 1).expect("fits")).expect("non-zero");
+            state.cards.push(crate::cards::Card {
+                uid,
+                card_id: id,
+                cost: 1,
+                card_type: crate::cards::CardType::Skill,
+                target_type: crate::cards::TargetType::Self_,
+                ..crate::cards::Card::pod_defaults()
+            });
+            state.player.draw.push(uid);
+        }
+        state
+    }
+
+    fn mixed_draw_ids() -> [crate::cards::CardId; 3] {
+        [
+            crate::cards::CardId::DefendIronclad,
+            crate::cards::CardId::StrikeIronclad,
+            crate::cards::CardId::Anger,
+        ]
+    }
+
+    fn cuid(n: u32) -> CardUid {
+        CardUid::new(n).expect("non-zero")
+    }
+
+    /// Havoc (`auto_play_card_from_draw_top`) onto an unknown mixed middle:
+    /// one shuffle-stream read (the search's chance node), and every card of
+    /// the middle can be the one played — not always the lowest uid.
+    #[test]
+    fn havoc_auto_play_over_unknown_middle_is_a_chance_event() {
+        let mut played = std::collections::BTreeSet::new();
+        for seed in 0..64i32 {
+            let mut state = state_with_draw_cards(&mixed_draw_ids(), true);
+            state.run_rng.shuffle = crate::dotnet_rng::Rng::new(seed);
+            let before = state.run_rng.shuffle.counter();
+            assert!(auto_play_card_from_draw_top(&mut state, true));
+            assert_eq!(
+                state.run_rng.shuffle.counter(),
+                before + 1,
+                "seed {seed}: the top of a mixed unknown middle must consume RNG"
+            );
+            let gone: Vec<u32> = (1..=3)
+                .filter(|&n| !state.player.draw.contains(&cuid(n)))
+                .collect();
+            assert_eq!(gone.len(), 1, "seed {seed}: exactly one card left draw");
+            played.insert(gone[0]);
+        }
+        assert_eq!(
+            played,
+            std::collections::BTreeSet::from([1, 2, 3]),
+            "every card of the unknown middle must be reachable as Havoc's card"
+        );
+    }
+
+    /// A KNOWN top (Headbutt / Innate / Imbued pin) stays deterministic.
+    #[test]
+    fn havoc_auto_play_of_a_pinned_top_reads_no_rng() {
+        let mut state = state_with_pinned_top_card(crate::cards::CardId::DefendIronclad);
+        let before = state.run_rng.shuffle.counter();
+        assert!(auto_play_card_from_draw_top(&mut state, true));
+        assert_eq!(state.run_rng.shuffle.counter(), before);
+        assert!(
+            !state.player.draw.contains(&cuid(1)),
+            "the pinned card was played"
+        );
+    }
+
+    /// Cascade / Distilled Chaos (`auto_play_n_from_draw_top`): one chance
+    /// event per collected card while the unknown middle has >=2 cards; the
+    /// last card is forced.
+    #[test]
+    fn cascade_auto_play_reads_rng_per_uncertain_card() {
+        let mut state = state_with_draw_cards(&mixed_draw_ids(), true);
+        let before = state.run_rng.shuffle.counter();
+        auto_play_n_from_draw_top(&mut state, 3, false);
+        assert!(state.player.draw.is_empty());
+        assert_eq!(
+            state.run_rng.shuffle.counter(),
+            before + 2,
+            "3-card and 2-card middles are chance events; the 1-card one is forced"
+        );
+    }
+
+    /// Mayhem's suspending collect path.
+    #[test]
+    fn mayhem_collect_over_unknown_middle_is_a_chance_event() {
+        let mut state = state_with_draw_cards(&mixed_draw_ids(), true);
+        let before = state.run_rng.shuffle.counter();
+        let ap = crate::PendingAutoplay {
+            remaining: 1,
+            collected: SmallVec::new(),
+            force_exhaust: false,
+        };
+        assert!(auto_play_collect_suspending(&mut state, ap).is_none());
+        assert_eq!(state.run_rng.shuffle.counter(), before + 1);
+        assert_eq!(state.player.draw.len(), 2);
+    }
+
+    /// The I Am Invincible peek runs at EVERY turn end. With no copy that
+    /// could be on top it must not read RNG or pin anything — otherwise every
+    /// deck would grow a spurious turn-end chance node.
+    #[test]
+    fn i_am_invincible_peek_without_a_candidate_is_inert() {
+        let mut state = state_with_draw_cards(&mixed_draw_ids(), true);
+        let before = state.clone();
+        auto_play_i_am_invincible_from_draw_top(&mut state);
+        assert_eq!(
+            state, before,
+            "no I Am Invincible in draw: nothing may change"
+        );
+    }
+
+    /// An I Am Invincible in an unknown >=2-card middle: the peek is a chance
+    /// event. Either the copy is on top and plays, or the sampled non-copy is
+    /// PINNED on top (it is now known, and is what the next draw takes).
+    #[test]
+    fn i_am_invincible_peek_over_unknown_middle_is_a_chance_event() {
+        let mut outcomes = std::collections::BTreeSet::new();
+        for seed in 0..64i32 {
+            let mut state = state_with_draw_cards(
+                &[
+                    crate::cards::CardId::IAmInvincible,
+                    crate::cards::CardId::StrikeIronclad,
+                    crate::cards::CardId::Anger,
+                ],
+                true,
+            );
+            state.run_rng.shuffle = crate::dotnet_rng::Rng::new(seed);
+            let before = state.run_rng.shuffle.counter();
+            auto_play_i_am_invincible_from_draw_top(&mut state);
+            assert_eq!(
+                state.run_rng.shuffle.counter(),
+                before + 1,
+                "seed {seed}: one peek read; the follow-up pop / re-peek read none"
+            );
+            let fired = !state.player.draw.contains(&cuid(1));
+            if fired {
+                assert!(state.player.pinned_top.is_empty(), "seed {seed}");
+                assert_eq!(state.player.draw.as_slice(), &[cuid(2), cuid(3)]);
+            } else {
+                let top = state.player.draw[0];
+                assert_ne!(top, cuid(1), "seed {seed}");
+                assert_eq!(state.player.pinned_top.as_slice(), &[top], "seed {seed}");
+                // The next draw takes exactly the peeked card, RNG-free.
+                let at = state.run_rng.shuffle.counter();
+                assert_eq!(
+                    cards::pop_next_card(&mut state.player, &mut state.run_rng.shuffle),
+                    top
+                );
+                assert_eq!(state.run_rng.shuffle.counter(), at, "seed {seed}");
+            }
+            outcomes.insert(fired);
+        }
+        assert_eq!(outcomes, std::collections::BTreeSet::from([false, true]));
+    }
+
+    /// Clairvoyant mode (every parity / fixture state) must be byte-identical
+    /// to the raw `draw.remove(0)` + `unpin` pop each consumer used to
+    /// hand-write: same card, same pile, no RNG read. Compared as WHOLE
+    /// states against a reference built from the legacy pop.
+    #[test]
+    fn clairvoyant_top_of_draw_consumers_are_byte_identical_to_the_legacy_pop() {
+        // A materialized (non-sorted) pile with a Headbutt-style pinned top.
+        let mk = |ids: &[crate::cards::CardId]| {
+            let mut s = state_with_draw_cards(ids, false);
+            s.player.draw.reverse();
+            let top = s.player.draw[0];
+            cards::pin_top(&mut s.player, top);
+            s
+        };
+        let legacy_pop = |s: &mut CombatState| {
+            let uid = s.player.draw.remove(0);
+            cards::unpin(&mut s.player, uid);
+            s.player.play.push(uid);
+            uid
+        };
+
+        // Havoc.
+        let mut new = mk(&mixed_draw_ids());
+        let mut old = new.clone();
+        assert!(auto_play_card_from_draw_top(&mut new, true));
+        let uid = legacy_pop(&mut old);
+        resolve_auto_played_card(&mut old, uid, true);
+        assert_eq!(new, old, "Havoc");
+
+        // Cascade for 2: collect both, then play in order.
+        let mut new = mk(&mixed_draw_ids());
+        let mut old = new.clone();
+        auto_play_n_from_draw_top(&mut new, 2, false);
+        let mut collected = Vec::new();
+        for _ in 0..2 {
+            let uid = legacy_pop(&mut old);
+            if let Some(c) = old.cards.get_mut(uid.0.get() as usize - 1) {
+                c.set_combat_var(crate::cards::VarKey::PendingBatchAutoPlay, 1);
+            }
+            collected.push(uid);
+        }
+        for uid in collected {
+            resolve_auto_played_card(&mut old, uid, false);
+        }
+        assert_eq!(new, old, "Cascade");
+
+        // I Am Invincible on top plays; the next card is not one, so it stops.
+        let mut new = mk(&[
+            crate::cards::CardId::Anger,
+            crate::cards::CardId::StrikeIronclad,
+            crate::cards::CardId::IAmInvincible,
+        ]);
+        let mut old = new.clone();
+        auto_play_i_am_invincible_from_draw_top(&mut new);
+        let uid = legacy_pop(&mut old);
+        resolve_auto_played_card(&mut old, uid, false);
+        assert_eq!(new, old, "I Am Invincible on top");
+
+        // I Am Invincible below the top: the peek reads draw[0] and stops.
+        let mut new = mk(&[
+            crate::cards::CardId::Anger,
+            crate::cards::CardId::IAmInvincible,
+            crate::cards::CardId::StrikeIronclad,
+        ]);
+        let old = new.clone();
+        auto_play_i_am_invincible_from_draw_top(&mut new);
+        assert_eq!(new, old, "I Am Invincible below the top");
+    }
+
+    // ── I Am Invincible: #860's BeliefDraw peek on #894's AutoPostPlay loop ──
+    //
+    // #894 moved the rider to `AfterAutoPostPlayPhaseEntered` (the first step
+    // of C# `EndPlayerTurnPhaseOneInternal`, CombatManager.cs:1168-1170) as a
+    // per-copy listener-snapshot loop (IAmInvincible.cs:29-39 over
+    // Hook.cs:1054-1067). #860 made "is the top an I Am Invincible?" a
+    // BeliefDraw chance event that pins the sampled top. The tests below pin
+    // the merge: clairvoyant play is #894's loop exactly, BeliefDraw asks the
+    // unknown-middle copies top-down as C# does, and a sampled miss never
+    // outlives the call site.
+
+    /// The #894 rider body verbatim (472df7fd2,
+    /// `auto_play_i_am_invincible_from_draw_top`): the reference the
+    /// clairvoyant path must reproduce byte for byte.
+    fn i_am_invincible_rider_894(state: &mut CombatState) {
+        let listeners: SmallVec<[CardUid; 4]> = state
+            .player
+            .hand
+            .iter()
+            .chain(state.player.draw.iter())
+            .chain(state.player.discard.iter())
+            .chain(state.player.exhaust.iter())
+            .chain(state.player.play.iter())
+            .copied()
+            .filter(|uid| {
+                let idx = uid.0.get() as usize - 1;
+                state
+                    .cards
+                    .get(idx)
+                    .is_some_and(|c| c.card_id == cards::CardId::IAmInvincible)
+            })
+            .collect();
+        for uid in listeners {
+            if state.is_over {
+                return;
+            }
+            if state.player.draw.first() != Some(&uid) {
+                continue;
+            }
+            state.player.draw.remove(0);
+            cards::unpin(&mut state.player, uid);
+            state.player.play.push(uid);
+            resolve_auto_played_card(state, uid, false);
+            if !state.is_over {
+                check_for_empty_hand(state);
+            }
+        }
+    }
+
+    /// Outside BeliefDraw (clairvoyant search, real-deck play, parity) the
+    /// merged rider is #894's loop: same whole state, no RNG read, nothing
+    /// handed back to drop. Covers a lone copy, stacked copies, a copy under a
+    /// non-copy, copies in hand / discard / exhaust next to one on top, a
+    /// Headbutt-pinned copy, and an empty draw pile.
+    #[test]
+    fn i_am_invincible_clairvoyant_rider_is_the_894_loop() {
+        use crate::cards::CardId::{Anger, IAmInvincible, StrikeIronclad};
+        // (name, draw ids in physical order = uid order, uids moved to hand,
+        // uids moved to discard, uids moved to exhaust, pin uid 1 on top)
+        let cases: [(
+            &str,
+            Vec<crate::cards::CardId>,
+            &[u32],
+            &[u32],
+            &[u32],
+            bool,
+        ); 7] = [
+            (
+                "lone copy on top",
+                vec![IAmInvincible, StrikeIronclad, Anger],
+                &[],
+                &[],
+                &[],
+                false,
+            ),
+            (
+                "two stacked copies",
+                vec![IAmInvincible, IAmInvincible, StrikeIronclad],
+                &[],
+                &[],
+                &[],
+                false,
+            ),
+            (
+                "copy under a non-copy",
+                vec![StrikeIronclad, IAmInvincible, Anger],
+                &[],
+                &[],
+                &[],
+                false,
+            ),
+            (
+                "copy, non-copy, copy",
+                vec![IAmInvincible, StrikeIronclad, IAmInvincible],
+                &[],
+                &[],
+                &[],
+                false,
+            ),
+            (
+                "copies in hand, discard and exhaust",
+                vec![
+                    IAmInvincible,
+                    StrikeIronclad,
+                    IAmInvincible,
+                    IAmInvincible,
+                    IAmInvincible,
+                    Anger,
+                ],
+                &[3],
+                &[4],
+                &[5],
+                false,
+            ),
+            (
+                "pinned copy over a copy",
+                vec![IAmInvincible, IAmInvincible, Anger],
+                &[],
+                &[],
+                &[],
+                true,
+            ),
+            (
+                "empty draw pile",
+                vec![IAmInvincible],
+                &[],
+                &[1],
+                &[],
+                false,
+            ),
+        ];
+        for (what, ids, hand, discard, exhaust, pin) in cases {
+            let mut new = state_with_draw_cards(&ids, false);
+            for (pile, uids) in [(0, hand), (1, discard), (2, exhaust)] {
+                for &n in uids {
+                    new.player.draw.retain(|u| *u != cuid(n));
+                    match pile {
+                        0 => new.player.hand.push(cuid(n)),
+                        1 => new.player.discard.push(cuid(n)),
+                        _ => new.player.exhaust.push(cuid(n)),
+                    }
+                }
+            }
+            if pin {
+                cards::pin_top(&mut new.player, cuid(1));
+            }
+            let mut old = new.clone();
+            let fp = new.run_rng.combat_counter_fingerprint();
+            let sampled = auto_play_i_am_invincible_from_draw_top(&mut new);
+            i_am_invincible_rider_894(&mut old);
+            assert_eq!(sampled, None, "{what}: nothing to drop outside BeliefDraw");
+            assert_eq!(new, old, "{what}: the merged rider is #894's loop");
+            assert_eq!(
+                new.run_rng.combat_counter_fingerprint(),
+                fp,
+                "{what}: no RNG read"
+            );
+        }
+    }
+
+    /// The copies in the unknown middle are asked top-down, as the C#
+    /// listener snapshot asks the draw pile (physical order), not in uid
+    /// order. The discriminating outcome: the HIGHER-uid copy is on top and
+    /// plays, then the lower-uid copy is the next top and plays too. A
+    /// uid-ordered per-copy loop asks the lower uid first, gets "not me", and
+    /// can never produce that order. Each uncertain top is one shuffle read;
+    /// a known top (a one-card middle) reads none.
+    #[test]
+    fn i_am_invincible_belief_draw_walks_unknown_middle_copies_top_down() {
+        use crate::cards::CardId::{Anger, IAmInvincible};
+        let mut orders = std::collections::BTreeSet::new();
+        for seed in 0..128i32 {
+            let mut state = state_with_draw_cards(&[IAmInvincible, IAmInvincible, Anger], true);
+            state.run_rng.shuffle = crate::dotnet_rng::Rng::new(seed);
+            let before = state.run_rng.shuffle.counter();
+            let sampled = auto_play_i_am_invincible_from_draw_top(&mut state);
+            let played: Vec<u32> = state
+                .player
+                .discard
+                .iter()
+                .map(|u| u.get())
+                .filter(|&n| n <= 2)
+                .collect();
+            for n in [1u32, 2] {
+                assert_eq!(
+                    played.contains(&n),
+                    !state.player.draw.contains(&cuid(n)),
+                    "seed {seed}: copy {n} left the draw pile iff it played"
+                );
+            }
+            // Reads: one per sampled top. With both copies played the last
+            // top (a one-card middle) is known.
+            let reads = state.run_rng.shuffle.counter() - before;
+            let expected_reads = match played.len() {
+                0 | 1 => played.len() + 1,
+                _ => 2,
+            };
+            assert_eq!(reads as usize, expected_reads, "seed {seed}: {played:?}");
+            // A miss after a sample hands back the sampled, pinned top.
+            if played.len() < 2 {
+                let top = state.player.draw[0];
+                assert_eq!(sampled, Some(top), "seed {seed}");
+                assert_eq!(state.player.pinned_top.as_slice(), &[top], "seed {seed}");
+            } else {
+                assert_eq!(sampled, None, "seed {seed}: the last top was known");
+                assert!(state.player.pinned_top.is_empty(), "seed {seed}");
+            }
+            orders.insert(played);
+        }
+        assert!(
+            orders.contains(&vec![2, 1]),
+            "the higher-uid copy on top, then the lower-uid copy beneath it: {orders:?}"
+        );
+        for o in [vec![], vec![1], vec![2], vec![1, 2]] {
+            assert!(orders.contains(&o), "{o:?} reachable: {orders:?}");
+        }
+    }
+
+    /// An end-of-turn state with `ids` as a canonical (BeliefDraw) draw pile,
+    /// uids 1..=n, an empty hand, a live enemy, in the play phase.
+    fn belief_draw_end_turn_state(ids: &[crate::cards::CardId]) -> CombatState {
+        let mut state = state_for_end_turn_phase_one(0);
+        let draw_only = state_with_draw_cards(ids, true);
+        state.cards = draw_only.cards;
+        state.player.draw = draw_only.player.draw;
+        state.player.deferred_draw_order = true;
+        state
+    }
+
+    /// The honesty half of the merge. #894 runs the rider ahead of
+    /// `BeforeTurnEnd`, `DoTurnEnd`, `BeforeFlush` and the enemy turn, each of
+    /// which can surface a choice; a sampled miss left pinned there would show
+    /// a decision node the hidden top card. Control: the bare rider does leave
+    /// the sampled card pinned, and which card it is depends on the shuffle
+    /// stream (the leak). Through the real call site the pin is gone: after
+    /// phase one every miss is ONE state (the canonical pile, no pin), and so
+    /// is every hit — whatever card was sampled on top.
+    #[test]
+    fn i_am_invincible_belief_draw_miss_is_dropped_before_the_turn_end_chain() {
+        use crate::cards::CardId::{Anger, DefendIronclad, IAmInvincible, StrikeIronclad};
+        let ids = [IAmInvincible, StrikeIronclad, Anger, DefendIronclad];
+        let mut leaked = std::collections::BTreeSet::new();
+        let mut by_outcome: [Option<CombatState>; 2] = [None, None];
+        for seed in 0..64i32 {
+            let mut bare = belief_draw_end_turn_state(&ids);
+            bare.run_rng.shuffle = crate::dotnet_rng::Rng::new(seed);
+            if let Some(pin) = auto_play_i_am_invincible_from_draw_top(&mut bare) {
+                assert_eq!(bare.player.pinned_top.as_slice(), &[pin], "seed {seed}");
+                leaked.insert(pin.get());
+            }
+
+            let mut state = belief_draw_end_turn_state(&ids);
+            state.run_rng.shuffle = crate::dotnet_rng::Rng::new(seed);
+            assert_eq!(end_player_turn_phase_one(&mut state), StepResult::Advanced);
+            let fired = !state.player.draw.contains(&cuid(1));
+            assert!(
+                state.player.pinned_top.is_empty(),
+                "seed {seed}: no pin survives"
+            );
+            let expected: Vec<CardUid> = (if fired { 2..=4 } else { 1..=4 }).map(cuid).collect();
+            assert_eq!(
+                state.player.draw.to_vec(),
+                expected,
+                "seed {seed}: canonical pile"
+            );
+            // Only the RNG cursor may differ between outcomes of one kind.
+            state.run_rng.shuffle = crate::dotnet_rng::Rng::new(0);
+            let i = usize::from(fired);
+            if let Some(first) = &by_outcome[i] {
+                assert_eq!(&state, first, "seed {seed}: fired={fired}");
+            } else {
+                by_outcome[i] = Some(state);
+            }
+        }
+        assert!(
+            leaked.len() >= 2,
+            "control: the bare rider pins a hidden top that varies: {leaked:?}"
+        );
+        assert!(
+            by_outcome.iter().all(Option::is_some),
+            "both the hit and the miss were reached"
+        );
     }
 
     /// Combat-log placeholder is reset on entry. At this pin

@@ -20,6 +20,8 @@ use rand::Rng;
 use sts2_core::cards::CardId;
 use sts2_core::{Action, CharacterId, CombatState};
 
+pub use crate::enemy_eval::IncomingDamage;
+
 /// Default priority for cards we haven't classified. Mid-bucket — same
 /// neighborhood as Iron Wave / Sentinel in the C++ table.
 pub const NEUTRAL_PRIORITY: i16 = 50;
@@ -1282,7 +1284,7 @@ pub fn pick_action_heuristic<R: Rng>(
     // incoming-damage sum + effective HP once per state so the HP-aware
     // priority bump (Defend↑/Strike↓ when effective_hp <= incoming) is
     // O(actions × 1) instead of O(actions × creatures) per call.
-    let ctx = HpAwareCtx::compute(state);
+    let ctx = HpAwareCtx::compute(state, IncomingDamage::Base);
     let priorities: smallvec::SmallVec<[i16; 16]> = actions
         .iter()
         .map(|a| action_priority(state, a, &ctx))
@@ -1415,10 +1417,31 @@ pub fn pick_rollout_action_with<R: Rng>(
     actions: &[Action],
     end_turn_priority: i16,
 ) -> usize {
-    pick_rollout_action_by(rng, state, actions, end_turn_priority, |id, ch| {
-        let base = play_ordering(id, ch);
-        (base, base != NEUTRAL_PRIORITY)
-    })
+    pick_rollout_action_incoming(rng, state, actions, end_turn_priority, IncomingDamage::Base)
+}
+
+/// [`pick_rollout_action_with`] reading the enemies' telegraphed attacks
+/// the `incoming` way ([`crate::MctsConfig::effective_incoming`]): it moves
+/// the HP-aware arms (lethal turn, sustained pressure, the graded Defend
+/// bonus). At [`IncomingDamage::Base`] it is [`pick_rollout_action_with`].
+pub fn pick_rollout_action_incoming<R: Rng>(
+    rng: &mut R,
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+    incoming: IncomingDamage,
+) -> usize {
+    pick_rollout_action_by(
+        rng,
+        state,
+        actions,
+        end_turn_priority,
+        incoming,
+        |id, ch| {
+            let base = play_ordering(id, ch);
+            (base, base != NEUTRAL_PRIORITY)
+        },
+    )
 }
 
 /// [`pick_rollout_action_with`] reading card base priorities from a fitted
@@ -1439,15 +1462,42 @@ pub fn pick_rollout_action_learned<R: Rng>(
     end_turn_priority: i16,
     table: &LearnedPriorities,
 ) -> usize {
-    pick_rollout_action_by(rng, state, actions, end_turn_priority, |id, ch| {
-        table.base(id, ch).map_or_else(
-            || {
-                let base = play_ordering(id, ch);
-                (base, base != NEUTRAL_PRIORITY)
-            },
-            |p| (p, true),
-        )
-    })
+    pick_rollout_action_learned_incoming(
+        rng,
+        state,
+        actions,
+        end_turn_priority,
+        table,
+        IncomingDamage::Base,
+    )
+}
+
+/// [`pick_rollout_action_learned`] reading telegraphed attacks the
+/// `incoming` way (see [`pick_rollout_action_incoming`]).
+pub fn pick_rollout_action_learned_incoming<R: Rng>(
+    rng: &mut R,
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+    table: &LearnedPriorities,
+    incoming: IncomingDamage,
+) -> usize {
+    pick_rollout_action_by(
+        rng,
+        state,
+        actions,
+        end_turn_priority,
+        incoming,
+        |id, ch| {
+            table.base(id, ch).map_or_else(
+                || {
+                    let base = play_ordering(id, ch);
+                    (base, base != NEUTRAL_PRIORITY)
+                },
+                |p| (p, true),
+            )
+        },
+    )
 }
 
 /// Shared body of the two rollout pickers. `base_of` returns a card's base
@@ -1457,6 +1507,7 @@ fn pick_rollout_action_by<R: Rng>(
     state: &CombatState,
     actions: &[Action],
     end_turn_priority: i16,
+    incoming: IncomingDamage,
     base_of: impl Fn(CardId, Option<CharacterId>) -> (i16, bool),
 ) -> usize {
     assert!(!actions.is_empty(), "pick_rollout_action: empty actions");
@@ -1520,7 +1571,7 @@ fn pick_rollout_action_by<R: Rng>(
     if let Some(idx) = obvious_kill_action(state, actions) {
         return idx;
     }
-    let ctx = HpAwareCtx::compute(state);
+    let ctx = HpAwareCtx::compute(state, incoming);
     let priorities: smallvec::SmallVec<[i16; 16]> = slots
         .iter()
         .map(|s| match s {
@@ -1543,7 +1594,19 @@ pub fn heuristic_priorities(
     actions: &[Action],
     end_turn_priority: i16,
 ) -> smallvec::SmallVec<[i16; 16]> {
-    let ctx = HpAwareCtx::compute(state);
+    heuristic_priorities_with(state, actions, end_turn_priority, IncomingDamage::Base)
+}
+
+/// [`heuristic_priorities`] reading telegraphed attacks the `incoming` way
+/// (the playout net's v3 features use [`IncomingDamage::Effective`]).
+#[must_use]
+pub fn heuristic_priorities_with(
+    state: &CombatState,
+    actions: &[Action],
+    end_turn_priority: i16,
+    incoming: IncomingDamage,
+) -> smallvec::SmallVec<[i16; 16]> {
+    let ctx = HpAwareCtx::compute(state, incoming);
     actions
         .iter()
         .map(|a| match a {
@@ -1705,7 +1768,7 @@ pub fn rollout_pricing(
     actions: &[Action],
     end_turn_priority: i16,
 ) -> RolloutPricing {
-    let ctx = HpAwareCtx::compute(state);
+    let ctx = HpAwareCtx::compute(state, IncomingDamage::Base);
     let character = state.player.character;
     let mut play_cards = 0u32;
     let mut covered = 0u32;
@@ -1809,7 +1872,9 @@ struct HpAwareCtx {
 }
 
 impl HpAwareCtx {
-    fn compute(state: &CombatState) -> Self {
+    /// `incoming` picks how a telegraphed attack is read (the base move-table
+    /// number, or the displayed one).
+    fn compute(state: &CombatState, incoming_damage: IncomingDamage) -> Self {
         // Single fused pass over the enemy list (perf-investigation
         // 2026-07-04). `compute` runs once per rollout step / selection
         // descent — the hottest cadence in the search — and the four
@@ -1817,10 +1882,9 @@ impl HpAwareCtx {
         // creature `find` per uid. One walk computes identical results
         // in the same iteration order:
         //
-        //   * `incoming` — telegraphed enemy attack damage this turn.
-        //     Per Intent::damage / hits semantics, non-attack intents
-        //     return damage=0, hits=1 — the multiplication still zeros
-        //     out, so no branch is needed.
+        //   * `incoming` — telegraphed enemy attack damage this turn,
+        //     read the `incoming_damage` way (base move-table number or
+        //     the displayed one); non-attack intents count 0.
         //   * `enemy_hp_sum` — HP sum over ALL resolved enemies (dead
         //     ones contribute 0 via `.max(0)`, matching the original
         //     unfiltered scan).
@@ -1843,9 +1907,7 @@ impl HpAwareCtx {
             };
             enemy_hp_sum += c.current_hp.max(0);
             if c.current_hp > 0 {
-                if let Some(i) = c.intent {
-                    incoming += i.damage().saturating_mul(i32::from(i.hits()));
-                }
+                incoming += incoming_damage.total(state, c);
                 any_alive = true;
                 if c.current_hp < smallest_alive_hp {
                     smallest_alive_hp = c.current_hp;
@@ -3681,7 +3743,7 @@ mod tests {
         state.creatures.push(enemy);
         state.enemy_uids = smallvec![CreatureUid(NonZeroU32::new(100).unwrap())];
 
-        let ctx = HpAwareCtx::compute(&state);
+        let ctx = HpAwareCtx::compute(&state, IncomingDamage::Base);
         assert_eq!(ctx.defend_threat_bonus, 0);
 
         let defend = make_block_card(1, CardId::DefendIronclad, 5, 1);
@@ -3787,7 +3849,7 @@ mod tests {
             enemy.intent = Some(Intent::Attack { damage: 24 });
             state.creatures.push(enemy);
             state.enemy_uids = smallvec![CreatureUid(NonZeroU32::new(100).unwrap())];
-            HpAwareCtx::compute(&state).defend_threat_bonus
+            HpAwareCtx::compute(&state, IncomingDamage::Base).defend_threat_bonus
         };
 
         let naked = bonus_at(0);
@@ -3813,7 +3875,10 @@ mod tests {
         quiet.player.max_hp = 80;
         quiet.creatures.push(make_enemy(100, 200));
         quiet.enemy_uids = smallvec![CreatureUid(NonZeroU32::new(100).unwrap())];
-        assert_eq!(HpAwareCtx::compute(&quiet).defend_threat_bonus, 0);
+        assert_eq!(
+            HpAwareCtx::compute(&quiet, IncomingDamage::Base).defend_threat_bonus,
+            0
+        );
     }
 
     fn make_enemy(uid_value: u32, hp: i32) -> sts2_core::Creature {

@@ -8,6 +8,7 @@ import Hand from "./Hand";
 import PileViewer from "./PileViewer";
 import PotionTray from "./PotionTray";
 import { isTextInput } from "../keys";
+import { enemyLabeller } from "../enemyLabels";
 import { stageFraming, stageZoom } from "../stageZoom";
 import { rigBox } from "../rigBounds";
 import {
@@ -34,6 +35,7 @@ import type { EffectEvent, TargetRef } from "../effects/types";
 import VfxLayer from "./VfxLayer";
 import { useSound } from "../sound/SoundContext";
 import { loadSfxMap } from "../sound/sfxMap";
+import { declaredGameVersion } from "../gameVersion";
 import { powerValenceLookup, type PowerValence } from "../sound/powerValence";
 import {
   SHAKE_DURATION,
@@ -323,9 +325,17 @@ export default function Board({
   const bgSeed = step.meta?.bg_seed;
   const bgRow = step.meta?.bg_row;
   const bgCol = step.meta?.bg_col;
+  // A seed past 2^53 arrives as a decimal string (GH #878), so it is exact.
+  const seedOk =
+    typeof bgSeed === "number" || (typeof bgSeed === "string" && /^\d+$/.test(bgSeed));
   const bgRoll =
-    typeof bgSeed === "number" && typeof bgRow === "number" && typeof bgCol === "number"
-      ? { seed: bgSeed, row: bgRow, col: bgCol }
+    seedOk && typeof bgRow === "number" && typeof bgCol === "number"
+      ? {
+          seed: bgSeed,
+          row: bgRow,
+          col: bgCol,
+          gameVersion: declaredGameVersion(step),
+        }
       : null;
   const room = resolveScene(roomScene, step.meta?.act, step.meta?.floor, bgRoll);
   // The whole fight, not just its room: the rigs of everyone on stage and the
@@ -641,16 +651,19 @@ export default function Board({
   // `cached` promise), so this shares the one fetch with `SoundContext`
   // rather than doubling it.
   const powerValenceRef = useRef<ReturnType<typeof powerValenceLookup>>(powerValenceLookup(null));
+  // The shown run's own build's table (GH #877): a power new in a later
+  // build is classified by that build's map.
+  const sfxVersion = declaredGameVersion(step);
   useEffect(() => {
     let live = true;
-    loadSfxMap()
+    loadSfxMap(fetch, sfxVersion)
       .then((map) => { if (live) powerValenceRef.current = powerValenceLookup(map); })
       // Additive, like `manifest`/`bindings` above: an unclassified power (or
       // a map that never loads) just takes `powerPopKind`'s fallback rather
       // than the panel failing to render at all.
       .catch(() => {});
     return () => { live = false; };
-  }, []);
+  }, [sfxVersion]);
 
   /** The board root — the whole-screen shake's target, and the positioned
    *  ancestor every absolute child in this file measures against. */
@@ -1384,6 +1397,10 @@ export default function Board({
     })),
   });
 
+  // The nameplate label: a name shared by several live enemies carries its
+  // " #k" — the same numbering every action label uses ("Strike → Rat #2").
+  const labelOf = enemyLabeller(enemies);
+
   // Build a CrabArm descriptor (the same per-enemy render info a
   // <Combatant> gets, plus its shared-rig `part`) for one enemy.
   const armOf = (d: typeof displayEnemies[number]): CrabArm => {
@@ -1400,6 +1417,8 @@ export default function Board({
     const dissolveFx = dissolveEffectFor(e);
     return {
       c: e, part: e.rig_part ?? "left", dataIndex: e.index,
+      // Numbered over the LIVE list only — a dying corpse keeps its plain name.
+      label: liveIdx >= 0 ? labelOf(e.index) : undefined,
       hotkey: !isDying && onPlayCard && pendingCard != null && liveIdx >= 0 && liveIdx < 9 ? liveIdx + 1 : undefined,
       onClick: !isDying && onPlayCard && pendingCard != null ? () => clickEnemy(e.index) : undefined,
       onHoverChange: !isDying && onPlayCard ? (h: boolean) => setHoverEnemy(h ? e.index : null) : undefined,
@@ -1940,7 +1959,7 @@ export default function Board({
           return (
             <div key={`${enemyKey(e)}-${isDying ? "d" : "l"}`} className="gs-side"
               style={slotStyle(slot, spriteBodyH(e, true), 1)}>
-              <Combatant c={e} isEnemy dataIndex={e.index} pxPerScene={actorScale}
+              <Combatant c={e} isEnemy dataIndex={e.index} pxPerScene={actorScale} label={a.label}
                 hotkey={a.hotkey} onClick={a.onClick} onHoverChange={a.onHoverChange}
                 animation={a.animation} actionAnim={a.actionAnim}
                 actionAnimCandidates={a.actionAnimCandidates} holdLast={a.holdLast}

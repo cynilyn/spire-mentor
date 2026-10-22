@@ -1247,6 +1247,72 @@ mod tests {
         );
     }
 
+    /// GH #858 on the run path: a run at A8+ enters combat with the
+    /// ToughEnemies / DeadlyEnemies `AfterAddedToRoom` amounts. C#
+    /// `TerrorEel.cs:39` Shriek (ToughEnemies, 75, 70), `FrogKnight.cs:43`
+    /// Plating (.., 19, 15), `InfestedPrism.cs:40` VitalSpark
+    /// (DeadlyEnemies, 3, 2). FrogKnight's Plating also sets its round-1
+    /// opening block (`PlatingPower.cs:41-56`), so the block moves with it.
+    #[test]
+    fn enter_combat_from_roster_scales_on_spawn_powers_858() {
+        use sts2_core::powers::PowerKind;
+
+        fn enemy_power(state: &CombatState, power: PowerKind) -> i32 {
+            let uid = state.enemy_uids[0];
+            let c = state.creatures.iter().find(|c| c.id == uid.0).unwrap();
+            c.powers
+                .iter()
+                .filter_map(|pu| state.powers.get_by_id(pu.0))
+                .filter(|p| p.kind == power)
+                .map(|p| p.amount)
+                .sum()
+        }
+
+        let cases: [(MonsterKind, i32, PowerKind, [i32; 3]); 3] = [
+            (MonsterKind::TerrorEel, 150, PowerKind::Shriek, [70, 75, 75]),
+            (
+                MonsterKind::FrogKnight,
+                199,
+                PowerKind::Plating,
+                [15, 19, 19],
+            ),
+            (
+                MonsterKind::InfestedPrism,
+                171,
+                PowerKind::VitalSpark,
+                [2, 2, 3],
+            ),
+        ];
+        for (kind, hp, power, wants) in cases {
+            for (asc, want) in [7u8, 8, 10].into_iter().zip(wants) {
+                let rs = RunState {
+                    ascension_level: asc,
+                    ..fresh_run()
+                };
+                let state = enter_combat_from_roster(
+                    &rs,
+                    &[(kind, MonsterSpawnArgs::None, hp)],
+                    sts2_core::runstate::RoomType::Monster,
+                );
+                assert_eq!(
+                    enemy_power(&state, power),
+                    want,
+                    "{kind:?} {power:?} at A{asc}"
+                );
+                if kind == MonsterKind::FrogKnight {
+                    let uid = state.enemy_uids[0];
+                    let block = state
+                        .creatures
+                        .iter()
+                        .find(|c| c.id == uid.0)
+                        .unwrap()
+                        .block;
+                    assert_eq!(block, want, "FrogKnight opening block at A{asc}");
+                }
+            }
+        }
+    }
+
     /// Room-type flags are plumbed onto the combat from the entering room's
     /// `RoomType`. `is_elite`/`is_boss` are set at combat setup (before the
     /// opening draw) so round-1 draw modifiers like BoomingConch's elite +2

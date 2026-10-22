@@ -1,3 +1,4 @@
+import { gameVersionBody } from "../gameVersion";
 import { useMemo, type ReactNode } from "react";
 import Menu, { type MenuItemSpec } from "./Menu";
 import CommandPalette, { type PaletteEntry } from "./CommandPalette";
@@ -58,6 +59,9 @@ export interface TopBarProps {
 
   tools: {
     simlabLink: boolean;
+    /** The shown run's game build (GH #877): the synergy catalog opens with
+     *  that build's card text. Absent / the default = the default build. */
+    gameVersion?: string | null;
     debug: { on: boolean; toggle: () => void };
     onHelp: () => void;
     /** Browser build only: the "Live game…" connection dialog (GH #709). */
@@ -94,6 +98,13 @@ export function runMenuItems(cmds: Command[]): (MenuItemSpec | null)[] {
   return danger.length ? [...safe, null, ...danger] : safe;
 }
 
+/** The synergy catalog's URL for game build `v` (`?game_version=` only for a
+ *  non-default build, read by `catalog/main.ts`). */
+function catalogHref(v: string | null | undefined): string {
+  const q = gameVersionBody(v).game_version;
+  return q ? `/catalog.html?game_version=${encodeURIComponent(q)}` : "/catalog.html";
+}
+
 export default function TopBar(p: TopBarProps) {
   const runItems = useMemo(() => runMenuItems(p.commands), [p.commands]);
   const analyzeItems = useMemo(
@@ -107,7 +118,7 @@ export default function TopBar(p: TopBarProps) {
       ? [{ id: "simlab", label: "🧪 SimLab ↗", href: "/simlab.html",
           title: "SimLab — batch combat statistics (opens in a new tab so your run isn't disturbed)" }]
       : []),
-    { id: "synergies", label: "⚡ Synergies ↗", href: "/catalog.html",
+    { id: "synergies", label: "⚡ Synergies ↗", href: catalogHref(p.tools.gameVersion),
       title: "Card Synergy Catalog — pair synergies per character (opens in a new tab so your run isn't disturbed)" },
     ...(p.tools.onBridge
       ? [{ id: "bridge", onSelect: p.tools.onBridge,
@@ -148,12 +159,12 @@ export default function TopBar(p: TopBarProps) {
         disabledReason: c.busy ? "in progress" : c.disabledReason, run: c.run });
     }
     if (p.tools.simlabLink) out.push({ id: "simlab", group: "Tools", label: "🧪 SimLab ↗", run: () => window.open("/simlab.html", "_blank", "noopener") });
-    out.push({ id: "synergies", group: "Tools", label: "⚡ Synergies ↗", run: () => window.open("/catalog.html", "_blank", "noopener") });
+    out.push({ id: "synergies", group: "Tools", label: "⚡ Synergies ↗", run: () => window.open(catalogHref(p.tools.gameVersion), "_blank", "noopener") });
     out.push({ id: "debug", group: "Tools", label: "🐞 debug log", checked: p.tools.debug.on, run: p.tools.debug.toggle });
     out.push({ id: "help", group: "Tools", label: "keyboard shortcuts", shortcut: "?", run: p.tools.onHelp });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.mode, p.showViewToggle, p.replayCount, p.chips.hints, p.chips.autobattle, p.commands, p.tools.simlabLink, p.tools.debug.on]);
+  }, [p.mode, p.showViewToggle, p.replayCount, p.chips.hints, p.chips.autobattle, p.commands, p.tools.simlabLink, p.tools.debug.on, p.tools.gameVersion]);
 
   const chip = (id: string, c: Chip | undefined, off: string, on: string) => c && (
     <button key={id} onClick={c.toggle} aria-pressed={c.on} title={c.title}

@@ -54,7 +54,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from combat_mirror import CombatMirror, MirrorDivergence, MirrorPolicy
-from realgame_adapter import character_display_name, to_headless_combat_play
+from realgame_adapter import character_display_name, run_ascension, to_headless_combat_play
 from sts2_hint.recommender import RecommendConfig
 
 logger = logging.getLogger(__name__)
@@ -1395,7 +1395,7 @@ class AdvisorMirror:
                 character=character,
                 combat_id=cfg.combat_id,
                 seed=cfg.seed,
-                ascension=cfg.ascension,
+                ascension=run_ascension(run_state, cfg.ascension),
             )
             # Park the engine on its OWN choice first, so `inject_choice` carries
             # the `post_effect` forward (Burning Pact's Draw 2, Brand's Strength).

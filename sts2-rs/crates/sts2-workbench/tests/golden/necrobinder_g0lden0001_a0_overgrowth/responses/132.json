@@ -82,7 +82,7 @@
   },
   {
    "act": 1,
-   "best_label": "Strike",
+   "best_label": "Ultimate Strike",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -91,8 +91,8 @@
    "hp_drop": null,
    "idx": 7,
    "is_blunder": false,
-   "matched_best": true,
-   "message": "Turn 2: Strike matched the MCTS line (P(win) 100%)",
+   "matched_best": false,
+   "message": "Turn 2: Strike instead of Ultimate Strike dropped P(win) 100%→100% (−0 pts)",
    "n_actions": 3,
    "node_id": 7,
    "played_label": "Strike",
@@ -102,12 +102,12 @@
    "regret": 0.0,
    "severity": 0.0,
    "turn": 2,
-   "verdict": "best",
+   "verdict": "uncertain",
    "visits": 8
   },
   {
    "act": 1,
-   "best_label": "Strike",
+   "best_label": "Ultimate Strike",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -116,8 +116,8 @@
    "hp_drop": null,
    "idx": 8,
    "is_blunder": false,
-   "matched_best": false,
-   "message": "Turn 2: Ultimate Strike instead of Strike dropped P(win) 100%→100% (−0 pts)",
+   "matched_best": true,
+   "message": "Turn 2: Ultimate Strike matched the MCTS line (P(win) 100%)",
    "n_actions": 3,
    "node_id": 8,
    "played_label": "Ultimate Strike",
@@ -127,7 +127,7 @@
    "regret": 0.0,
    "severity": 0.0,
    "turn": 2,
-   "verdict": "uncertain",
+   "verdict": "best",
    "visits": 8
   },
   {
@@ -632,7 +632,7 @@
   },
   {
    "act": 1,
-   "best_label": "Defend",
+   "best_label": "Defy",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -642,7 +642,7 @@
    "idx": 41,
    "is_blunder": false,
    "matched_best": false,
-   "message": "Turn 1: Strike instead of Defend dropped P(win) 100%→100% (−0 pts)",
+   "message": "Turn 1: Strike instead of Defy dropped P(win) 100%→100% (−0 pts)",
    "n_actions": 5,
    "node_id": 41,
    "played_label": "Strike",
@@ -757,7 +757,7 @@
   },
   {
    "act": 1,
-   "best_label": "Sow",
+   "best_label": "Unleash",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -767,7 +767,7 @@
    "idx": 47,
    "is_blunder": false,
    "matched_best": false,
-   "message": "Turn 2: Strike instead of Sow dropped P(win) 100%→100% (−0 pts)",
+   "message": "Turn 2: Strike instead of Unleash dropped P(win) 100%→100% (−0 pts)",
    "n_actions": 4,
    "node_id": 47,
    "played_label": "Strike",
@@ -978,7 +978,7 @@
    "severity": 0.0,
    "turn": 1,
    "verdict": "uncertain",
-   "visits": 5
+   "visits": 4
   },
   {
    "act": 1,
@@ -1003,7 +1003,7 @@
    "severity": 0.0,
    "turn": 1,
    "verdict": "best",
-   "visits": 7
+   "visits": 6
   },
   {
    "act": 1,
@@ -1032,7 +1032,7 @@
   },
   {
    "act": 1,
-   "best_label": "Defy",
+   "best_label": "Unleash",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -1042,7 +1042,7 @@
    "idx": 66,
    "is_blunder": false,
    "matched_best": false,
-   "message": "Turn 2: Defend instead of Defy dropped P(win) 100%→100% (−0 pts)",
+   "message": "Turn 2: Defend instead of Unleash dropped P(win) 100%→100% (−0 pts)",
    "n_actions": 6,
    "node_id": 66,
    "played_label": "Defend",
@@ -1057,7 +1057,7 @@
   },
   {
    "act": 1,
-   "best_label": "Sow",
+   "best_label": "Strike",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -1066,8 +1066,8 @@
    "hp_drop": null,
    "idx": 67,
    "is_blunder": false,
-   "matched_best": true,
-   "message": "Turn 2: Sow matched the MCTS line (P(win) 100%)",
+   "matched_best": false,
+   "message": "Turn 2: Sow instead of Strike dropped P(win) 100%→100% (−0 pts)",
    "n_actions": 5,
    "node_id": 67,
    "played_label": "Sow",
@@ -1077,7 +1077,7 @@
    "regret": 0.0,
    "severity": 0.0,
    "turn": 2,
-   "verdict": "best",
+   "verdict": "uncertain",
    "visits": 3
   },
   {
@@ -1132,7 +1132,7 @@
   },
   {
    "act": 1,
-   "best_label": "end turn",
+   "best_label": "Snap",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -1142,7 +1142,7 @@
    "idx": 71,
    "is_blunder": false,
    "matched_best": false,
-   "message": "Turn 3: Strike instead of end turn dropped P(win) 100%→100% (−0 pts)",
+   "message": "Turn 3: Strike instead of Snap dropped P(win) 100%→100% (−0 pts)",
    "n_actions": 4,
    "node_id": 71,
    "played_label": "Strike",
@@ -1207,7 +1207,7 @@
   },
   {
    "act": 1,
-   "best_label": "Defend",
+   "best_label": "Strike",
    "best_line": [],
    "best_mean_hp": null,
    "best_win_prob": 1.0,
@@ -1216,8 +1216,8 @@
    "hp_drop": null,
    "idx": 75,
    "is_blunder": false,
-   "matched_best": false,
-   "message": "Turn 4: Strike instead of Defend dropped P(win) 100%→100% (−0 pts)",
+   "matched_best": true,
+   "message": "Turn 4: Strike matched the MCTS line (P(win) 100%)",
    "n_actions": 4,
    "node_id": 75,
    "played_label": "Strike",
@@ -1227,7 +1227,7 @@
    "regret": 0.0,
    "severity": 0.0,
    "turn": 4,
-   "verdict": "uncertain",
+   "verdict": "best",
    "visits": 6
   },
   {

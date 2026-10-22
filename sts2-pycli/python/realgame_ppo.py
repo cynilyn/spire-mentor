@@ -830,11 +830,22 @@ def _veto_off_model_page(
     )
 
 
-#: The structured per-option deltas GH #237 put on the wire. All three must
-#: be present for ``ppo.encoder.structured_event_payload`` to use them; a
-#: partial set falls back to the description regex rather than letting an
-#: absent field read as a confident zero.
-_STRUCTURED_DELTA_KEYS = ("gold_delta", "hp_delta", "max_hp_delta")
+#: The structured per-option deltas GH #237 put on the wire. The first three
+#: must all be present for ``ppo.encoder.structured_event_payload`` to use
+#: them; a partial set falls back to the description regex rather than letting
+#: an absent field read as a confident zero. The non-gold, non-HP counts are
+#: read one by one (absent = 0), as in ``wire.rs``'s ``build_event``.
+_STRUCTURED_DELTA_KEYS = (
+    "gold_delta",
+    "hp_delta",
+    "max_hp_delta",
+    "relics_gained",
+    "relics_lost",
+    "potions_gained",
+    "potions_lost",
+    "cards_gained",
+    "cards_lost",
+)
 
 
 def _build_event(state: dict[str, Any]) -> PpoDecision | None:
@@ -842,7 +853,8 @@ def _build_event(state: dict[str, Any]) -> PpoDecision | None:
     boss_relic = _ancient_boss_relic_decision(state)
     if boss_relic is not None:
         return boss_relic
-    options = [o for o in (state.get("options") or []) if o.get("enabled", True)]
+    all_options = state.get("options") or []
+    options = [o for o in all_options if o.get("enabled", True)]
     if not options:
         return None
     run_state = state.get("run_state") or {}
@@ -894,6 +906,13 @@ def _build_event(state: dict[str, Any]) -> PpoDecision | None:
     # GH #487 off-model-page guard -- AFTER the lethal filter, deliberately
     # (see `_veto_off_model_page` on Trial's REJECT page).
     options, off_model_note = _veto_off_model_page(options)
+    # A disabled option keeps its slot, as in the engine's option list: the
+    # net reads an option by POSITION, so dropping one would shift every later
+    # option onto another's slot (the Fake Merchant's throw/leave, GH #873).
+    # It gets no action, and is never the pick.
+    kept = {id(o) for o in options}
+    options = [o for o in all_options if not o.get("enabled", True) or id(o) in kept]
+    choices = [i for i, o in enumerate(options) if o.get("enabled", True)]
     obs = _base_obs(state, run_state)
     event_id = next((o.get("event_id") for o in options if o.get("event_id")), "")
     obs["event_name"] = _resolve_event_name(options, str(event_id or ""))
@@ -913,16 +932,14 @@ def _build_event(state: dict[str, Any]) -> PpoDecision | None:
         }
         for o, label in zip(options, option_labels)
     ]
-    actions = [{"action": "event_choice", "idx": i} for i in range(len(options))]
-    responses = [
-        {"action": "choose", "index": int(o.get("index", i))} for i, o in enumerate(options)
-    ]
+    actions = [{"action": "event_choice", "idx": i} for i in choices]
+    responses = [{"action": "choose", "index": int(options[i].get("index", i))} for i in choices]
     return PpoDecision(
         obs,
         actions,
         _base_metrics(state, run_state),
         responses,
-        option_labels,
+        [option_labels[i] for i in choices],
         source_note=off_model_note,
     )
 

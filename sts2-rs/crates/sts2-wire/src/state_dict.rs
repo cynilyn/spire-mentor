@@ -41,7 +41,7 @@ use std::num::NonZeroU32;
 use smallvec::SmallVec;
 
 use sts2_content::monster_dispatch::{
-    build_ai, build_ai_for_version, MonsterSpawnArgs, SpawnPosition,
+    build_ai_for_version, build_ai_with_ascension, MonsterSpawnArgs, SpawnPosition,
 };
 use sts2_content::names::resolve_card_name;
 use sts2_core::cards::{Card, CardId, EnchantmentId, VarKey};
@@ -311,6 +311,12 @@ pub struct ParsedPlayer {
     pub relics: Vec<ParsedRelic>,
     pub powers: Vec<ParsedPower>,
     pub potions: Vec<Option<PotionKind>>,
+    /// Potion-belt capacity (C# `Player.MaxPotionCount`; 2 under A4 Tight
+    /// Belt). Optional: `potions` is not the slot count on every producer
+    /// (the Rust emitter lists filled slots only), so the capacity rides in
+    /// its own key. Absent → the engine's unset sentinel, as before the key
+    /// existed.
+    pub potion_slots: Option<u8>,
     pub orbs: Option<Vec<ParsedOrb>>,
     pub orb_slots: Option<u32>,
     pub stars: Option<i32>,
@@ -958,6 +964,15 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         potions.push(Some(kind));
     }
 
+    let potion_slots = match extract_optional(d, "potion_slots") {
+        Some(v) => Some(
+            v.as_i64()
+                .and_then(|n| u8::try_from(n).ok())
+                .ok_or_else(|| schema_err("$.player.potion_slots", "must be a u8"))?,
+        ),
+        None => None,
+    };
+
     // Optional: orbs / orb_slots / stars / osty
     let (orbs, orb_slots) = match extract_optional(d, "orbs") {
         Some(ov) => {
@@ -1081,6 +1096,7 @@ fn parse_player<V: WireValue>(d: &V) -> WireResult<ParsedPlayer> {
         relics,
         powers,
         potions,
+        potion_slots,
         orbs,
         orb_slots,
         stars,
@@ -2761,12 +2777,21 @@ fn ingest_intent(
 /// a fresh AI drops the spawn payload and every mid-fight counter the
 /// reconstruction went to the trouble of recovering, which is what
 /// [`reconstructed_base_damage`] exists to read instead.
-fn wire_base_intent(m: &ParsedEnemy) -> Option<Intent> {
+///
+/// `ascension` is the wire's `$.rng.ascension`. The base is compared against
+/// the wire telegraph, and C# telegraphs the ascension-scaled number: the
+/// attack properties are `GetValueIfAscension(DeadlyEnemies, …)` (e.g.
+/// `Crusher.cs:81` THRASH 14/12, `Rocket.cs:61` TARGETING_RETICLE 4/3), read
+/// by `AttackIntent.GetSingleDamage` at telegraph time. An A0 table at A9+
+/// matched neither the plain nor the boosted candidate, so the facing silently
+/// fell back to the spawn default (GH #840).
+fn wire_base_intent(m: &ParsedEnemy, ascension: u8) -> Option<Intent> {
     let ms = m.move_state.as_deref()?;
-    let mut ai = build_ai(
+    let mut ai = build_ai_with_ascension(
         m.kind,
         MonsterSpawnArgs::default(),
         SpawnPosition::default(),
+        ascension,
     );
     let resolved = wire_move_state_alias(m.kind, ms)
         .is_some_and(|alias| ai.force_current_state_by_name(alias))
@@ -2826,7 +2851,7 @@ fn infer_surrounded_facing(parsed: &ParsedState) -> Option<i32> {
         if m.is_dead || m.hp <= 0 {
             continue;
         }
-        let Some(base_intent) = wire_base_intent(m) else {
+        let Some(base_intent) = wire_base_intent(m, parsed.ascension) else {
             continue;
         };
         let (Intent::Attack { damage: base } | Intent::MultiAttack { damage: base, .. }) =
@@ -3281,6 +3306,10 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     // EMPTY, so the Osty would take id 1 — the id the player row is about to
     // be pushed with.
 
+    // Belt capacity first, so it is in place before anything reads it.
+    if let Some(slots) = parsed.player.potion_slots {
+        state.player.potion_slots = slots;
+    }
     // Potions (None → skip slot; Some(kind) → push).
     for k in parsed.player.potions.iter().flatten() {
         if state.player.potions.len() < state.player.potions.capacity() {
@@ -3649,11 +3678,20 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
         // read a base magnitude off it.
         let mut ai_at_wire_move = false;
         let ai: Option<MonsterAi> = m.move_state.as_deref().and_then(|ms| {
+            // At the wire's ascension (GH #840) and game build (GH #787). C#
+            // resolves every attack magnitude through
+            // `GetValueIfAscension(DeadlyEnemies, …)` (e.g.
+            // `SkulkingColony.cs:41-45`, `Entomancer.cs:27`, `Vantom.cs:68-72`)
+            // for the whole fight, and the engine bakes those values into the
+            // move table once, at build (`ascension_scaling`). Built at A0, the
+            // reconstruction kept the current telegraph (it rides the wire)
+            // but hit for the A0 number on every LATER move — at A10, 375 of
+            // 463 lockstep probes diverged at the next telegraph.
             let mut ai = build_ai_for_version(
                 m.kind,
                 spawn_args,
                 SpawnPosition::default(),
-                0,
+                parsed.ascension,
                 parsed.game_version,
             );
             // Alias table FIRST: entries are per-monster verified mappings,
@@ -4120,6 +4158,7 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sts2_content::monster_dispatch::build_ai;
     /// Every [`WIRE_MOVE_STATE_ALIASES`] target must exist as a move
     /// state on the freshly-built AI of its monster — a content-side
     /// state rename would otherwise silently revive the inert-enemy

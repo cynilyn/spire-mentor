@@ -105,13 +105,31 @@ pub const PY_DATA_INPUTS: [(&str, &str); 0] = [];
 pub const RUNAI_DATA_INPUTS: [(&str, &str); 1] =
     [("data/runai/heuristic_v.toml", "data/runai/heuristic_v.toml")];
 
-/// Extra out-of-`src` engine inputs for sts2-mcts: the built-in Ironclad
-/// playout net `src/rollout_net.rs` bakes in with `include_str!`. A missing
-/// input is skipped, as everywhere.
-pub const MCTS_DATA_INPUTS: [(&str, &str); 1] = [(
-    "data/rollout_nets/ironclad.json",
-    "data/rollout_nets/ironclad.json",
-)];
+/// Extra out-of-`src` engine inputs for sts2-mcts: the built-in playout nets
+/// `src/rollout_net.rs` bakes in with `include_str!`, one per character. A
+/// missing input is skipped, as everywhere.
+pub const MCTS_DATA_INPUTS: [(&str, &str); 5] = [
+    (
+        "data/rollout_nets/ironclad.json",
+        "data/rollout_nets/ironclad.json",
+    ),
+    (
+        "data/rollout_nets/silent.json",
+        "data/rollout_nets/silent.json",
+    ),
+    (
+        "data/rollout_nets/defect.json",
+        "data/rollout_nets/defect.json",
+    ),
+    (
+        "data/rollout_nets/regent.json",
+        "data/rollout_nets/regent.json",
+    ),
+    (
+        "data/rollout_nets/necrobinder.json",
+        "data/rollout_nets/necrobinder.json",
+    ),
+];
 
 /// Every workspace crate compiled into the `sts2_rs` extension, in the FIXED
 /// order used by both the aggregate and the recompute. `sts2_py::src_hash()`

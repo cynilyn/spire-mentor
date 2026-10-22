@@ -19,8 +19,16 @@ use pyo3::types::{PyDict, PyList};
 
 use sts2_core::full_run::RunPolicy;
 use sts2_core::run_manager::Phase;
+use sts2_core::run_rng_set::splitmix64;
+use sts2_core::Side;
+use sts2_mcts::rollout_net::{heuristic_mirror_net, net_for};
+use sts2_mcts::turn_plan::{enumerate_plans, PlanCap, PlanEnd};
+use sts2_mcts::turn_plan_features::{
+    anchors, deck_context, plan_cards, plan_features, plan_logprob,
+};
 use sts2_mcts::RootOutcome;
-use sts2_runai::policy::{CombatBudget, HeuristicPolicy, MctsCombatPolicy};
+use sts2_runai::policy::{deployed_hidden_info, CombatBudget, HeuristicPolicy, MctsCombatPolicy};
+use sts2_runai::turn_plan_teacher::price_plans;
 
 use crate::run_manager::{phase_str, run_action_to_pydict, PyRunManager};
 
@@ -35,7 +43,14 @@ use crate::run_manager::{phase_str, run_action_to_pydict, PyRunManager};
 #[derive(Debug)]
 pub struct PyMctsCombatAgent {
     policy: MctsCombatPolicy<HeuristicPolicy>,
+    /// The constructor seed, which [`Self::turn_plan_labels`] mixes into
+    /// its per-position seed.
+    seed: i32,
 }
+
+/// Salt that keeps turn-plan label seeds off the decision seeds
+/// `mcts_pick` derives from the same `(seed, counter)` pair.
+const TURN_PLAN_SEED_SALT: u64 = 0x7E41_C0DE_5EED_0830;
 
 #[pymethods]
 impl PyMctsCombatAgent {
@@ -53,7 +68,7 @@ impl PyMctsCombatAgent {
         budget.boss_sims = boss_sims;
 
         let policy = MctsCombatPolicy::new(HeuristicPolicy::new(), budget, seed);
-        Self { policy }
+        Self { policy, seed }
     }
 
     /// Apply one decision to `rm` and return a step record dict, or `None`
@@ -83,6 +98,11 @@ impl PyMctsCombatAgent {
             return Ok(None);
         };
         let action = actions[idx];
+        let retained_visits = if is_combat {
+            self.policy.last_retained_visits()
+        } else {
+            None
+        };
 
         // Capture the combat search record AFTER `choose` (which runs the
         // MCTS and caches it in `last_combat_search`) but BEFORE
@@ -113,6 +133,14 @@ impl PyMctsCombatAgent {
 
                     // The recommended action (chosen by Q-then-visits).
                     d.set_item("recommended", crate::action_to_pydict(py, &rec.chosen)?)?;
+                    // What `net_expand_order` (GH #830 rung 4) did in this
+                    // search; all zero with the knob off or on a forced move.
+                    let eo = PyDict::new(py);
+                    eo.set_item("considered", rec.expand_order.considered)?;
+                    eo.set_item("scored", rec.expand_order.scored)?;
+                    eo.set_item("reordered", rec.expand_order.reordered)?;
+                    eo.set_item("first_changed", rec.expand_order.first_changed)?;
+                    d.set_item("expand_order", eo)?;
                     Ok(d)
                 })
                 .transpose()?
@@ -134,8 +162,159 @@ impl PyMctsCombatAgent {
         out.set_item("won", won)?;
         out.set_item("action", run_action_to_pydict(py, &action)?)?;
         out.set_item("combat_search", combat_search)?;
+        // `tree_reuse` (GH #830): root visits this decision's search kept
+        // from the one before (`None`: fresh tree, no search, or knob off).
+        out.set_item("retained_visits", retained_visits)?;
         out.set_item("result", format!("{result:?}"))?;
         Ok(Some(out))
+    }
+
+    /// Teacher labels for every deterministic plan of the current player
+    /// turn (GH #830), or `None` when `rm` is not on the player's turn of a
+    /// live combat. Does not advance `rm`, and leaves the decision counter
+    /// (hence every later `step()`) untouched.
+    ///
+    /// Plans are enumerated under the deployed search's hidden-info mode
+    /// and priced by `price_plans` through this agent's own policy, so the
+    /// env/override bundle is the deployed one. The seed mixes the agent
+    /// seed with its decision counter through splitmix64: `price_plans`
+    /// seeds plan `i` with `seed ^ i`, so adjacent raw position seeds would
+    /// share plan seeds.
+    ///
+    /// Returns `{"cap_hit", "n_plans", "deck": {"cards", "relics",
+    /// "powers": [[id, amount]], "ctx"}, "plans": [{"actions" (the
+    /// `combat_search` action dicts of `step()`), "end": "end_turn" |
+    /// "chance" | "terminal", "features", "cards", "logp_heur", "logp_rl2"
+    /// (None without a playout net), "anchors": {"lethal", "max_block",
+    /// "max_damage", "heuristic", "rl2"}, "q", "visits", "q_var",
+    /// "final_hp"}]}`.
+    #[pyo3(signature = (rm, sims_per_plan, max_plans = 512))]
+    fn turn_plan_labels<'py>(
+        &mut self,
+        py: Python<'py>,
+        rm: &PyRunManager,
+        sims_per_plan: u32,
+        max_plans: usize,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if rm.inner.phase() != Phase::Combat {
+            return Ok(None);
+        }
+        let Some(combat) = rm.inner.combat.as_ref() else {
+            return Ok(None);
+        };
+        if combat.is_over || combat.side != Side::Player {
+            return Ok(None);
+        }
+
+        let cap = PlanCap {
+            max_plans,
+            ..PlanCap::default()
+        };
+        let set = enumerate_plans(combat, deployed_hidden_info(), cap);
+        let flags = anchors(combat, &set);
+        let heur = heuristic_mirror_net();
+        let rl2 = net_for(combat);
+        let seed_bits = u64::from(u32::from_ne_bytes(self.seed.to_ne_bytes()));
+        let seed = splitmix64(
+            splitmix64(seed_bits ^ TURN_PLAN_SEED_SALT) ^ self.policy.combat_decisions(),
+        );
+        let prices = price_plans(
+            &mut self.policy,
+            &rm.inner,
+            combat,
+            &set.plans,
+            sims_per_plan,
+            seed,
+        );
+
+        let ctx = deck_context(combat);
+        let deck = PyDict::new(py);
+        deck.set_item("cards", &ctx.cards)?;
+        deck.set_item("relics", &ctx.relics)?;
+        let powers = PyList::empty(py);
+        for (id, amount) in &ctx.powers {
+            let pair = PyList::empty(py);
+            pair.append(id)?;
+            pair.append(amount)?;
+            powers.append(pair)?;
+        }
+        deck.set_item("powers", powers)?;
+        deck.set_item("ctx", ctx.ctx.to_vec())?;
+
+        let plans = PyList::empty(py);
+        for ((plan, flag), price) in set.plans.iter().zip(&flags).zip(&prices) {
+            let d = PyDict::new(py);
+            let actions = PyList::empty(py);
+            for a in &plan.actions {
+                actions.append(crate::action_to_pydict(py, a)?)?;
+            }
+            d.set_item("actions", actions)?;
+            d.set_item(
+                "end",
+                match plan.end {
+                    PlanEnd::EndTurn => "end_turn",
+                    PlanEnd::Chance => "chance",
+                    PlanEnd::Terminal => "terminal",
+                },
+            )?;
+            d.set_item("features", plan_features(combat, plan).to_vec())?;
+            d.set_item("cards", plan_cards(combat, plan))?;
+            d.set_item("logp_heur", plan_logprob(&heur, combat, plan))?;
+            d.set_item("logp_rl2", rl2.map(|net| plan_logprob(net, combat, plan)))?;
+            let a = PyDict::new(py);
+            a.set_item("lethal", flag.lethal)?;
+            a.set_item("max_block", flag.max_block)?;
+            a.set_item("max_damage", flag.max_damage)?;
+            a.set_item("heuristic", flag.heuristic)?;
+            a.set_item("rl2", flag.rl2)?;
+            d.set_item("anchors", a)?;
+            d.set_item("q", price.mean_value)?;
+            d.set_item("visits", price.visits)?;
+            d.set_item("q_var", price.value_variance)?;
+            d.set_item("final_hp", price.mean_final_hp)?;
+            plans.append(d)?;
+        }
+
+        let out = PyDict::new(py);
+        out.set_item("cap_hit", set.cap_hit)?;
+        out.set_item("n_plans", set.plans.len())?;
+        out.set_item("deck", deck)?;
+        out.set_item("plans", plans)?;
+        Ok(Some(out))
+    }
+
+    /// `(elite decisions, boss decisions, motif-tagged common decisions,
+    /// simulations requested)` over this agent's lifetime — the compute
+    /// readout for benchmark arms. Forced moves count as decisions but
+    /// request no simulations.
+    fn combat_budget_spent(&self) -> (u64, u64, u64, u64) {
+        self.policy.combat_budget_spent()
+    }
+
+    /// What `tree_reuse` (`STS2_RUNAI_MCTS_OVERRIDES=tree_reuse=1`, GH
+    /// #830) did over this agent's lifetime, as a dict of counts (all zero
+    /// with the knob off). `searched` = searched decisions; `reused` of them
+    /// started from the previous decision's tree (`reused_via_chance`
+    /// through a chance edge); each `fresh_*` counts a fresh tree by reason.
+    /// Reuse rate = `reused / searched`; carried-over share of root visits =
+    /// `retained_visits / (retained_visits + new_sims)`.
+    fn tree_reuse_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let c = self.policy.tree_reuse_counts();
+        let d = PyDict::new(py);
+        d.set_item("searched", c.searched)?;
+        d.set_item("reused", c.reused)?;
+        d.set_item("reused_via_chance", c.reused_via_chance)?;
+        d.set_item("fresh_no_tree", c.fresh_no_tree)?;
+        d.set_item("fresh_not_expanded", c.fresh_not_expanded)?;
+        d.set_item("fresh_mismatch", c.fresh_mismatch)?;
+        d.set_item("fresh_outcome_unseen", c.fresh_outcome_unseen)?;
+        d.set_item("fresh_edge_set", c.fresh_edge_set)?;
+        d.set_item("fresh_other", c.fresh_other)?;
+        d.set_item("retained_visits", c.retained_visits)?;
+        d.set_item("new_sims", c.new_sims)?;
+        d.set_item("forced_carried", c.forced_carried)?;
+        d.set_item("forced_dropped", c.forced_dropped)?;
+        Ok(d)
     }
 }
 
@@ -156,6 +335,7 @@ fn root_outcome_to_pydict<'py>(
         o.ties,
         o.value_sum,
         o.hp_sum,
+        o.hp_sq_sum,
         o.hp_n,
         /* low_confidence */ false,
         /* q_saturated */ false,

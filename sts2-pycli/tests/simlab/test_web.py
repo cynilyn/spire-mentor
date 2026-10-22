@@ -517,6 +517,35 @@ def test_catalog_route(tmp_path) -> None:
     assert "mcts" in cat["strategies"]
 
 
+def test_sandbox_deals_and_keeps_the_selected_game_version(tmp_path) -> None:
+    """GH #877: ``game_version`` on ``/position/new`` deals the fight in that
+    build, the position remembers it through build / moves, and an unknown
+    build is a 400. A default-build position names no version at all."""
+    client = TestClient(create_app(results_root=tmp_path))
+    body = {"character": "Ironclad", "encounter": "FUZZY_WURM_CRAWLER_WEAK", "seed": 4}
+    base = client.post("/api/simlab/position/new", json=body).json()
+    assert "game_version" not in base["position"] and "game_version" not in base["wire"]
+
+    r = client.post("/api/simlab/position/new", json={**body, "game_version": "v0.111.0"})
+    assert r.status_code == 200, r.text
+    pos = r.json()["position"]
+    assert pos["game_version"] == "v0.111.0"
+    assert r.json()["wire"]["game_version"] == "v0.111.0"
+    built = client.post("/api/simlab/position/build", json={"position": pos}).json()
+    assert built["position"]["game_version"] == "v0.111.0"
+    assert built["wire"]["game_version"] == "v0.111.0"
+    moves = client.post("/api/simlab/position/moves", json={"position": pos}).json()["moves"]
+    assert any(m["label"] == "End turn" for m in moves)
+
+    assert (
+        client.post("/api/simlab/position/new", json={**body, "game_version": "v9"}).status_code
+        == 400
+    )
+    assert client.get("/api/simlab/catalog?game_version=v9").status_code == 400
+    cat = client.get("/api/simlab/catalog?game_version=v0.111.0").json()
+    assert {c["id"] for c in cat["characters"]} >= {"Ironclad", "Necrobinder"}
+
+
 def test_position_new_build_moves_and_sweep(tmp_path) -> None:
     client = TestClient(create_app(results_root=tmp_path))
     r = client.post(

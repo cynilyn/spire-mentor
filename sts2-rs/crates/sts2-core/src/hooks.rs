@@ -634,6 +634,7 @@ impl PowerHook {
                     PowerKind::Skittish,
                     PowerKind::Slumber,
                     PowerKind::Asleep,
+                    PowerKind::Hellraiser,
                 ])),
             Self::BeforeSideTurnStart => BEFORE_SIDE_TURN_START_KINDS,
             Self::AfterSideTurnStart => {
@@ -1245,14 +1246,30 @@ pub enum Effect {
         /// Move-state id to install as the new current move.
         state_id: crate::monster_ai::StateId,
     },
+    /// Stun `target` into its prebuilt `state_id` stun move — C#
+    /// `CreatureCmd.Stun` → `Creature.StunInternal` → `SetMoveImmediate`
+    /// (Creature.cs:524-544, MonsterModel.cs:562-575). Routes to
+    /// [`crate::monster_ai::MonsterAi::stun_immediate`], which honours the
+    /// `if (NextMove.CanTransitionAway)` guard that [`Effect::ForceMonsterMove`]
+    /// (the `forceTransition: true` analogue) skips, and queues `next_move`
+    /// (`None` = C#'s `StateLog.Last().Id` default) as the post-stun resume.
+    /// Re-points the telegraphed `creature.intent` when the stun lands.
+    StunMonster {
+        /// Creature to stun.
+        target: CreatureUid,
+        /// The stun move-state id (built `must_perform_once: true`).
+        state_id: crate::monster_ai::StateId,
+        /// C# `nextMoveId`; `None` resumes at the last rolled move.
+        next_move: Option<crate::monster_ai::StateId>,
+    },
     /// Queue `state_id` as `target`'s forced NEXT move-state (consumed at
     /// the owner's next turn-end roll) — the C# `Creature.StunInternal`
     /// `FollowUpStateId` half of a stun redirect. Must be applied AFTER any
     /// [`Effect::ForceMonsterMove`] for the same target in the same batch:
-    /// `force_current_state` clears the queued forced-next override. Used by
-    /// `RavenousPower.AfterDeath` (CorpseSlug), whose C# stun passes a null
-    /// `nextMoveId` and therefore resumes at `StateLog.Last().Id` — the move
-    /// the slug had telegraphed when it started devouring.
+    /// `force_current_state` clears the queued forced-next override. (The
+    /// CorpseSlug Ravenous stun that used to pair it with `ForceMonsterMove`
+    /// now goes through [`Effect::StunMonster`], which queues the resume
+    /// itself.)
     ForceMonsterNextMove {
         /// Creature whose AI next-move to queue.
         target: CreatureUid,
@@ -1800,6 +1817,19 @@ pub fn apply_effect(state: &mut CombatState, effect: Effect) {
                 }
             }
         }
+        Effect::StunMonster {
+            target,
+            state_id,
+            next_move,
+        } => {
+            if let Some(c) = state.creatures.iter_mut().find(|c| c.id == target.0) {
+                if let Some(ai) = c.ai.as_mut() {
+                    if ai.stun_immediate(state_id, next_move) {
+                        c.intent = ai.current_move().intents.first().copied();
+                    }
+                }
+            }
+        }
         Effect::ForceMonsterNextMove { target, state_id } => {
             // C# `StunInternal` FollowUpStateId: queue the post-stun resume.
             // Applied after `ForceMonsterMove` in the same batch (which
@@ -2121,24 +2151,21 @@ fn apply_dealhploss(
             // damage), absorb through block (unless UNBLOCKABLE), and
             // write HP loss. Mirrors the read-only path of Python's
             // `apply_damage` for self-targeted unpowered hits.
-            // v0.111.0: `CreatureCmd.Damage` runs `Hook.ModifyDamage(...,
-            // ModifyDamageHookType.All, ...)` before block (decomp
-            // CreatureCmd.cs:283), whose Cap step takes every listener's
-            // `ModifyDamageCap` (Hook.cs:2697) — so Intangible caps a
+            // `CreatureCmd.Damage` runs `Hook.ModifyDamage(...,
+            // ModifyDamageHookType.All, ...)` before block (decomp v0.111.0
+            // CreatureCmd.cs:283; v0.107.1 :261, same body), whose Cap step
+            // takes every listener's `ModifyDamageCap` — so Intangible caps a
             // Constrict / Poison self-tick at 1 BEFORE block absorbs it
             // (IntangiblePower.cs:47). The shortcut skipped the cap: Constrict
             // 6 under Intangible stripped 3 Block and then lost 1 HP where
-            // C# spends 1 Block. v0.107.1 C# has the same rule; its gap is
-            // left alone so the default build stays bit-identical.
-            let amount = if state.game_version >= crate::GameVersion::V0_111_0 {
+            // C# spends 1 Block. Both builds (GH #806).
+            let amount = {
                 let cap_ctx = DamageCtx {
                     dealer,
                     target: CreatureRef::Player,
                     props,
                 };
                 amount.min(dispatch_modify_damage_cap(state, &cap_ctx))
-            } else {
-                amount
             };
             let unblockable = props.contains(ValueProps::UNBLOCKABLE);
             let absorbed = if unblockable {
@@ -2234,16 +2261,15 @@ fn apply_dealhploss(
             // a Buffer-absorbed tick has `LoseHpInternal(0)` in C#, so
             // `UnblockedDamage == 0` and damage-received reactions stay
             // silent (bead `sts2-rs-ytgbq` follow-up).
-            // v0.111.0: C# skips `AfterDamageReceived` for a target the hit
-            // killed (`if (!WasTargetKilled || !IsDead)`, decomp
-            // CreatureCmd.cs:414) — the death check and any FairyInABottle
-            // revive run after it, in `Kill`. So a lethal Inferno self-tick
-            // revived by the Fairy fans no Inferno damage (Ironclad mid seed
-            // 833, SOUL_FYSH_BOSS: monsters[0].hp cs=185 rs=179). v0.107.1 C#
-            // has the same rule; left alone there for bit-identity.
-            let killed_v0111 =
-                state.game_version >= crate::GameVersion::V0_111_0 && state.player.current_hp == 0;
-            if modified > 0 && !killed_v0111 {
+            // C# skips `AfterDamageReceived` for a target the hit killed
+            // (`if (!WasTargetKilled || !IsDead)`, decomp v0.111.0
+            // CreatureCmd.cs:414; v0.107.1 :392) — the death check and any
+            // FairyInABottle revive run after it, in `Kill`. So a lethal
+            // Inferno self-tick revived by the Fairy fans no Inferno damage
+            // (Ironclad mid seed 833, SOUL_FYSH_BOSS: monsters[0].hp cs=185
+            // rs=179). Both builds (GH #806).
+            let killed = state.player.current_hp == 0;
+            if modified > 0 && !killed {
                 let dctx = DamageCtx {
                     dealer,
                     target: CreatureRef::Player,
@@ -4048,7 +4074,14 @@ fn power_modify_damage_multiplicative(
             // to scope it to the FIRST attack — once consumed the
             // power is gone, so the second attack sees no instance.
             // Bead `sts2-rs-2e9q2` follow-up (Gigantification Potion).
-            if owner == Some(ctx.dealer) && ctx.props.is_powered() {
+            //
+            // GH #806: C# keys on `cardSource.Owner.Creature == Owner`, not on
+            // the dealer, so the Osty's card attacks (`FromOsty(osty, card)`,
+            // a player-owned card) are tripled too. Every Osty attack comes
+            // from a card, so an Osty dealer implies a player card source.
+            let osty_card_hit = owner == Some(CreatureRef::Player)
+                && matches!(ctx.dealer, CreatureRef::Enemy(uid) if state.player.pet_uid == Some(uid));
+            if (owner == Some(ctx.dealer) || osty_card_hit) && ctx.props.is_powered() {
                 DamageMul::new(3, 1)
             } else {
                 DamageMul::ONE
@@ -9203,13 +9236,6 @@ pub fn after_death(
             if creature_ref_side(owner) != ctx.dead_side {
                 return None;
             }
-            // C# resume target: the currently-telegraphed state id.
-            let resume = state
-                .creatures
-                .iter()
-                .find(|c| c.id == owner_uid.0)
-                .and_then(|c| c.ai.as_ref())
-                .map(crate::monster_ai::MonsterAi::current_state_id);
             let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
             // C# `RavenousPower.cs:28` flashes inside this same guard, before
             // the stun/Strength grant.
@@ -9225,18 +9251,19 @@ pub fn after_death(
                 amount: power.amount,
                 applier: None,
             });
-            // Order is load-bearing: ForceMonsterMove clears any queued
-            // forced-next, so the resume must be queued AFTER it.
-            effects.push(Effect::ForceMonsterMove {
+            // `CreatureCmd.Stun(Owner, StunnedMove)` — null `nextMoveId`, so
+            // the resume defaults to `StateLog.Last().Id` (the move the slug
+            // had telegraphed). `StunMonster` honours `SetMoveImmediate`'s
+            // `CanTransitionAway` guard: a slug still holding an unserved
+            // STUNNED (a second ally died first) is NOT re-stunned, but the
+            // Strength above is still granted — exactly C#, where the guard
+            // lives inside `SetMoveImmediate` and the `PowerCmd.Apply` runs
+            // regardless. Issue #806.
+            effects.push(Effect::StunMonster {
                 target: owner_uid,
                 state_id: "STUNNED",
+                next_move: None,
             });
-            if let Some(resume) = resume {
-                effects.push(Effect::ForceMonsterNextMove {
-                    target: owner_uid,
-                    state_id: resume,
-                });
-            }
             Some(effects)
         }
         PowerKind::Surrounded => {
@@ -10132,13 +10159,71 @@ fn after_damage_received_staged(
     }
 
     power_hook_dispatch(state, hook, |state| {
-        after_damage_received_lanes(state, ctx, damage);
+        after_damage_received_lanes(
+            state,
+            ctx,
+            damage,
+            hook != PowerHook::AfterDamageReceivedEnemyTarget,
+        );
     });
+}
+
+/// HardenedShell's `AfterDamageReceived` tally (HardenedShellPower.cs:50-68):
+/// add the hit's unblocked damage to `damageReceivedThisTurn` (the power's
+/// `counter`). C# `CreatureCmd.Damage` fires `AfterDamageGiven` BEFORE
+/// `AfterDamageReceived` for each result (v0.107.1 CreatureCmd.cs:388-393,
+/// identical in v0.111.0), so a hit nested inside the given-side hooks
+/// (ReaperForm's Doom -> SleightOfFlesh) is capped against the tally from
+/// before the outer hit; `damage::apply_damage` therefore calls this after
+/// its given dispatch (GH #806).
+pub(crate) fn tally_hardened_shell_damage(
+    state: &mut CombatState,
+    target: CreatureRef,
+    damage: i32,
+) {
+    if damage > 0 && power_kind_live(state, PowerKind::HardenedShell) {
+        let target_uid = match target {
+            CreatureRef::Player => state.player.creature_uid,
+            CreatureRef::Enemy(uid) => Some(uid),
+            // No STS2 ally carries HardenedShell at this pin; Nobody owns
+            // nothing.
+            CreatureRef::Ally(_) | CreatureRef::Nobody => None,
+        };
+        if let Some(target_uid) = target_uid {
+            let shell_pid = state
+                .creatures
+                .iter()
+                .find(|c| c.id == target_uid.0)
+                .and_then(|c| {
+                    c.powers.iter().copied().find_map(|u| {
+                        state
+                            .powers
+                            .iter()
+                            .find(|p| p.id == u.0 && p.kind == PowerKind::HardenedShell)
+                            .map(|p| p.id)
+                    })
+                });
+            if let Some(pid) = shell_pid {
+                if let Some(pow) = state.powers.get_mut_by_id(pid) {
+                    pow.counter = pow.counter.saturating_add(damage);
+                }
+            }
+        }
+    }
 }
 
 /// The post-walk lanes of [`dispatch_after_damage_received`], which need the
 /// post-mitigation `damage` the per-listener fn cannot see.
-fn after_damage_received_lanes(state: &mut CombatState, ctx: &DamageCtx, damage: i32) {
+///
+/// `tally_hardened_shell` is false on the `apply_damage` path, which tallies
+/// HardenedShell itself AFTER `AfterDamageGiven` (see
+/// [`tally_hardened_shell_damage`]).
+fn after_damage_received_lanes(
+    state: &mut CombatState,
+    ctx: &DamageCtx,
+    damage: i32,
+    tally_hardened_shell: bool,
+) {
     // ── Slippery post-walk reaction ─────────────────────────────────────
     // Bead `sts2-rs-12xvk`; v0.107.1 retiming `§1a.8` (bead `…wb8lk.1`). Per
     // C# decomp v0.107.1
@@ -10318,34 +10403,8 @@ fn after_damage_received_lanes(state: &mut CombatState, ctx: &DamageCtx, damage:
     // `before_side_turn_start` arm. Inline like Slumber/Flutter because
     // the per-listener fn can't see the post-block amount.
     // present_kinds lane gate (perf): no live HardenedShell ⇒ provably no-op.
-    if damage > 0 && power_kind_live(state, PowerKind::HardenedShell) {
-        let target_uid = match ctx.target {
-            CreatureRef::Player => state.player.creature_uid,
-            CreatureRef::Enemy(uid) => Some(uid),
-            // No STS2 ally carries HardenedShell at this pin; Nobody owns
-            // nothing.
-            CreatureRef::Ally(_) | CreatureRef::Nobody => None,
-        };
-        if let Some(target_uid) = target_uid {
-            let shell_pid = state
-                .creatures
-                .iter()
-                .find(|c| c.id == target_uid.0)
-                .and_then(|c| {
-                    c.powers.iter().copied().find_map(|u| {
-                        state
-                            .powers
-                            .iter()
-                            .find(|p| p.id == u.0 && p.kind == PowerKind::HardenedShell)
-                            .map(|p| p.id)
-                    })
-                });
-            if let Some(pid) = shell_pid {
-                if let Some(pow) = state.powers.get_mut_by_id(pid) {
-                    pow.counter = pow.counter.saturating_add(damage);
-                }
-            }
-        }
+    if tally_hardened_shell {
+        tally_hardened_shell_damage(state, ctx.target, damage);
     }
 
     // ── ShriekPower threshold stun (TerrorEel) ──────────────────────────
@@ -14600,6 +14659,14 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
     // still consumes — NOT the reverted `ph5mx` powered-hit gate.
     let attack_command_suppressed = state.player.attack_command_suppressed_this_play;
     let is_player_attack = is_attack && !is_osty_attack && !attack_command_suppressed;
+    // GH #806: Gigantification differs from Vigor. Its `BeforeAttack` keys on
+    // `cardModel.Owner.Creature == Owner` (GigantificationPower.cs:27-50), not
+    // on `command.Attacker`, so an Osty-attack card's command latches it — when
+    // the Osty actually attacked (no Osty means no `AttackCommand`).
+    let osty_attacked_this_play =
+        state.combat_log.osty_attacks_this_turn > state.combat_log.osty_attacks_at_card_play_start;
+    let is_gigantification_attack =
+        is_player_attack || (is_attack && is_osty_attack && osty_attacked_this_play);
     // Storm is snapshot-armed at before-play (`counter` holds the pre-`OnPlay`
     // stack count; see [`arm_storm_snapshot`]). C# `StormPower.BeforeCardPlayed`
     // only records an entry for POWER cards, and `AfterCardPlayed` channels the
@@ -14820,7 +14887,12 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
                 // playing SIC_EM spent the player's Gigantification (e.g. from
                 // a Gigantification potion) end-to-end (Necrobinder sweep seed
                 // 396: player.powers GIGANTIFICATION cs=[1] rs=[]).
-                if is_player_attack && amount > 0 => {
+                // GH #806 correction: Osty hits ARE powered (`DamageCmd.Attack`
+                // defaults to `ValueProp.Move`, AttackCommand.cs:121) and the
+                // latch keys on the card's owner, so an Osty-attack card spends
+                // the buff whenever the Osty actually attacked; seed 396 is the
+                // Osty-missing case, where no command runs.
+                if is_gigantification_attack && amount > 0 => {
                     let mut remove_pid = None;
                     for uid in player_power_uids.iter().copied() {
                         if let Some(power) = state.powers.get_mut_by_id(uid.0) {
@@ -16200,13 +16272,20 @@ fn shriek_stun_below_threshold(state: &mut CombatState, creature_uid: CreatureUi
     // (the ForceMonsterMove/Flutter discipline — `enemy_turn_exec` performs
     // the snapshotted `creature.intent`, so the stale attack telegraph must
     // be replaced or it lands anyway).
-    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == creature_uid.0) {
-        if let Some(ai) = c.ai.as_mut() {
-            if ai.force_current_state_by_name("STUN_MOVE") {
-                c.intent = ai.current_move().intents.first().copied();
-            }
-        }
-    }
+    //
+    // `Stun(Owner, TerrorState.StateId)`: C# synthesizes a must-perform
+    // STUNNED whose follow-up is TERROR_MOVE; the eel's prebuilt `STUN_MOVE`
+    // (must_perform_once, follow-up TERROR_MOVE) is that state. Routed through
+    // `StunMonster` for the `SetMoveImmediate` `CanTransitionAway` guard
+    // (issue #806).
+    apply_effects(
+        state,
+        &[Effect::StunMonster {
+            target: creature_uid,
+            state_id: "STUN_MOVE",
+            next_move: Some("TERROR_MOVE"),
+        }],
+    );
     true
 }
 
@@ -16576,6 +16655,21 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
             if p.kind == PowerKind::Skittish {
                 p.counter = 0;
                 p.skip_next_tick = false;
+            }
+        }
+    }
+
+    // ── Hellraiser infinite-HP auto-play counter reset ─────────────────
+    // C# `HellraiserPower.AfterSideTurnEnd` (`HellraiserPower.cs:70-78`):
+    // `if (participants.Contains(base.Owner)) ResetInfiniteAutoPlayData();`.
+    // Hellraiser is a player power, so this is the player's turn end. The
+    // counter (`Data.infiniteAutoPlaysThisTurn`, in `counter`) caps on-draw
+    // Strike auto-plays at 9 per turn while every hittable enemy shows
+    // infinite HP (`CombatState::hellraiser_infinite_auto_play_gate`).
+    if ctx.side == Side::Player && power_kind_live(state, PowerKind::Hellraiser) {
+        for p in &mut state.powers {
+            if p.kind == PowerKind::Hellraiser {
+                p.counter = 0;
             }
         }
     }
@@ -23443,45 +23537,29 @@ mod tests {
         before - hp_of(&state)
     }
 
-    /// v0.107.1 Rust fires `after_damage_received` on the killing tick, so
-    /// Inferno fans its 6 to every enemy.
+    /// `CreatureCmd.Damage` skips `AfterDamageReceived` for a killed target
+    /// (v0.111.0 CreatureCmd.cs:414, v0.107.1 :392), so Inferno does not fan.
+    /// Same C# in both builds (GH #806).
     #[test]
-    fn inferno_fans_on_lethal_self_tick_v0107() {
-        assert_eq!(
-            inferno_fan_on_lethal_self_tick(crate::GameVersion::V0_107_1),
-            6
-        );
+    fn inferno_skips_lethal_self_tick_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            assert_eq!(inferno_fan_on_lethal_self_tick(version), 0, "{version:?}");
+        }
     }
 
-    /// v0.111.0: `CreatureCmd.Damage` skips `AfterDamageReceived` for a killed
-    /// target (CreatureCmd.cs:414), so Inferno does not fan.
+    /// `CreatureCmd.Damage` caps the tick at 1 before Block (`Hook.ModifyDamage`
+    /// Cap step, v0.111.0 CreatureCmd.cs:283, v0.107.1 :261), so 1 Block is
+    /// spent and no HP is lost (the Silent `card+:WRAITH_FORM` sweep subject).
+    /// Same C# in both builds (GH #806).
     #[test]
-    fn inferno_skips_lethal_self_tick_v0111() {
-        assert_eq!(
-            inferno_fan_on_lethal_self_tick(crate::GameVersion::V0_111_0),
-            0
-        );
-    }
-
-    /// v0.107.1 Rust: the self-tick skips the damage cap, so Block absorbs 3
-    /// of the 6 and the Intangible HP-loss cap lets 1 through.
-    #[test]
-    fn constrict_under_intangible_skips_damage_cap_v0107() {
-        assert_eq!(
-            constrict_tick_under_intangible(crate::GameVersion::V0_107_1),
-            (49, 0)
-        );
-    }
-
-    /// v0.111.0: `CreatureCmd.Damage` caps the tick at 1 before Block
-    /// (`Hook.ModifyDamage` Cap step, CreatureCmd.cs:283), so 1 Block is spent
-    /// and no HP is lost (the Silent `card+:WRAITH_FORM` sweep subject).
-    #[test]
-    fn constrict_under_intangible_is_capped_before_block_v0111() {
-        assert_eq!(
-            constrict_tick_under_intangible(crate::GameVersion::V0_111_0),
-            (50, 2)
-        );
+    fn constrict_under_intangible_is_capped_before_block_both_versions() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            assert_eq!(
+                constrict_tick_under_intangible(version),
+                (50, 2),
+                "{version:?}"
+            );
+        }
     }
 
     /// Bead `sts2-rs-2e9q2`: when Constrict's end-of-turn self-damage zeroes
@@ -31560,7 +31638,7 @@ mod power_hook_liveness {
             PowerHook::AfterDamageReceived | PowerHook::AfterDamageReceivedEnemyTarget => {
                 let effects = super::collect_after_damage_received(s, &damage);
                 super::apply_effects(s, &effects);
-                super::after_damage_received_lanes(s, &damage, 3);
+                super::after_damage_received_lanes(s, &damage, 3, true);
             }
             PowerHook::AfterDamageGiven | PowerHook::AfterDamageGivenEnemyTarget => {
                 for fully_blocked in [false, true] {

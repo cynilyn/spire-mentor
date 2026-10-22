@@ -54,10 +54,12 @@ from typing import Any
 
 import realgame_hand_select
 import runtime_paths
+from enemy_labels import enemy_label
 from realgame_adapter import (
     UnsupportedGameVersionError,
     character_display_name,
     envelope_game_version,
+    run_ascension,
     to_headless_combat_play,
 )
 from realgame_advisor_mirror import AdvisorMirror
@@ -168,8 +170,8 @@ def _tag_label(tag: HintTag, state: dict[str, Any]) -> str:
         return f"choose option {i}"
     else:
         return f"action {tag.stable_idx}"
-    if tag.target_index is not None and 0 <= tag.target_index < len(enemies):
-        target = enemies[tag.target_index].get("name") or f"enemy {tag.target_index}"
+    target = enemy_label(enemies, tag.target_index)
+    if target is not None:
         label += f" → {target}"
     return label
 
@@ -205,9 +207,9 @@ def _pv_labels(pv: list[Any], state: dict[str, Any]) -> list[str]:
             label = str(hand[idx].get("name") or hand[idx].get("id") or "?")
         else:
             label = kind.replace("_", " ")
-        target = action.get("target_index")
-        if isinstance(target, int) and 0 <= target < len(enemies):
-            label += f" → {enemies[target].get('name') or f'enemy {target}'}"
+        target = enemy_label(enemies, action.get("target_index"))
+        if target is not None:
+            label += f" → {target}"
         labels.append(label)
     return labels
 
@@ -396,7 +398,13 @@ def compute_combat_advice(
     # to `RecommendConfig.resolved_c_puct`, which reads it off the budget THIS
     # decision actually gets (`call_cfg.sims`), so a trimmed boss/regular
     # budget can no longer keep a constant tuned for a budget it never runs.
-    call_cfg = dataclasses.replace(cfg, character=character, sims=sims, c_puct=None)
+    call_cfg = dataclasses.replace(
+        cfg,
+        character=character,
+        ascension=run_ascension(run_state, cfg.ascension),
+        sims=sims,
+        c_puct=None,
+    )
 
     headless = to_headless_combat_play(state)
     wire = adapter.translate(
@@ -488,7 +496,7 @@ def combat_rows(
       move nobody could make.
     * Each row takes the advice option's label (potion and target names the
       advisor resolves against the wire board), and in return the options
-      gain the rows' ``mean_final_hp`` / ``hp_n`` (additive keys).
+      gain the rows' ``mean_final_hp`` / ``hp_sd`` / ``hp_n`` (additive keys).
     """
     from workbench.reasoning import rows_from_mcts
 
@@ -502,6 +510,7 @@ def combat_rows(
         if o.get("label"):
             row["action"] = o["label"]
         o["mean_final_hp"] = row.get("mean_final_hp")
+        o["hp_sd"] = row.get("hp_sd")
         o["hp_n"] = row.get("hp_n", 0)
     best = next((o for o in options if o.get("is_best")), None)
     if best is not None:
@@ -542,6 +551,17 @@ _SURFACE_STANDINS = {
     "treasure": ("boss_relic", "scored with the boss-relic head"),
 }
 
+#: Surfaces the advisor answers but has no policy FOR, keyed to the player-facing
+#: reason that rides on ``advice.hand_back`` (GH #874). A borrowed head is
+#: honest in the HUD note, but it is still not the AI deciding, so F7 hands the
+#: screen back instead of playing it. Delete an entry when its surface gets a
+#: trained head (GH #379); the mod keeps no list of its own, so the pause goes
+#: away with it.
+_HAND_BACK_SURFACES = {
+    "treasure": "the chest relic pick has no trained policy",
+    "card_bundle": "card bundles have no trained policy",
+}
+
 
 #: Characters whose run-policy net has already been warmed this session.
 _WARMED: set[str] = set()
@@ -580,10 +600,15 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
     is the failure this whole pass is about. So the first option is named as
     the pick and the note says plainly that nothing ranked it: an arbitrary
     choice the player can see is arbitrary beats a silent stall.
+
+    Every answer from here also carries ``hand_back`` (GH #874): with the
+    mod's default ``pause_on: "unsupported"`` F7 stops here and gives the
+    player the screen, so the first-option pick only plays when they opted
+    out of pausing (unattended runs).
     """
     options = state.get("options") or state.get("cards") or state.get("nodes") or []
     if not options:
-        return {"note": f"{why} (nothing to pick)"}
+        return {"note": f"{why} (nothing to pick)", "hand_back": why}
     labels = [
         str(o.get("label") or o.get("name") or o.get("id") or f"option {i}")
         for i, o in enumerate(options)
@@ -598,6 +623,7 @@ def _unranked(state: dict[str, Any], why: str) -> dict[str, Any]:
             for i, label in enumerate(labels)
         ],
         "best": {"action": "choose", "index": 0, "label": labels[0]},
+        "hand_back": why,
     }
 
 
@@ -705,7 +731,7 @@ def compute_screen_advice(
     character = character_display_name(run_state.get("character")) or "Ironclad"
     policy, error = policies.get(character)
     if policy is None:
-        return {"note": f"no run-policy net: {error}"}
+        return {"note": f"no run-policy net: {error}", "hand_back": "no run-policy net is loaded"}
 
     standin_note = ""
     if advice_for == "card_select":
@@ -840,6 +866,8 @@ def compute_screen_advice(
         note += " · scored as a deck pick; this copy only lasts the fight"
 
     advice = {"note": note, "options": options, "best": best}
+    if advice_for in _HAND_BACK_SURFACES:
+        advice["hand_back"] = _HAND_BACK_SURFACES[advice_for]
 
     if advice_for == "map_select":
         path = _project_map_path(state, policy, best_i, hp_table=_projection_hp_table())
@@ -1601,7 +1629,7 @@ def _handle_advice_request(
         # len()` cost a whole debugging round on 2026-08-24 for exactly that
         # reason.
         logger.error("advice_request failed: %s", e, exc_info=True)
-        advice = {"note": f"advisor error: {e}"}
+        advice = {"note": f"advisor error: {e}", "hand_back": "the advisor hit an error"}
 
     elapsed = time.monotonic() - t0
     reply = {

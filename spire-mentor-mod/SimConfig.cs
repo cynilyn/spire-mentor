@@ -17,6 +17,7 @@
 // mod dir is never written.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
@@ -79,6 +80,25 @@ public sealed class SimConfig
     /// measures play quality.
     /// </summary>
     public bool AdvisorAutoplay { get; init; } = false;
+
+    /// <summary>
+    /// Where F7 autoplay stops and hands the decision back to the player
+    /// (GH #874; see AutoplayPause.cs). `"unsupported"` = every decision the
+    /// advisor flags as not really its own (`advice.hand_back`: the unranked
+    /// first-option pick, a borrowed head, an advisor error) plus the screens
+    /// the mod answers blind (the crystal sphere). Any other entry is an
+    /// event id / `advice_for` / screen name to always play yourself, e.g.
+    /// `"unsupported, Neow"`. Empty = never pause.
+    ///
+    /// Read <see cref="EffectivePauseOn"/>, not this: `advisor_autoplay` is
+    /// unattended and forces it empty, so a climb or a regression run can
+    /// never wait for a player who is not there.
+    /// </summary>
+    public IReadOnlyList<string> PauseOn { get; init; } = AutoplayPause.Default;
+
+    /// <summary><see cref="PauseOn"/> as it applies to this launch.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> EffectivePauseOn => AutoplayPause.Effective(PauseOn, AdvisorAutoplay);
 
     /// <summary>
     /// Resume the run already in progress instead of starting a new one:
@@ -271,6 +291,7 @@ public sealed class SimConfig
                 AgentTimeoutSeconds = ReadInt(root, "agent_timeout_seconds", defaults.AgentTimeoutSeconds),
                 AutoStart = ReadBool(root, "auto_start", defaults.AutoStart),
                 AdvisorAutoplay = ReadBool(root, "advisor_autoplay", defaults.AdvisorAutoplay),
+                PauseOn = AutoplayPause.FromJson(root, "pause_on", defaults.PauseOn),
                 ResumeRun = ReadBool(root, "resume_run", defaults.ResumeRun),
                 FastMode = ReadString(root, "fast_mode", defaults.FastMode),
                 TimeScale = ReadDouble(root, "time_scale", defaults.TimeScale),

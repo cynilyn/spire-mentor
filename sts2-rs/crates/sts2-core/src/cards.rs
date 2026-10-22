@@ -2068,6 +2068,187 @@ pub(crate) fn pop_next_card(player: &mut PlayerCombatState, rng: &mut CombatRng)
     player.draw.remove(idx)
 }
 
+/// Pop the PHYSICAL TOP card of a non-empty draw pile for an effect that
+/// takes "the top card" without drawing it — C#
+/// `CardPileCmd.AutoPlayFromDrawPile(.., CardPilePosition.Top, ..)`'s
+/// `drawPile.Cards.FirstOrDefault()` (Havoc, Cascade, Distilled Chaos,
+/// Mayhem, I Am Invincible) and ToastyMittens' exhaust-top. GH #785.
+///
+/// Under [`PlayerCombatState::deferred_draw_order`] the physical top of
+/// the unknown middle is not `draw[0]`: that segment is kept CANONICAL
+/// (uid-sorted), so `draw[0]` is merely its lowest-uid card. "The top
+/// card" is the same random variable "the next card drawn" is, so this
+/// delegates to [`pop_next_card`] — a known `pinned_top` card pops
+/// deterministically with no RNG, a >=2-card unknown middle samples
+/// uniformly and consumes the shuffle stream (the search's chance node),
+/// and the known-bottom stack goes last. It then clears the popped card's
+/// pin, exactly as a draw does.
+///
+/// With the flag clear (every clairvoyant / parity / fixture state) this is
+/// `draw.remove(0)` plus the `unpin` — byte-identical to the raw pop each
+/// call site used to hand-write, with no RNG read.
+///
+/// Panics if `player.draw` is empty — callers check first.
+pub(crate) fn pop_top_card(player: &mut PlayerCombatState, rng: &mut CombatRng) -> CardUid {
+    let uid = pop_next_card(player, rng);
+    unpin(player, uid);
+    uid
+}
+
+/// PEEK at the physical top of the draw pile for an effect that only acts
+/// when that card satisfies `pred`, leaving the card where it is: C#
+/// `IAmInvincible.AfterAutoPostPlayPhaseEntered`'s
+/// `drawPile.Cards.FirstOrDefault() == this`. Returns the top card when it
+/// satisfies `pred`, `None` otherwise (or when the pile is empty). GH #785.
+///
+/// With [`PlayerCombatState::deferred_draw_order`] clear this reads
+/// `draw[0]` and never mutates or touches RNG.
+///
+/// Under a deferred-order pile the top is only known when it is pinned, or
+/// when the unknown middle has at most one card (the top is then that card,
+/// or the first of the known-bottom stack). Otherwise "what is on top?" is
+/// a chance event, resolved the way [`pop_next_card`] resolves a draw: one
+/// RNG read picks a card from the unknown middle, which is then MOVED to
+/// the physical top and PINNED there. The pin is what keeps the later draw
+/// consistent with the peek: the card the peek saw on top is the card the
+/// next pop takes, with no second RNG read.
+///
+/// If no card of the unknown middle satisfies `pred`, every possible top
+/// gives the same answer, so this returns `None` WITHOUT reading RNG or
+/// pinning anything. That matters because the I Am Invincible peek runs at
+/// every turn end, whatever the deck: only a pile that can actually hold an
+/// I Am Invincible on top forms a chance node.
+///
+/// Two caveats about the SAMPLED pin (the player only learns "the top is
+/// not a match", never which card it is):
+///
+/// - **No player decision may see it.** The pinned uid is visible to the
+///   search, so a decision node that saw it would know the exact top card.
+///   The only caller, the I Am Invincible rider, runs where C# runs it
+///   (`AfterAutoPostPlayPhaseEntered`, the first step of
+///   `EndPlayerTurnPhaseOneInternal`, `CombatManager.cs:1168-1170`; GH #894),
+///   ahead of `BeforeTurnEnd` and every turn-end choice. So it hands a
+///   sampled miss back, and its call site drops the pin at once with
+///   [`drop_sampled_top_pin`], before anything can surface a choice.
+///   Dropping forgets that the top is not a match: the next draw can take
+///   an I Am Invincible that C# could not have had on top (probability k/n
+///   for k copies in an n-card unknown middle). That only affects decks
+///   holding an I Am Invincible in the unknown middle, and it errs toward
+///   the search knowing less than the player, never more.
+/// - **Random inserts land below it.** A pinned top is treated as known,
+///   so [`insert_into_unknown_sorted`] (enemy status shuffles during the
+///   enemy turn) and the deferred [`shuffle`] keep it on top, while C#
+///   `CardPileCmd.Add(.., Random)` lands above the top card with
+///   probability `1/(n+1)`. The Headbutt / Thinking Ahead pins carry this
+///   approximation. The I Am Invincible pin no longer does: it is dropped
+///   before the enemy turn (above), so an inserted status joins the unknown
+///   middle and can be the next draw, as in C#.
+pub(crate) fn peek_top_card_if(
+    player: &mut PlayerCombatState,
+    rng: &mut CombatRng,
+    pred: impl Fn(CardUid) -> bool,
+) -> Option<CardUid> {
+    let &top = player.draw.first()?;
+    if !player.deferred_draw_order {
+        return pred(top).then_some(top);
+    }
+    // Same staleness sweep as `pop_next_card`: a stale pin must not make
+    // the top look known.
+    player.pinned_top.retain(|uid| player.draw.contains(uid));
+    player.pinned_bottom.retain(|uid| player.draw.contains(uid));
+    let middle_len = player.draw.len().saturating_sub(player.pinned_bottom.len());
+    if !player.pinned_top.is_empty() || middle_len <= 1 {
+        // The top is known: a pinned card, the only unknown card, or the
+        // first card of the known-bottom stack.
+        let top = player.draw[0];
+        return pred(top).then_some(top);
+    }
+    if !player.draw[..middle_len].iter().any(|&uid| pred(uid)) {
+        return None;
+    }
+    let idx = rng.next_int(0, (middle_len - 1) as i32) as usize;
+    let uid = player.draw.remove(idx);
+    player.draw.insert(0, uid);
+    pin_top(player, uid);
+    pred(uid).then_some(uid)
+}
+
+/// Undo the PIN of a top card that [`peek_top_card_if`] SAMPLED and that did
+/// not satisfy its predicate: take it off the physical top, clear its pin and
+/// fold it back into the canonical (uid-sorted) unknown middle. The pile is
+/// then laid out exactly as before the peek; only the RNG cursor moved, and
+/// `chance_outcome_hash` ignores that, so every miss of one peek is the same
+/// search outcome. GH #785 / #894.
+///
+/// The pin named a hidden card (the player learned only "the top is not a
+/// match"), so a caller whose next steps can surface a player choice drops it
+/// first — see the caveat on [`peek_top_card_if`] for what that forgets.
+///
+/// Pass only a card the caller's own peek sampled: a KNOWN pin (Headbutt,
+/// Nostalgia) is information the player has and must never be dropped. As a
+/// guard, this is a no-op unless `uid` is the pinned physical top of a
+/// deferred-order pile.
+pub(crate) fn drop_sampled_top_pin(player: &mut PlayerCombatState, uid: CardUid) {
+    if !player.deferred_draw_order
+        || player.draw.first() != Some(&uid)
+        || !player.pinned_top.contains(&uid)
+    {
+        return;
+    }
+    player.draw.remove(0);
+    unpin(player, uid);
+    insert_into_unknown_sorted(player, uid);
+}
+
+/// Remove and return the FIRST draw-pile card, counting from the physical
+/// top, that satisfies `pred`; `None` if no card does. C#
+/// `drawPile.Cards.FirstOrDefault(pred)` followed by a move out of the
+/// pile — ToastyMittens' round-1 "first non-Innate card" exhaust. GH #785.
+///
+/// With [`PlayerCombatState::deferred_draw_order`] clear this is
+/// `draw.iter().position(pred)` + `draw.remove(..)`, with no RNG read.
+///
+/// Under a deferred-order pile, the pile is walked as the player knows it:
+/// the pinned top cards in order first; then the unknown middle, where the
+/// first match in a uniformly random order is a uniformly random match, so
+/// one RNG read picks among the matching middle cards when there are two or
+/// more (a single match is taken with no RNG read); then the known-bottom
+/// stack in order. The removed card's pin, if any, is cleared.
+pub(crate) fn pop_first_card_matching(
+    player: &mut PlayerCombatState,
+    rng: &mut CombatRng,
+    pred: impl Fn(CardUid) -> bool,
+) -> Option<CardUid> {
+    let idx = if player.deferred_draw_order {
+        player.pinned_top.retain(|uid| player.draw.contains(uid));
+        player.pinned_bottom.retain(|uid| player.draw.contains(uid));
+        let top_len = player.pinned_top.len();
+        let middle_end = player.draw.len().saturating_sub(player.pinned_bottom.len());
+        if let Some(i) = player.draw[..top_len].iter().position(|&uid| pred(uid)) {
+            i
+        } else {
+            let matches: SmallVec<[usize; 32]> = (top_len..middle_end)
+                .filter(|&i| pred(player.draw[i]))
+                .collect();
+            match matches.len() {
+                0 => {
+                    middle_end
+                        + player.draw[middle_end..]
+                            .iter()
+                            .position(|&uid| pred(uid))?
+                }
+                1 => matches[0],
+                n => matches[rng.next_int(0, (n - 1) as i32) as usize],
+            }
+        }
+    } else {
+        player.draw.iter().position(|&uid| pred(uid))?
+    };
+    let uid = player.draw.remove(idx);
+    unpin(player, uid);
+    Some(uid)
+}
+
 /// Insert `uid` into the unknown middle segment of `player.draw`,
 /// preserving canonical (uid-ascending) sortedness, consuming NO RNG (bead
 /// `sts2-rs-09x5n`, F2 `HiddenInfoMode::BeliefDraw`).
@@ -2089,8 +2270,9 @@ pub(crate) fn insert_into_unknown_sorted(player: &mut PlayerCombatState, uid: Ca
     // Stale-pin sweep FIRST — same retain-against-draw sweep
     // [`crate::blindfold::canonicalize_unknown_middle`] and [`shuffle`]
     // perform. Without it, a pin whose card left the pile WITHOUT an
-    // `unpin` (e.g. Havoc/Cascade's `auto_play_card_from_draw_top` pops
-    // the pinned top via raw `draw.remove(0)`) would be RESURRECTED by
+    // `unpin` (e.g. a raw `draw.remove(pos)` at some content call site;
+    // the Havoc/Cascade top pop was one before GH #785 routed it through
+    // `pop_top_card`) would be RESURRECTED by
     // the rebuild below: `draw.extend(top)` re-inserts a uid that now
     // also lives in play/exhaust — duplicating the card across piles.
     // Reviewer-caught (bead `sts2-rs-09x5n` re-review).
@@ -5331,6 +5513,326 @@ mod tests {
         assert_eq!(rng.counter(), before, "false flag must never touch RNG");
     }
 
+    // ── Top-of-draw helpers (GH #785) ──────────────────────────────────
+    //
+    // Havoc / Cascade / Distilled Chaos / Mayhem / I Am Invincible /
+    // ToastyMittens act on the PHYSICAL top of the draw pile. Under a
+    // deferred-order pile the unknown middle is kept uid-sorted, so its
+    // `draw[0]` is a fixed stand-in (the lowest uid), not the top.
+
+    #[test]
+    fn pop_top_card_multi_card_segment_consumes_rng() {
+        let mut p = deferred_player_with_draw(&[1, 2, 3, 4, 5]);
+        let mut rng = crate::dotnet_rng::Rng::new(123);
+        let before = rng.counter();
+        let popped = pop_top_card(&mut p, &mut rng);
+        assert!((1..=5).map(uid).any(|u| u == popped));
+        assert_eq!(
+            rng.counter(),
+            before + 1,
+            "the top of a >=2-card unknown middle is a chance event: one RNG read"
+        );
+        assert!(
+            p.draw.windows(2).all(|w| w[0] < w[1]),
+            "the rest of the unknown middle stays canonical: {:?}",
+            p.draw
+        );
+    }
+
+    /// The bias the issue is about: the old raw `draw.remove(0)` always took
+    /// the lowest uid. Every card of the unknown middle must be reachable.
+    #[test]
+    fn pop_top_card_reaches_every_card_of_the_unknown_middle() {
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..128i32 {
+            let mut p = deferred_player_with_draw(&[10, 20, 30]);
+            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            seen.insert(pop_top_card(&mut p, &mut rng).get());
+        }
+        assert_eq!(seen, std::collections::BTreeSet::from([10, 20, 30]));
+    }
+
+    #[test]
+    fn pop_top_card_pinned_top_is_deterministic_and_consumes_its_pin() {
+        let mut p = deferred_player_with_draw(&[3, 1, 2, 4]);
+        pin_top(&mut p, uid(3));
+        let mut rng = crate::dotnet_rng::Rng::new(7);
+        let before = rng.counter();
+        assert_eq!(pop_top_card(&mut p, &mut rng), uid(3));
+        assert_eq!(rng.counter(), before, "a known top must not touch RNG");
+        assert!(p.pinned_top.is_empty(), "the popped card's pin is consumed");
+    }
+
+    #[test]
+    fn pop_top_card_false_flag_is_legacy_remove_front_plus_unpin() {
+        let mut p = player_with_draw(&[5, 4, 3, 2, 1]);
+        pin_top(&mut p, uid(5));
+        let mut rng = crate::dotnet_rng::Rng::new(999);
+        let before = rng.counter();
+        assert_eq!(pop_top_card(&mut p, &mut rng), uid(5));
+        assert_eq!(pop_top_card(&mut p, &mut rng), uid(4));
+        assert_eq!(rng.counter(), before, "clairvoyant mode never touches RNG");
+        assert_eq!(p.draw.as_slice(), &[uid(3), uid(2), uid(1)]);
+        assert!(p.pinned_top.is_empty());
+    }
+
+    #[test]
+    fn peek_top_card_if_false_flag_reads_front_without_mutating() {
+        let mut p = player_with_draw(&[5, 4, 3]);
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        assert_eq!(
+            peek_top_card_if(&mut p, &mut rng, |u| u == uid(5)),
+            Some(uid(5))
+        );
+        assert_eq!(peek_top_card_if(&mut p, &mut rng, |u| u == uid(4)), None);
+        assert_eq!(rng.counter(), before);
+        assert_eq!(p.draw.as_slice(), &[uid(5), uid(4), uid(3)]);
+        assert!(p.pinned_top.is_empty());
+    }
+
+    #[test]
+    fn peek_top_card_if_no_matching_candidate_reads_no_rng_and_pins_nothing() {
+        let mut p = deferred_player_with_draw(&[1, 2, 3, 4]);
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        assert_eq!(peek_top_card_if(&mut p, &mut rng, |u| u == uid(99)), None);
+        assert_eq!(
+            rng.counter(),
+            before,
+            "an answer that is the same for every possible top is no chance event"
+        );
+        assert!(p.pinned_top.is_empty());
+        assert_eq!(p.draw.as_slice(), &[uid(1), uid(2), uid(3), uid(4)]);
+    }
+
+    /// A matching card in a >=2-card unknown middle makes the peek a chance
+    /// event; the sampled card is pinned on top, so the pop that follows (a
+    /// match) or the next draw (no match) takes that same card, RNG-free.
+    #[test]
+    fn peek_top_card_if_samples_pins_and_the_next_pop_agrees() {
+        let mut outcomes = std::collections::BTreeSet::new();
+        for seed in 0..128i32 {
+            let mut p = deferred_player_with_draw(&[1, 2, 3]);
+            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            let before = rng.counter();
+            let peeked = peek_top_card_if(&mut p, &mut rng, |u| u == uid(2));
+            assert_eq!(rng.counter(), before + 1, "seed {seed}: one RNG read");
+            let top = p.draw[0];
+            assert_eq!(p.pinned_top.as_slice(), &[top], "seed {seed}: top pinned");
+            assert_eq!(peeked, (top == uid(2)).then_some(top));
+            let after_peek = rng.counter();
+            assert_eq!(pop_top_card(&mut p, &mut rng), top, "seed {seed}");
+            assert_eq!(rng.counter(), after_peek, "seed {seed}: pop is RNG-free");
+            outcomes.insert(peeked.is_some());
+        }
+        assert_eq!(
+            outcomes,
+            std::collections::BTreeSet::from([false, true]),
+            "both outcomes of the peek must be reachable"
+        );
+    }
+
+    #[test]
+    fn peek_top_card_if_known_top_is_deterministic() {
+        // Pinned top.
+        let mut p = deferred_player_with_draw(&[3, 1, 2]);
+        pin_top(&mut p, uid(3));
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        assert_eq!(
+            peek_top_card_if(&mut p, &mut rng, |u| u == uid(3)),
+            Some(uid(3))
+        );
+        assert_eq!(peek_top_card_if(&mut p, &mut rng, |u| u == uid(1)), None);
+        // Single-card unknown middle above a known bottom.
+        let mut q = deferred_player_with_draw(&[1, 2]);
+        pin_bottom(&mut q, uid(2));
+        assert_eq!(
+            peek_top_card_if(&mut q, &mut rng, |u| u == uid(1)),
+            Some(uid(1))
+        );
+        assert_eq!(rng.counter(), before, "a known top must not touch RNG");
+        assert!(
+            q.pinned_top.is_empty(),
+            "nothing to pin when the top is known"
+        );
+    }
+
+    #[test]
+    fn pop_first_card_matching_false_flag_is_position_then_remove() {
+        let mut p = player_with_draw(&[5, 4, 3, 2]);
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        let odd = |u: CardUid| u.get() % 2 == 1;
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), Some(uid(5)));
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), Some(uid(3)));
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), None);
+        assert_eq!(rng.counter(), before);
+        assert_eq!(p.draw.as_slice(), &[uid(4), uid(2)]);
+    }
+
+    #[test]
+    fn pop_first_card_matching_walks_known_top_then_samples_the_middle() {
+        let odd = |u: CardUid| u.get() % 2 == 1;
+        // A matching pinned top is taken first, with no RNG read.
+        let mut p = deferred_player_with_draw(&[7, 1, 2, 3]);
+        pin_top(&mut p, uid(7));
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), Some(uid(7)));
+        assert_eq!(rng.counter(), before);
+        assert!(p.pinned_top.is_empty());
+
+        // A non-matching pinned top is skipped; two matches in the middle
+        // are a chance event, and both are reachable.
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..64i32 {
+            let mut p = deferred_player_with_draw(&[8, 1, 2, 3]);
+            pin_top(&mut p, uid(8));
+            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            let before = rng.counter();
+            let got = pop_first_card_matching(&mut p, &mut rng, odd).expect("a match");
+            assert_eq!(rng.counter(), before + 1, "seed {seed}");
+            assert_eq!(p.pinned_top.as_slice(), &[uid(8)], "the known top stays");
+            assert_eq!(p.draw[0], uid(8));
+            seen.insert(got.get());
+        }
+        assert_eq!(seen, std::collections::BTreeSet::from([1, 3]));
+
+        // A single middle match is forced: no RNG read.
+        let mut p = deferred_player_with_draw(&[1, 2, 4]);
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), Some(uid(1)));
+        assert_eq!(rng.counter(), before);
+    }
+
+    #[test]
+    fn pop_first_card_matching_falls_back_to_known_bottom_then_none() {
+        let odd = |u: CardUid| u.get() % 2 == 1;
+        let mut p = deferred_player_with_draw(&[2, 4, 3]);
+        pin_bottom(&mut p, uid(3));
+        let mut rng = crate::dotnet_rng::Rng::new(1);
+        let before = rng.counter();
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), Some(uid(3)));
+        assert!(
+            p.pinned_bottom.is_empty(),
+            "the taken card's pin is consumed"
+        );
+        assert_eq!(pop_first_card_matching(&mut p, &mut rng, odd), None);
+        assert_eq!(rng.counter(), before);
+        assert_eq!(p.draw.as_slice(), &[uid(2), uid(4)]);
+    }
+
+    /// GH #785 / #894: dropping a sampled miss restores the pile exactly as it
+    /// was before the peek (canonical middle, no top pin, the known bottom
+    /// untouched), so the misses of one peek are one state whatever card was
+    /// sampled. A known pin, or a card that is not the pinned top, is left
+    /// alone.
+    #[test]
+    fn drop_sampled_top_pin_restores_the_pre_peek_pile() {
+        let mut dropped_states = std::collections::BTreeSet::new();
+        let mut sampled = std::collections::BTreeSet::new();
+        for seed in 0..64i32 {
+            let mut p = deferred_player_with_draw(&[1, 2, 3, 4, 5]);
+            pin_bottom(&mut p, uid(5));
+            let before = p.clone();
+            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            if peek_top_card_if(&mut p, &mut rng, |u| u == uid(2)).is_some() {
+                continue;
+            }
+            let top = p.draw[0];
+            assert_eq!(
+                p.pinned_top.as_slice(),
+                &[top],
+                "seed {seed}: a sampled pin"
+            );
+            sampled.insert(top.get());
+            drop_sampled_top_pin(&mut p, top);
+            assert_eq!(p.draw, before.draw, "seed {seed}");
+            assert_eq!(p.pinned_top, before.pinned_top, "seed {seed}");
+            assert_eq!(p.pinned_bottom, before.pinned_bottom, "seed {seed}");
+            dropped_states.insert(format!("{:?}", (&p.draw, &p.pinned_top, &p.pinned_bottom)));
+        }
+        assert!(
+            sampled.len() >= 2,
+            "fixture: several hidden tops were sampled: {sampled:?}"
+        );
+        assert_eq!(dropped_states.len(), 1, "every miss drops to one pile");
+
+        // A known pin is not a sampled one: nothing happens.
+        let mut p = deferred_player_with_draw(&[3, 1, 2]);
+        pin_top(&mut p, uid(3));
+        let known = p.clone();
+        drop_sampled_top_pin(&mut p, uid(1));
+        assert_eq!(p, known, "uid 1 is not the pinned top");
+        // ... and the clairvoyant pile is never touched.
+        let mut q = player_with_draw(&[3, 1, 2]);
+        pin_top(&mut q, uid(3));
+        let clair = q.clone();
+        drop_sampled_top_pin(&mut q, uid(3));
+        assert_eq!(q, clair, "flag clear: no-op");
+    }
+
+    /// The peek samples its top from the unknown MIDDLE only: a known-bottom
+    /// card that satisfies `pred` sits below the whole middle, so it can
+    /// never be "the top". A sample range that spilled into the bottom stack
+    /// would hoist it onto the top and re-pin it there.
+    #[test]
+    fn peek_top_card_if_never_samples_the_known_bottom() {
+        let mut outcomes = std::collections::BTreeSet::new();
+        for seed in 0..64i32 {
+            let mut p = deferred_player_with_draw(&[1, 2, 3]);
+            pin_bottom(&mut p, uid(3));
+            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            let before = rng.counter();
+            let peeked = peek_top_card_if(&mut p, &mut rng, |u| u == uid(2) || u == uid(3));
+            assert_eq!(rng.counter(), before + 1, "seed {seed}: one RNG read");
+            assert_ne!(
+                peeked,
+                Some(uid(3)),
+                "seed {seed}: the bottom card is not on top"
+            );
+            assert_ne!(p.draw[0], uid(3), "seed {seed}");
+            assert_eq!(
+                p.draw.last(),
+                Some(&uid(3)),
+                "seed {seed}: bottom stays put"
+            );
+            assert_eq!(p.pinned_bottom.as_slice(), &[uid(3)], "seed {seed}");
+            assert!(!p.pinned_top.contains(&uid(3)), "seed {seed}");
+            outcomes.insert(peeked.map(CardUid::get));
+        }
+        assert_eq!(
+            outcomes,
+            std::collections::BTreeSet::from([None, Some(2)]),
+            "both middle cards are reachable as the top"
+        );
+    }
+
+    /// "First match from the top" walks the unknown middle before the
+    /// known-bottom stack: with exactly one middle match it is forced (no
+    /// RNG read), whatever matches further down in the bottom stack.
+    #[test]
+    fn pop_first_card_matching_takes_the_single_middle_match_before_the_known_bottom() {
+        for seed in 0..64i32 {
+            let mut p = deferred_player_with_draw(&[1, 2, 3]);
+            pin_bottom(&mut p, uid(3));
+            let mut rng = crate::dotnet_rng::Rng::new(seed);
+            let before = rng.counter();
+            let got = pop_first_card_matching(&mut p, &mut rng, |u| u == uid(1) || u == uid(3));
+            assert_eq!(got, Some(uid(1)), "seed {seed}");
+            assert_eq!(
+                rng.counter(),
+                before,
+                "seed {seed}: a forced pick reads no RNG"
+            );
+            assert_eq!(p.draw.as_slice(), &[uid(2), uid(3)], "seed {seed}");
+            assert_eq!(p.pinned_bottom.as_slice(), &[uid(3)], "seed {seed}");
+        }
+    }
+
     #[test]
     fn shuffle_sorts_instead_of_shuffling_under_deferred_flag() {
         let mut p = deferred_player_with_draw(&[5, 3, 1, 4, 2]);
@@ -5413,9 +5915,9 @@ mod tests {
     }
 
     /// Stale-pin resurrection guard (bead `sts2-rs-09x5n` re-review): a
-    /// pinned card removed from draw WITHOUT an `unpin` (the
-    /// Havoc/Cascade `auto_play_card_from_draw_top` path pops the top via
-    /// raw `draw.remove(0)`) must NOT be re-inserted by a later
+    /// pinned card removed from draw WITHOUT an `unpin` (a raw
+    /// `draw.remove(..)`, as the Havoc/Cascade top pop was before GH #785)
+    /// must NOT be re-inserted by a later
     /// `insert_into_unknown_sorted` rebuild — that would duplicate the
     /// card across draw AND play/exhaust. The function must retain-sweep
     /// the pin lists against the actual pile first, exactly like

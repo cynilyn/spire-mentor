@@ -102,6 +102,32 @@ def test_player_beats_ai_line_is_a_tie():
     assert d.verdict == "tie"
 
 
+def test_hp_gap_within_noise_reads_zero():
+    # GH #888: two near-equal rows, 2 HP apart with overlapping spread
+    # (SE of the difference 4 HP) -- rollout noise, not advice.
+    noisy = {"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50}
+    d = regret_review.assess_decision(_hp_step(noisy, {**noisy, "mean_final_hp": 58.0}))
+    assert d.hp_drop == 0
+    assert d.verdict == "tie"
+    assert "HP" not in d.message
+
+
+def test_hp_gap_clearing_noise_counts():
+    d = regret_review.assess_decision(_hp_step({"hp_sd": 5.0}, {"hp_sd": 5.0}))
+    assert d.hp_drop == 12
+    assert d.verdict == "blunder"
+
+
+def test_noise_gaps_do_not_sum_into_a_turn_grade():
+    # Clamp-then-sum turned three +1.5 HP jitters into a 4.5 HP slip.
+    noisy = {"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50}
+    played = {**noisy, "mean_final_hp": 58.5}
+    regrets = [regret_review.assess_decision(_hp_step(noisy, played)) for _ in range(3)]
+    grade = regret_review.grade_turn(regrets)
+    assert grade.hp_drop is None
+    assert grade.verdict == "best"
+
+
 def test_best_line_is_echoed():
     line = ["Bash", "Defend", "end turn"]
     d = regret_review.assess_decision(_hp_step({}, {}, best_line=line))

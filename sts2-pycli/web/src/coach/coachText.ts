@@ -16,12 +16,14 @@ export function turnChipText(rec: CoachTurnRecord): { title: string; lines: stri
       `Turn ${rec.turn ?? "?"} · you: ${rec.you.join(" → ")}`,
       `AI: ${rec.ai.join(" → ")}`,
       `${hp}win ${pct(rec.win_before)} → ${pct(rec.win_after)}${rec.peeked ? " (peeked)" : ""}`,
+      ...(rec.why ? [rec.why] : []),
     ],
   };
 }
 
 /** A turn as the recap / autopsy show it (the mod's `CoachPanelText.TurnBlock`):
- *  the position it started from, then your line, the AI's, and the cost. */
+ *  the position it started from, then your line, the AI's, the cost, and
+ *  the reason when there is one. */
 export function turnBlockLines(rec: CoachTurnRecord): string[] {
   const lines: string[] = [];
   const n = rec.turn ?? 0;
@@ -43,6 +45,7 @@ export function turnBlockLines(rec: CoachTurnRecord): string[] {
   } else {
     lines.push(`win ${pct(rec.win_before)} → ${pct(rec.win_after)}${peeked}`);
   }
+  if (rec.why) lines.push(rec.why);
   return lines;
 }
 

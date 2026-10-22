@@ -689,6 +689,7 @@ def _root_outcomes(advice: dict[str, Any]) -> list[dict[str, Any]]:
                 # advisor saw rather than re-deriving wins / visits.
                 "win_prob": o.get("p_win"),
                 "mean_final_hp": o.get("mean_final_hp"),
+                "hp_sd": o.get("hp_sd"),
                 "hp_n": o.get("hp_n", 0),
             }
         )

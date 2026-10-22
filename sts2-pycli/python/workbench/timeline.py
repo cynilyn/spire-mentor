@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any, TypedDict
 
+from workbench.seed import json_exact_seed
+
 
 class Step(TypedDict):
     idx: int
@@ -386,7 +388,7 @@ class TimelineStore:
                 {
                     # The HP-aware grade needs these; only the live writers
                     # record them (#850).
-                    **{k: r[k] for k in ("mean_final_hp", "hp_n") if k in r},
+                    **{k: r[k] for k in ("mean_final_hp", "hp_sd", "hp_n") if k in r},
                     "stable_idx": r.get("stable_idx"),
                     "action": r.get("action") or r.get("action_label"),
                     "target_index": r.get("target_index"),
@@ -424,7 +426,7 @@ class TimelineStore:
                         "act_name": act_name,
                         # Absent together: the room falls back to its stable
                         # per-floor hash unless it has all three.
-                        "bg_seed": run_seed,
+                        "bg_seed": None if run_seed is None else json_exact_seed(run_seed),
                         "bg_row": node.get("row") if node else None,
                         "bg_col": node.get("col") if node else None,
                         "advice": _compact_advice(advice),

@@ -1648,24 +1648,18 @@ fn thrash_fold_under_strike_dummy(version: sts2_core::GameVersion) -> i32 {
     state.cards[thrash.0.get() as usize - 1].base_damage
 }
 
-/// v0.107.1 Rust folds the exhausted Strike's printed 6 (no relic term).
+/// The fold's `Hook.ModifyDamage` carries the exhausted card as `cardSource`
+/// (Thrash.cs:70, same call in both builds), so StrikeDummy's +3 is folded:
+/// 4 + 6 + 3 (fuzz seed 395, `SPINY_TOAD_NORMAL`: Thrash hit 13 where C# hit
+/// 16). GH #806: no longer gated on v0.111.0.
 #[test]
-fn thrash_fold_skips_strike_dummy_v0107() {
-    assert_eq!(
-        thrash_fold_under_strike_dummy(sts2_core::GameVersion::V0_107_1),
-        10
-    );
-}
-
-/// v0.111.0: the fold's `Hook.ModifyDamage` carries the exhausted card as
-/// `cardSource` (Thrash.cs:70), so StrikeDummy's +3 is folded: 4 + 6 + 3
-/// (fuzz seed 395, `SPINY_TOAD_NORMAL`: Thrash hit 13 where C# hit 16).
-#[test]
-fn thrash_fold_includes_strike_dummy_v0111() {
-    assert_eq!(
-        thrash_fold_under_strike_dummy(sts2_core::GameVersion::V0_111_0),
-        13
-    );
+fn thrash_fold_includes_strike_dummy_both_versions() {
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        assert_eq!(thrash_fold_under_strike_dummy(version), 13, "{version:?}");
+    }
 }
 
 /// Push a card POD into `state.cards` and the Hand pile; returns its uid.

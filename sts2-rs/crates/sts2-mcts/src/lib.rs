@@ -54,13 +54,15 @@ use smallvec::SmallVec;
 #[cfg(test)]
 use sts2_core::StepResult;
 use sts2_core::{
-    apply as core_apply, evaluate_victory, is_terminal, legal_actions, loot_at_risk_hp_equiv,
-    state_hash, terminal_value, victory_hp_equiv_to_q, victory_hp_surplus, Action, CombatState,
+    apply as core_apply, evaluate_victory, evaluate_victory_carry, is_terminal, legal_actions,
+    loot_at_risk_hp_equiv, state_hash, terminal_value, victory_hp_equiv_to_q, victory_hp_surplus,
+    Action, CombatState,
 };
 
 pub mod action_index;
 pub mod corpus;
 pub mod dominance;
+pub mod enemy_eval;
 pub mod expert;
 pub mod hint;
 pub mod lethal_detector;
@@ -69,7 +71,15 @@ pub mod npz;
 pub mod quiescence;
 pub mod rollout_net;
 pub mod tt;
+pub mod turn_plan;
+pub mod turn_plan_features;
 pub mod value_net;
+pub mod values;
+
+#[cfg(test)]
+mod leaf_playouts_tests;
+#[cfg(test)]
+mod tree_reuse_tests;
 
 pub use lethal_detector::detect_lethal;
 
@@ -528,6 +538,67 @@ pub struct MctsConfig {
     /// See `logs/2026-08-14-exploration-arms/FINDINGS.md` §2 and
     /// `docs/research/2026-08-14-adaptive-exploration-beyond-fixed-c-puct.md` §6.1.
     pub fpu_reduction: Option<f32>,
+    /// Order the untried actions of every NON-ROOT decision node by the
+    /// playout net's own preference (GH #830, rung 4).
+    ///
+    /// A decision node expands its untried actions front to back, one per
+    /// visit (`remove(0)`), and [`canonicalize_actions`] fills that queue in
+    /// the fixed STS1-era [`expert::play_ordering`] ladder. Most simulations
+    /// cross the root turn's `EndTurn` and land on thinly visited next-turn
+    /// nodes, so the first move of the continuation the tree actually
+    /// stores comes from that ladder, not from the net that plays the
+    /// rollouts. With this on, each newly populated non-root decision node
+    /// scores its untried edges with
+    /// [`rollout_net::playout_logits`] — the very logits the rollout samples
+    /// from at that state — and stable-sorts them by logit descending, so a
+    /// partial expansion agrees with the playout policy. An edge the net
+    /// cannot score keeps its canonical place after the scored ones.
+    ///
+    /// Inert unless [`Self::rollout_policy`] is [`RolloutPolicyKind::Net`]
+    /// and a net exists for the node's state ([`rollout_net::net_for`]);
+    /// the root keeps its canonical order. The ordering draws no randomness
+    /// and touches no RNG stream, so a seeded search stays deterministic.
+    /// Default `false`: byte-identical to the engine before the knob
+    /// existed. Counted by [`Mcts::expand_order_stats`].
+    pub net_expand_order: bool,
+    /// Read telegraphed enemy attacks at the number the game displays
+    /// ([`enemy_eval::IncomingDamage::Effective`]: the dealer's Strength /
+    /// Weak, the player's Vulnerable / Intangible, a back attack's ×1.5)
+    /// instead of the move table's base number (GH #830 boss audit: a
+    /// Kaiser Crab Laser from behind is 61 on screen and 35 in the base
+    /// reading).
+    ///
+    /// Reaches the heuristic playout's HP-aware priorities (the Heuristic
+    /// and Learned rollout policies, and the Net policy's fallback for a
+    /// character without a net) and the proven-lost scoring
+    /// ([`Mcts::lost_position_override`]'s block credit, the root's
+    /// block guard). It does NOT change a playout net's inputs: a net reads
+    /// what its feature version reads ([`rollout_net::FeatureVersion::V3`]
+    /// is the effective-incoming net). Default `false`: byte-identical to
+    /// the engine before the knob existed.
+    pub effective_incoming: bool,
+    /// Count each multi-form or reviving enemy's remaining forms in the
+    /// loss band's "enemy HP removed" term ([`loss_quality_with`], via
+    /// [`enemy_eval::enemy_hp_remaining`]): Test Subject's later forms,
+    /// a dead Decimillipede segment that will reattach, Axebot respawns,
+    /// Phrog Parasite's Wrigglers, Gremlin Merc's gremlins; illusions count
+    /// nothing.
+    ///
+    /// Without it, killing Test Subject's first form reads as removing all
+    /// enemy HP and its revive as losing all of it, so a search in the loss
+    /// band avoids the kill (GH #830: on 86 Test Subject cells,
+    /// `loss_w_removed = 0` cut form-1 deaths 32 → 4). Default `false`:
+    /// byte-identical to the engine before the knob existed.
+    pub removed_counts_forms: bool,
+    /// How much of a won fight's end HP carries into the rest of the run, in
+    /// `[0, 1]` ([`sts2_core::evaluate_victory_carry`], GH #771). 0 for the
+    /// run's last boss, where only winning counts; 0 or 0.2 after an act-1
+    /// or act-2 boss, whose missing HP the next Ancient heals. `None` and
+    /// [`Self::win_potion_carry`] `None` ⇒ the deployed win value.
+    pub win_hp_carry: Option<f32>,
+    /// The same for held potions: 0 lets the run's last boss drink its belt
+    /// without the search pricing what it keeps. `None` ⇒ carry 1.
+    pub win_potion_carry: Option<f32>,
     /// KataGo's dynamic variance-scaled cPUCT: the exploration term is
     /// multiplied by
     /// `1 + cpuct_utility_stdev_scale · (σ_node / cpuct_utility_stdev_prior − 1)`,
@@ -633,6 +704,83 @@ pub struct MctsConfig {
     /// permitted (and are the way to increase aggression) but floor at
     /// zero, which discards ordering information below `-B`.
     pub backup_power_shift: f32,
+
+    /// **Playouts per non-decisive leaf** (GH #830, deep bets build 1: the
+    /// G-A "where does compute pay" probe, arm L4). Default `1` is the
+    /// historical single playout, on the unchanged code path: no extra
+    /// clone, no extra RNG draw.
+    ///
+    /// At `k > 1` the leaf is evaluated by `k` playouts and backed up as
+    /// their mean:
+    ///
+    /// * **Playout 0 is today's playout, untouched**: the realized leaf
+    ///   state, its own RNG cursors, and the simulation's policy RNG.
+    /// * **Playouts `1..k`** each run on a fresh clone of the realized leaf
+    ///   after `reseed_for_outcome(clone, sim_rng.next_u64(), i)`, i.e. a
+    ///   fresh sample of every combat RNG stream (and so, under
+    ///   [`HiddenInfoMode::BeliefDraw`], of the hidden draw order, which is
+    ///   drawn from the shuffle stream at draw time), and continue the same
+    ///   policy RNG.
+    /// * The **backed-up value** is the mean of the `k` playout values, each
+    ///   clamped exactly as a single leaf value is. That mean is also what
+    ///   `value_sq_sum` accumulates, so a node's return variance
+    ///   ([`RootOutcome::value_variance`]) is the variance of the k-mean.
+    /// * Everything else a leaf feeds comes from **playout 0 alone**: the
+    ///   win / loss / tie bucket (and so the `wins > 0` gate of
+    ///   [`Mcts::lost_position_override`]'s proven-loss salvage rule), the
+    ///   final-HP statistic, and the best-sequence capture. A decisive
+    ///   (proven or terminal) leaf runs no playout at any `k`.
+    /// * Counters: `rollouts_total` grows by `k` per leaf, `depth_cap_hits`
+    ///   by every playout that stopped at the depth cap.
+    ///
+    /// Only the RNG streams are re-sampled. Under the modes that keep a
+    /// materialized draw-pile order ([`HiddenInfoMode::Clairvoyant`],
+    /// `RootScramble`, `DrawChance`) the extra playouts therefore draw in
+    /// the leaf's pile order; only `BeliefDraw` (deployed) re-samples the
+    /// draw itself. Values below 1 behave as 1.
+    ///
+    /// **Sibling comparisons get less from the extras than from playout
+    /// 0.** Playout 0 runs on the leaf's own streams, and a deterministic
+    /// edge leaves the streams as they were, so two siblings reached by
+    /// deterministic plays deal their playout 0 the same next hands and
+    /// monster rolls (common random numbers for free). The extras are
+    /// seeded from the per-simulation `sim_rng`, so two siblings' extras
+    /// see independent environments. The k-mean therefore shrinks the
+    /// noise of a sibling difference less than `k` matched playouts would:
+    /// a review probe on 10 dev_v1 opening sibling pairs (GH #830) put
+    /// k = 4 as built at a median ~13% more difference variance than k = 4
+    /// with matched extras (about k ≈ 3.5 matched), still 2.3–3.7x below
+    /// k = 1. Read a `leaf_playouts` arm as a slightly conservative
+    /// ceiling for the leaf-precision route. Seeding the extras from the
+    /// leaf's streams instead would match siblings' extras but fix the
+    /// extras' environments for a whole deterministic subtree, so it is a
+    /// different estimator, not a free improvement.
+    pub leaf_playouts: u32,
+    /// Key the transposition table on [`sts2_core::tt_hash_v2`] instead of
+    /// [`sts2_core::search_hash`] (GH #830, deep bets build 2). Default
+    /// `false`: the deployed search, bit-identical.
+    ///
+    /// `search_hash` reads neither the belt the game plays from
+    /// (`player.potions`; it hashes the legacy `CombatState::potions`
+    /// arena) nor the player's powers (they live on the player's mirror
+    /// creature; it hashes the legacy `player.powers` list). Drinking a
+    /// potion whose effect is a player power or a belt change — 18 of the
+    /// 50 potions drinkable at a fight's opening, Strength, Dexterity, Flex,
+    /// Lucky Tonic, Stable Serum, Fysh Oil among them — leaves the key
+    /// unchanged, and the table merges the drank-it node into a
+    /// still-holds-it one. It also keys powers on their arena uid, which
+    /// splits one position into one node per order the powers were applied
+    /// in. v2 folds the belt and the mirror creature's powers in and sorts
+    /// powers by their fields instead ([`sts2_core::tt_hash_v2`]).
+    ///
+    /// Only the table key moves. Each node's [`MctsNode::search_hash`]
+    /// stays `search_hash` (the non-observational chance dedup compares
+    /// it), and chance-outcome dedup stays on
+    /// [`sts2_core::chance_outcome_hash`], which has the same belt gap.
+    /// A dominance-pruned node's v2 key carries the same salt
+    /// ([`dominance::salt`]) its `search_hash` does, so the pruning stays
+    /// path-conditional under either key.
+    pub tt_hash_v2: bool,
 }
 
 /// How simulation returns combine on the way back up the tree
@@ -782,7 +930,13 @@ pub enum HiddenInfoMode {
     ///   outcome-sampling mechanism, so there is nothing left to
     ///   re-materialize.
     /// * **Dedup**: chance-outcome deduplication uses
-    ///   [`sts2_core::chance_outcome_hash`], same as `DrawChance`.
+    ///   [`sts2_core::chance_outcome_hash`], same as `DrawChance`. It folds
+    ///   every face-up pile the sampled card can land in observationally:
+    ///   Hand for a draw, and (GH #785) Exhaust / Discard / Play for the
+    ///   top-of-draw consumers (Havoc, Cascade, Distilled Chaos, Mayhem,
+    ///   I Am Invincible, ToastyMittens), which also sample from the
+    ///   unknown middle — so a homogeneous segment dedups to one child for
+    ///   those too.
     /// * **Widening class**: a chance node is marked draw-triggered
     ///   ([`MctsNode::chance_is_draw_triggered`], selecting
     ///   [`WideningClass::Draw`]) whenever `cards_drawn` advanced — no
@@ -983,11 +1137,23 @@ impl MctsConfig {
     /// per-seed `--timeout-ms`, must still account for it.
     pub fn apply_mode_dialect(&mut self) {
         if self.hidden_info == HiddenInfoMode::BeliefDraw {
-            self.c_puct = belief_draw_c_puct(self.max_simulations);
-            self.draw_widening_c = BELIEF_DRAW_DRAW_WIDENING_C;
-            (self.endturn_widening_c, self.endturn_widening_alpha) = BELIEF_DRAW_ENDTURN_WIDENING;
-            self.rollout_policy = RolloutPolicyKind::Net;
+            self.apply_belief_draw_dialect();
         }
+    }
+
+    /// The BeliefDraw dialect's values regardless of the hidden-info mode.
+    ///
+    /// [`Self::apply_mode_dialect`] applies them only under BeliefDraw, so a
+    /// clairvoyant search otherwise also falls back to the legacy c_puct,
+    /// EndTurn widening and heuristic playout. Calling this on a clairvoyant
+    /// config gives an arm that differs from the deployed honest search in
+    /// information alone (GH #830). Draw widening is inert there: a
+    /// clairvoyant search builds no draw chance nodes.
+    pub fn apply_belief_draw_dialect(&mut self) {
+        self.c_puct = belief_draw_c_puct(self.max_simulations);
+        self.draw_widening_c = BELIEF_DRAW_DRAW_WIDENING_C;
+        (self.endturn_widening_c, self.endturn_widening_alpha) = BELIEF_DRAW_ENDTURN_WIDENING;
+        self.rollout_policy = RolloutPolicyKind::Net;
     }
 
     /// The `(C, α)` pair that sizes a chance node of `class`.
@@ -1060,6 +1226,11 @@ impl Default for MctsConfig {
             potion_charge_q: None,
             root_drink_mask: false,
             fpu_reduction: None,
+            net_expand_order: false,
+            effective_incoming: false,
+            removed_counts_forms: false,
+            win_hp_carry: None,
+            win_potion_carry: None,
             cpuct_utility_stdev_scale: 0.0,
             // Our utility units, not KataGo's 0.40. Measured median root-node
             // σ on the position book; see `mcts_node_stdev_probe`.
@@ -1070,6 +1241,8 @@ impl Default for MctsConfig {
             backup_rule: BackupRule::Mean,
             backup_power_p: 1.0,
             backup_power_shift: MAX_LEAF_VALUE_ABS,
+            leaf_playouts: 1,
+            tt_hash_v2: false,
         }
     }
 }
@@ -1226,7 +1399,8 @@ impl EdgeAction {
     /// the calling determinization simply doesn't contain the card
     /// this edge represents, so the edge is unplayable this sim and
     /// the caller should skip it.
-    fn resolve(&self, state: &CombatState) -> Option<Action> {
+    #[must_use]
+    pub fn resolve(&self, state: &CombatState) -> Option<Action> {
         match self {
             Self::Other(a) => Some(a.clone()),
             Self::PlayCard {
@@ -1302,6 +1476,10 @@ pub struct RootOutcome {
     /// terminal; 0 for a death). Depth-cut rollouts contribute nothing.
     /// Pure bookkeeping: no search decision reads it.
     pub hp_sum: f32,
+    /// Running `Σ hp²` over the same rollouts as [`Self::hp_sum`], so a
+    /// consumer can put a standard error on the mean final HP and tell a real
+    /// HP gap between two root children from rollout noise (GH #888).
+    pub hp_sq_sum: f32,
     /// Number of rollouts counted in [`Self::hp_sum`]; `<= visits`.
     pub hp_n: u32,
     /// `value_sum / visits` — the player-perspective expected value
@@ -1316,6 +1494,17 @@ impl RootOutcome {
     pub fn mean_final_hp(&self) -> Option<f32> {
         #[allow(clippy::cast_precision_loss)]
         (self.hp_n > 0).then(|| self.hp_sum / self.hp_n as f32)
+    }
+
+    /// Population standard deviation of the final HP over the same rollouts
+    /// as [`Self::mean_final_hp`] (`Σhp²/n − mean²`, clamped at 0 against
+    /// rounding), or `None` when none resolved.
+    #[must_use]
+    pub fn final_hp_sd(&self) -> Option<f32> {
+        let mean = self.mean_final_hp()?;
+        #[allow(clippy::cast_precision_loss)]
+        let n = self.hp_n as f32;
+        Some((self.hp_sq_sum / n - mean * mean).max(0.0).sqrt())
     }
 
     /// Sample variance of the returns backed up through this child
@@ -1389,6 +1578,103 @@ const CHANCE_CLOSE_K: u32 = 16;
 /// pile/stream salts) mirrors the nested seed derivation the
 /// `clairvoyance_probe` bench already uses for its BLIND arm.
 const ROOT_BLINDFOLD_SEED_SALT: u64 = 0xB11D_F01D_5EED_0000;
+
+/// The honest-search root conversion `Mcts::with_policy` applies to its
+/// private root clone for `mode` (blindfold, belief canonicalization, or
+/// nothing for `Clairvoyant`), seeded from the search's own `seed`.
+/// Shared with [`turn_plan::enumerate_plans`] so a turn's plans are
+/// enumerated against the same view of hidden information the search sees.
+pub(crate) fn apply_hidden_info_root(
+    root_state: &mut CombatState,
+    mode: HiddenInfoMode,
+    seed: u64,
+) {
+    match mode {
+        HiddenInfoMode::RootScramble | HiddenInfoMode::DrawChance => {
+            let blindfold_seed =
+                sts2_core::run_rng_set::splitmix64(seed ^ ROOT_BLINDFOLD_SEED_SALT);
+            sts2_core::blindfold::blindfold_root(root_state, blindfold_seed);
+        }
+        HiddenInfoMode::BeliefDraw => {
+            let belief_seed = sts2_core::run_rng_set::splitmix64(seed ^ ROOT_BLINDFOLD_SEED_SALT);
+            sts2_core::blindfold::belief_root(root_state, belief_seed);
+        }
+        HiddenInfoMode::Clairvoyant => {}
+    }
+}
+
+/// What applying one action did to the combat's randomness — the
+/// classification the expansion site turns into a chance node or a plain
+/// decision child.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TransitionProbe {
+    /// The transition consumed combat randomness: any combat-stream
+    /// counter moved, the legacy rng moved, or (under `DrawChance`) a
+    /// card was drawn from an observationally heterogeneous unknown
+    /// segment.
+    pub(crate) stochastic: bool,
+    /// `DrawChance` only: the PARENT's unknown draw segment was
+    /// heterogeneous (>= 2 cards, not observationally homogeneous).
+    pub(crate) pre_action_draw_heterogeneous: bool,
+    /// The action drew at least one card.
+    pub(crate) cards_drawn_moved: bool,
+}
+
+/// Apply `action` to `work` and classify the transition. The expansion
+/// site and [`turn_plan::enumerate_plans`] both go through this, so the
+/// search and the plan enumerator cannot disagree on what is random.
+pub(crate) fn apply_and_probe(
+    work: &mut CombatState,
+    action: Action,
+    hidden_info: HiddenInfoMode,
+) -> TransitionProbe {
+    let before_fp = work.run_rng.combat_counter_fingerprint();
+    let before_legacy = work.rng.counter();
+    let before_cards_drawn = work.cards_drawn;
+    // DrawChance detection (bead `sts2-rs-i8bgu`, F1 plan
+    // §3.2 step 1): read BEFORE `core_apply` mutates the
+    // pile — the segment is a property of the PARENT
+    // decision, matching the parent-conditioned reseed
+    // `realize_chance_outcome` uses. Short-circuits to
+    // `false` (skipping the segment scan entirely) outside
+    // `DrawChance`, so Clairvoyant/RootScramble pay nothing
+    // extra here.
+    let draw_chance_mode = hidden_info == HiddenInfoMode::DrawChance;
+    // F2 (bead `sts2-rs-09x5n`): under `BeliefDraw`, `cards::draw`
+    // consumes the shuffle stream itself whenever the unknown
+    // segment has >=2 cards, so the fingerprint-delta term in
+    // `stochastic` below already detects a genuine draw-chance
+    // event with ZERO extra code here — no heterogeneity
+    // pre-check is needed (or even possible without reading the
+    // pile a second time), unlike `DrawChance`'s single
+    // first-draw special case.
+    let pre_action_draw_heterogeneous = draw_chance_mode && {
+        let segment = sts2_core::cards::unknown_middle_uids(&work.player);
+        segment.len() >= 2
+            && !sts2_core::cards::segment_is_observationally_homogeneous(&segment, &work.cards)
+    };
+    let _ = core_apply(work, action);
+    let cards_drawn_moved = work.cards_drawn > before_cards_drawn;
+    let stochastic = work.run_rng.combat_counter_fingerprint() != before_fp
+        || work.rng.counter() != before_legacy
+        || (pre_action_draw_heterogeneous && cards_drawn_moved);
+    TransitionProbe {
+        stochastic,
+        pre_action_draw_heterogeneous,
+        cards_drawn_moved,
+    }
+}
+
+/// Apply `action` to `work`; `true` iff the transition consumed combat
+/// randomness — exactly the predicate that makes MCTS expansion allocate a
+/// chance node (see [`apply_and_probe`]).
+pub(crate) fn apply_detect_stochastic(
+    work: &mut CombatState,
+    action: Action,
+    hidden_info: HiddenInfoMode,
+) -> bool {
+    apply_and_probe(work, action, hidden_info).stochastic
+}
 
 /// The sibling-invariant salt [`Mcts::alloc_chance_node`] substitutes for
 /// the parent's child count under [`MctsConfig::common_random_numbers`].
@@ -1581,6 +1867,8 @@ pub struct MctsNode {
     /// [`Self::visits`]). Bookkeeping only; never read by selection or
     /// [`BackupRule`] aggregation.
     pub hp_sum: f32,
+    /// `Σ hp²` over the simulations counted in [`Self::hp_sum`].
+    pub hp_sq_sum: f32,
     /// Count of simulations contributing to [`Self::hp_sum`].
     pub hp_n: u32,
     pub children: SmallVec<[(EdgeAction, NodeId); 6]>,
@@ -1797,6 +2085,7 @@ impl MctsNode {
             own_visits: 0,
             own_value_sum: 0.0,
             hp_sum: 0.0,
+            hp_sq_sum: 0.0,
             hp_n: 0,
             children: SmallVec::new(),
             child_visits: SmallVec::new(),
@@ -1904,6 +2193,82 @@ impl MctsTree {
 
 // ─── Engine ─────────────────────────────────────────────────────────────────
 
+/// What [`MctsConfig::net_expand_order`] did during one search: counts of
+/// newly populated non-root decision nodes. All zero when the knob is off.
+///
+/// `considered ≥ scored ≥ reordered ≥ first_changed`: a node is
+/// *considered* when the knob, the playout policy and the node allow
+/// ordering (non-root, at least two untried edges), *scored* when the net
+/// exists for its state and scored at least one edge, *reordered* when the
+/// net's order differs from the canonical one anywhere, and
+/// *first_changed* when it differs in the first edge — the one the node's
+/// next expansion materializes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpandOrderStats {
+    pub considered: u64,
+    pub scored: u64,
+    pub reordered: u64,
+    pub first_changed: u64,
+}
+
+/// How [`net_order_untried`] changed one node's untried queue.
+#[derive(Clone, Copy, Debug)]
+struct NodeReorder {
+    reordered: bool,
+    first_changed: bool,
+}
+
+/// Stable-sort `untried` (the canonical queue of the decision node whose
+/// realized state is `state`) by the playout net's logit, highest first,
+/// for [`MctsConfig::net_expand_order`].
+///
+/// `legal` is `legal_actions(state)` before canonicalization — the list
+/// the rollout scores at this state, whose card-play count is a state
+/// feature. Each edge is resolved against `state` and takes the logit of
+/// its action in `legal`; an edge that does not resolve, or resolves to an
+/// action outside `legal`, is unscored and keeps its canonical relative
+/// order after every scored edge. Ties keep canonical order (stable sort).
+///
+/// Returns `None`, leaving `untried` untouched, when `state` has no net or
+/// no edge could be scored. Draws no randomness.
+fn net_order_untried(
+    state: &CombatState,
+    legal: &[Action],
+    untried: &mut SmallVec<[EdgeAction; 16]>,
+    end_turn_priority: i16,
+) -> Option<NodeReorder> {
+    let logits = rollout_net::playout_logits(state, legal, end_turn_priority)?;
+    let mut keyed: SmallVec<[(Option<f32>, EdgeAction); 16]> = untried
+        .drain(..)
+        .map(|edge| {
+            let logit = edge
+                .resolve(state)
+                .and_then(|a| legal.iter().position(|l| *l == a))
+                .and_then(|i| logits.get(i).copied());
+            (logit, edge)
+        })
+        .collect();
+    if keyed.iter().all(|(l, _)| l.is_none()) {
+        untried.extend(keyed.into_iter().map(|(_, e)| e));
+        return None;
+    }
+    let canonical: SmallVec<[EdgeAction; 16]> = keyed.iter().map(|(_, e)| e.clone()).collect();
+    // Scored before unscored; among scored, higher logit first. `total_cmp`
+    // keeps a `-inf` (masked EndTurn) last among the scored and orders a NaN
+    // deterministically instead of panicking.
+    keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+        (Some(x), Some(y)) => y.total_cmp(x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    untried.extend(keyed.into_iter().map(|(_, e)| e));
+    Some(NodeReorder {
+        reordered: *untried != canonical,
+        first_changed: untried.first() != canonical.first(),
+    })
+}
+
 /// UCT MCTS engine.
 ///
 /// Type parameter `P` is the policy prior; defaults to [`UniformPolicy`].
@@ -1983,6 +2348,11 @@ pub struct Mcts<P: Policy = UniformPolicy> {
     /// through this branch are the ones where the leaf evaluator's
     /// quality actually matters. See [`Self::rollout_stats`].
     depth_cap_hits: u64,
+    /// Non-decisive leaves evaluated by playouts: one per simulation that
+    /// reached the playout step. Equals [`Self::rollouts_total`] at
+    /// [`MctsConfig::leaf_playouts`] `= 1` and `rollouts_total / k` at `k`
+    /// (GH #830). See [`Self::rollout_leaves`].
+    rollout_leaves: u64,
     /// GitHub issue #19: number of stored tree edges that were
     /// unavailable in the current PIMC determinization (the stored
     /// action was not in `legal_actions(state)` at descent time).
@@ -2048,6 +2418,9 @@ pub struct Mcts<P: Policy = UniformPolicy> {
     /// costs that node one uncached draw (it re-probes on the next). It
     /// steers only how much the probe clones, never what a draw realizes.
     endturn_prefix_guess: u8,
+    /// What [`MctsConfig::net_expand_order`] did. See
+    /// [`Self::expand_order_stats`].
+    expand_order: ExpandOrderStats,
 }
 
 impl Mcts<UniformPolicy> {
@@ -2057,67 +2430,176 @@ impl Mcts<UniformPolicy> {
     }
 }
 
+/// Turn the caller's state into the state a search roots at, and finish the
+/// config the search runs under. Shared by [`Mcts::with_policy`] and
+/// [`Mcts::reroot_observed`], so a reused tree's root is built exactly as a
+/// fresh search's.
+fn prepare_search_root(root_state: &mut CombatState, config: &mut MctsConfig) {
+    // Bead `sts2-rs-vqckz` (F0): honest-search root blindfold. Must
+    // run before ANY of `root_state` is read/cached — the
+    // `recommended_depth` scan, the transposition-table state, and the
+    // root node's `search_hash` / `realized` snapshot must all see the
+    // blindfolded state, not the caller's true one, or the "honest"
+    // search would still leak hidden information through those paths.
+    // No-op (byte-identical) when `hidden_info` is the default
+    // `Clairvoyant`. `DrawChance` includes the root blindfold too
+    // (bead `sts2-rs-i8bgu`, plan §3.2: defense in depth — rollouts
+    // from leaves that predate the first draw-chance node still read
+    // the root's stored pile order). `BeliefDraw` (bead `sts2-rs-09x5n`,
+    // F2) uses its own root conversion — canonicalize-and-set-the-flag
+    // instead of canonicalize-and-shuffle — since there is no
+    // permutation left to materialize once draws defer their
+    // randomness to draw time.
+    apply_hidden_info_root(root_state, config.hidden_info, config.seed);
+    // Bead `sts2-rs-y4e4z`: bump rollout depth when any enemy on
+    // the board recommends a higher horizon (Vantom → 50). See
+    // [`effective_rollout_depth`].
+    config.max_rollout_depth = effective_rollout_depth(root_state, config);
+    // The transposition table is always ON: chance trees reconverge
+    // heavily (the same game state is reached via many different outcome
+    // paths), so `search_hash`-keyed merging concentrates visits and
+    // measurably improves decision quality. The table is sized small
+    // (`CHANCE_TT_SIZE_LOG2`) since chance trees are small and the table is
+    // reallocated per move in closed-loop play.
+    config.use_transposition_table = true;
+}
+
+/// The child edges a decision node holding `state` expands, in expansion
+/// order: the canonical legal actions, `DrinkPotion` dropped when
+/// `drink_mask` is set (the root under [`MctsConfig::root_drink_mask`])
+/// unless that would leave none.
+fn decision_edges(state: &CombatState, drink_mask: bool) -> SmallVec<[EdgeAction; 16]> {
+    decision_edges_from(state, legal_actions(state), drink_mask)
+}
+
+/// [`decision_edges`] from `acts`, the already computed
+/// [`legal_actions`]`(state)`, for the caller that also keeps the raw list
+/// ([`MctsConfig::net_expand_order`] scores against it).
+fn decision_edges_from(
+    state: &CombatState,
+    acts: SmallVec<[Action; 16]>,
+    drink_mask: bool,
+) -> SmallVec<[EdgeAction; 16]> {
+    let mut acts = canonicalize_actions(state, acts);
+    // Drink-jitter seam (GH #447 follow-up): mask `DrinkPotion` at the
+    // ROOT only — interior nodes and rollouts still drink, this is about
+    // removing the root *decision* to create exogenous belt variation.
+    // Guard against emptying the action set (EndTurn is always legal in
+    // PlayerPlayPhase, so this only trips on exotic pending-choice roots —
+    // keep the originals there rather than strand the search).
+    if drink_mask {
+        let unmasked = acts.clone();
+        acts.retain(|a| !matches!(a, Action::DrinkPotion { .. }));
+        if acts.is_empty() {
+            acts = unmasked;
+        }
+    }
+    let mut untried: SmallVec<[EdgeAction; 16]> = SmallVec::new();
+    for a in acts {
+        untried.push(EdgeAction::from_action(&a, state));
+    }
+    untried
+}
+
+/// The transposition-table hash of a decision node holding `state`, whose
+/// [`MctsNode::search_hash`] is `sh` and whose dominance-pruned set has
+/// [`dominance::salt`] `salt` (`0` when nothing is pruned): `sh` itself,
+/// which already carries the salt, or [`sts2_core::tt_hash_v2`] with the
+/// salt folded in when `v2` ([`MctsConfig::tt_hash_v2`]). Without the salt
+/// a pruned node and the unpruned node of the same position would share a
+/// key, and the pruned set, which holds only for the edge that allocated
+/// the node, would leak to the other.
+#[inline]
+fn tt_key(v2: bool, state: &CombatState, sh: u64, salt: u64) -> u64 {
+    if v2 {
+        sts2_core::tt_hash_v2(state) ^ salt
+    } else {
+        sh
+    }
+}
+
+/// Tree reuse's test that a retained node `kept` stands for the position
+/// `root` (GH #830): equal [`sts2_core::chance_outcome_hash`] (`root_hash`
+/// is `root`'s) — the uid- and order-insensitive observation the search
+/// already dedups chance outcomes on — and, because that hash does not read
+/// them, the same player powers ([`player_power_rows`]), potion belt and
+/// relic counters. Hidden information (the unknown draw order, RNG cursors)
+/// is deliberately not compared: that is what lets a node from an earlier
+/// belief world stand for the new one.
+fn observation_matches(kept: &CombatState, root: &CombatState, root_hash: u64) -> bool {
+    sts2_core::chance_outcome_hash(kept) == root_hash
+        && kept.player.potions == root.player.potions
+        && kept.player.potion_slot_indices == root.player.potion_slot_indices
+        && kept.player.potion_slots == root.player.potion_slots
+        && kept
+            .relics
+            .iter()
+            .map(|r| (r.kind, r.counter))
+            .eq(root.relics.iter().map(|r| (r.kind, r.counter)))
+        && player_power_rows(kept) == player_power_rows(root)
+}
+
+/// The player's powers, sorted, without their arena uids. Read from the
+/// mirror creature and the legacy list both
+/// ([`CombatState::player_power_uids`]): effects apply player powers to the
+/// mirror creature, which neither [`sts2_core::search_hash`] nor
+/// [`sts2_core::chance_outcome_hash`] visits.
+fn player_power_rows(
+    s: &CombatState,
+) -> SmallVec<[(sts2_core::PowerKind, i32, i32, Option<u32>, bool); 8]> {
+    let mut rows: SmallVec<[_; 8]> = s
+        .player_power_uids()
+        .iter()
+        .filter_map(|u| s.powers.get_by_id(u.0))
+        .map(|p| {
+            (
+                p.kind,
+                p.amount,
+                p.counter,
+                p.applier.map(|a| a.0.get()),
+                p.skip_next_tick,
+            )
+        })
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+/// Why [`Mcts::reroot_observed`] kept nothing. The tree is unchanged in
+/// every case; the caller builds a fresh search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RerootMiss {
+    /// Reuse is implemented for `BeliefDraw` (deployed) and `Clairvoyant`
+    /// only, and the tree must have been built under the same mode and
+    /// without [`MctsConfig::dominance_pruning`].
+    UnsupportedMode,
+    /// The action taken has no expanded child at the current root.
+    NotExpanded,
+    /// Deterministic edge: the child does not match the new root's
+    /// observation.
+    Mismatch,
+    /// Chance edge: no stored outcome matches the realised observation.
+    OutcomeUnseen,
+    /// The matched node's edges differ from the new root's legal moves.
+    EdgeSetChanged,
+}
+
+/// What [`Mcts::reroot_observed`] kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RerootKept {
+    /// Visits of the node that became the root: the simulations the next
+    /// search starts with on top of its own budget.
+    pub retained_visits: u32,
+    /// Nodes carried over, the root included.
+    pub retained_nodes: usize,
+    /// The action was a chance edge and a stored outcome matched.
+    pub via_chance: bool,
+}
+
 impl<P: Policy> Mcts<P> {
     /// Construct an MCTS engine with a custom policy.
     pub fn with_policy(mut root_state: CombatState, mut config: MctsConfig, policy: P) -> Self {
-        // Bead `sts2-rs-vqckz` (F0): honest-search root blindfold. Must
-        // run before ANY of `root_state` is read/cached below — the
-        // `recommended_depth` scan, the transposition-table state, and the
-        // root node's `search_hash` / `realized` snapshot must all see the
-        // blindfolded state, not the caller's true one, or the "honest"
-        // search would still leak hidden information through those paths.
-        // No-op (byte-identical) when `hidden_info` is the default
-        // `Clairvoyant`. `DrawChance` includes the root blindfold too
-        // (bead `sts2-rs-i8bgu`, plan §3.2: defense in depth — rollouts
-        // from leaves that predate the first draw-chance node still read
-        // the root's stored pile order). `BeliefDraw` (bead `sts2-rs-09x5n`,
-        // F2) uses its own root conversion — canonicalize-and-set-the-flag
-        // instead of canonicalize-and-shuffle — since there is no
-        // permutation left to materialize once draws defer their
-        // randomness to draw time.
-        match config.hidden_info {
-            HiddenInfoMode::RootScramble | HiddenInfoMode::DrawChance => {
-                let blindfold_seed =
-                    sts2_core::run_rng_set::splitmix64(config.seed ^ ROOT_BLINDFOLD_SEED_SALT);
-                sts2_core::blindfold::blindfold_root(&mut root_state, blindfold_seed);
-            }
-            HiddenInfoMode::BeliefDraw => {
-                let belief_seed =
-                    sts2_core::run_rng_set::splitmix64(config.seed ^ ROOT_BLINDFOLD_SEED_SALT);
-                sts2_core::blindfold::belief_root(&mut root_state, belief_seed);
-            }
-            HiddenInfoMode::Clairvoyant => {}
-        }
-        // Bead `sts2-rs-y4e4z`: bump rollout depth when any enemy on
-        // the board recommends a higher horizon (Vantom → 50; see
-        // `MonsterKind::recommended_rollout_depth`). Caller-supplied
-        // depth is treated as a floor — if you explicitly set a
-        // higher depth than the recommendation, that wins. Depth is
-        // only ever raised, never lowered.
-        let recommended_depth = root_state
-            .enemy_uids
-            .iter()
-            .filter_map(|uid| {
-                root_state
-                    .creatures
-                    .iter()
-                    .find(|c| c.id == uid.0)
-                    .and_then(|c| c.species)
-                    .and_then(sts2_core::MonsterKind::recommended_rollout_depth)
-            })
-            .max();
-        if let Some(rec) = recommended_depth {
-            if rec > config.max_rollout_depth {
-                config.max_rollout_depth = rec;
-            }
-        }
-        // The transposition table is always ON: chance trees reconverge
-        // heavily (the same game state is reached via many different outcome
-        // paths), so `search_hash`-keyed merging concentrates visits and
-        // measurably improves decision quality. The table is sized small
-        // (`CHANCE_TT_SIZE_LOG2`) since chance trees are small and the table is
-        // reallocated per move in closed-loop play.
-        config.use_transposition_table = true;
+        prepare_search_root(&mut root_state, &mut config);
         let mut tree = MctsTree::new(root_state, config.use_lethal_detector);
         // Reserve the node arena up front from the simulation budget so the
         // hot search loop never pays a `Vec` doubling-regrow (each regrow
@@ -2156,6 +2638,7 @@ impl<P: Policy> Mcts<P> {
             rollouts_skipped: 0,
             rollouts_total: 0,
             depth_cap_hits: 0,
+            rollout_leaves: 0,
             stale_child_edges: 0,
             failed_apply: 0,
             invalid_target: 0,
@@ -2166,6 +2649,7 @@ impl<P: Policy> Mcts<P> {
             dpw_cap_cache: [Vec::new(), Vec::new(), Vec::new()],
             dpw_cap_params: [(0, 0), (0, 0), (0, 0)],
             endturn_prefix_guess: 1,
+            expand_order: ExpandOrderStats::default(),
         }
     }
 
@@ -2247,6 +2731,27 @@ impl<P: Policy> Mcts<P> {
     /// Phase-0 usage).
     pub fn rollout_stats(&self) -> (u64, u64) {
         (self.rollouts_total, self.depth_cap_hits)
+    }
+
+    /// Non-decisive leaves this tree evaluated by playouts (one per
+    /// simulation whose leaf was neither proven nor terminal), accumulated
+    /// like [`Self::rollout_stats`]. Each such leaf ran
+    /// [`MctsConfig::leaf_playouts`] playouts, so `rollouts_total` is this
+    /// times `k` (GH #830).
+    #[must_use]
+    pub fn rollout_leaves(&self) -> u64 {
+        self.rollout_leaves
+    }
+
+    /// What [`MctsConfig::net_expand_order`] did, accumulated over every
+    /// search on this instance since construction or the last
+    /// [`Self::reroot_observed`] (one decision, for the run agent, which
+    /// searches each decision on a fresh or rerooted `Mcts`). All zero when
+    /// the knob is off. Counting only. Per-instance, like
+    /// [`Self::rollout_stats`]: [`par_search`] never merges workers.
+    #[must_use]
+    pub fn expand_order_stats(&self) -> ExpandOrderStats {
+        self.expand_order
     }
 
     /// GitHub issue #19: count of stored tree edges that were
@@ -2457,7 +2962,10 @@ impl<P: Policy> Mcts<P> {
             // candidate `s` is the NEXT player turn (block expired,
             // fresh intents), so the credit is ~0 there and the enemy
             // hit it just ate is priced through `hp_lost` instead.
-            let incoming = sum_enemy_telegraphed_damage(&s);
+            let incoming = sum_enemy_telegraphed_damage(
+                &s,
+                enemy_eval::IncomingDamage::from_effective(self.config.effective_incoming),
+            );
             #[allow(clippy::cast_precision_loss)]
             let useful_block_gained =
                 (s.player.block.min(incoming) - baseline.player.block.min(incoming)).max(0) as f32;
@@ -3064,7 +3572,11 @@ impl<P: Policy> Mcts<P> {
             // in the band (audit: 26 declined blocks into realized
             // damage, 307 HP). `base_block > 0` is the same
             // block-bearing key the GH #293 rollout ramp uses.
-            if sum_enemy_telegraphed_damage(state) > state.player.block {
+            if sum_enemy_telegraphed_damage(
+                state,
+                enemy_eval::IncomingDamage::from_effective(self.config.effective_incoming),
+            ) > state.player.block
+            {
                 if let Some(i) = band_pick(&|card| card.base_block > 0) {
                     idx = i;
                 }
@@ -3199,6 +3711,7 @@ impl<P: Policy> Mcts<P> {
                     value_sum: c.value_sum,
                     value_sq_sum: c.value_sq_sum,
                     hp_sum: c.hp_sum,
+                    hp_sq_sum: c.hp_sq_sum,
                     hp_n: c.hp_n,
                     mean_value: mean,
                 })
@@ -3425,6 +3938,273 @@ impl<P: Policy> Mcts<P> {
             });
         }
         true
+    }
+
+    /// Tree reuse between one player's consecutive decisions (GH #830,
+    /// `tree_reuse`): after `action` was taken at the current root and the
+    /// game moved to `new_state`, keep the subtree that stands for
+    /// `new_state` and make it the root of the next search, which then runs
+    /// under `config`. Unlike [`Self::reroot`] this works under the honest
+    /// `BeliefDraw` mode, and it keeps the whole subtree, not just the root
+    /// statistics.
+    ///
+    /// **What is kept depends only on observations.** The new root state is
+    /// built from `new_state` exactly as [`Self::with_policy`] builds a fresh
+    /// search's root ([`prepare_search_root`]: under `BeliefDraw`,
+    /// [`sts2_core::blindfold::belief_root`] with `config.seed`), so the
+    /// caller's hidden draw order and RNG cursors never reach the tree. The
+    /// subtree is chosen by comparing that root to stored nodes with
+    /// [`observation_matches`], which reads no hidden information. For a
+    /// deterministic edge the child must match; for a chance edge (a draw,
+    /// `EndTurn`) one of the stored outcomes must, otherwise nothing is kept.
+    /// The kept nodes hold states of the earlier search's belief world: they
+    /// came from an earlier honest root, so they carry no more than that
+    /// root knew. Only the root node's own state is replaced.
+    ///
+    /// **A tree built with [`MctsConfig::dominance_pruning`] is never
+    /// kept.** A node's pruned set rests on the card plays that led to it,
+    /// and below the new root those can include plays above it, which the
+    /// game has already made: the set would no longer be proven, and a kept
+    /// root that has not expanded yet would drop legal moves when it does.
+    /// Pruning in the search that runs after a reroot is fine: a tree built
+    /// without it holds no pruned sets, and the new search prunes along
+    /// lines that start at the new root, as a fresh search does.
+    ///
+    /// On success the transposition table is rebuilt over the kept nodes
+    /// (each decision node under its shallowest depth from the new root),
+    /// the search RNG, simulation index, best-sequence tracker and the
+    /// per-search counters restart as in a fresh search, and the next
+    /// [`Self::try_search_n`]`(n)` runs `n` new simulations on top of
+    /// [`RerootKept::retained_visits`].
+    ///
+    /// # Errors
+    ///
+    /// A [`RerootMiss`] when nothing can be kept; the tree is then left
+    /// exactly as it was.
+    pub fn reroot_observed(
+        &mut self,
+        action: &Action,
+        new_state: &CombatState,
+        mut config: MctsConfig,
+    ) -> Result<RerootKept, RerootMiss> {
+        if config.hidden_info != self.config.hidden_info
+            || !matches!(
+                config.hidden_info,
+                HiddenInfoMode::BeliefDraw | HiddenInfoMode::Clairvoyant
+            )
+            || self.config.dominance_pruning
+        {
+            return Err(RerootMiss::UnsupportedMode);
+        }
+        let child = self.root_child_for(action).ok_or(RerootMiss::NotExpanded)?;
+        let mut root_state = new_state.clone();
+        prepare_search_root(&mut root_state, &mut config);
+        root_state.combat_log.event_log.disarm_for_search();
+        let root_hash = sts2_core::chance_outcome_hash(&root_state);
+        let matches = |id: NodeId| {
+            self.tree
+                .node(id)
+                .realized
+                .as_deref()
+                .is_some_and(|s| observation_matches(s, &root_state, root_hash))
+        };
+        let (target, via_chance) = match self.tree.node(child).kind {
+            NodeKind::Decision => {
+                if !matches(child) {
+                    return Err(RerootMiss::Mismatch);
+                }
+                (child, false)
+            }
+            NodeKind::Chance => {
+                let hit = self
+                    .tree
+                    .node(child)
+                    .chance_outcomes
+                    .iter()
+                    .map(|o| o.child)
+                    .find(|&c| matches(c));
+                (hit.ok_or(RerootMiss::OutcomeUnseen)?, true)
+            }
+        };
+        // The kept root must expand exactly the moves the new root has, or
+        // its children and untried list would describe another position.
+        {
+            let node = self.tree.node(target);
+            if node.is_expanded && !node.is_terminal {
+                let fresh = decision_edges(&root_state, config.root_drink_mask);
+                let kept: SmallVec<[&EdgeAction; 16]> = node
+                    .children
+                    .iter()
+                    .map(|(e, _)| e)
+                    .chain(node.untried_actions.iter())
+                    .collect();
+                if kept.len() != fresh.len() || !fresh.iter().all(|e| kept.contains(&e)) {
+                    return Err(RerootMiss::EdgeSetChanged);
+                }
+            }
+        }
+
+        // Keep everything reachable from `target`, numbered breadth-first
+        // (so `target` becomes NodeId(0)), with each node's shallowest depth.
+        let n_old = self.tree.arena.len();
+        let mut map = vec![u32::MAX; n_old];
+        let mut order: Vec<usize> = vec![target.0 as usize];
+        let mut depth: Vec<usize> = vec![0];
+        map[target.0 as usize] = 0;
+        let mut head = 0;
+        while head < order.len() {
+            let (id, d) = (order[head], depth[head]);
+            head += 1;
+            let node = &self.tree.arena[id];
+            let succ = node
+                .children
+                .iter()
+                .map(|(_, c)| *c)
+                .chain(node.chance_outcomes.iter().map(|o| o.child));
+            for s in succ {
+                let s = s.0 as usize;
+                if map[s] == u32::MAX {
+                    map[s] = u32::try_from(order.len()).expect("arena fits in u32");
+                    order.push(s);
+                    depth.push(d + 1);
+                }
+            }
+        }
+        let remap = |id: NodeId| -> Option<NodeId> {
+            let m = map[id.0 as usize];
+            (m != u32::MAX).then_some(NodeId(m))
+        };
+        let mut old: Vec<Option<MctsNode>> = std::mem::take(&mut self.tree.arena)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut arena = Vec::with_capacity(order.len() + arena_reservation(config.max_simulations));
+        for &id in &order {
+            let mut n = old[id].take().expect("each node is kept once");
+            for (_, c) in &mut n.children {
+                *c = remap(*c).expect("a kept node's children are kept");
+            }
+            for o in &mut n.chance_outcomes {
+                o.child = remap(o.child).expect("a kept chance node's outcomes are kept");
+            }
+            // A chance node is reachable only through its parent's child
+            // list, so its parent (read by widening) is always kept. A
+            // decision node's parent is never read; it may be dropped.
+            n.parent = n.parent.and_then(remap);
+            debug_assert!(
+                n.kind == NodeKind::Decision || n.parent.is_some(),
+                "kept a chance node without its parent"
+            );
+            arena.push(n);
+        }
+        drop(old);
+
+        // The new root: the fresh root state, keeping the subtree's edges,
+        // statistics and proofs. Terminal / lethal flags are re-derived the
+        // way `MctsNode::new` seeds a fresh root.
+        {
+            let terminal = is_terminal(&root_state);
+            let lethal = !terminal
+                && config.use_lethal_detector
+                && lethal_detector::detect_lethal(&root_state);
+            let root = &mut arena[0];
+            root.parent = None;
+            root.state_hash = state_hash(&root_state);
+            root.search_hash = sts2_core::search_hash(&root_state);
+            root.is_terminal = terminal;
+            if terminal {
+                let (_, v) = terminal_value(&root_state);
+                root.proven_win = v > 0.5;
+                root.proven_loss = v < 0.0;
+            } else if lethal {
+                root.proven_win = true;
+            }
+            root.realized = Some(Box::new(root_state.clone()));
+        }
+        // A chance child of the root widens from the root's state, which
+        // just changed: its cached `EndTurn` prefix was built from the old.
+        let root_chance_children: SmallVec<[usize; 8]> = arena[0]
+            .children
+            .iter()
+            .map(|(_, c)| c.0 as usize)
+            .filter(|&c| arena[c].kind == NodeKind::Chance)
+            .collect();
+        for c in root_chance_children {
+            arena[c].endturn_prefix = EndTurnPrefix::Unprobed;
+        }
+
+        self.tree.arena = arena;
+        self.tree.root = NodeId(0);
+        self.tree.root_state = root_state;
+
+        // Transposition table over the kept nodes. The root is not in it
+        // (a fresh search never inserts its root either); the first node
+        // seen at a key keeps it.
+        if let Some(tt) = self.transposition.as_mut() {
+            tt.clear();
+        }
+        for (new_id, &d) in depth.iter().enumerate().skip(1) {
+            let node = &self.tree.arena[new_id];
+            if node.kind != NodeKind::Decision {
+                continue;
+            }
+            let hash = node.realized.as_deref().map_or(node.search_hash, |s| {
+                tt_key(
+                    config.tt_hash_v2,
+                    s,
+                    node.search_hash,
+                    dominance::salt(&node.dominance_pruned),
+                )
+            });
+            #[allow(clippy::cast_possible_truncation)]
+            let key = (hash, (d / 4).min(u8::MAX as usize) as u8);
+            if let Some(tt) = self.transposition.as_mut() {
+                if tt.peek(key).is_none() {
+                    tt.insert(
+                        key,
+                        NodeId(u32::try_from(new_id).expect("arena fits in u32")),
+                    );
+                }
+            }
+        }
+
+        // Everything else restarts as in a fresh search.
+        let (mut q_sum, mut q_sq_sum, mut q_count) = (0.0_f64, 0.0_f64, 0_u64);
+        for n in &self.tree.arena {
+            if n.visits > 0 {
+                let q = f64::from(n.value_sum) / f64::from(n.visits);
+                q_sum += q;
+                q_sq_sum += q * q;
+                q_count += 1;
+            }
+        }
+        self.tree_q_sum = q_sum;
+        self.tree_q_sq_sum = q_sq_sum;
+        self.tree_q_count = q_count;
+        self.rng = Xoshiro256PlusPlus::seed_from_u64(config.seed);
+        self.config = config;
+        self.sim_index = 0;
+        self.root_stats.clear();
+        self.forced_root_child = None;
+        self.best_seq.clear();
+        self.best_value = f32::NEG_INFINITY;
+        self.nodes_allocated = 0;
+        self.illegal_root_actions = 0;
+        self.rollouts_skipped = 0;
+        self.rollouts_total = 0;
+        self.depth_cap_hits = 0;
+        self.rollout_leaves = 0;
+        self.expand_order = ExpandOrderStats::default();
+        self.stale_child_edges = 0;
+        self.failed_apply = 0;
+        self.invalid_target = 0;
+        self.no_op_playcard = 0;
+
+        Ok(RerootKept {
+            retained_visits: self.tree.node(self.tree.root).visits,
+            retained_nodes: self.tree.arena.len(),
+            via_chance,
+        })
     }
 
     /// Principal variation from the root, following the best child at
@@ -3696,8 +4476,7 @@ impl<P: Policy> Mcts<P> {
             match self.config.terminal_eval_mode {
                 TerminalEvalMode::Binary | TerminalEvalMode::RichLoss => 1.0,
                 TerminalEvalMode::RichBoth => {
-                    0.5 + evaluate_victory(state) + victory_hp_surplus(state)
-                        - loot_penalty_q(state, &self.config)
+                    win_value(state, &self.config) - loot_penalty_q(state, &self.config)
                 }
             }
         } else if leaf_proven_loss {
@@ -3792,26 +4571,18 @@ impl<P: Policy> Mcts<P> {
                         .as_deref()
                         .expect("decision node has realized state in chance mode");
                     let acts = legal_actions(state_ref);
-                    let mut acts = canonicalize_actions(state_ref, acts);
-                    // Drink-jitter seam (GH #447 follow-up): mask
-                    // `DrinkPotion` at the ROOT only — interior nodes and
-                    // rollouts still drink, this is about removing the
-                    // root *decision* to create exogenous belt variation.
-                    // Guard against emptying the action set (EndTurn is
-                    // always legal in PlayerPlayPhase, so this only trips
-                    // on exotic pending-choice roots — keep the originals
-                    // there rather than strand the search).
-                    if self.config.root_drink_mask && node_id == self.tree.root {
-                        let unmasked = acts.clone();
-                        acts.retain(|a| !matches!(a, Action::DrinkPotion { .. }));
-                        if acts.is_empty() {
-                            acts = unmasked;
-                        }
-                    }
-                    let mut untried: SmallVec<[EdgeAction; 16]> = SmallVec::new();
-                    for a in acts {
-                        untried.push(EdgeAction::from_action(&a, state_ref));
-                    }
+                    // `net_expand_order` scores against the full legal list
+                    // the rollout would see here, so keep it before
+                    // canonicalization dedups it. Root excluded.
+                    let net_order_legal = (self.config.net_expand_order
+                        && self.config.rollout_policy == RolloutPolicyKind::Net
+                        && node_id != self.tree.root)
+                        .then(|| acts.clone());
+                    let mut untried = decision_edges_from(
+                        state_ref,
+                        acts,
+                        self.config.root_drink_mask && node_id == self.tree.root,
+                    );
                     let pruned = &self.tree.node(node_id).dominance_pruned;
                     if !pruned.is_empty() {
                         untried.retain(|e| !pruned.contains(e));
@@ -3831,6 +4602,20 @@ impl<P: Policy> Mcts<P> {
                         "duplicate EdgeAction in untried_actions — \
                          canonicalize_actions key drifted from EdgeAction: {untried:?}"
                     );
+                    if let Some(legal) = net_order_legal.filter(|_| untried.len() >= 2) {
+                        let change = net_order_untried(
+                            state_ref,
+                            &legal,
+                            &mut untried,
+                            self.config.rollout_end_turn_priority,
+                        );
+                        self.expand_order.considered += 1;
+                        if let Some(c) = change {
+                            self.expand_order.scored += 1;
+                            self.expand_order.reordered += u64::from(c.reordered);
+                            self.expand_order.first_changed += u64::from(c.first_changed);
+                        }
+                    }
                     self.tree.node_mut(node_id).untried_actions = untried;
                 }
                 self.tree.node_mut(node_id).is_expanded = true;
@@ -3992,40 +4777,12 @@ impl<P: Policy> Mcts<P> {
                 if let Some(action) = edge.resolve(&work) {
                     // Apply and detect whether the transition consumed combat
                     // randomness (→ chance node) via a counter delta across
-                    // all combat streams + the legacy rng.
-                    let before_fp = work.run_rng.combat_counter_fingerprint();
-                    let before_legacy = work.rng.counter();
-                    let before_cards_drawn = work.cards_drawn;
-                    // DrawChance detection (bead `sts2-rs-i8bgu`, F1 plan
-                    // §3.2 step 1): read BEFORE `core_apply` mutates the
-                    // pile — the segment is a property of the PARENT
-                    // decision, matching the parent-conditioned reseed
-                    // `realize_chance_outcome` uses. Short-circuits to
-                    // `false` (skipping the segment scan entirely) outside
-                    // `DrawChance`, so Clairvoyant/RootScramble pay nothing
-                    // extra here.
-                    let draw_chance_mode = self.config.hidden_info == HiddenInfoMode::DrawChance;
-                    // F2 (bead `sts2-rs-09x5n`): under `BeliefDraw`, `cards::draw`
-                    // consumes the shuffle stream itself whenever the unknown
-                    // segment has >=2 cards, so the fingerprint-delta term in
-                    // `stochastic` below already detects a genuine draw-chance
-                    // event with ZERO extra code here — no heterogeneity
-                    // pre-check is needed (or even possible without reading the
-                    // pile a second time), unlike `DrawChance`'s single
-                    // first-draw special case.
-                    let pre_action_draw_heterogeneous = draw_chance_mode && {
-                        let segment = sts2_core::cards::unknown_middle_uids(&work.player);
-                        segment.len() >= 2
-                            && !sts2_core::cards::segment_is_observationally_homogeneous(
-                                &segment,
-                                &work.cards,
-                            )
-                    };
+                    // all combat streams + the legacy rng (see
+                    // `apply_and_probe`, shared with `turn_plan`).
                     let action_applied = action.clone();
-                    let _ = core_apply(&mut work, action);
-                    let stochastic = work.run_rng.combat_counter_fingerprint() != before_fp
-                        || work.rng.counter() != before_legacy
-                        || (pre_action_draw_heterogeneous && work.cards_drawn > before_cards_drawn);
+                    let probe = apply_and_probe(&mut work, action, self.config.hidden_info);
+                    let pre_action_draw_heterogeneous = probe.pre_action_draw_heterogeneous;
+                    let stochastic = probe.stochastic;
                     if stochastic {
                         let chance_id = self.alloc_chance_node(node_id, &edge, &work);
                         // H3 retune (bead `sts2-rs-k1z14`, F1 G2/G3 pass):
@@ -4041,7 +4798,7 @@ impl<P: Policy> Mcts<P> {
                         // `cards_drawn` delta — under that mode the trigger IS
                         // the fingerprint delta, so there is nothing else to
                         // gate the classification on.
-                        let cards_drawn_moved = work.cards_drawn > before_cards_drawn;
+                        let cards_drawn_moved = probe.cards_drawn_moved;
                         let f1_draw_triggered = pre_action_draw_heterogeneous && cards_drawn_moved;
                         let belief_draw_mode =
                             self.config.hidden_info == HiddenInfoMode::BeliefDraw;
@@ -4152,12 +4909,14 @@ impl<P: Policy> Mcts<P> {
                         let child = if pruned.is_empty() {
                             self.chance_alloc_decision(Some(node_id), work, &path)
                         } else {
-                            let sh = sts2_core::search_hash(&work) ^ dominance::salt(&pruned);
+                            let salt = dominance::salt(&pruned);
+                            let sh = sts2_core::search_hash(&work) ^ salt;
                             let child = self.chance_alloc_decision_with_hash(
                                 Some(node_id),
                                 work,
                                 &path,
                                 sh,
+                                salt,
                             );
                             if self.tree.node(child).dominance_pruned.is_empty() {
                                 self.tree.node_mut(child).dominance_pruned = pruned;
@@ -4206,7 +4965,10 @@ impl<P: Policy> Mcts<P> {
         let leaf_proven_win = leaf.proven_win;
         let leaf_proven_loss = leaf.proven_loss;
         let leaf_decisive = leaf_proven_win || leaf_proven_loss || leaf.is_terminal;
-        let (value, rollout_hit_terminal, final_hp) = if leaf_decisive {
+        // `playout0` is `Some` only at `leaf_playouts > 1`, where `value` is
+        // the k-playout mean and playout 0's own value is kept apart for the
+        // statistics that stay single-playout (bucket, best sequence).
+        let (value, rollout_hit_terminal, final_hp, playout0) = if leaf_decisive {
             // A proven win/terminal leaf keeps its HP; a proven loss is a
             // death even if the stored state is still alive.
             let hp = if leaf_proven_loss && !leaf_proven_win {
@@ -4219,6 +4981,7 @@ impl<P: Policy> Mcts<P> {
                 // Unused: `leaf_decisive` already forces the decisive bucket.
                 true,
                 Some(hp),
+                None,
             )
         } else {
             let mut state = (*realized).clone();
@@ -4233,6 +4996,7 @@ impl<P: Policy> Mcts<P> {
             );
             let hit_terminal = is_terminal(&state);
             self.rollouts_total += 1;
+            self.rollout_leaves += 1;
             if !hit_terminal {
                 // `rollout` returned via its depth-cap branch
                 // (`depth_cut_value`) — see the mirrored condition
@@ -4240,7 +5004,12 @@ impl<P: Policy> Mcts<P> {
                 self.depth_cap_hits += 1;
             }
             let hp = hit_terminal.then(|| final_hp_of(&state));
-            (v, hit_terminal, hp)
+            if self.config.leaf_playouts > 1 {
+                let mean = self.extra_leaf_playouts(&realized, &mut sim_rng, v);
+                (mean, hit_terminal, hp, Some(v))
+            } else {
+                (v, hit_terminal, hp, None)
+            }
         };
         self.tree.node_mut(node_id).realized = Some(realized);
         debug_assert!(
@@ -4249,10 +5018,13 @@ impl<P: Policy> Mcts<P> {
             self.config.terminal_eval_mode,
         );
         let value = value.clamp(-MAX_LEAF_VALUE_ABS, MAX_LEAF_VALUE_ABS);
+        // Playout 0's value: `value` itself unless the leaf ran k > 1.
+        let first_value =
+            playout0.map_or(value, |v| v.clamp(-MAX_LEAF_VALUE_ABS, MAX_LEAF_VALUE_ABS));
 
         // ── 4. BACKPROPAGATION (uniform / expectimax) ───────────────────
         let bucket = if leaf_decisive || rollout_hit_terminal {
-            Bucket::from_value(value)
+            Bucket::from_value(first_value)
         } else {
             Bucket::Tie
         };
@@ -4295,6 +5067,7 @@ impl<P: Policy> Mcts<P> {
             n.value_sq_sum += value * value;
             if let Some(hp) = final_hp {
                 n.hp_sum += hp;
+                n.hp_sq_sum += hp * hp;
                 n.hp_n += 1;
             }
             if nid == leaf_id {
@@ -4325,7 +5098,39 @@ impl<P: Policy> Mcts<P> {
         }
 
         self.chance_backprop_proven(&path);
-        self.chance_capture_best_seq(&path, value);
+        self.chance_capture_best_seq(&path, first_value);
+    }
+
+    /// Playouts `1..k` of a leaf evaluated at [`MctsConfig::leaf_playouts`]
+    /// `= k > 1` (GH #830). Each runs on a fresh clone of the realized
+    /// `leaf` whose combat RNG streams are re-sampled by
+    /// `reseed_for_outcome(clone, sim_rng.next_u64(), i)`, and continues the
+    /// simulation's policy RNG. Returns the mean of the `k` playout values,
+    /// each clamped to the backup bound like a single leaf value, given
+    /// playout 0's raw value `first`. Counts every playout into
+    /// `rollouts_total` and every depth-capped one into `depth_cap_hits`.
+    fn extra_leaf_playouts(
+        &mut self,
+        leaf: &CombatState,
+        sim_rng: &mut Xoshiro256PlusPlus,
+        first: f32,
+    ) -> f32 {
+        use rand::RngCore;
+        let k = self.config.leaf_playouts;
+        let mut sum = f64::from(first.clamp(-MAX_LEAF_VALUE_ABS, MAX_LEAF_VALUE_ABS));
+        for i in 1..k {
+            let mut state = leaf.clone();
+            reseed_for_outcome(&mut state, sim_rng.next_u64(), i);
+            let v = values::search_playout(&mut state, sim_rng, &self.config, &self.leaf_eval);
+            self.rollouts_total += 1;
+            if !is_terminal(&state) {
+                self.depth_cap_hits += 1;
+            }
+            sum += f64::from(v);
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let mean = (sum / f64::from(k)) as f32;
+        mean
     }
 
     /// Re-express one node's value as an aggregate over its **successors**
@@ -4756,24 +5561,28 @@ impl<P: Policy> Mcts<P> {
         path: &[NodeId],
     ) -> NodeId {
         let sh = sts2_core::search_hash(&state);
-        self.chance_alloc_decision_with_hash(parent, state, path, sh)
+        self.chance_alloc_decision_with_hash(parent, state, path, sh, 0)
     }
 
     /// As [`Self::chance_alloc_decision`], but for callers that already
     /// computed the `search_hash` of `state` (e.g. the widen path, which
     /// hashes to dedup before allocating). Avoids a second full hash of the
-    /// large [`CombatState`] on the search hot path.
+    /// large [`CombatState`] on the search hot path. `sh` already carries
+    /// `salt`, the node's [`dominance::salt`] (`0` when nothing is pruned);
+    /// it is passed apart so the [`MctsConfig::tt_hash_v2`] key can fold it
+    /// in too.
     fn chance_alloc_decision_with_hash(
         &mut self,
         parent: Option<NodeId>,
         state: CombatState,
         path: &[NodeId],
         sh: u64,
+        salt: u64,
     ) -> NodeId {
         if self.config.use_transposition_table {
             #[allow(clippy::cast_possible_truncation)]
             let bucket = (path.len() / 4).min(u8::MAX as usize) as u8;
-            let key = (sh, bucket);
+            let key = (tt_key(self.config.tt_hash_v2, &state, sh, salt), bucket);
             let peek = self
                 .transposition
                 .as_ref()
@@ -5012,7 +5821,7 @@ impl<P: Policy> Mcts<P> {
                 // Reuse the `sh` the non-observational dedup computed instead
                 // of hashing the large state a second time.
                 let sh = sh.unwrap_or_else(|| sts2_core::search_hash(&s));
-                let child = self.chance_alloc_decision_with_hash(Some(chance_id), s, path, sh);
+                let child = self.chance_alloc_decision_with_hash(Some(chance_id), s, path, sh, 0);
                 self.tree
                     .node_mut(chance_id)
                     .chance_outcomes
@@ -5209,6 +6018,20 @@ pub fn terminal_state_value(
     terminal_state_value_with(state, &cfg, leaf_eval)
 }
 
+/// `RichBoth` value of a won terminal: `0.5 + evaluate_victory`, plus the
+/// out-of-band HP surplus. With either carry set ([`MctsConfig::win_hp_carry`],
+/// GH #771) the HP and potion terms are blended toward a full win and the
+/// surplus is scaled by the HP carry.
+fn win_value(state: &CombatState, cfg: &MctsConfig) -> f32 {
+    if cfg.win_hp_carry.is_none() && cfg.win_potion_carry.is_none() {
+        return 0.5 + evaluate_victory(state) + victory_hp_surplus(state);
+    }
+    let hp_carry = cfg.win_hp_carry.unwrap_or(1.0);
+    let potion_carry = cfg.win_potion_carry.unwrap_or(1.0);
+    0.5 + evaluate_victory_carry(state, hp_carry, potion_carry)
+        + hp_carry * victory_hp_surplus(state)
+}
+
 /// Parameterized form of [`terminal_state_value`] (arm E surface,
 /// 2026-08-15 Optuna study prep): the loss-quality weights come from
 /// `cfg` (see [`loss_quality_with`]) instead of the fixed defaults.
@@ -5236,8 +6059,7 @@ pub fn terminal_state_value_with(
         }
         TerminalEvalMode::RichBoth => {
             if state.player_won {
-                0.5 + evaluate_victory(state) + victory_hp_surplus(state)
-                    - loot_penalty_q(state, cfg)
+                win_value(state, cfg) - loot_penalty_q(state, cfg)
             } else {
                 -1.0 + 0.5 * loss_leaf_value(state, leaf_eval, cfg)
             }
@@ -5339,10 +6161,12 @@ pub fn loss_quality(state: &CombatState) -> f32 {
 /// swept.
 #[must_use]
 pub fn loss_quality_with(state: &CombatState, cfg: &MctsConfig) -> f32 {
-    let enemy_max = sum_enemy_max_hp(state);
+    // `removed_counts_forms` off reads the same sums as `sum_enemy_hp` /
+    // `sum_enemy_max_hp` (the base reading of `enemy_hp_remaining`).
+    let (enemy_hp, enemy_max) = enemy_eval::enemy_hp_remaining(state, cfg.removed_counts_forms);
     #[allow(clippy::cast_precision_loss)]
     let removed = if enemy_max > 0 {
-        1.0 - sum_enemy_hp(state) as f32 / enemy_max as f32
+        1.0 - enemy_hp as f32 / enemy_max as f32
     } else {
         0.0
     };
@@ -5411,21 +6235,31 @@ fn rollout(
         // heuristic pick into one hand/card resolution pass; the chosen
         // action and RNG-draw sequence are identical to the
         // coverage-then-pick pair it replaced (perf 2026-07-04).
+        let incoming = enemy_eval::IncomingDamage::from_effective(cfg.effective_incoming);
         let idx = match policy_kind {
             RolloutPolicyKind::Uniform => Uniform.pick(rng, state, &acts),
-            RolloutPolicyKind::Heuristic => {
-                expert::pick_rollout_action_with(rng, state, &acts, cfg.rollout_end_turn_priority)
-            }
-            RolloutPolicyKind::Learned => expert::pick_rollout_action_learned(
+            RolloutPolicyKind::Heuristic => expert::pick_rollout_action_incoming(
+                rng,
+                state,
+                &acts,
+                cfg.rollout_end_turn_priority,
+                incoming,
+            ),
+            RolloutPolicyKind::Learned => expert::pick_rollout_action_learned_incoming(
                 rng,
                 state,
                 &acts,
                 cfg.rollout_end_turn_priority,
                 expert::learned_priorities(),
+                incoming,
             ),
-            RolloutPolicyKind::Net => {
-                rollout_net::pick(rng, state, &acts, cfg.rollout_end_turn_priority)
-            }
+            RolloutPolicyKind::Net => rollout_net::pick_incoming(
+                rng,
+                state,
+                &acts,
+                cfg.rollout_end_turn_priority,
+                incoming,
+            ),
         };
         let action = acts[idx].clone();
         let _ = core_apply(state, action);
@@ -5439,6 +6273,14 @@ fn rollout(
         // future edge case where sole-legal-actions chain unboundedly.
         let _ = quiescence::drive_to_quiescence(state, 32);
     }
+    rollout_end_value(state, leaf_eval, cfg)
+}
+
+/// The value [`rollout`] returns for the state its playout stopped in:
+/// the configured terminal value when the fight is over, else the
+/// depth-cut leaf. Shared with [`playout_return`] so a playout scored
+/// outside the search gets exactly the search's number.
+fn rollout_end_value(state: &CombatState, leaf_eval: &LeafEval, cfg: &MctsConfig) -> f32 {
     if is_terminal(state) {
         // sts2-rs-vbzji: the historical Binary mode returns flat -1.0
         // on losses, throwing away the rich state signal (enemy HP
@@ -5454,6 +6296,30 @@ fn rollout(
         // already cleanly handles it, so option (b) wasn't needed).
         depth_cut_value(state, leaf_eval, cfg)
     }
+}
+
+/// What the search backs up for a playout that ended in `state`: the
+/// [`rollout`] value (after quiescence when `cfg.use_quiescence`), clamped
+/// to the backup bound exactly as `Mcts::one_simulation` clamps it.
+///
+/// Under the deployed `RichBoth` + `loss_gradient` dialect a won fight scores
+/// `0.5 + evaluate_victory + victory_hp_surplus − loot_penalty_q` (in
+/// `[1.0, 1.5]` at the default weights; the victory eval prices each kept
+/// potion at `STS2_RUNAI_POTION_WEIGHT` HP, default 8) and a lost one
+/// `-1.0 + 0.5 · (TERMINAL_LOSS_LEAF + loss_span · loss_quality)` (in
+/// `[-1.45, -1.05)`). A state still in progress gets the depth-cut leaf. The
+/// playout trainer (`ppo.rollout_learn rl --reward search`) uses it as the
+/// reward, so the net is trained on the number the search actually reads.
+#[must_use]
+pub fn playout_return(state: &CombatState, cfg: &MctsConfig, leaf_eval: &LeafEval) -> f32 {
+    let v = if cfg.use_quiescence && !is_terminal(state) {
+        let mut s = state.clone();
+        let _ = quiescence::drive_to_quiescence(&mut s, 32);
+        rollout_end_value(&s, leaf_eval, cfg)
+    } else {
+        rollout_end_value(state, leaf_eval, cfg)
+    };
+    v.clamp(-MAX_LEAF_VALUE_ABS, MAX_LEAF_VALUE_ABS)
 }
 
 /// Run a single synthetic rollout from `state` for the purpose of
@@ -5508,6 +6374,32 @@ pub fn sample_rollout_leaf_state(
         depth += 1;
     }
     observer(state, depth);
+}
+
+/// The playout depth a search rooted at `root` runs under `cfg`:
+/// `cfg.max_rollout_depth`, raised to the largest
+/// [`sts2_core::MonsterKind::recommended_rollout_depth`] of the enemies on
+/// the board (bead `sts2-rs-y4e4z`: Vantom → 50). The caller's depth is a
+/// floor — a higher explicit depth wins; depth is only ever raised.
+/// [`Mcts::with_policy`] applies it to the root; [`values::playout_value`]
+/// applies it to the state it scores, so both run the same playout.
+#[must_use]
+pub fn effective_rollout_depth(root: &CombatState, cfg: &MctsConfig) -> u32 {
+    let recommended = root
+        .enemy_uids
+        .iter()
+        .filter_map(|uid| {
+            root.creatures
+                .iter()
+                .find(|c| c.id == uid.0)
+                .and_then(|c| c.species)
+                .and_then(sts2_core::MonsterKind::recommended_rollout_depth)
+        })
+        .max();
+    match recommended {
+        Some(rec) if rec > cfg.max_rollout_depth => rec,
+        _ => cfg.max_rollout_depth,
+    }
 }
 
 /// Reseed `state`'s combat streams and legacy `rng` for chance outcome `n`
@@ -5601,26 +6493,17 @@ fn debug_assert_prefix_seed_independent(
 /// (GitHub #32). Defined as a free function so the override's `&self`
 /// borrow doesn't conflict with iterating `root.children`.
 fn sum_enemy_hp(state: &CombatState) -> i32 {
-    state
-        .creatures
-        .iter()
-        .filter(|c| state.enemy_uids.iter().any(|u| u.0 == c.id))
-        .map(|c| c.scored_hp(state.ascension).0.max(0))
-        .sum()
+    enemy_eval::enemy_hp_remaining(state, false).0
 }
 
-/// `max_hp` sibling of [`sum_enemy_hp`] — the denominator for
-/// [`loss_quality`]'s enemy-HP-removed fraction. Same all-enemy
-/// (minions included) convention. A beaten sentinel (see
-/// [`sts2_core::Creature::is_beaten_sentinel`]) counts at its spawn max HP, so it reads as
-/// fully removed with its real weight.
+/// `max_hp` sibling of [`sum_enemy_hp`], for tests; [`loss_quality_with`]
+/// reads both sums from [`enemy_eval::enemy_hp_remaining`], whose base
+/// reading these are. Same all-enemy (minions included) convention. A
+/// beaten sentinel (see [`sts2_core::Creature::is_beaten_sentinel`]) counts
+/// at its spawn max HP, so it reads as fully removed with its real weight.
+#[cfg(test)]
 fn sum_enemy_max_hp(state: &CombatState) -> i32 {
-    state
-        .creatures
-        .iter()
-        .filter(|c| state.enemy_uids.iter().any(|u| u.0 == c.id))
-        .map(|c| c.scored_hp(state.ascension).1.max(0))
-        .sum()
+    enemy_eval::enemy_hp_remaining(state, false).1
 }
 
 /// Whether the player is still alive after the next enemy turn, given a
@@ -5690,15 +6573,17 @@ fn root_hand_card<'a>(
 /// regime this feeds, over-crediting block while Intangible is up is
 /// harmless (both candidates see the same inflated total). Sibling of
 /// [`sum_enemy_hp`]; free function for the same borrow reason.
-fn sum_enemy_telegraphed_damage(state: &CombatState) -> i32 {
+///
+/// `incoming` picks the reading ([`MctsConfig::effective_incoming`]): the
+/// base one is the sum above; the effective one is the displayed number,
+/// which DOES apply the Intangible cap and every other modifier the game
+/// paints on the intent.
+fn sum_enemy_telegraphed_damage(state: &CombatState, incoming: enemy_eval::IncomingDamage) -> i32 {
     state
         .creatures
         .iter()
         .filter(|c| state.enemy_uids.iter().any(|u| u.0 == c.id) && c.current_hp > 0)
-        .filter_map(|c| c.intent)
-        .fold(0i32, |acc, i| {
-            acc.saturating_add(i.damage().saturating_mul(i32::from(i.hits())))
-        })
+        .fold(0i32, |acc, c| acc.saturating_add(incoming.total(state, c)))
 }
 
 /// Total remaining `Slippery` stacks across alive enemies — the 1-ply
@@ -5768,6 +6653,62 @@ fn depth_cut_value(state: &CombatState, leaf_eval: &LeafEval, cfg: &MctsConfig) 
     (base - loot_penalty_q(state, cfg)).max(LOOT_ADJUSTED_LEAF_FLOOR)
 }
 
+/// The [`EdgeAction::PlayCard`] identity of a `PlayCard` action — the key
+/// [`canonicalize_actions`] dedups on. Cards in the player's hand index
+/// into `state.cards` via `card_uid.0 - 1`.
+///
+/// INVARIANT (A8 audit §7b): this key is exactly the
+/// [`EdgeAction::PlayCard`] identity tuple `(card_id, upgraded,
+/// cost, free, affliction, target)`, because `EdgeAction` is the identity
+/// the tree actually keys and resolves edges by. A FINER key here
+/// manufactures sibling children that map to the same `EdgeAction`
+/// and resolve to the same concrete hand slot — byte-identical
+/// duplicate root actions splitting one move's budget and (via the
+/// transposition table) double-counting a shared child's visits. A
+/// COARSER key drops a genuinely distinct play — twice now: the PowerPotion
+/// free-copy bug that added `free` (`86a4c0f5c`), and the 2026-08-16
+/// `affliction` addition, where a `Bound` and a clean copy of one card
+/// collapsed into a single edge whose `resolve` returned the slot
+/// `legal_actions` had gated out under ChainsOfBinding.
+/// Keep the two tuples in lockstep; the expansion-site
+/// `debug_assert` and `tests/canonicalize.rs` pin both directions.
+///
+/// The original key (bead `sts2-rs-dfv1`) additionally carried
+/// `combat_vars.len()` as a `special_data` proxy meant to keep
+/// scaling copies (Rampage) apart — but `EdgeAction::resolve`
+/// ignores combat vars and always picks the FIRST matching hand
+/// card, so that distinction never reached the simulator; it only
+/// produced the duplicate children above (6.6% of audited A8 plies).
+pub(crate) type PlayIdentity = (
+    sts2_core::cards::CardId,
+    bool,
+    i8,
+    bool,
+    Option<sts2_core::card_afflictions::CardAfflictionKind>,
+    Option<u8>,
+);
+
+/// [`PlayIdentity`] of `a` at `state`; `None` for a non-`PlayCard` action
+/// or a stale hand index.
+pub(crate) fn play_identity(state: &CombatState, a: &Action) -> Option<PlayIdentity> {
+    match a {
+        Action::PlayCard { hand_index, target } => {
+            let card_uid = state.player.hand.get(*hand_index as usize)?;
+            let idx = card_uid.0.get() as usize - 1;
+            let card = state.cards.get(idx)?;
+            Some((
+                card.card_id,
+                card.upgraded,
+                card.cost,
+                sts2_core::hooks::card_cost_locally_zeroed(state, card),
+                card.affliction.map(|a| a.kind),
+                *target,
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// W3: canonicalize the legal-action list at expansion time. Mirrors
 /// the duplicate-prune block at
 /// `sts_lightspeed/src/sim/search/BattleScumSearcher2.cpp:220-234`
@@ -5788,71 +6729,19 @@ fn depth_cut_value(state: &CombatState, leaf_eval: &LeafEval, cfg: &MctsConfig) 
 /// final priority sort.
 ///
 /// Bead `sts2-rs-dfv1` W3.
-fn canonicalize_actions(
+pub(crate) fn canonicalize_actions(
     state: &CombatState,
     acts: SmallVec<[Action; 16]>,
 ) -> SmallVec<[Action; 16]> {
-    // Resolve the card identity tuple used for dedup. Cards in the
-    // player's hand index into `state.cards` via `card_uid.0 - 1`.
-    //
-    // INVARIANT (A8 audit §7b): this key is exactly the
-    // [`EdgeAction::PlayCard`] identity tuple `(card_id, upgraded,
-    // cost, free, affliction, target)`, because `EdgeAction` is the identity
-    // the tree actually keys and resolves edges by. A FINER key here
-    // manufactures sibling children that map to the same `EdgeAction`
-    // and resolve to the same concrete hand slot — byte-identical
-    // duplicate root actions splitting one move's budget and (via the
-    // transposition table) double-counting a shared child's visits. A
-    // COARSER key drops a genuinely distinct play — twice now: the PowerPotion
-    // free-copy bug that added `free` (`86a4c0f5c`), and the 2026-08-16
-    // `affliction` addition, where a `Bound` and a clean copy of one card
-    // collapsed into a single edge whose `resolve` returned the slot
-    // `legal_actions` had gated out under ChainsOfBinding.
-    // Keep the two tuples in lockstep; the expansion-site
-    // `debug_assert` and `tests/canonicalize.rs` pin both directions.
-    //
-    // The original key (bead `sts2-rs-dfv1`) additionally carried
-    // `combat_vars.len()` as a `special_data` proxy meant to keep
-    // scaling copies (Rampage) apart — but `EdgeAction::resolve`
-    // ignores combat vars and always picks the FIRST matching hand
-    // card, so that distinction never reached the simulator; it only
-    // produced the duplicate children above (6.6% of audited A8 plies).
-    type Key = (
-        sts2_core::cards::CardId,
-        bool,
-        i8,
-        bool,
-        Option<sts2_core::card_afflictions::CardAfflictionKind>,
-        Option<u8>,
-    );
-    let key_of = |a: &Action| -> Option<Key> {
-        match a {
-            Action::PlayCard { hand_index, target } => {
-                let card_uid = state.player.hand.get(*hand_index as usize)?;
-                let idx = card_uid.0.get() as usize - 1;
-                let card = state.cards.get(idx)?;
-                Some((
-                    card.card_id,
-                    card.upgraded,
-                    card.cost,
-                    sts2_core::hooks::card_cost_locally_zeroed(state, card),
-                    card.affliction.map(|a| a.kind),
-                    *target,
-                ))
-            }
-            _ => None,
-        }
-    };
-
     // Partition into PlayCard actions (with their dedup keys) and
     // everything else. Bead `sts2-rs-a1jo9` (perf): both partitions
     // are SmallVec<_; 16> so the typical legal-actions set (also
     // SmallVec<_; 16> from `legal_actions`) stays inline — no heap
     // touch on the hot MCTS node-expansion path.
-    let mut plays: SmallVec<[(Key, Action); 16]> = SmallVec::new();
+    let mut plays: SmallVec<[(PlayIdentity, Action); 16]> = SmallVec::new();
     let mut others: SmallVec<[Action; 16]> = SmallVec::new();
     for a in acts {
-        if let Some(k) = key_of(&a) {
+        if let Some(k) = play_identity(state, &a) {
             plays.push((k, a));
         } else {
             others.push(a);
@@ -6050,6 +6939,7 @@ where
                 // oracle-q`, GH #494).
                 existing.value_sq_sum += o.value_sq_sum;
                 existing.hp_sum += o.hp_sum;
+                existing.hp_sq_sum += o.hp_sq_sum;
                 existing.hp_n += o.hp_n;
             } else {
                 merged.push(o);
@@ -9809,6 +10699,423 @@ mod tests {
         );
     }
 
+    // ── GH #785: top-of-draw effects under BeliefDraw ─────────────────
+
+    /// Havoc in hand over a draw pile of Self-target Defends, `upgraded`
+    /// per entry, in uid order (the first entry gets the lowest draw uid).
+    /// Self-target on purpose: an auto-played Enemy-target card rolls
+    /// `combat_targets` and would make the edge stochastic on its own,
+    /// hiding what this fixture isolates — the only randomness in playing
+    /// Havoc is WHICH card is on top.
+    fn havoc_over_defends_state(upgraded: &[bool]) -> CombatState {
+        use sts2_core::cards::{CardId, CardType, TargetType};
+        let draw: Vec<(CardId, bool)> = upgraded
+            .iter()
+            .map(|&u| (CardId::DefendIronclad, u))
+            .collect();
+        let mut s = build_pommel_strike_state(&draw);
+        for c in &mut *s.cards {
+            c.card_type = CardType::Skill;
+            c.target_type = TargetType::Self_;
+            c.base_damage = 0;
+            if c.card_id == CardId::PommelStrike {
+                c.card_id = CardId::Havoc;
+            } else {
+                c.base_block = if c.upgraded { 8 } else { 5 };
+            }
+        }
+        s
+    }
+
+    /// Two plain Defends and an upgraded one.
+    fn havoc_over_mixed_draw_state() -> CombatState {
+        havoc_over_defends_state(&[false, true, false])
+    }
+
+    fn havoc_child_kind<P: Policy>(m: &Mcts<P>) -> Option<NodeKind> {
+        havoc_child(m).map(|cid| m.tree.node(cid).kind)
+    }
+
+    fn havoc_child<P: Policy>(m: &Mcts<P>) -> Option<NodeId> {
+        let root = m.tree.root;
+        m.tree
+            .node(root)
+            .children
+            .iter()
+            .find_map(|(edge, cid)| match edge {
+                EdgeAction::PlayCard {
+                    card_id: sts2_core::cards::CardId::Havoc,
+                    ..
+                } => Some(*cid),
+                _ => None,
+            })
+    }
+
+    /// The realized states of `chance`'s outcomes.
+    fn realized_outcomes<P: Policy>(m: &Mcts<P>, chance: NodeId) -> Vec<&CombatState> {
+        m.tree
+            .node(chance)
+            .chance_outcomes
+            .iter()
+            .filter_map(|o| m.tree.node(o.child).realized.as_deref())
+            .collect()
+    }
+
+    /// Under BeliefDraw the unknown middle is kept uid-sorted, so Havoc used
+    /// to auto-play its lowest-uid card with no RNG read: the search built
+    /// no chance node and treated that one card as certain. Havoc must now
+    /// be a chance node. The `Clairvoyant` control must stay a decision
+    /// node — proving the chance comes from the draw-top resolution, not
+    /// from anything else on the edge — and is the byte-stability side of
+    /// the fix (the clairvoyant pop never reads RNG).
+    #[test]
+    fn belief_draw_search_chance_nodes_a_havoc_play() {
+        let kind = |hidden_info: HiddenInfoMode| {
+            let cfg = MctsConfig {
+                max_simulations: 20,
+                max_rollout_depth: 5,
+                seed: 0x0785_4A0C,
+                hidden_info,
+                ..MctsConfig::default()
+            };
+            let mut m = Mcts::new(havoc_over_mixed_draw_state(), cfg);
+            let _ = m.search_n(20);
+            havoc_child_kind(&m).expect("the Havoc edge must exist at the root")
+        };
+        assert_eq!(
+            kind(HiddenInfoMode::BeliefDraw),
+            NodeKind::Chance,
+            "Havoc onto an unknown mixed middle is a chance event under BeliefDraw"
+        );
+        assert_eq!(
+            kind(HiddenInfoMode::Clairvoyant),
+            NodeKind::Decision,
+            "control: the clairvoyant pop reads no RNG"
+        );
+    }
+
+    /// With the top card KNOWN (pinned, as after Headbutt) Havoc stays a
+    /// decision node under BeliefDraw: a known card is not a chance event.
+    #[test]
+    fn belief_draw_search_keeps_havoc_onto_a_pinned_top_deterministic() {
+        let mut state = havoc_over_mixed_draw_state();
+        // The upgraded Defend, moved onto the top and pinned there.
+        let top = state.player.draw.remove(1);
+        state.player.draw.insert(0, top);
+        sts2_core::cards::pin_top(&mut state.player, top);
+        let cfg = MctsConfig {
+            max_simulations: 20,
+            max_rollout_depth: 5,
+            seed: 0x0785_4A0D,
+            hidden_info: HiddenInfoMode::BeliefDraw,
+            ..MctsConfig::default()
+        };
+        let mut m = Mcts::new(state, cfg);
+        let _ = m.search_n(20);
+        assert_eq!(
+            havoc_child_kind(&m).expect("the Havoc edge must exist at the root"),
+            NodeKind::Decision
+        );
+    }
+
+    /// The discriminating honesty check for GH #785. A permutation of the
+    /// hidden pile cannot detect the old bias: `belief_root` sorts the
+    /// unknown middle by uid and reseeds the streams, so two states that
+    /// differ only in physical order are byte-identical before the search
+    /// starts (see `honest_search_is_invariant_to_draw_pile_permutation`).
+    /// The old bias rode on the uid LABELS instead: Havoc took `draw[0]` of
+    /// the uid-sorted middle, i.e. always the lowest-uid card. So this test
+    /// holds the same three cards (two plain Defends, one upgraded) and
+    /// varies which instance carries the lowest uid — information the
+    /// player does not have — and asserts Havoc reaches both observable
+    /// cards in both labellings.
+    ///
+    /// The fixture check below is the legacy control: it shows the old
+    /// stand-in (`draw[0]` after `belief_root`) is the upgraded Defend in
+    /// one labelling and a plain one in the other, so the legacy pop would
+    /// have played a different, certain card per labelling (a Decision
+    /// node, one outcome) and fails this test.
+    #[test]
+    fn belief_draw_havoc_outcomes_do_not_depend_on_which_card_holds_the_lowest_uid() {
+        for (what, upgraded) in [
+            ("upgraded Defend holds the lowest uid", [true, false, false]),
+            (
+                "upgraded Defend holds the highest uid",
+                [false, false, true],
+            ),
+        ] {
+            let state = havoc_over_defends_state(&upgraded);
+            let seed = 0x0785_4A0E;
+            let mut root = state.clone();
+            sts2_core::blindfold::belief_root(&mut root, seed);
+            let stand_in = sts2_core::card_by_uid(&root.cards, root.player.draw[0])
+                .expect("draw card in the arena");
+            assert_eq!(
+                stand_in.upgraded, upgraded[0],
+                "{what}: fixture — the legacy lowest-uid stand-in must flip with the labelling"
+            );
+
+            let cfg = MctsConfig {
+                max_simulations: 300,
+                max_rollout_depth: 5,
+                seed,
+                hidden_info: HiddenInfoMode::BeliefDraw,
+                ..MctsConfig::default()
+            };
+            let mut m = Mcts::new(state, cfg);
+            let _ = m.search_n(300);
+            let havoc = havoc_child(&m).expect("the Havoc edge must exist at the root");
+            assert_eq!(m.tree.node(havoc).kind, NodeKind::Chance, "{what}");
+            let exhausted: std::collections::BTreeSet<bool> = realized_outcomes(&m, havoc)
+                .into_iter()
+                .map(|s| {
+                    assert_eq!(s.player.exhaust.len(), 1, "{what}: Havoc exhausts its card");
+                    sts2_core::card_by_uid(&s.cards, s.player.exhaust[0])
+                        .expect("exhausted card in the arena")
+                        .upgraded
+                })
+                .collect();
+            assert_eq!(
+                exhausted,
+                std::collections::BTreeSet::from([false, true]),
+                "{what}: Havoc must reach both the plain and the upgraded Defend"
+            );
+            assert_eq!(
+                m.tree.node(havoc).chance_outcomes.len(),
+                2,
+                "{what}: two observable outcomes; the two plain Defends dedup"
+            );
+        }
+    }
+
+    /// GH #785: Havoc onto an unknown middle of observationally IDENTICAL
+    /// cards still reads RNG (BeliefDraw runs no homogeneity pre-check), so
+    /// the edge is a Chance node — but every outcome is the same observable
+    /// state, so they must dedup to ONE child. The sampled card lands in
+    /// EXHAUST, not HAND, so this only holds because
+    /// `sts2_core::chance_outcome_hash` folds Exhaust (with Discard and
+    /// Play) observationally; with Exhaust hashed by uid each Defend
+    /// instance became its own outcome and the search spread its visits
+    /// and widening budget over four copies of one position.
+    #[test]
+    fn belief_draw_havoc_onto_identical_cards_dedups_to_one_outcome() {
+        let state = havoc_over_defends_state(&[false; 4]);
+        let draw: Vec<_> = state
+            .player
+            .draw
+            .iter()
+            .map(|&u| sts2_core::card_by_uid(&state.cards, u).expect("draw card"))
+            .collect();
+        assert!(
+            draw.windows(2)
+                .all(|w| sts2_core::cards::cards_observationally_equal(w[0], w[1])),
+            "fixture: the four Defends must be observationally identical"
+        );
+        let cfg = MctsConfig {
+            max_simulations: 400,
+            max_rollout_depth: 20,
+            seed: 0x0785_0001,
+            hidden_info: HiddenInfoMode::BeliefDraw,
+            ..MctsConfig::default()
+        };
+        let mut m = Mcts::new(state, cfg);
+        let _ = m.search_n(400);
+        let havoc = havoc_child(&m).expect("the Havoc edge must exist at the root");
+        let node = m.tree.node(havoc);
+        assert_eq!(node.kind, NodeKind::Chance);
+        assert!(
+            node.visits >= 20,
+            "the Havoc chance node must be visited enough to have tried widening: {}",
+            node.visits
+        );
+        assert_eq!(
+            node.chance_outcomes.len(),
+            1,
+            "which identical Defend Havoc exhausted is unobservable"
+        );
+    }
+
+    /// GH #785: ToastyMittens exhausts the top card at EVERY turn start, so
+    /// under BeliefDraw every EndTurn of a ToastyMittens deck samples the
+    /// exhausted card. On a deck of identical Defends that sample is
+    /// unobservable, so the relic must add no EndTurn outcomes over the
+    /// same deck without it.
+    #[test]
+    fn belief_draw_toasty_mittens_end_turn_adds_no_outcomes_on_identical_cards() {
+        use sts2_core::cards::{CardId, CardType, TargetType};
+        sts2_content::relics::dispatch::ensure_installed();
+        let end_turn_outcomes = |toasty: bool| {
+            let mut s = build_pommel_strike_state(&[(CardId::DefendIronclad, false); 10]);
+            for c in &mut *s.cards {
+                c.card_type = CardType::Skill;
+                c.target_type = TargetType::Self_;
+                c.card_id = CardId::DefendIronclad;
+                c.base_damage = 0;
+                c.base_block = 5;
+            }
+            let _ = s.init_player_creature();
+            s.sync_player_creature();
+            if toasty {
+                s.relics.push(sts2_core::Relic {
+                    id: std::num::NonZeroU32::new(1).expect("non-zero"),
+                    kind: sts2_core::RelicKind::ToastyMittens,
+                    counter: 0,
+                    is_wax: false,
+                    is_melted: false,
+                });
+            }
+            let cfg = MctsConfig {
+                max_simulations: 600,
+                max_rollout_depth: 20,
+                seed: 0x0785_0003,
+                hidden_info: HiddenInfoMode::BeliefDraw,
+                ..MctsConfig::default()
+            };
+            let mut m = Mcts::new(s, cfg);
+            let _ = m.search_n(600);
+            let root = m.tree.root;
+            let end_turn = m
+                .tree
+                .node(root)
+                .children
+                .iter()
+                .find_map(|(edge, cid)| {
+                    matches!(edge, EdgeAction::Other(Action::EndTurn)).then_some(*cid)
+                })
+                .expect("the EndTurn edge must exist at the root");
+            assert_eq!(
+                m.tree.node(end_turn).kind,
+                NodeKind::Chance,
+                "toasty={toasty}"
+            );
+            assert!(
+                m.tree.node(end_turn).visits >= 20,
+                "toasty={toasty}: EndTurn must be visited enough to have tried widening"
+            );
+            let outcomes = realized_outcomes(&m, end_turn);
+            for s in &outcomes {
+                assert_eq!(
+                    s.player.exhaust.len(),
+                    usize::from(toasty),
+                    "toasty={toasty}: the relic (and only it) exhausts a card"
+                );
+            }
+            outcomes.len()
+        };
+        let without = end_turn_outcomes(false);
+        assert_eq!(
+            end_turn_outcomes(true),
+            without,
+            "which identical Defend ToastyMittens exhausted is unobservable"
+        );
+    }
+
+    /// #860 (GH #785) x #894 (GH #806): I Am Invincible's rider now runs in
+    /// AutoPostPlay (`IAmInvincible.cs:29-39`, first step of C#
+    /// `EndPlayerTurnPhaseOneInternal`, `CombatManager.cs:1168-1170`), ahead
+    /// of every turn-end choice. Here EndTurn runs it over an unknown middle
+    /// holding one copy and three different cards, and then Well-Laid Plans
+    /// asks what to retain (v0.107.1 `WellLaidPlansPower.BeforeFlushLate`,
+    /// :23-38), so the EndTurn chance node's outcomes are the search's
+    /// decision nodes at that choice.
+    ///
+    /// The player sees only whether the copy played. An honest search
+    /// therefore has exactly two decision nodes there, and neither may name
+    /// the hidden top. If the peek's sampled pin outlived the rider, every
+    /// miss would pin a different hidden card on top and become its own
+    /// decision node: the search would pick what to retain knowing the next
+    /// draw. Same idea as `honest_search_is_invariant_to_draw_pile_permutation`,
+    /// but discriminating: a permutation of the hidden pile is erased by
+    /// `belief_root` before the search starts, while this leak is created
+    /// inside the search, by its own chance sampling.
+    #[test]
+    fn belief_draw_i_am_invincible_turn_end_choice_does_not_see_the_hidden_top() {
+        use sts2_core::cards::{CardId, CardType, TargetType};
+        let mut s = build_pommel_strike_state(&[
+            (CardId::IAmInvincible, false),
+            (CardId::DefendIronclad, false),
+            (CardId::DefendIronclad, true),
+            (CardId::DefendSilent, false),
+        ]);
+        // Self-target Skills (three observably different Defends), so an
+        // auto-play rolls no target: the only randomness on the EndTurn edge
+        // is the hidden top.
+        // The hand card (the fixture's Pommel Strike) becomes a Defend too:
+        // it is what Well-Laid Plans offers to retain.
+        for c in &mut *s.cards {
+            if c.card_id == CardId::PommelStrike {
+                c.card_id = CardId::DefendSilent;
+            }
+            c.card_type = CardType::Skill;
+            c.target_type = TargetType::Self_;
+            c.base_damage = 0;
+            c.base_block = 5;
+        }
+        let iai = s.player.draw[0];
+        s.game_version = sts2_core::GameVersion::V0_107_1;
+        // No energy: EndTurn is the only move at the root.
+        s.player.energy = 0;
+        let player = s.init_player_creature();
+        s.sync_player_creature();
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut s,
+            player,
+            sts2_core::PowerKind::WellLaidPlans,
+            1,
+        );
+        let cfg = MctsConfig {
+            max_simulations: 400,
+            max_rollout_depth: 10,
+            seed: 0x0894_0785,
+            hidden_info: HiddenInfoMode::BeliefDraw,
+            ..MctsConfig::default()
+        };
+        let mut m = Mcts::new(s, cfg);
+        let _ = m.search_n(400);
+        let root = m.tree.root;
+        let end_turn = m
+            .tree
+            .node(root)
+            .children
+            .iter()
+            .find_map(|(edge, cid)| {
+                matches!(edge, EdgeAction::Other(Action::EndTurn)).then_some(*cid)
+            })
+            .expect("the EndTurn edge must exist at the root");
+        assert_eq!(m.tree.node(end_turn).kind, NodeKind::Chance);
+        assert!(
+            m.tree.node(end_turn).visits >= 20,
+            "EndTurn must be visited enough to have tried widening"
+        );
+        let outcomes = realized_outcomes(&m, end_turn);
+        for o in &outcomes {
+            assert_eq!(
+                o.pending_choice.as_ref().map(|c| c.kind),
+                Some(sts2_core::ChoiceKind::RetainAtTurnEnd),
+                "each outcome is the Well-Laid Plans decision"
+            );
+            assert!(
+                o.player.pinned_top.is_empty(),
+                "no hidden card may be pinned on top at the decision: {:?}",
+                o.player.pinned_top
+            );
+        }
+        let fired: std::collections::BTreeSet<bool> = outcomes
+            .iter()
+            .map(|o| !o.player.draw.contains(&iai))
+            .collect();
+        assert_eq!(
+            fired,
+            std::collections::BTreeSet::from([false, true]),
+            "both the copy on top and a non-copy on top are reached"
+        );
+        assert_eq!(
+            outcomes.len(),
+            2,
+            "the player sees only whether the copy played: two decision nodes"
+        );
+    }
+
     /// `common_random_numbers` decides whether stochastic siblings share
     /// a reseed stream. Exercised through `alloc_chance_node` directly
     /// with a hand-grown child list, because the contract is about the
@@ -11473,5 +12780,142 @@ mod endturn_prefix_tests {
         // Stand-in for a phase that rolled off an RNG's seed.
         prefix.player.block += 1;
         debug_assert_prefix_seed_independent(&thievery, &prefix, clean, 1, 0);
+    }
+}
+
+/// GH #830 rung 4: [`net_order_untried`], the queue reorder behind
+/// [`MctsConfig::net_expand_order`].
+#[cfg(test)]
+mod net_expand_order_tests {
+    use super::*;
+    use sts2_content::monster_dispatch::MonsterSpawnArgs;
+    use sts2_core::potions::CharacterId;
+    use sts2_core::runstate::{RoomType, RunState};
+    use sts2_core::MonsterKind;
+
+    /// An Ironclad starter deck against a Nibbit in the play phase of round
+    /// 1, built the way the run loop builds a combat.
+    fn ironclad_vs_nibbit(seed: i32) -> CombatState {
+        sts2_content::cards::dispatch::ensure_installed();
+        sts2_content::relics::dispatch::ensure_installed();
+        sts2_content::potions::dispatch::ensure_installed();
+        sts2_core::relic_effects::ensure_installed();
+        let mut rs = RunState {
+            current_hp: 70,
+            max_hp: 80,
+            rng: sts2_core::run_rng_set::RunRngSet::new(seed),
+            character_id: CharacterId::Ironclad,
+            ..RunState::default()
+        };
+        sts2_content::run_callbacks::populate_starter_deck(&mut rs, CharacterId::Ironclad);
+        let roster = [(MonsterKind::Nibbit, MonsterSpawnArgs::None, 40)];
+        sts2_content::run_bridge::enter_combat_from_roster(&rs, &roster, RoomType::Monster)
+    }
+
+    /// The queue `one_simulation` builds before any reorder.
+    fn canonical_untried(state: &CombatState) -> SmallVec<[EdgeAction; 16]> {
+        canonicalize_actions(state, legal_actions(state))
+            .iter()
+            .map(|a| EdgeAction::from_action(a, state))
+            .collect()
+    }
+
+    /// Logit of `edge`'s action among `legal`, `None` when it is not there.
+    fn logit_of(state: &CombatState, legal: &[Action], edge: &EdgeAction) -> Option<f32> {
+        let logits =
+            rollout_net::playout_logits(state, legal, expert::END_TURN_PRIORITY).expect("a net");
+        let a = edge.resolve(state)?;
+        legal.iter().position(|l| *l == a).map(|i| logits[i])
+    }
+
+    /// Every edge scored: the queue becomes the same edges, logit-descending.
+    #[cfg(rollout_net_ironclad)]
+    #[test]
+    fn scored_queue_is_logit_descending_permutation() {
+        let state = ironclad_vs_nibbit(3);
+        assert!(rollout_net::net_for(&state).is_some(), "Ironclad has a net");
+        let legal = legal_actions(&state);
+        let canonical = canonical_untried(&state);
+        assert!(canonical.len() >= 3, "{canonical:?}");
+        let mut untried = canonical.clone();
+        let change = net_order_untried(&state, &legal, &mut untried, expert::END_TURN_PRIORITY)
+            .expect("the net scores the node");
+        let logits: Vec<f32> = untried
+            .iter()
+            .map(|e| logit_of(&state, &legal, e).expect("every edge is scored"))
+            .collect();
+        assert!(
+            logits.windows(2).all(|w| w[0] >= w[1]),
+            "{untried:?} {logits:?}"
+        );
+        let mut a: Vec<String> = untried.iter().map(|e| format!("{e:?}")).collect();
+        let mut b: Vec<String> = canonical.iter().map(|e| format!("{e:?}")).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "a permutation of the canonical queue");
+        assert_eq!(change.reordered, untried != canonical);
+        assert_eq!(change.first_changed, untried[0] != canonical[0]);
+    }
+
+    /// An edge whose action is missing from the scored list keeps its
+    /// canonical relative order behind every scored edge.
+    #[cfg(rollout_net_ironclad)]
+    #[test]
+    fn unscored_edges_trail_in_canonical_order() {
+        let state = ironclad_vs_nibbit(5);
+        let legal = legal_actions(&state);
+        let canonical = canonical_untried(&state);
+        assert!(canonical.len() >= 3, "{canonical:?}");
+        // Hide EndTurn and the canonical-first card play from the scorer.
+        let hidden: Vec<Action> = canonical
+            .iter()
+            .filter_map(|e| e.resolve(&state))
+            .filter(|a| matches!(a, Action::EndTurn))
+            .chain(
+                canonical
+                    .iter()
+                    .filter_map(|e| e.resolve(&state))
+                    .find(|a| matches!(a, Action::PlayCard { .. })),
+            )
+            .collect();
+        assert_eq!(hidden.len(), 2, "{hidden:?}");
+        let partial: SmallVec<[Action; 16]> = legal
+            .iter()
+            .filter(|a| !hidden.contains(a))
+            .cloned()
+            .collect();
+        let mut untried = canonical.clone();
+        net_order_untried(&state, &partial, &mut untried, expert::END_TURN_PRIORITY)
+            .expect("some edges are scored");
+        let n_scored = canonical.len() - 2;
+        let scored: Vec<f32> = untried[..n_scored]
+            .iter()
+            .map(|e| logit_of(&state, &partial, e).expect("scored edges first"))
+            .collect();
+        assert!(scored.windows(2).all(|w| w[0] >= w[1]), "{scored:?}");
+        let tail: Vec<&EdgeAction> = untried[n_scored..].iter().collect();
+        let expected: Vec<&EdgeAction> = canonical
+            .iter()
+            .filter(|e| e.resolve(&state).is_some_and(|a| hidden.contains(&a)))
+            .collect();
+        assert_eq!(tail, expected, "unscored edges keep canonical order, last");
+    }
+
+    /// No net for the state (a fight with no character; every character
+    /// has a built-in net): the queue is left exactly as it was.
+    #[test]
+    fn no_net_leaves_the_queue_untouched() {
+        if std::env::var_os("STS2_ROLLOUT_NET").is_some() {
+            return; // an experiment net covers every character
+        }
+        let mut state = ironclad_vs_nibbit(3);
+        state.player.character = None;
+        let legal = legal_actions(&state);
+        let canonical = canonical_untried(&state);
+        let mut untried = canonical.clone();
+        assert!(
+            net_order_untried(&state, &legal, &mut untried, expert::END_TURN_PRIORITY).is_none()
+        );
+        assert_eq!(untried, canonical);
     }
 }

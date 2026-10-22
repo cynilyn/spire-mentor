@@ -64,7 +64,6 @@
 use std::collections::BTreeMap;
 
 use smallvec::smallvec;
-use sts2_core::ascension::{self, AscensionLevel};
 use sts2_core::card_effects::{apply_power_to_creature, EffectResult};
 use sts2_core::monster_ai::{
     ConditionFn, ConditionalBranch, ConditionalBranchState, MonsterAi, MonsterState,
@@ -98,19 +97,32 @@ use super::dsl::{always_true, br, cb, mv, mv_eff, proto_ai, proto_ais, ProtoAis}
 fn tunneler_burrow_effect(state: &mut CombatState, owner: CreatureUid) {
     apply_power_to_creature(state, owner, PowerKind::Burrowed, 1);
     // Bead `sts2-rs-fzp1y`: C# `Tunneler.cs:78-83` `BurrowMove` also
-    // does `GainBlock(BlockGain=32)` to self after the Burrowed apply.
+    // does `GainBlock(BlockGain)` to self after the Burrowed apply.
     // The telegraph `Intent::Defend { block: 32 }` is dropped by
     // `perform_intent` because it is the SECOND intent (Buff is
-    // first), so the block has to live here.
-    gain_secondary_defend_block(state, owner, 32);
+    // first), so the block has to live here. `BlockGain =>
+    // GetValueIfAscension(ToughEnemies, 37, 32)` (`Tunneler.cs:52`, GH #858).
+    let block = crate::ascension_scaling::tough_block(
+        state.ascension,
+        MonsterKind::Tunneler,
+        "BURROW_MOVE",
+        32,
+    );
+    gain_secondary_defend_block(state, owner, block);
 }
 
 /// `BowlbugNectar` BUFF — `BowlbugNectar.cs:68`
 /// `PowerCmd.Apply<StrengthPower>(base.Creature, BuffStrengthGain=15, …)`
 /// self-buff (Ascension-16 bumps to 16; identity at pin 01c094d).
 fn bowlbug_nectar_buff_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 16, 15);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::BowlbugNectar,
+        "BUFF",
+        PowerKind::Strength,
+        15,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
@@ -154,8 +166,8 @@ fn the_obscura_sail_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// sorts AHEAD of Obscura in enemy order — front-insert to match
 /// (same modelling as `fogmog_illusion_effect`, bead `sts2-rs-o1mwv`).
 /// The fresh Parafright is paired with its real moveset via
-/// [`create_parafright_ai`](crate::monsters::act1_overgrowth::create_parafright_ai)
-/// so it acts on its own intents rather than the static
+/// [`build_spawned_ai`](crate::monster_dispatch::build_spawned_ai) (scaled at
+/// A9+, GH #847) so it acts on its own intents rather than the static
 /// `MonsterKind::roll_intent` fallback (C#
 /// `CreatureCmd.Add<Parafright>` constructs a fully-wired Parafright).
 /// Bead `sts2-rs-cuocf` (AI attachment; the spawn itself was
@@ -165,11 +177,13 @@ fn the_obscura_illusion_effect(state: &mut CombatState, _owner: CreatureUid) {
     // `TheObscuraNormal.Slots = ["illusion", "obscura"]`; the slot model
     // reproduces C#'s `SortEnemiesBySlotName` instead of the old hardcoded
     // front-insert (GH #552).
-    state.spawn_enemy_in_slot(
+    // Scaled like an encounter member at A9+ (GH #847).
+    let ai = crate::monster_dispatch::build_spawned_ai(
+        state,
         MonsterKind::Parafright,
-        THE_OBSCURA_ILLUSION_SLOT,
-        crate::monsters::act1_overgrowth::create_parafright_ai(),
+        crate::monster_dispatch::MonsterSpawnArgs::None,
     );
+    state.spawn_enemy_in_slot(MonsterKind::Parafright, THE_OBSCURA_ILLUSION_SLOT, ai);
 }
 
 /// `TheObscuraNormal.Slots = ["illusion", "obscura"]` — the Parafright's slot.
@@ -216,8 +230,14 @@ fn wriggler_wriggle_effect(state: &mut CombatState, owner: CreatureUid) {
 /// self-buff (Ascension-DeadlyEnemies bumps to 3; identity at pin).
 /// The Attack 4 rider is handled by `Intent::Attack`.
 fn myte_suck_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 3, 2);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::Myte,
+        "SUCK_MOVE",
+        PowerKind::Strength,
+        2,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
@@ -232,8 +252,14 @@ fn ovicopter_tenderizer_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// `PowerCmd.Apply<StrengthPower>(base.Creature,
 /// NutritionalPasteStrengthAmount=3, …)` self-buff (Ascension bumps to 4).
 fn ovicopter_nutritional_paste_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 4, 3);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::Ovicopter,
+        "NUTRITIONAL_PASTE_MOVE",
+        PowerKind::Strength,
+        3,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
@@ -299,8 +325,14 @@ fn spiny_toad_explosion_effect(state: &mut CombatState, owner: CreatureUid) {
 /// `PowerCmd.Apply<StrengthPower>(base.Creature, SalivateStrength=2, …)`
 /// self-buff (Ascension bumps to 3; identity at pin).
 fn the_insatiable_salivate_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 3, 2);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::TheInsatiable,
+        "SALIVATE",
+        PowerKind::Strength,
+        2,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
@@ -360,8 +392,14 @@ fn the_insatiable_liquify_ground_effect(state: &mut CombatState, owner: Creature
 /// `waterfall_giant_siphon_effect`. The heal was previously dropped.
 fn knowledge_demon_ponder_effect(state: &mut CombatState, owner: CreatureUid) {
     state.creature_heal(owner, 30);
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 3, 2);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::KnowledgeDemon,
+        "PONDER",
+        PowerKind::Strength,
+        2,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
@@ -379,24 +417,44 @@ fn crusher_bug_sting_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// `PowerCmd.Apply<StrengthPower>(base.Creature, AdaptStrengthGain=2, …)`
 /// self-buff (Ascension bumps to 3).
 fn crusher_adapt_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 3, 2);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::Crusher,
+        "ADAPT",
+        PowerKind::Strength,
+        2,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
 /// `InfestedPrism` PULSATE (v0.107.1) — decomp
 /// `v0.107.1/…/InfestedPrism.cs:107-114` `PulsateMove`:
-/// `Attack(PulsateDamage)` then `GainBlock(PulsateBlock=20)` then
+/// `Attack(PulsateDamage)` then `GainBlock(PulsateBlock)` then
 /// `PowerCmd.Apply<VitalSparkPower>(base.Creature, VitalSparkAmount, …)`.
 /// `…wb8lk.11`: v0.107.1 replaced the old Strength self-buff with a
 /// re-application of VitalSpark (the Tainted applier) plus the 20 Block.
 /// The Attack 8 is the primary intent (handled by `perform_intent`); the
 /// secondary Defend 20 and Buff are applied here. VitalSparkAmount =
-/// GetValueIfAscension(DeadlyEnemies, 3, 2) ⇒ A0 2 / A9 3.
+/// GetValueIfAscension(DeadlyEnemies, 3, 2) ⇒ A0 2 / A9 3. PulsateBlock =
+/// GetValueIfAscension(ToughEnemies, 22, 20) (`InfestedPrism.cs:44`) ⇒ A0 20 /
+/// A8 22 (GH #858).
 fn infested_prism_pulsate_effect(state: &mut CombatState, owner: CreatureUid) {
-    gain_secondary_defend_block(state, owner, 20);
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 3, 2);
+    let block = crate::ascension_scaling::tough_block(
+        state.ascension,
+        MonsterKind::InfestedPrism,
+        "PULSATE",
+        20,
+    );
+    gain_secondary_defend_block(state, owner, block);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::InfestedPrism,
+        "PULSATE",
+        PowerKind::VitalSpark,
+        2,
+    );
     apply_power_to_creature(state, owner, PowerKind::VitalSpark, amount);
 }
 
@@ -623,24 +681,23 @@ fn louse_progenitor_web_effect(state: &mut CombatState, _owner: CreatureUid) {
     apply_power_to_player_via_legacy_surface(state, PowerKind::Frail, 2);
 }
 
-/// `LouseProgenitor` CURL_AND_GROW_MOVE applies `Strength(5)` to self; its
-/// primary `Intent::Defend { block: 14 }` (CurlBlock non-asc) is granted by
-/// the engine's block-gain path before this effect runs. Mirrors C#
+/// `LouseProgenitor` CURL_AND_GROW_MOVE applies Strength to self; its
+/// primary `Intent::Defend` (`CurlBlock`, 14 / A8 18) is granted by the
+/// engine's block-gain path before this effect runs. Mirrors C#
 /// `LouseProgenitor.cs` `CurlAndGrowMove`:
-/// `GainBlock(CurlBlock=14, Move) ; await PowerCmd.Apply<StrengthPower>(base.Creature, 5m, …)`.
+/// `GainBlock(CurlBlock, Move) ; await PowerCmd.Apply<StrengthPower>(base.Creature, …)`.
+/// The Strength is a flat 5 in v0.107.1 and `GrowStrength =>
+/// GetValueIfAscension(DeadlyEnemies, 7, 5)` in v0.111.0 (decomp
+/// LouseProgenitor.cs:65,107) — `V0111_BUFF_VALUES`.
 fn louse_progenitor_curl_and_grow_effect(state: &mut CombatState, owner: CreatureUid) {
-    let grow = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        // v0.111.0: GrowStrength => GetValueIfAscension(DeadlyEnemies, 7, 5);
-        // v0.107.1 applied a flat 5m (decomp LouseProgenitor.cs:65,107)
-        sts2_core::ascension::get_value_if_ascension(
-            state.ascension,
-            sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-            7,
-            5,
-        )
-    } else {
-        5
-    };
+    let grow = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::LouseProgenitor,
+        "CURL_AND_GROW_MOVE",
+        PowerKind::Strength,
+        5,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, grow);
 }
 
@@ -695,7 +752,13 @@ fn ovicopter_lay_eggs_effect(state: &mut CombatState, _owner: CreatureUid) {
         // falls back to the static `MonsterKind::roll_intent` path. The
         // eggs act before the Ovicopter on subsequent turns (slot < 5) —
         // load-bearing for the hatch-roll Niche RNG order.
-        let uid = state.spawn_enemy_in_slot(MonsterKind::ToughEgg, slot, create_tough_egg_ai());
+        // Scaled like an encounter member at A9+ (GH #847).
+        let ai = crate::monster_dispatch::build_spawned_ai(
+            state,
+            MonsterKind::ToughEgg,
+            crate::monster_dispatch::MonsterSpawnArgs::None,
+        );
+        let uid = state.spawn_enemy_in_slot(MonsterKind::ToughEgg, slot, ai);
         // Bead `sts2-rs-z4jsg`: C# `ToughEgg.AfterAddedToRoom` (fired
         // inside `CreatureCmd.Add`, BEFORE the summon-site Minion apply
         // below) grants `HatchPower((CurrentSide != Enemy) ? 1 : 2)`.
@@ -728,8 +791,8 @@ fn ovicopter_lay_eggs_effect(state: &mut CombatState, _owner: CreatureUid) {
 ///      a hatching egg sheds player-applied debuffs (Vulnerable, …) but
 ///      keeps its Minion tag.
 ///   2. Re-roll HP: `RunRng.Niche.NextInt(HatchlingMinHp=19,
-///      HatchlingMaxHp=22)` (non-ascension; C# `Rng.NextInt(min, max)`
-///      is max-EXCLUSIVE — `Rng.cs:57` — so the band is 19..=21; PLAIN
+///      HatchlingMaxHp=22)` (20 / 23 at A8 ToughEnemies; C# `Rng.NextInt(min,
+///      max)` is max-EXCLUSIVE — `Rng.cs:57` — so the band is 19..=21; PLAIN
 ///      NextInt, no unique-HP dedup) wrapped in `ScaleHpForMultiplayer`
 ///      (identity at playerCount == 1), then
 ///      `CreatureCmd.SetMaxAndCurrentHp` — max AND current both set,
@@ -762,16 +825,21 @@ fn tough_egg_hatch_effect(state: &mut CombatState, owner: CreatureUid) {
             c.powers.retain(|u| u.0 != pid);
         }
     }
-    // C# `Rng.NextInt(19, 22)` is max-EXCLUSIVE → band 19..=21.
+    // `HatchlingMinHp => GetValueIfAscension(ToughEnemies, 20, 19)`,
+    // `HatchlingMaxHp => (.., 23, 22)` on both builds (decomp
+    // ToughEgg.cs:56-58). One Niche read either way.
+    use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::ToughEnemies};
+    let min = get_value_if_ascension(state.ascension, ToughEnemies, 20, 19);
+    let max = get_value_if_ascension(state.ascension, ToughEnemies, 23, 22);
     let hp = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
         // v0.111.0: `NextInt(HatchlingMinHp, HatchlingMaxHp + 1)` — the band is
-        // now inclusive, 19..=22 (A8 ToughEnemies 20..=23) (decomp ToughEgg.cs:56-58,172)
-        use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::ToughEnemies};
-        let min = get_value_if_ascension(state.ascension, ToughEnemies, 20, 19);
-        let max = get_value_if_ascension(state.ascension, ToughEnemies, 23, 22);
+        // inclusive, 19..=22 (A8 20..=23) (decomp ToughEgg.cs:172).
         state.run_rng.niche.next_int_exclusive(min, max + 1)
     } else {
-        state.run_rng.niche.next_int_exclusive(19, 22)
+        // v0.107.1: `NextInt(HatchlingMinHp, HatchlingMaxHp)` is max-EXCLUSIVE
+        // → 19..=21, and 20..=22 at A8+ (decomp ToughEgg.cs:172; GH #858 —
+        // this branch used to ignore ToughEnemies).
+        state.run_rng.niche.next_int_exclusive(min, max)
     };
     if let Some(c) = state.creatures.iter_mut().find(|c| c.id == owner.0) {
         c.max_hp = hp;
@@ -804,21 +872,51 @@ fn myte_infest_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// the Strength +1 in the sub-3 branch — corrected here per the
 /// C#-is-source-of-truth rule. Bead `sts2-rs-pnv5` / `sts2-rs-ybtmu`.
 fn entomancer_pheromone_spit_effect(state: &mut CombatState, uid: CreatureUid) {
+    let strength = entomancer_spit_strength(state, uid);
+    if strength == 1 {
+        apply_power_to_creature(state, uid, PowerKind::PersonalHive, 1);
+    }
+    apply_power_to_creature(state, uid, PowerKind::Strength, strength);
+    // The next spit's Strength depends on the hive this one just grew, so
+    // re-telegraph it (C# `BuffIntent` carries no number; ours does).
+    let next = entomancer_spit_strength(state, uid);
+    set_buff_intent_amount(state, uid, "PHEROMONE_SPIT", PowerKind::Strength, next);
+}
+
+/// The Strength PHEROMONE_SPIT grants with the hive as it stands: 1 (and
+/// +1 hive) below 3, else 2. v0.111.0: a MISSING PersonalHivePower takes the
+/// +2 branch (`FirstOrDefault()` + `personalHivePower == null || Amount >=
+/// 3`); in v0.107.1 `First()` had no null case and Rust reads the absent
+/// hive as 0 and grows it (decomp Entomancer.cs:59-63). A power at 0 is
+/// removed, so amount 0 here means absent.
+fn entomancer_spit_strength(state: &CombatState, uid: CreatureUid) -> i32 {
     let hive = entomancer_personal_hive_amount(state, uid);
-    // v0.111.0: a MISSING PersonalHivePower takes the +2 Strength branch
-    // (`FirstOrDefault()` + `personalHivePower == null || Amount >= 3`); in
-    // v0.107.1 `First()` had no null case and Rust read the absent hive as 0
-    // and grew it (decomp Entomancer.cs:59-63). A power at 0 is removed, so
-    // amount 0 here means absent.
     if state.game_version >= sts2_core::GameVersion::V0_111_0 && hive == 0 {
-        apply_power_to_creature(state, uid, PowerKind::Strength, 2);
-        return;
+        return 2;
     }
     if hive < 3 {
-        apply_power_to_creature(state, uid, PowerKind::PersonalHive, 1);
-        apply_power_to_creature(state, uid, PowerKind::Strength, 1);
+        1
     } else {
-        apply_power_to_creature(state, uid, PowerKind::Strength, 2);
+        2
+    }
+}
+
+/// Rewrite `owner`'s stored `Intent::Buff { kind: power }` on `move_id` to
+/// `amount` — for a move whose granted amount changes during combat.
+pub(crate) fn set_buff_intent_amount(
+    state: &mut CombatState,
+    owner: CreatureUid,
+    move_id: &str,
+    power: PowerKind,
+    amount: i32,
+) {
+    if let Some(ai) = state
+        .creatures
+        .iter_mut()
+        .find(|c| c.id == owner.0)
+        .and_then(|c| c.ai.as_mut())
+    {
+        ai.set_buff_amount(move_id, power, amount);
     }
 }
 
@@ -933,8 +1031,17 @@ fn curl_up_after_damage(
 ) -> EffectResult {
     use sts2_core::hooks::CreatureRef;
     // C# gate: powered attack (`IsPoweredAttack()`) sourced from a card
-    // (`cardSource != null` ≈ a player-card dealer).
-    if !props.is_powered() || !matches!(dealer, CreatureRef::Player) {
+    // (`cardSource != null` ≈ a player-card dealer). GH #806: the Osty's
+    // attacks carry their card too — `AttackCommand.FromOsty(osty, card)` sets
+    // `ModelSource = card` (AttackCommand.cs:227-238), and every `FromOsty`
+    // caller is a card — so an Osty dealer (`CreatureRef::Enemy(pet_uid)`)
+    // arms the latch as well.
+    let card_dealer = match dealer {
+        CreatureRef::Player => true,
+        CreatureRef::Enemy(uid) => state.player.pet_uid == Some(uid),
+        CreatureRef::Ally(_) | CreatureRef::Nobody => false,
+    };
+    if !props.is_powered() || !card_dealer {
         return EffectResult::NotImplemented;
     }
     // Latch the CurlUp on the owner (counter = 1) — granted + removed once the
@@ -2235,9 +2342,11 @@ pub fn create_entomancer_ai() -> MonsterAi {
         MonsterState::Move(MoveState {
             id: "PHEROMONE_SPIT",
             effect: entomancer_pheromone_spit_effect,
+            // 1 while the hive grows (it spawns at 1), 2 once it is full;
+            // the effect re-telegraphs after each spit.
             intents: smallvec![Intent::Buff {
                 kind: PowerKind::Strength,
-                amount: 2
+                amount: 1
             }],
             follow_up: Some("BEES"),
             must_perform_once: false,
@@ -2627,8 +2736,14 @@ pub fn create_crusher_ai() -> MonsterAi {
 /// at Asc-0 (DeadlyEnemies = 3, ascension identity at the pin). Bead
 /// `sts2-rs-i0niw`.
 fn rocket_charge_up_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount =
-        ascension::get_value_if_ascension(state.ascension, AscensionLevel::DeadlyEnemies, 3, 2);
+    let amount = crate::ascension_scaling::scaled_buff(
+        state.ascension,
+        state.game_version,
+        sts2_core::MonsterKind::Rocket,
+        "CHARGE_UP_MOVE",
+        PowerKind::Strength,
+        2,
+    );
     apply_power_to_creature(state, owner, PowerKind::Strength, amount);
 }
 
@@ -4134,6 +4249,19 @@ mod tests {
         assert_eq!(seen, (19..=21).collect());
     }
 
+    /// GH #858 sibling: v0.107.1 `ToughEgg.cs:56,58` `HatchlingMinHp =>
+    /// (ToughEnemies, 20, 19)`, `HatchlingMaxHp => (.., 23, 22)`, rolled
+    /// max-exclusive at `:172` — so the A8+ hatchling is 20..=22, not the A0
+    /// band. Same single Niche read, so the RNG cursor does not move.
+    #[test]
+    fn tough_egg_hatch_band_lifts_at_a8_v0107_858() {
+        let v = sts2_core::GameVersion::V0_107_1;
+        let a7: std::collections::BTreeSet<i32> = (0..400).map(|s| hatch_hp(s, 7, v)).collect();
+        assert_eq!(a7, (19..=21).collect());
+        let a8: std::collections::BTreeSet<i32> = (0..400).map(|s| hatch_hp(s, 8, v)).collect();
+        assert_eq!(a8, (20..=22).collect());
+    }
+
     /// v0.111.0 `ToughEgg.cs:172`: `NextInt(HatchlingMinHp, HatchlingMaxHp + 1)`
     /// — the band is inclusive, 19..=22, and A8 ToughEnemies (`:56-58`) lifts
     /// it to 20..=23.
@@ -5010,6 +5138,79 @@ mod tests {
             parafright.ai.is_some(),
             "Parafright must have its AI attached (cuocf), not the roll_intent fallback",
         );
+    }
+
+    /// GH #847: the Obscura's Parafright slams at the summoner's ascension.
+    /// C# `Parafright.cs:29` `SlamDamage => (DeadlyEnemies, 17, 16)` resolves
+    /// run-globally for the `CreatureCmd.Add<Parafright>` in
+    /// `TheObscura.cs:84`.
+    #[test]
+    fn obscura_parafright_slams_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, enemies_of_kind, SPAWN_ASC_MATRIX,
+        };
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let mut state = CombatState {
+                ascension: asc,
+                game_version: version,
+                ..CombatState::default()
+            };
+            let obscura = state.spawn_enemy(MonsterKind::TheObscura);
+            state.set_creature_ai(obscura, create_the_obscura_ai());
+            state.assign_encounter_slots(&[1]);
+            the_obscura_illusion_effect(&mut state, obscura);
+            let frights = enemies_of_kind(&state, MonsterKind::Parafright);
+            assert_eq!(frights.len(), 1, "A{asc} {version:?}: one Parafright");
+            let slam = if asc >= 9 { 17 } else { 16 };
+            assert_eq!(
+                ai_move_intent(&state, frights[0], "SLAM"),
+                Intent::Attack { damage: slam },
+                "A{asc} {version:?}: SLAM"
+            );
+            assert_ai_is_dispatcher_build(
+                &state,
+                frights[0],
+                MonsterKind::Parafright,
+                MonsterSpawnArgs::None,
+            );
+        }
+    }
+
+    /// GH #847: the Ovicopter's eggs nibble at the summoner's ascension. C#
+    /// `ToughEgg.cs:60` `NibbleDamage => (DeadlyEnemies, 5, 4)` resolves
+    /// run-globally for each of the three `CreatureCmd.Add` eggs
+    /// (`Ovicopter.cs:90`).
+    #[test]
+    fn ovicopter_eggs_nibble_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, enemies_of_kind, SPAWN_ASC_MATRIX,
+        };
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let mut state = CombatState {
+                ascension: asc,
+                game_version: version,
+                ..CombatState::default()
+            };
+            ovicopter_lay_eggs_effect(&mut state, CreatureUid::new(1).expect("nz"));
+            let eggs = enemies_of_kind(&state, MonsterKind::ToughEgg);
+            assert_eq!(eggs.len(), 3, "A{asc} {version:?}: three eggs");
+            let nibble = if asc >= 9 { 5 } else { 4 };
+            for &egg in &eggs {
+                assert_eq!(
+                    ai_move_intent(&state, egg, "NIBBLE_MOVE"),
+                    Intent::Attack { damage: nibble },
+                    "A{asc} {version:?}: NIBBLE_MOVE"
+                );
+                assert_ai_is_dispatcher_build(
+                    &state,
+                    egg,
+                    MonsterKind::ToughEgg,
+                    MonsterSpawnArgs::None,
+                );
+            }
+        }
     }
 
     #[test]

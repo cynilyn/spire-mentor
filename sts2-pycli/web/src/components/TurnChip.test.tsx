@@ -27,6 +27,15 @@ describe("turnChipText", () => {
     expect(t?.title).toBe("▽ suboptimal");
     expect(t?.lines[2]).toBe("win 96% → 94%");
   });
+  it("ends with the reason line when there is one (GH #888)", () => {
+    const why = "Your line wakes Lagavulin Matriarch on turn 3";
+    expect(turnChipText(rec({ why }))?.lines).toEqual([
+      "Turn 3 · you: Strike (Cultist) → end turn",
+      "AI: Bash (Cultist) → Defend → end turn",
+      "≈ 9 HP more lost · win 96% → 94%",
+      why,
+    ]);
+  });
   it("says (peeked)", () => {
     expect(turnChipText(rec({ peeked: true }))?.lines[2]).toMatch(/\(peeked\)$/);
   });

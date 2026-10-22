@@ -322,6 +322,28 @@ A `choose` whose `index` is out of range, or names an option that has become
 locked by the time the reply arrives, gets `error:"invalid_index"` and a
 fresh re-send (like every other `choose` handler).
 
+**The Fake Merchant (GH #873).** This event has no option buttons; its room
+is a shopfront. The autopilot asks it as an `event` whose options are the
+headless engine's (`act2_hive.rs` `FAKE_MERCHANT_OPTIONS`), always all three
+and always in this order, because the run policy reads an option by its
+position:
+
+| index | `text_key` | Meaning |
+|---|---|---|
+| 0 | `FAKE_MERCHANT.options.BUY` | Buy the first stocked relic the player can afford, in inventory order. `relic_id` names it. |
+| 1 | `FAKE_MERCHANT.options.THROW_FOUL` | Throw a held Foul Potion at the merchant. Starts the merchant fight. Winning it gives the Rug, every relic still in stock and 300 gold; the event does not resume afterwards. |
+| 2 | `FAKE_MERCHANT.options.LEAVE` | Leave. |
+
+An option that is not available right now stays in its slot with
+`enabled:false`: buy with nothing affordable, throw with no Foul Potion (or
+after the fight has started). Each option also carries the structured deltas
+the engine previews for it: `gold_delta`, `hp_delta`, `max_hp_delta`,
+`relics_gained` and `potions_lost`. The message adds `player_gold` and
+`stock`, the whole shopfront as `{kind, label, price, stocked, affordable,
+item?}` rows. After a purchase the event is asked again, until the agent
+throws or leaves. Coach mode asks the same message, built by the same code
+(GH #886).
+
 ### `treasure`
 
 | Field | Type | Meaning |
@@ -710,6 +732,7 @@ never appears as an `advice_request`.
 | `advice.options[].col/row` | int | `map_select` only: the option's map-graph coordinate, so the HUD can pin its score to the node on the map instead of printing a coordinate in a panel. |
 | `advice.path[]` | array | `map_select` only: the **projected route** through the act — `{col, row, type, hop, hp}`, `hop` 0 being the node being chosen now and `hp` the HP the projection expects to *arrive* at that node with (before its own room resolves). Produced by re-querying the same policy hop by hop with `map_coord` walked along the graph and HP walked forward through the run-AI's expected-cost tables, so the route runs the whole act rather than stopping a few floors out. Deck, gold, relics and potions stay frozen and the HP deltas are flat per-act expectations, so it is a projection, not a plan, and the HUD says so. `hp` is absent when the engine could not supply its cost tables (older wheel) — the route then draws with HP frozen, as it did before. Absent entirely when the net cannot see a route (single-child chains still count). |
 | `advice.pv` | array of string | Principal variation, rendered as the "line:" row. |
+| `advice.hand_back` | string | **New (GH #874).** Present when the answer is not really the AI deciding: an unranked surface (`best` is the first option, "NOT a recommendation"), a borrowed head (`treasure`, `card_bundle` — GH #379), no run-policy net, an inference failure, an advisor error. The value is a short player-facing reason. Under the mod's `pause_on: "unsupported"` (the default) F7 autoplay stops on it and hands the decision to the player; everything else (HUD, `best`, F6) is unchanged. Absent on a real recommendation and on older advisors. The mod applies the same verdict itself to what it answers without a round trip (the crystal sphere's reveals). |
 | `capabilities` | object | **New in v5 / coach.** Top level of the `advice` message, next to `advice` (not inside it). What this advisor build understands: `{"coach": 1}` = it accepts the v5 `human_action` kinds (`end_turn`, non-combat choices) and grades them; `{"coach": 2}` (v5.1) = also accepts `combat_ended` / Advisor-mode `game_over` and answers them with `recap` / `autopsy` records. Absent on older advisors: treat as `{}`. The mod reads it from every reply (`SimAdvisor.AdvisorCoachCapability`) and also accepts `advice.capabilities`. |
 | `advice.unsupported_game_version` | string \| any | **New (GH #800).** Present only on a **refusal**: the request's envelope `game_version` (section 1) names a build the advisor has no engine for. The value is that `game_version` as sent; `advice.note` is the player-facing explanation (the build, the supported builds, what to do), and there is no `best` / `options` / `p_win` -- nothing to render or execute. A missing or `"v0.107.1"` `game_version` is never refused. |
 
@@ -860,7 +883,7 @@ an object is dropped.
 
 | `kind` | Fields |
 |---|---|
-| `turn` | `id, node_id, turn, floor, verdict` (`best \| tie \| slip \| blunder`), `you: [str]` (the human's turn, ending `"end turn"`), `ai: [str]` (the AI's line from the turn's first position), `hp_drop: number \| null` (expected extra HP lost), `win_before, win_after: number` (win chance of best / played at the turn's first graded decision), `peeked: bool`, `ungraded_actions: int` |
+| `turn` | `id, node_id, turn, floor, verdict` (`best \| tie \| slip \| blunder`), `you: [str]` (the human's turn, ending `"end turn"`), `ai: [str]` (the AI's line from the turn's first position), `why: str \| null` (optional: what one line visibly did on the board that the other did not -- an enemy woken or killed, the fight won -- e.g. `"Your line wakes Lagavulin Matriarch on turn 1"`; render as its own line when present, GH #888), `hp_drop: number \| null` (expected extra HP lost; 0 when the gap is within search noise, GH #888), `win_before, win_after: number` (win chance of best / played at the turn's first graded decision), `peeked: bool`, `ungraded_actions: int` |
 | `choice` | `id, node_id, decision` (the `decision_type`), `label_kind` (display name: "Card reward", "Map", ...), `verdict` (`agree \| tossup \| flag`), `strength` (e.g. "strong preference"), `played: {label, prob, rank}`, `top: {label, prob}`, `alternatives: [{label, prob}]`, `peeked: bool`, `path: {"you": [...], "ai": [...]}` (map only, may be absent; each entry like `advice.path[]`, with `hp` when known) |
 | `recap` | **v5.1.** `id` (`"recap:<node_id>"`), `node_id`, `log_name`, `log_idx` (the fight's first decision), `floor, room_type, hp_start, hp_end, hp_lost`, `ai_hp_lost: number \| null` (reserved for the HP the AI's own line would lose; current advisors always send `null` -- the opening search's mean final HP overstated it, GH #856. Render `null` as the HP loss alone), `turns, turns_graded, turns_ungraded, unfinished_turns: int`, `costliest: [<turn record>]` (at most 2, `slip`/`blunder` only, by `severity`, each with `context`). Sent after a won fight. |
 | `autopsy` | **v5.1.** `id` (`"autopsy:<run key>"`), `log_name, floor, act`, `items: [{"kind": "turn" \| "choice", "record": <turn \| choice record>}]` (at most 3, display order), `turns_ungraded, decisions_graded: int`. Sent on death. `items` may be empty. |

@@ -106,8 +106,9 @@ echo "build_mod.sh: OK $BUILD/mod/SpireMentor.dll"
 # compiled against (a source compile does not prove that for members reached
 # through `var`, defaults or overloads). A member whose signature differs
 # between builds goes through SimGameApi.cs instead.
-RC="$HERE/.build/refcheck"
-"$DOTNET" build "$HERE/RefCheck/RefCheck.csproj" -c Release -nologo -v q   -p:BaseIntermediateOutputPath="$HERE/.build/refcheck-obj/"   -p:MSBuildProjectExtensionsPath="$HERE/.build/refcheck-obj/"   -o "$RC" >"$HERE/.build/refcheck.build.log" 2>&1   || { cat "$HERE/.build/refcheck.build.log" >&2; die "RefCheck build failed"; }
+# Per game version, so run_all.sh can build the versions in parallel.
+RC="$BUILD/refcheck"
+"$DOTNET" build "$HERE/RefCheck/RefCheck.csproj" -c Release -nologo -v q   -p:BaseIntermediateOutputPath="$BUILD/refcheck-obj/"   -p:MSBuildProjectExtensionsPath="$BUILD/refcheck-obj/"   -o "$RC" >"$BUILD/refcheck.build.log" 2>&1   || { cat "$BUILD/refcheck.build.log" >&2; die "RefCheck build failed"; }
 for other in "$STS2_BINARIES"/v*/data_sts2_windows_x86_64/sts2.dll; do
   [[ -f "$other" ]] || continue
   over="$(basename "$(dirname "$(dirname "$other")")")"

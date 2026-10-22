@@ -265,6 +265,9 @@ function AppBody() {
   // every path that replaces `live` -- restore, start, faithful, import,
   // play-from-here, loading a save, seek -- reports the right build.
   const liveGameVersion = live ? declaredGameVersion(live) : null;
+  // The build the SHOWN run plays -- the live session's, or the replayed
+  // recording's in replay -- for the per-build display tables (GH #877).
+  const shownGameVersion = mode === "replay" ? (step ? declaredGameVersion(step) : null) : liveGameVersion;
   // Feature flags from the same probe: a control whose route this deployment
   // cannot answer is hidden rather than left as a button whose every call
   // answers 501. Absent flags (the classic backend) mean everything is on.
@@ -1907,7 +1910,7 @@ function AppBody() {
 
   return (
     <EffectsProvider autoplaying={autoRunning}>
-    <SoundProvider>
+    <SoundProvider gameVersion={shownGameVersion}>
     <SoundBridge soundRef={soundRef} live={live} mode={mode} />
     <div className="wb-shell"
       style={{ gridTemplateColumns: sideVisible && !narrow ? "1fr 320px" : "1fr" }}>
@@ -1952,6 +1955,7 @@ function AppBody() {
           } : undefined}
           tools={{
             simlabLink: advisors && simlab,
+            gameVersion: shownGameVersion,
             debug: { on: debugEnabled, toggle: toggleDebug },
             onHelp: () => setHelpOpen((o) => !o),
             ...(isStaticMode()

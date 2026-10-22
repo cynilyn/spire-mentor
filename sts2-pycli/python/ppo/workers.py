@@ -39,6 +39,21 @@ DEFAULT_GAME_TIMEOUT_S = 1800.0
 _JOB_STARTS: Any = None
 
 
+def _reached_second_boss(rm: Any) -> bool | None:
+    """Whether the run entered the A10 DoubleBoss second-boss room, i.e. beat
+    the first act-3 boss: an A9 win read off an A10 run (A10 = A9 + DoubleBoss).
+    None when the current map has no second boss (below A10, or before act 3)."""
+    m = rm.full_map()
+    sb = m and m.get("second_boss")
+    if not sb:
+        return None
+    for row in m["rows"]:
+        for node in row:
+            if (node["col"], node["row"]) == (sb["col"], sb["row"]):
+                return bool(node["visited"] or node["current"])
+    return None
+
+
 def _init_job_starts(starts: Any) -> None:
     global _JOB_STARTS
     _JOB_STARTS = starts
@@ -269,6 +284,7 @@ def play_one(
         "steps": terminal.steps,
         "n_decisions": terminal.decisions,
         "final": terminal.metrics,
+        "reached_second_boss": _reached_second_boss(env.rm),
         "wall_s": round(time.time() - t0, 2),
         "resolution_counts": counts,
         "decisions": decisions,

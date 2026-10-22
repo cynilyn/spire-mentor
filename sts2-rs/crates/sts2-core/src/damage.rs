@@ -521,6 +521,14 @@ fn originating_card_uid(state: &CombatState, card: Option<CardId>) -> Option<cra
 ///   `DamageResult.TotalDamage` (`BlockedDamage + UnblockedDamage`). Does NOT
 ///   include overkill — add `overkill` explicitly for the Fisticuffs-style
 ///   `TotalDamage + OverkillDamage` sum.
+/// * `was_target_killed` — C# `DamageResult.WasTargetKilled`, set by
+///   `Creature.LoseHpInternal` (`Creature.cs:445-455`) as
+///   `CurrentHp > 0 && amount >= CurrentHp`: THIS hit took a living target to
+///   0. It is a property of the hit, not of the target's HP afterwards, which
+///   differs when a death interrupt revives the target inside the hit (the
+///   Waterfall Giant comes back at 999,999,999 before the damage call
+///   returns). The Fatal / on-kill cards (Feed, The Hunt, Hand of Greed,
+///   Sunder, Knockout Blow, Echoing Slash) read it.
 ///
 /// Bead `sts2-rs-67yqf` / `sts2-rs-6cnok`: Fisticuffs gains Block equal to
 /// `total_damage + overkill` (incl. block-absorbed and overkill), which
@@ -531,6 +539,7 @@ pub struct DamageOutcome {
     pub blocked: i32,
     pub overkill: i32,
     pub total_damage: i32,
+    pub was_target_killed: bool,
 }
 
 /// Compute the fully-modified outgoing damage for a single dealer→target hit
@@ -975,6 +984,10 @@ fn apply_damage_with_final_impl(
     } else {
         crate::Side::Player
     };
+    // The death power whose `AfterDeath` handler fired below; its kill tail
+    // (`enemy_death_effects::finish_kill`) runs after the AfterDamageGiven
+    // hooks further down.
+    let mut death_power_fired: Option<crate::PowerKind> = None;
     if just_died {
         remove_constrict_from_dead_applier(state, target);
         remove_shrink_from_dead_applier(state, target);
@@ -1021,7 +1034,7 @@ fn apply_damage_with_final_impl(
         // combat-end sweep never double-fires it. Enemy deaths only (the
         // player carries no enemy-death-spawn power).
         if dead_side == crate::Side::Enemy {
-            crate::enemy_death_effects::fire_for_owner(state, target);
+            death_power_fired = crate::enemy_death_effects::fire_for_owner(state, target);
         }
     }
 
@@ -1118,6 +1131,17 @@ fn apply_damage_with_final_impl(
         if dealer_uid == pet_uid {
             state.combat_log.osty_attacks_this_turn =
                 state.combat_log.osty_attacks_this_turn.saturating_add(1);
+            // GH #806: per-target powered-hit tally for GangUp (GangUp.cs:24-29
+            // counts the target's powered `DamageReceivedEntry`s from a
+            // same-side, non-owner dealer — the Osty).
+            if props.is_powered() {
+                let tally = &mut state.combat_log.osty_powered_hits_by_target_this_turn;
+                if let Some(entry) = tally.iter_mut().find(|(uid, _)| *uid == target) {
+                    entry.1 = entry.1.saturating_add(1);
+                } else {
+                    tally.push((target, 1));
+                }
+            }
         }
     }
 
@@ -1181,6 +1205,12 @@ fn apply_damage_with_final_impl(
         }
     }
 
+    // GH #806: HardenedShell's `AfterDamageReceived` tally runs after the
+    // given-side hooks above, as in C# (`Hook.AfterDamageGiven` precedes
+    // `Hook.AfterDamageReceived`, CreatureCmd.cs:388-393). A hit nested in
+    // them (ReaperForm Doom -> SleightOfFlesh) is capped before this hit counts.
+    hooks::tally_hardened_shell_damage(state, target_ref, hp_loss);
+
     // Bead `sts2-rs-rmrzx`: relic-side `AfterDeath` bus. C# fires
     // `RelicModel.AfterDeath` from `CreatureCmd.Kill` (`CreatureCmd.cs:285`),
     // i.e. AFTER `AfterDamageGiven`/`AfterDamageReceived` for the lethal hit —
@@ -1195,6 +1225,18 @@ fn apply_damage_with_final_impl(
                 dead_side,
             },
         );
+    }
+
+    // The kill's tail, after this hit's AfterDamageGiven hooks and the relic
+    // AfterDeath bus. C# `CreatureCmd.Damage` runs `Hook.AfterDamageGiven`
+    // for the killing result (`CreatureCmd.cs:388-391`) BEFORE `Kill`
+    // (`:409`), whose `KillWithoutCheckingWinCondition` strips the corpse with
+    // `RemoveAllPowersAfterDeath` (`:533`) only after `Hook.AfterDeath`
+    // (`:519`). The handler fired early above, so a power one of those hooks
+    // put on the dying creature (Envenom's Poison, `EnvenomPower.cs:20-26`) is
+    // still there to be stripped (the Waterfall Giant's revive, #830).
+    if let Some(kind) = death_power_fired {
+        crate::enemy_death_effects::finish_kill(state, target, kind);
     }
 
     // C# `DamageResult` split (`DamageResult.cs`): `UnblockedDamage` is the
@@ -1225,6 +1267,10 @@ fn apply_damage_with_final_impl(
         // C# `DamageResult.TotalDamage` (`DamageResult.cs:17`:
         // `TotalDamage => BlockedDamage + UnblockedDamage`).
         total_damage: blocked.saturating_add(hp_loss),
+        // C# `DamageResult.WasTargetKilled` (`Creature.cs:447`): `just_died`
+        // is the same `CurrentHp > 0 && amount >= CurrentHp` predicate, read
+        // at the HP write, before any death interrupt revives the target.
+        was_target_killed: just_died,
     }
 }
 

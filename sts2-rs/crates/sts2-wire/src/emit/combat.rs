@@ -686,6 +686,16 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         .map(|k| val(k.python_name()))
         .collect();
     player.insert("potions".to_owned(), Value::Array(potions_list));
+    // The belt CAPACITY (C# `Player.MaxPotionCount`), which `potions` cannot
+    // carry since it lists filled slots only. Omitted while unset (`0`, the
+    // `Default` sentinel), so the parser keeps that sentinel too.
+    if state.player.potion_slots != 0 {
+        set(
+            &mut player,
+            "potion_slots",
+            i32::from(state.player.potion_slots),
+        );
+    }
 
     if state.player.stars != 0 {
         set(&mut player, "stars", i32::from(state.player.stars));

@@ -4426,23 +4426,21 @@ fn hidden_gem_on_lone_frantic_escape(version: sts2_core::GameVersion) -> i32 {
     state.cards[uid.0.get() as usize - 1].base_replay_count
 }
 
-/// v0.107.1 Rust drops Status cards from the fallback pool.
+/// The fallback excludes only Curse/Quest (`type - 5 <= 1`, HiddenGem.cs:41;
+/// Status is 4), so the lone FranticEscape gets the Replay. Same C# in both
+/// builds (GH #806).
 #[test]
-fn hidden_gem_fallback_skips_status_v0107() {
-    assert_eq!(
-        hidden_gem_on_lone_frantic_escape(sts2_core::GameVersion::V0_107_1),
-        0
-    );
-}
-
-/// v0.111.0: the fallback excludes only Curse/Quest (`type - 5 <= 1`,
-/// HiddenGem.cs:41; Status is 4), so the lone FranticEscape gets the Replay.
-#[test]
-fn hidden_gem_fallback_keeps_playable_status_v0111() {
-    assert_eq!(
-        hidden_gem_on_lone_frantic_escape(sts2_core::GameVersion::V0_111_0),
-        super::HIDDEN_GEM_REPLAY
-    );
+fn hidden_gem_fallback_keeps_playable_status_both_versions() {
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        assert_eq!(
+            hidden_gem_on_lone_frantic_escape(version),
+            super::HIDDEN_GEM_REPLAY,
+            "{version:?}"
+        );
+    }
 }
 
 /// HiddenGem with no playable cards in the draw pile is a clean

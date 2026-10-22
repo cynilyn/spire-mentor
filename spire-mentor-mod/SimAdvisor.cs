@@ -58,6 +58,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 
 namespace SpireMentor;
@@ -240,6 +241,15 @@ internal sealed class SimAdvisor
     /// sync.</summary>
     private bool _autoPlay;
     private int _aiActionsPending;
+
+    /// <summary>
+    /// The decision autoplay last handed back (`pause_on`, GH #874), and the
+    /// one the player resumed F7 on. Resuming on a handed-back screen means
+    /// "you do it after all", so that decision -- every page and reveal of it
+    /// -- must not pause again. See <see cref="PauseKey"/>.
+    /// </summary>
+    private string _pausedKey = "";
+    private string _resumedKey = "";
 
     // Runaway guard. A screen choice that does not change the screen is not
     // idempotent in general: on the deck-select screens each repeat SELECTS
@@ -1062,13 +1072,9 @@ internal sealed class SimAdvisor
             // Re-asked, not assumed: settling can take us past the end of the
             // fight, or onto a screen that outranks the board.
             //
-            // Only when we actually waited, though. Describe() is not a pure
-            // read -- DescribeFakeMerchant emits MerchantOpened and advances
-            // its open-poll counter before returning null -- so asking a
-            // second time for a request that never waited would consume that
-            // poll limit at twice the rate and abandon a shopfront still
-            // animating open. When the queue was already quiet, the answer
-            // RequestAdviceNow got moments ago is still the answer.
+            // Only when we actually waited, though. When the queue was
+            // already quiet, the answer RequestAdviceNow got moments ago is
+            // still the answer.
             if (boardMayHaveMoved)
             {
                 SimScreenDecision? nowScreen = SimScreenAdvice.Describe();
@@ -1256,7 +1262,7 @@ internal sealed class SimAdvisor
                 SimHud.Instance.ShowAdvice(screen.LocalAdvice, null);
                 RenderLatchedPeek();
             }
-            if (_autoPlay && _lastBest != null)
+            if (_autoPlay && !PauseForPlayer(screen, screen.HandBack) && _lastBest != null)
             {
                 ScheduleAutoPlay();
             }
@@ -1431,7 +1437,14 @@ internal sealed class SimAdvisor
                 SimHud.Instance.ShowAdvice(advice, LocalContext.GetMe(runState));
                 RenderLatchedPeek();
 
-                if (_autoPlay && _lastBest != null)
+                // The screen this reply answers, for `pause_on`'s ids and the
+                // mod's own verdict; combat has neither.
+                SimScreenDecision? forDecision = !isCombat && _lastScreen != null &&
+                                                 ReferenceEquals(_lastScreen.Screen, forScreen)
+                    ? _lastScreen
+                    : null;
+                if (_autoPlay && !PauseForPlayer(forDecision, advice.HandBack ?? forDecision?.HandBack) &&
+                    _lastBest != null)
                 {
                     // Small grace so the human can see the recommendation
                     // (and press F7 to stop) before it fires.
@@ -2046,6 +2059,8 @@ internal sealed class SimAdvisor
         // Turning it back on is the player saying "try again" -- most often
         // right after clearing by hand whatever the runaway guard stopped on.
         _recentScreenChoices.Clear();
+        // ...or "play it after all" on a decision `pause_on` handed back.
+        _resumedKey = _pausedKey;
         if (_lastBest != null)
         {
             ScheduleAutoPlay();
@@ -2066,6 +2081,72 @@ internal sealed class SimAdvisor
     {
         _autoPlay = value;
         SimRuntime.AdvisorAutoplayArmed = value;
+    }
+
+    /// <summary>
+    /// `pause_on` (GH #874): stop autoplay on a decision the AI cannot really
+    /// make, or one the player listed, and hand it back exactly as F7-off
+    /// does. Returns true when it paused. Main thread.
+    /// <paramref name="screen"/> is null for combat; <paramref name="handBack"/>
+    /// is the advisor's or the mod's "not really a decision" reason.
+    /// </summary>
+    private bool PauseForPlayer(SimScreenDecision? screen, string? handBack)
+    {
+        if (!_autoPlay)
+        {
+            return false;
+        }
+        IReadOnlyList<string> pauseOn = SimConfig.Instance.EffectivePauseOn;
+        if (pauseOn.Count == 0)
+        {
+            return false;
+        }
+        RunState? runState = RunManager.Instance.DebugOnlyGetState();
+        string? eventId = CurrentEventId(runState);
+        string adviceFor = screen?.AdviceFor ?? "combat_action";
+        string? reason = AutoplayPause.Reason(pauseOn, handBack, new[] { adviceFor, screen?.ScreenName, eventId });
+        if (reason == null)
+        {
+            return false;
+        }
+        string key = PauseKey(screen, adviceFor, eventId, runState);
+        if (key == _resumedKey)
+        {
+            return false;
+        }
+        _pausedKey = key;
+        SetAutoPlay(false);
+        string toast = AutoplayPause.Toast(AutoplayPause.Pretty(eventId ?? adviceFor), reason);
+        Logger.Log($"[SimAdvisor] Paused for the player on {screen?.ScreenName ?? "combat"}: {reason}");
+        SimActionLog.Note(toast);
+        // After ShowAdvice, which set the toolbar note to the advice's own.
+        SimToolbar.Instance.SetNote(toast);
+        return true;
+    }
+
+    /// <summary>
+    /// One handed-back decision, however many requests it takes: an event's
+    /// pages share the room node and the floor, the crystal sphere's reveals
+    /// share their screen. The floor tells apart the long-lived nodes (the
+    /// event room, the map) from one room to the next.
+    /// </summary>
+    private static string PauseKey(SimScreenDecision? screen, string adviceFor, string? eventId, RunState? runState) =>
+        $"{adviceFor}|{eventId}|{runState?.TotalFloor}|" +
+        (screen?.Screen is { } node && GodotObject.IsInstanceValid(node) ? node.GetInstanceId() : 0UL);
+
+    /// <summary>The current event's id ("NEOW", "CRYSTAL_SPHERE"), or null
+    /// outside an event room. Never throws.</summary>
+    private static string? CurrentEventId(RunState? runState)
+    {
+        try
+        {
+            return runState?.CurrentRoom is EventRoom room ? room.LocalMutableEvent?.Id.Entry : null;
+        }
+        catch (Exception)
+        {
+            // Between pages the event synchronizer has no local event yet.
+            return null;
+        }
     }
 
     private void ScheduleAutoPlay()

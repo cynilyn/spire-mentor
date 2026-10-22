@@ -496,7 +496,7 @@ impl ReplayStore {
                 .and_then(|r| r.get("run_seed"))
                 .filter(|v| v.is_i64() || v.is_u64())
             {
-                run_seed = s.clone();
+                run_seed = s.as_u64().map_or_else(|| s.clone(), crate::game::seed_json);
             }
             let node = if floor.is_null() {
                 None
@@ -988,6 +988,13 @@ mod tests {
         assert_eq!(store.len(), 2);
         let s0 = store.get(0).unwrap();
         assert_eq!(s0.meta["bg_seed"], json!(7));
+        // GH #878: a v0.111.0 `ulong` seed past 2^53 goes out as a string.
+        let wide = text.replace(r#""run_seed":7"#, r#""run_seed":18000000000000000123"#);
+        let store = ReplayStore::parse("x.jsonl", &wide).unwrap();
+        assert_eq!(
+            store.get(0).unwrap().meta["bg_seed"],
+            json!("18000000000000000123")
+        );
         assert_eq!(s0.meta["bg_col"], json!(1));
         assert_eq!(s0.wpa["value"], json!(0.5));
         assert_eq!(s0.chosen_action["label"], json!("go"));

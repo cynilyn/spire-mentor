@@ -1189,6 +1189,14 @@ def translate(
     gold = player_raw.get("gold")
     if isinstance(gold, int) and not isinstance(gold, bool):
         player["gold"] = gold
+    # Belt CAPACITY (C# ``Player.MaxPotionCount``). ``potions`` above is not
+    # the slot count on every producer (the headless ``PlayerSummary`` drops
+    # empty slots), so the capacity rides in its own key: the headless
+    # ``potion_slots`` (RunSimulator.cs PlayerSummary) or the live bridge's
+    # ``run_state.potion_slot_count`` via ``realgame_adapter``. GH #893.
+    potion_slots = player_raw.get("potion_slots")
+    if isinstance(potion_slots, int) and not isinstance(potion_slots, bool) and potion_slots > 0:
+        player["potion_slots"] = potion_slots
     if orbs is not None:
         player["orbs"] = orbs
         if orb_slots is not None:

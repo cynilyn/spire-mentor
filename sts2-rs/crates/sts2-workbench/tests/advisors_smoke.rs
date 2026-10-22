@@ -476,11 +476,15 @@ fn last_move_regret_flags_wasted_turn() {
 
 /// A fresh SMOKE1 Ironclad run walked to its first combat decision.
 fn first_combat(wb: &mut Workbench) -> Value {
+    first_combat_seeded(wb, "SMOKE1")
+}
+
+fn first_combat_seeded(wb: &mut Workbench, seed: &str) -> Value {
     let mut step = call(
         wb,
         "POST",
         "/api/live/start",
-        json!({"character": "Ironclad", "seed": "SMOKE1", "ascension": 0, "act1": "overgrowth"}),
+        json!({"character": "Ironclad", "seed": seed, "ascension": 0, "act1": "overgrowth"}),
     );
     call(
         wb,
@@ -621,4 +625,70 @@ fn last_turn_grade_over_cap_is_silent() {
         ),
         Err(409)
     );
+}
+
+/// One Strike, then End turn with two energy and a Strike in hand: the
+/// engine's default 300 sims grades it a tie (≈2.4 HP), the grade's own
+/// default (`TURN_GRADE_SIMS`, the advisor's 8000) a slip (≈3.3 HP).
+#[test]
+fn last_turn_grade_flags_an_under_played_turn() {
+    let mut wb = new_wb();
+    let step = first_combat_seeded(&mut wb, "B2");
+    let hand = step["state"]["hand"].as_array().unwrap();
+    let strike = hand
+        .iter()
+        .find(|c| c["name"] == json!("Strike"))
+        .expect("B2 opens with a Strike");
+    call(
+        &mut wb,
+        "POST",
+        "/api/live/action",
+        json!({"action": "play_card", "args": {
+            "card_index": strike["index"],
+            "target_index": step["state"]["enemies"][0]["index"],
+        }}),
+    );
+    call(
+        &mut wb,
+        "POST",
+        "/api/live/action",
+        json!({"action": "end_turn", "args": {}}),
+    );
+    let r = call(
+        &mut wb,
+        "POST",
+        "/api/live/last-turn-grade",
+        json!({"config": {}}),
+    );
+    assert!(
+        matches!(r["verdict"].as_str(), Some("slip" | "blunder")),
+        "{r}"
+    );
+    assert_eq!(r["you"], json!(["Strike", "end turn"]), "{r}");
+}
+
+/// A hint weaker than the grade's search is not reused: it re-searches.
+#[test]
+fn last_turn_grade_researches_a_weaker_hint() {
+    let mut wb = new_wb();
+    first_combat(&mut wb);
+    call(
+        &mut wb,
+        "POST",
+        "/api/live/hint",
+        json!({"config": {"sims": 400, "seed": 2}}),
+    );
+    call(
+        &mut wb,
+        "POST",
+        "/api/live/action",
+        json!({"action": "end_turn", "args": {}}),
+    );
+    let r = call(
+        &mut wb,
+        "POST",
+        "/api/live/last-turn-grade",
+        json!({"config": {"sims": 1000, "seed": 2}}),
+    );
+    assert_eq!(r["searches"], json!(1), "{r}");
 }

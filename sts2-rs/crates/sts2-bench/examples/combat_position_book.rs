@@ -2029,6 +2029,7 @@ mod tests {
             value_sum,
             value_sq_sum: values.iter().map(|v| v * v).sum(),
             hp_sum: 0.0,
+            hp_sq_sum: 0.0,
             hp_n: 0,
             mean_value: value_sum / visits as f32,
         }

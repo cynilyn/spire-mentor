@@ -125,6 +125,17 @@ class TestPvLabels:
         ]
         assert ra._pv_labels(pv, self._STATE) == ["Strike → Cultist", "play", "end turn"]
 
+    def test_same_named_targets_say_which_one(self) -> None:
+        # Three rats all read "Two-Tailed Rat"; the HUD tags each "#k" by
+        # the same count (spire-mentor-mod/EnemyTagText.cs).
+        rats = {"hand": [{"name": "Strike"}], "enemies": [{"name": "Two-Tailed Rat"}] * 3}
+        pv = [{"action": "play", "card_index": 0, "target_index": 1}]
+        assert ra._pv_labels(pv, rats) == ["Strike → Two-Tailed Rat #2"]
+        tag = HintTag(
+            stable_idx=0, win_prob=0.5, bucket_label="even", is_best=True, visits=1, target_index=2
+        )
+        assert ra._tag_label(tag, rats) == "Strike → Two-Tailed Rat #3"
+
     def test_unknown_shapes_never_raise(self) -> None:
         assert ra._pv_labels([{"action": "play", "card_index": 99}], self._STATE) == ["play"]
         assert ra._pv_labels(["already a string"], self._STATE) == ["already a string"]

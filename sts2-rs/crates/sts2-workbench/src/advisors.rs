@@ -60,6 +60,10 @@ pub const DEFAULT_BLUNDER_DROP_PCT: f64 = 8.0;
 pub const TIE_PTS: f64 = 3.0;
 /// Minimum resolved playouts (`hp_n`) on BOTH rows before the HP gap is used.
 pub const HP_MIN_SAMPLES: i64 = 10;
+/// Standard errors (of the difference of the two rows' mean final HP) an HP
+/// gap must clear to count; under it the gap reads as 0 (GH #888). Mirrors
+/// `regret_review.HP_GAP_SE`.
+pub const HP_GAP_SE: f64 = 2.0;
 /// Minimum MCTS visits on the played move before it can be graded at all.
 pub const PLAYED_MIN_VISITS: i64 = 50;
 /// Per-action severity (win-chance points or HP) below which an action does
@@ -219,6 +223,7 @@ pub fn rows_from_mcts(result: &Value, state: &Value) -> Vec<Value> {
             "losses": entry["losses"].as_i64().unwrap_or(0),
             "ties": entry["ties"].as_i64().unwrap_or(0),
             "mean_final_hp": entry["mean_final_hp"].as_f64(),
+            "hp_sd": entry["hp_sd"].as_f64(),
             "hp_n": entry["hp_n"].as_i64().unwrap_or(0),
         }));
     }
@@ -533,14 +538,16 @@ fn best_row(scores: &[Value]) -> &Value {
         })
 }
 
+/// `_enemy_name`: the label of the enemy whose `index` is `target` — its
+/// name plus `" #k"` when several enemies share it
+/// ([`crate::enemy_labels`]), so a "wrong rat" blunder says which rat.
 fn enemy_name(enemies: &[Value], target: Option<i64>) -> Option<String> {
     let target = target?;
-    enemies
+    let e = enemies
         .iter()
-        .find(|e| e["index"].as_i64() == Some(target))
-        .and_then(|e| e["name"].as_str())
-        .filter(|n| !n.is_empty())
-        .map(str::to_string)
+        .find(|e| e["index"].as_i64() == Some(target))?;
+    e["name"].as_str().filter(|n| !n.is_empty())?;
+    crate::enemy_labels::enemy_label_by_index(enemies, target)
 }
 
 /// `_targeted_label`: the row's label, with `→ <enemy>` when the fight has
@@ -646,6 +653,23 @@ fn round_half_up(x: f64) -> i64 {
 /// resolved playouts (a missing `hp_n` counts as 0).
 fn hp_known(row: &Value) -> bool {
     row["mean_final_hp"].as_f64().is_some() && py_int(&row["hp_n"]) >= HP_MIN_SAMPLES
+}
+
+/// `_hp_gap`: how much more mean final HP `best` keeps than `played`, or 0
+/// when that is within [`HP_GAP_SE`] standard errors of the difference (a
+/// noise gap) or negative. Clamping only after the noise test keeps
+/// `grade_turn`'s per-turn sum from accumulating one-sided jitter. Rows
+/// without `hp_sd` (logged before it existed) skip the test.
+fn hp_gap(best: &Value, played: &Value) -> f64 {
+    let gap = f64_of(&best["mean_final_hp"]) - f64_of(&played["mean_final_hp"]);
+    if let (Some(sb), Some(sp)) = (best["hp_sd"].as_f64(), played["hp_sd"].as_f64()) {
+        #[allow(clippy::cast_precision_loss)]
+        let var = sb * sb / py_int(&best["hp_n"]) as f64 + sp * sp / py_int(&played["hp_n"]) as f64;
+        if gap < HP_GAP_SE * var.sqrt() {
+            return 0.0;
+        }
+    }
+    gap.max(0.0)
 }
 
 /// A position's name-resolved `combat_play` view, built from the engine
@@ -779,6 +803,7 @@ pub fn top_up_played(
         "mean_final_hp".into(),
         json!(fresh["mean_final_hp"].as_f64()),
     );
+    m.insert("hp_sd".into(), json!(fresh["hp_sd"].as_f64()));
     m.insert("is_best".into(), json!(false));
 }
 
@@ -803,7 +828,7 @@ pub fn assess_decision(step: &DecisionStep, scores: &[Value], blunder_pct: f64) 
     let hp = (hp_known(played) && hp_known(best)).then(|| {
         let played_hp = f64_of(&played["mean_final_hp"]);
         let best_hp = f64_of(&best["mean_final_hp"]);
-        (played_hp, best_hp, (best_hp - played_hp).max(0.0))
+        (played_hp, best_hp, hp_gap(best, played))
     });
     let hp_drop = hp.map(|(_, _, d)| d);
     // `regret * 100.0` in f64, as Python computes it: 1.0 − 0.92 gives
@@ -1008,8 +1033,9 @@ pub fn hint_remembered(sess: &mut Session, config: &Value) -> Result<Option<Valu
         .and_then(|g| g.combat_state())
         .ok_or_else(|| SessionError::new(400, "no native combat state"))?;
     let (out, pv) = score_with_pv(cs, &named, config);
+    let sims = params_for(config, "mcts_recommend").map_or(0, |p| p.sims);
     if let Some(rows) = out["scores"].as_array().filter(|r| !r.is_empty()) {
-        sess.hint_scores.insert(id, (rows.clone(), pv));
+        sess.hint_scores.insert(id, (rows.clone(), pv, sims));
     }
     Ok(Some(out))
 }
@@ -1183,7 +1209,10 @@ pub fn intent_text(intents: &[Value]) -> String {
 
 /// `realgame_coach.turn_context` for a workbench combat view: the position
 /// a turn started from — `{hand, energy, max_energy, hp, max_hp, block,
-/// enemies: [{name, hp, intent}]}` (the view lists live enemies only).
+/// enemies: [{name, hp, intent}]}`. The view lists live enemies only; the
+/// Python twin reads the mod's wire, which can still carry a dying one, and
+/// [`crate::enemy_labels`] gives such an entry no number — so both number
+/// the same live enemies the same way.
 #[must_use]
 pub fn turn_context(named: &Value) -> Value {
     let empty = Vec::new();
@@ -1198,13 +1227,16 @@ pub fn turn_context(named: &Value) -> Value {
                 .unwrap_or("?"))
         })
         .collect();
-    let enemies: Vec<Value> = named["enemies"]
-        .as_array()
-        .unwrap_or(&empty)
+    let view_enemies = named["enemies"].as_array().unwrap_or(&empty);
+    // `name` is the board label: a name shared by several enemies carries
+    // its `" #k"` ([`crate::enemy_labels`]), so the recap says WHICH rat.
+    let labels = crate::enemy_labels::enemy_labels(view_enemies);
+    let enemies: Vec<Value> = view_enemies
         .iter()
-        .map(|e| {
+        .zip(labels)
+        .map(|(e, label)| {
             json!({
-                "name": e["name"].as_str().unwrap_or("?"),
+                "name": label,
                 "hp": e["hp"].as_i64(),
                 "intent": intent_text(e["intents"].as_array().unwrap_or(&empty)),
             })
@@ -1227,13 +1259,24 @@ pub fn turn_context(named: &Value) -> Value {
 /// ungraded rather than stall the player's next action.
 pub const TURN_GRADE_MAX_SEARCHES: usize = 6;
 
+/// Default sims of a turn grade's search: the live advisor's `--sims`
+/// (`realgame_advisor.py`), so the browser coach and the mod's grade a turn
+/// from the same search strength. At the engine's 300 the root's children
+/// split ~75 playouts each and an under-played turn's HP cost drowns in the
+/// noise (a Strike-then-End-turn graded `best`).
+pub const TURN_GRADE_SIMS: u32 = 8000;
+
+/// Forced-root sims for a played-move top-up: `realgame_coach.TOP_UP_SIMS`.
+pub const TURN_GRADE_TOP_UP_SIMS: u32 = 400;
+
 /// `last_turn_grade`: the combat turn that the active node's End turn just
 /// closed, graded whole (`grade_turn`) — the PROTOCOL.md `coach` `turn`
 /// record, so the live chip and follow mode share one renderer.
 ///
 /// Walks back from the End turn through the turn's moves (same fight, same
 /// round). Each move is scored from its remembered hint search
-/// (`Session::hint_scores`) or a fresh search — at most `max_searches`
+/// (`Session::hint_scores`, if it ran at least the grade's `sims`, default
+/// [`TURN_GRADE_SIMS`]) or a fresh search — at most `max_searches`
 /// (default [`TURN_GRADE_MAX_SEARCHES`]) of them; past the cap the move is
 /// ungraded and the turn silent — then topped up and diffed like
 /// [`last_move_regret`]. A forced move (one legal action) is labelled, not
@@ -1273,10 +1316,17 @@ pub fn last_turn_grade(sess: &Session, config: &Value) -> Result<Option<Value>, 
         .as_object_mut()
         .and_then(|m| m.remove("peeked"))
         .is_some_and(|v| v.as_bool() == Some(true));
+    if let Some(m) = cfg.as_object_mut() {
+        m.entry("sims").or_insert(json!(TURN_GRADE_SIMS));
+    }
     let Ok(params) = params_for(&cfg, "mcts_recommend") else {
         return Ok(Some(
             json!({"error": "no MCTS scores available", "turn": Value::Null}),
         ));
+    };
+    let top_up = RecommendParams {
+        sims: TURN_GRADE_TOP_UP_SIMS,
+        ..params
     };
 
     let mut you: Vec<String> = Vec::new();
@@ -1300,7 +1350,11 @@ pub fn last_turn_grade(sess: &Session, config: &Value) -> Result<Option<Value>, 
             you.push(idx.map_or_else(|| "?".to_string(), |i| action_label(i, &step.state)));
             continue;
         }
-        let (mut scores, pv) = if let Some((rows, pv)) = sess.hint_scores.get(&parent.id) {
+        let hint = sess
+            .hint_scores
+            .get(&parent.id)
+            .filter(|(_, _, sims)| *sims >= params.sims);
+        let (mut scores, pv) = if let Some((rows, pv, _)) = hint {
             (rows.clone(), pv.clone())
         } else if searches < max_searches {
             searches += 1;
@@ -1310,7 +1364,7 @@ pub fn last_turn_grade(sess: &Session, config: &Value) -> Result<Option<Value>, 
             // Past the cap: silent, whatever the rest of the turn holds.
             return Ok(None);
         };
-        top_up_played(cs, &mut scores, &step.chosen, &params);
+        top_up_played(cs, &mut scores, &step.chosen, &top_up);
         if first.is_none() && !scores.is_empty() {
             first = Some((cs, pv, scores.clone()));
         }
@@ -2186,6 +2240,34 @@ mod tests {
     }
 
     #[test]
+    fn targeted_label_and_turn_context_number_duplicated_enemies() {
+        let enemies = vec![
+            json!({"index": 0, "name": "Two-Tailed Rat"}),
+            json!({"index": 1, "name": "Louse"}),
+            json!({"index": 3, "name": "Two-Tailed Rat"}),
+        ];
+        let r = |t| row(0, Some(t), 0.5, false, "Strike");
+        assert_eq!(
+            targeted_label(&r(0), &enemies),
+            "Strike → Two-Tailed Rat #1"
+        );
+        assert_eq!(targeted_label(&r(1), &enemies), "Strike → Louse");
+        assert_eq!(
+            targeted_label(&r(3), &enemies),
+            "Strike → Two-Tailed Rat #2"
+        );
+        assert_eq!(targeted_label(&r(2), &enemies), "Strike");
+        let ctx = turn_context(&json!({"enemies": enemies}));
+        let names: Vec<&str> = ctx["enemies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Two-Tailed Rat #1", "Louse", "Two-Tailed Rat #2"]);
+    }
+
+    #[test]
     fn assess_decision_matched_line_and_unresolvable() {
         let scores = vec![
             row(1, None, 0.6, true, "Defend"),
@@ -2291,6 +2373,38 @@ mod tests {
         let mut s = step(json!({"action": "end_turn"}), json!([]));
         s.best_line = best_line.iter().map(|x| (*x).to_string()).collect();
         assess_decision(&s, &[played, best], DEFAULT_BLUNDER_DROP_PCT).unwrap()
+    }
+
+    #[test]
+    fn hp_gap_within_noise_reads_zero() {
+        // GH #888: 2 HP apart, SE of the difference 4 HP -- noise.
+        let noisy = json!({"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50});
+        let mut played = noisy.clone();
+        played["mean_final_hp"] = json!(58.0);
+        let d = hp_assess(noisy, played, &[]);
+        assert_eq!(d["hp_drop"], json!(0.0));
+        assert_eq!(d["verdict"], json!("tie"));
+        assert!(!d["message"].as_str().unwrap().contains("HP"));
+    }
+
+    #[test]
+    fn hp_gap_clearing_noise_counts() {
+        let d = hp_assess(json!({"hp_sd": 5.0}), json!({"hp_sd": 5.0}), &[]);
+        assert_eq!(d["hp_drop"], json!(12.0));
+        assert_eq!(d["verdict"], json!("blunder"));
+    }
+
+    #[test]
+    fn noise_gaps_do_not_sum_into_a_turn_grade() {
+        let noisy = json!({"mean_final_hp": 60.0, "hp_sd": 20.0, "hp_n": 50});
+        let mut played = noisy.clone();
+        played["mean_final_hp"] = json!(58.5);
+        let regrets: Vec<Option<Value>> = (0..3)
+            .map(|_| Some(hp_assess(noisy.clone(), played.clone(), &[])))
+            .collect();
+        let g = grade_turn(&regrets).unwrap();
+        assert!(g["hp_drop"].is_null(), "{g}");
+        assert_eq!(g["verdict"], json!("best"));
     }
 
     #[test]

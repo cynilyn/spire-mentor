@@ -508,7 +508,19 @@ impl Workbench {
                 "default_game_version": GameVersion::default().as_str(),
             })),
             ("GET", "/api/meta") => Ok(crate::simlab_catalog::meta()),
-            ("GET", "/api/simlab/catalog") => Ok(crate::simlab_catalog::catalog()),
+            ("GET", "/api/simlab/catalog") => {
+                // `?game_version=…` names the build whose loc names the
+                // catalog (GH #877); absent = the default build.
+                let query = route.split_once('?').map_or("", |(_, q)| q);
+                let raw = query
+                    .split('&')
+                    .filter_map(|kv| kv.split_once('='))
+                    .find(|(key, _)| *key == "game_version")
+                    .map(|(_, v)| json!(percent_decode(v)));
+                let version = crate::session::parse_game_version(raw.as_ref())
+                    .map_err(|e| ApiError::new(400, e))?;
+                Ok(crate::simlab_catalog::catalog_for(version))
+            }
             ("POST", "/api/simlab/position/build") => Self::simlab_build(body),
             ("POST", "/api/simlab/position/new") => Self::simlab_new(body),
             ("POST", "/api/simlab/position/import") => Self::simlab_import(body),
@@ -711,10 +723,12 @@ impl Workbench {
                 }
             }
             ("GET", "/api/deck/trend") => Ok(replay::deck_trend(self.store()?)),
-            ("POST", "/api/deck/reward-preview") => Ok(replay::reward_preview(body)),
+            ("POST", "/api/deck/reward-preview") => {
+                replay::reward_preview(body).map_err(|e| ApiError::new(400, e))
+            }
             ("GET", "/api/live/deck-analysis") => {
                 let state = self.live()?.state()?;
-                Ok(replay::live_deck_analysis(&state))
+                Ok(replay::live_deck_analysis(&state, self.live_version()))
             }
             ("POST", "/api/recommend") => {
                 let idx = idx_of(body)?;
@@ -892,12 +906,15 @@ impl Workbench {
             .unwrap_or("Ironclad");
         let (starter_hp, starter_deck, starter_relic, _) =
             crate::simlab_catalog::starter_for(character);
+        // The selector's build, like `/api/live/start` (GH #877).
+        let version = body_game_version(body)?;
         let encounter = body.get("encounter").and_then(Value::as_str);
         let monsters = str_list("monsters");
         let relics = str_list("relics");
         let deck = str_list("deck");
         let potions = str_list("potions").unwrap_or_default();
         let built = crate::simlab::new_position(
+            version,
             character,
             encounter,
             monsters.as_deref(),
@@ -931,7 +948,10 @@ impl Workbench {
         let empty = json!({});
         let pos = body.get("position").unwrap_or(&empty);
         let built = crate::simlab::build_position(pos).map_err(|e| ApiError::new(422, e.0))?;
-        let name_of = |kind: &str, ident: &str| crate::simlab_catalog::name_of(kind, ident);
+        let version =
+            crate::simlab::position_game_version(pos).map_err(|e| ApiError::new(422, e.0))?;
+        let name_of =
+            |kind: &str, ident: &str| crate::simlab_catalog::name_of_for(version, kind, ident);
         let moves = crate::simlab::first_moves(&built.wire, &name_of)
             .map_err(|e| ApiError::new(422, e.0))?;
         Ok(json!({"moves": moves, "wire": built.wire}))
@@ -955,7 +975,10 @@ impl Workbench {
             "threads": body.get("threads").and_then(Value::as_i64).unwrap_or(1).max(1),
             "hidden_info": body.get("hidden_info").and_then(Value::as_str).unwrap_or("beliefdraw"),
         });
-        let name_of = |kind: &str, ident: &str| crate::simlab_catalog::name_of(kind, ident);
+        let version =
+            crate::simlab::position_game_version(pos).map_err(|e| ApiError::new(422, e.0))?;
+        let name_of =
+            |kind: &str, ident: &str| crate::simlab_catalog::name_of_for(version, kind, ident);
         crate::simlab::mcts_eval(&built.wire, &config, &name_of)
             .map_err(|e| ApiError::new(422, e.0))
     }

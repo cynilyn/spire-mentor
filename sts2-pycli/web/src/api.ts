@@ -380,7 +380,8 @@ export interface Step {
   meta: {
     turn: number | null; step_no: number; floor?: number | null; act?: number | null;
     act_name?: string | null; advice?: StepAdvice | null;
-    bg_seed?: number | null; bg_row?: number | null; bg_col?: number | null;
+    /** GH #878: a decimal string when the seed is past 2^53 (v0.111.0's `ulong`). */
+    bg_seed?: number | string | null; bg_row?: number | null; bg_col?: number | null;
     /** GH #801: the session's game build; absent = v0.107.1. */
     game_version?: string;
   };
@@ -420,6 +421,9 @@ export interface CoachTurnRecord {
   verdict: "best" | "tie" | "slip" | "blunder" | "ungraded";
   you: string[];
   ai: string[];
+  /** What one line did on the board that the other did not ("Your line
+   *  wakes Lagavulin Matriarch on turn 1"); absent / null when nothing. */
+  why?: string | null;
   hp_drop: number | null;
   win_before: number | null;
   win_after: number | null;
@@ -1456,11 +1460,13 @@ export const api = {
   deckAnalysis: (idx: number) =>
     apiFetch(`/api/step/${idx}/deck-analysis`).then(json<DeckAnalysis>),
   deckTrend: () => apiFetch("/api/deck/trend").then(json<{ points: TrendPoint[] }>),
-  deckRewardPreview: (deck: unknown[], candidates: unknown[]) =>
+  // `gameVersion` (GH #877): the build whose card tables grade the cards;
+  // sent only when it is not the default, like every other route.
+  deckRewardPreview: (deck: unknown[], candidates: unknown[], gameVersion?: string | null) =>
     apiFetch("/api/deck/reward-preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deck, candidates }),
+      body: JSON.stringify({ deck, candidates, ...gameVersionBody(gameVersion) }),
     }).then(json<RewardPreview>),
   timeline: () => apiFetch("/api/timeline").then(json<{ steps: TimelineEntry[] }>),
   map: () => apiFetch("/api/map").then(json<{ rows: MapRow[]; graphs: MapGraph[] }>),

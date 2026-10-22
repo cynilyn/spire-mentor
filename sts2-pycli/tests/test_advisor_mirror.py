@@ -810,6 +810,26 @@ def _potion_screen(potion: str = "ATTACK_POTION") -> tuple[AdvisorMirror, dict[s
     }
 
 
+def test_a_card_select_answer_rebuilds_at_the_run_ascension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GH #848: the answer's rebuild reads the run's ascension, not A0."""
+    from sts2_hint import adapter
+
+    advisor, screen = _potion_screen()
+    screen["run_state"]["ascension"] = 10
+    seen: list[int] = []
+    real = adapter.translate
+
+    def spy(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.append(kwargs.get("ascension", 0))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "translate", spy)
+    assert advisor.answer_card_select(screen, HONEST, 8) is not None
+    assert seen and set(seen) == {10}
+
+
 def test_a_potion_screen_is_searched_end_to_end() -> None:
     """The whole chain, on the screen class that was 100% rarity-sorted.
 

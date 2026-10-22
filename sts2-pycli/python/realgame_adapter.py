@@ -226,6 +226,26 @@ def character_display_name(character_id: str | None) -> str | None:
     return CHARACTER_ID_TO_DISPLAY.get(character_id.upper())
 
 
+def run_ascension(run_state: dict[str, Any], default: int = 0) -> int:
+    """The ascension a live board must be rebuilt at.
+
+    The mod reports the run's level as ``run_state.ascension``
+    (``SimStateExtractor.cs``). A combat lane that rebuilds the board without
+    it plans every enemy turn after the current telegraph against A0 tables
+    (GH #848).
+
+    Args:
+        run_state: The bridge state's ``run_state`` block (may be empty).
+        default: Used only when the mod sent no level, e.g. the
+            ``RecommendConfig.ascension`` the lane was built with.
+
+    Returns:
+        The run's ascension level.
+    """
+    value = run_state.get("ascension")
+    return default if value is None else int(value)
+
+
 def _normalize_affliction_name(name: str) -> str:
     """Normalize a per-card affliction onto the class-name wire vocabulary
     (``card_affliction_kind_from_wire`` in sts2-rs). Converts the unresolved
@@ -671,6 +691,13 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
         # "master_deck" note) -- threaded into wire["deck"]["master_deck"].
         "master_deck": master_deck,
     }
+    # Belt CAPACITY (C# ``Player.MaxPotionCount``; 2 under A4 Tight Belt) from
+    # the bridge's run block. ``sts2_hint.adapter.translate`` forwards it as
+    # the wire's ``player.potion_slots``; without it a rebuilt board's
+    # slot-filling potions fill as if the belt had 5 slots (GH #893).
+    slot_count = run_state.get("potion_slot_count")
+    if isinstance(slot_count, int) and not isinstance(slot_count, bool):
+        out["player"]["potion_slots"] = slot_count
 
     # The run's RNG position, from the bridge envelope
     # (``SimStateExtractor.ApplyEnvelope``): the once-hashed master seed every

@@ -42,9 +42,9 @@ use super::dsl::{br, mv, mv_eff, proto_ai, proto_ais, ProtoAis};
 /// Mirrors Python pin `sts2-rl-agent@01c094d:sts2_env/monsters/act1.py:159-161`
 /// (`illusion()` calls `combat.add_enemy(eye, eye_ai)`).
 ///
-/// Bead `sts2-rs-lc58p`: attach `create_eye_with_teeth_ai()` to the
-/// freshly-spawned Eye (same pattern as `infested_after_death_spawn`
-/// above). Without the AI, the spawned Eye fell back to the legacy
+/// Bead `sts2-rs-lc58p`: attach the Eye's real AI to the freshly-spawned
+/// Eye (same pattern as `infested_after_death_spawn` below; built through
+/// [`crate::monster_dispatch::build_spawned_ai`], GH #847). Without the AI, the spawned Eye fell back to the legacy
 /// [`MonsterKind::roll_intent`] placeholder (Debuff stub) instead of
 /// its real DISTRACT/bite state machine, leaving the Dazed cards from
 /// `eye_with_teeth_distract_effect` un-fired.
@@ -58,11 +58,12 @@ fn fogmog_illusion_effect(state: &mut CombatState, _owner: CreatureUid) {
     // Was a bare `spawn_enemy_at_front`, which happened to be right only
     // because "illusion" is index 0. Going through the slot model retires the
     // `TODO(o1mwv)` per-encounter workaround (GH #552).
-    state.spawn_enemy_in_slot(
+    let ai = crate::monster_dispatch::build_spawned_ai(
+        state,
         MonsterKind::EyeWithTeeth,
-        FOGMOG_ILLUSION_SLOT,
-        create_eye_with_teeth_ai(),
+        crate::monster_dispatch::MonsterSpawnArgs::None,
     );
+    state.spawn_enemy_in_slot(MonsterKind::EyeWithTeeth, FOGMOG_ILLUSION_SLOT, ai);
 }
 
 /// `FogmogNormal.Slots = ["illusion", "fogmog"]` — the summoned Eye's slot.
@@ -99,7 +100,9 @@ fn phrog_parasite_infect_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// `for (int i = 0; i < 4; i++) { wriggler.StartStunned = true;
 /// CreatureCmd.Add(wriggler, …, wriggler{i+1}) }`.
 ///
-/// `create_infested_wriggler_ai(slot)` starts at `SPAWNED_MOVE` (Stun), so
+/// The AI (`create_infested_wriggler_ai(slot)`, built through
+/// [`crate::monster_dispatch::build_spawned_ai`] so it scales at A9+, GH
+/// #847) starts at `SPAWNED_MOVE` (Stun), so
 /// the freshly-spawned wrigglers spend their first turn stunned — modelling
 /// `StartStunned = true`. Its `FollowUpState` is the slot-conditional branch
 /// (C# `Wriggler.cs::GenerateMoveStateMachine` `ConditionalBranchState`):
@@ -118,7 +121,7 @@ fn phrog_parasite_infect_effect(state: &mut CombatState, _owner: CreatureUid) {
 /// all-enemies-dead branch of `combat_loop::check_combat_end` (bead
 /// `sts2-rs-h9u` Phase-7 sliver).
 pub fn infested_after_death_spawn(state: &mut CombatState, _owner: CreatureUid) {
-    use super::shared::{create_infested_wriggler_ai, DenseVegetationWrigglerSlot};
+    use super::shared::DenseVegetationWrigglerSlot;
     let slots = [
         DenseVegetationWrigglerSlot::First,
         DenseVegetationWrigglerSlot::Second,
@@ -127,7 +130,13 @@ pub fn infested_after_death_spawn(state: &mut CombatState, _owner: CreatureUid) 
     ];
     for slot in slots {
         let uid = state.spawn_enemy(MonsterKind::Wriggler);
-        let ai = create_infested_wriggler_ai(slot);
+        // `MonsterKind::Wriggler` + the slot payload is the dispatcher's
+        // `create_infested_wriggler_ai(slot)` arm, scaled at A9+ (GH #847).
+        let ai = crate::monster_dispatch::build_spawned_ai(
+            state,
+            MonsterKind::Wriggler,
+            crate::monster_dispatch::MonsterSpawnArgs::DenseVegetationWriggler { slot },
+        );
         // Telegraph the spawned wriggler's initial move (SPAWNED_MOVE = Stun)
         // on the fresh creature so the NEXT enemy turn's `acting_enemies`
         // snapshot — which filters on `creature.intent.is_some()` — includes
@@ -144,7 +153,7 @@ pub fn infested_after_death_spawn(state: &mut CombatState, _owner: CreatureUid) 
         // downstream discard/reshuffle pile size, surfacing as a `shuffle`
         // RNG-counter divergence). Mirrors the Axebot respawn telegraph in
         // `act3_glory::respawn_axebot`.
-        // v0.111.0: a PhrogParasite killed on the ENEMY side (a Poison tick at
+        // A PhrogParasite killed on the ENEMY side (a Poison tick at
         // the enemy turn start, before the acting snapshot) adds its wrigglers
         // while `CurrentSide == Enemy`: `AfterCreatureAdded` rolls no move and
         // `SpawnedThisTurn` makes `Creature.TakeTurn` skip `PerformMove`
@@ -152,10 +161,10 @@ pub fn infested_after_death_spawn(state: &mut CombatState, _owner: CreatureUid) 
         // turn and perform SPAWNED_MOVE on the next one — the
         // `surprise_after_death_spawn` / Axebot rule. Telegraphing here let
         // them stun that same turn and bite/wriggle a turn early (Silent mid
-        // seed 995, PHROG_PARASITE_ELITE: player.hp cs=58 rs=46). v0.107.1 C#
-        // is the same; left alone there for bit-identity.
-        let telegraph = state.game_version < sts2_core::GameVersion::V0_111_0
-            || state.side == sts2_core::Side::Player;
+        // seed 995, PHROG_PARASITE_ELITE: player.hp cs=58 rs=46). Same C# in
+        // v0.107.1 (Creature.cs:717, MonsterModel.cs:554), so both builds
+        // (GH #806).
+        let telegraph = state.side == sts2_core::Side::Player;
         let initial_intent = if telegraph {
             ai.current_move().intents.first().copied()
         } else {
@@ -370,10 +379,12 @@ fn tracker_ruby_raider_track_effect(state: &mut CombatState, _owner: CreatureUid
 /// metadata (`Strength,2`) was a fabrication. The PLOW power gates phase 2
 /// of the boss state machine via `PLOW_CHECK` (`ceremonial_beast_plow_depleted`).
 fn ceremonial_beast_stamp_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        160,
+        state.game_version,
+        sts2_core::MonsterKind::CeremonialBeast,
+        "STAMP",
+        PowerKind::Plow,
         150,
     );
     // C# `PowerCmd.Apply<PlowPower>(base.Creature, PlowAmount, base.Creature, null)`
@@ -423,10 +434,12 @@ fn ceremonial_beast_beast_cry_effect(state: &mut CombatState, _owner: CreatureUi
 /// is listed first so `perform_intent` performs it; the trailing
 /// `Intent::Buff{Strength,3}` (`BuffIntent()`) is telegraph-only.
 fn ceremonial_beast_crush_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        4,
+        state.game_version,
+        sts2_core::MonsterKind::CeremonialBeast,
+        "CRUSH",
+        PowerKind::Strength,
         3,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
@@ -459,10 +472,12 @@ fn kin_priest_orb_of_weakness_effect(state: &mut CombatState, _owner: CreatureUi
 /// where `RitualStrength = 2` (non-ascension; 3 at DeadlyEnemies). The
 /// `Intent::Buff{Strength,2}` (`BuffIntent()`) is telegraph-only.
 fn kin_priest_ritual_effect(state: &mut CombatState, owner: CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        3,
+        state.game_version,
+        sts2_core::MonsterKind::KinPriest,
+        "RITUAL_MOVE",
+        PowerKind::Strength,
         2,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
@@ -1743,10 +1758,12 @@ pub enum KinFollowerSlot {
 /// DanceStrength=2)` (`KinFollower.cs:132`, Asc-0). `Intent::Buff` is
 /// telegraph-only; the Strength self-buff is applied here.
 fn kin_follower_power_dance_effect(state: &mut CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        3,
+        state.game_version,
+        sts2_core::MonsterKind::KinFollower,
+        "POWER_DANCE",
+        PowerKind::Strength,
         2,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);
@@ -2479,19 +2496,18 @@ mod tests {
             .collect()
     }
 
-    /// v0.107.1 Rust telegraphs the Stun even on an enemy-side death.
+    /// `SpawnedThisTurn` (MonsterModel.cs:555, Creature.cs:722) — wrigglers
+    /// added during the enemy turn sit it out (no telegraph). Same C# in both
+    /// builds (GH #806).
     #[test]
-    fn infested_enemy_side_wrigglers_telegraph_v0107() {
-        let intents = enemy_side_infested_intents(sts2_core::GameVersion::V0_107_1);
-        assert_eq!(intents, vec![Some(sts2_core::monsters::Intent::Stun); 4]);
-    }
-
-    /// v0.111.0: `SpawnedThisTurn` (MonsterModel.cs:555, Creature.cs:722) —
-    /// wrigglers added during the enemy turn sit it out (no telegraph).
-    #[test]
-    fn infested_enemy_side_wrigglers_sit_out_the_turn_v0111() {
-        let intents = enemy_side_infested_intents(sts2_core::GameVersion::V0_111_0);
-        assert_eq!(intents, vec![None; 4]);
+    fn infested_enemy_side_wrigglers_sit_out_the_turn_both_versions() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let intents = enemy_side_infested_intents(version);
+            assert_eq!(intents, vec![None; 4], "{version:?}");
+        }
     }
 
     /// Bead `sts2-rs-2u9w1`: the 4 InfestedPower-death Wrigglers must use the
@@ -2546,6 +2562,102 @@ mod tests {
                 "slot {} post-stun follow-up should be {}",
                 i + 1,
                 expected[i]
+            );
+        }
+    }
+
+    /// GH #847: the InfestedPower wrigglers bite at the summoner's ascension.
+    /// C# `Wriggler.cs:35` `BiteDamage => GetValueIfAscension(DeadlyEnemies,
+    /// 7, 6)` resolves run-globally (`AscensionHelper.cs:22`) for a
+    /// `CreatureCmd.Add`ed wriggler exactly as for an encounter member, so
+    /// NASTY_BITE is 7 from A9. The summon used to build a bare A0 AI.
+    #[test]
+    fn infested_wrigglers_bite_at_deadly_damage_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::shared::DenseVegetationWrigglerSlot as Slot;
+        use crate::monsters::test_util::{
+            ai_move_intent, assert_ai_is_dispatcher_build, creature_ai, enemies_of_kind,
+            SPAWN_ASC_MATRIX,
+        };
+        use sts2_core::monsters::Intent;
+        use sts2_core::CombatState;
+
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let mut state = CombatState {
+                ascension: asc,
+                game_version: version,
+                side: sts2_core::Side::Player,
+                ..CombatState::default()
+            };
+            let phrog = state.spawn_enemy(MonsterKind::PhrogParasite);
+            infested_after_death_spawn(&mut state, phrog);
+
+            let wrigglers = enemies_of_kind(&state, MonsterKind::Wriggler);
+            assert_eq!(wrigglers.len(), 4, "A{asc} {version:?}: four wrigglers");
+            let bite = if asc >= 9 { 7 } else { 6 };
+            for (&w, slot) in
+                wrigglers
+                    .iter()
+                    .zip([Slot::First, Slot::Second, Slot::Third, Slot::Fourth])
+            {
+                assert_eq!(
+                    ai_move_intent(&state, w, "NASTY_BITE"),
+                    Intent::Attack { damage: bite },
+                    "A{asc} {version:?} {slot:?}: NASTY_BITE"
+                );
+                assert_ai_is_dispatcher_build(
+                    &state,
+                    w,
+                    MonsterKind::Wriggler,
+                    MonsterSpawnArgs::DenseVegetationWriggler { slot },
+                );
+                // The spawn-turn telegraph is SPAWNED_MOVE's Stun either way.
+                let c = state.creatures.iter().find(|c| c.id == w.0).unwrap();
+                assert_eq!(c.intent, Some(Intent::Stun), "A{asc} {version:?}");
+            }
+
+            // The number the player sees: slot 1 rolls NASTY_BITE after its
+            // stun turn, off the scaled table.
+            let mut ai = creature_ai(&state, wrigglers[0]).clone();
+            ai.on_move_performed();
+            let next = ai.roll_move_seeded(0);
+            assert_eq!(next.id, "NASTY_BITE");
+            assert_eq!(
+                next.intents.first().copied(),
+                Some(Intent::Attack { damage: bite }),
+                "A{asc} {version:?}: slot 1's first bite telegraph"
+            );
+        }
+    }
+
+    /// GH #847: the Fogmog's Eye is routed through the dispatcher too. C#
+    /// `EyeWithTeeth.cs` has no `GetValueIfAscension` member, so its numbers
+    /// do not move; this pins that the routing keeps it so.
+    #[test]
+    fn fogmog_eye_is_the_dispatcher_build_847() {
+        use crate::monster_dispatch::MonsterSpawnArgs;
+        use crate::monsters::test_util::{
+            assert_ai_is_dispatcher_build, enemies_of_kind, SPAWN_ASC_MATRIX,
+        };
+        use sts2_core::CombatState;
+
+        for (version, asc) in SPAWN_ASC_MATRIX {
+            let mut state = CombatState {
+                ascension: asc,
+                game_version: version,
+                ..CombatState::default()
+            };
+            let fogmog = state.spawn_enemy(MonsterKind::Fogmog);
+            state.set_creature_ai(fogmog, create_fogmog_ai());
+            state.assign_encounter_slots(&[1]);
+            fogmog_illusion_effect(&mut state, fogmog);
+            let eyes = enemies_of_kind(&state, MonsterKind::EyeWithTeeth);
+            assert_eq!(eyes.len(), 1, "A{asc} {version:?}: one Eye");
+            assert_ai_is_dispatcher_build(
+                &state,
+                eyes[0],
+                MonsterKind::EyeWithTeeth,
+                MonsterSpawnArgs::None,
             );
         }
     }

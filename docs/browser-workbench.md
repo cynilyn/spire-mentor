@@ -338,7 +338,10 @@ port `BranchingLiveSession.start_run_mode` / `run_mode_step` /
   `random.Random` (MT19937, `_randbelow`, `shuffle`) so the Monte-Carlo
   rollouts draw the same shuffles; the two tables (`card_db.json`,
   `card_tags.json`) ride in the data bundle (`just workbench-data` copies
-  them from `python/workbench/data/`).
+  them from `python/workbench/data/`). They are per game build (GH #877): a
+  non-default build has its own `card_db.json` and a `card_tags.json`
+  overlay under `python/workbench/data/<ver>/`, and every deck route grades
+  with the run's own build's tables.
 - The run log is written with the Python normaliser's action shape (a
   hand-played potion records `slot: null` — the M2 asymmetry stays in the
   live coach only), so a recorded line hashes like the oracle's.

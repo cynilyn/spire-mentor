@@ -58,10 +58,12 @@ fn noop_effect(_: &mut sts2_core::CombatState, _: sts2_core::CreatureUid) {}
 /// intents); the power apply lives here. Previously `noop_effect`, so Nibbit
 /// never ramped Strength.
 fn nibbit_hiss_effect(state: &mut sts2_core::CombatState, owner: sts2_core::CreatureUid) {
-    let amount = sts2_core::ascension::get_value_if_ascension(
+    let amount = crate::ascension_scaling::scaled_buff(
         state.ascension,
-        sts2_core::ascension::AscensionLevel::DeadlyEnemies,
-        3,
+        state.game_version,
+        sts2_core::MonsterKind::Nibbit,
+        "HISS",
+        PowerKind::Strength,
         2,
     );
     sts2_core::card_effects::apply_power_to_creature(state, owner, PowerKind::Strength, amount);

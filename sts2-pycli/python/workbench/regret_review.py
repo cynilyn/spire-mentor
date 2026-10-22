@@ -27,6 +27,8 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from enemy_labels import enemy_labels
+
 # Sentinel stable_idx values, mirrored from workbench.record /
 # workbench.reasoning so this module stays self-contained.
 _END_TURN = -1
@@ -43,6 +45,10 @@ DEFAULT_BLUNDER_DROP_PCT = 8.0
 TIE_PTS = 3.0
 #: Minimum resolved playouts (``hp_n``) on BOTH rows before the HP gap is used.
 HP_MIN_SAMPLES = 10
+#: Standard errors (of the difference of the two rows' mean final HP) an HP
+#: gap must clear to count; under it the gap is rollout noise and reads as 0
+#: (GH #888).  Mirrored in the Rust advisor.
+HP_GAP_SE = 2.0
 #: Minimum MCTS visits on the played move before it can be graded at all.
 PLAYED_MIN_VISITS = 50
 #: Per-action severity (win-chance points or HP) below which an action does not
@@ -63,6 +69,23 @@ def _round_half_up(x: float) -> int:
 
 def _hp_known(row: dict[str, Any]) -> bool:
     return row.get("mean_final_hp") is not None and int(row.get("hp_n", 0) or 0) >= HP_MIN_SAMPLES
+
+
+def _hp_gap(best: dict[str, Any], played: dict[str, Any]) -> float:
+    """How much more mean final HP ``best`` keeps than ``played``.
+
+    0 when the gap is within :data:`HP_GAP_SE` standard errors of the
+    difference (noise) or negative. Clamping only *after* the noise test keeps
+    :func:`grade_turn`'s per-turn sum from piling up one-sided jitter. Rows
+    without ``hp_sd`` (logged before it existed) skip the test.
+    """
+    gap = float(best["mean_final_hp"]) - float(played["mean_final_hp"])
+    sb, sp = best.get("hp_sd"), played.get("hp_sd")
+    if sb is not None and sp is not None:
+        var = float(sb) ** 2 / int(best["hp_n"]) + float(sp) ** 2 / int(played["hp_n"])
+        if gap < HP_GAP_SE * math.sqrt(var):
+            return 0.0
+    return max(0.0, gap)
 
 
 def _win_prob(row: dict[str, Any]) -> float:
@@ -131,12 +154,16 @@ def _best_row(scores: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _enemy_name(enemies: list[dict[str, Any]], target: int | None) -> str | None:
-    """Name of the enemy whose ``index`` is *target*, or ``None`` if unresolved."""
+    """Label of the enemy whose ``index`` is *target*, or ``None`` if unresolved.
+
+    The label is the name plus ``" #k"`` when several enemies share it
+    (:func:`enemy_labels.enemy_labels`), so a "wrong rat" blunder says which rat.
+    """
     if target is None:
         return None
-    for e in enemies:
+    for pos, e in enumerate(enemies):
         if e.get("index") == target:
-            return e.get("name") or None
+            return enemy_labels(enemies)[pos] if e.get("name") else None
     return None
 
 
@@ -185,7 +212,9 @@ class DecisionRegret:
     message: str
     played_mean_hp: float | None = None
     best_mean_hp: float | None = None
-    hp_drop: float | None = None  # clamped >= 0; None unless both rows have enough HP samples
+    hp_drop: float | None = (
+        None  # >= 0, 0 within noise; None unless both rows have enough HP samples
+    )
     severity: float = 0.0  # max(regret * 100, hp_drop or 0)
     verdict: str = "best"  # best | uncertain | tie | blunder | slip
     best_line: list[str] = field(default_factory=list)
@@ -240,7 +269,7 @@ def assess_decision(
     if _hp_known(played) and _hp_known(best):
         played_hp = float(played["mean_final_hp"])
         best_hp = float(best["mean_final_hp"])
-        hp_drop = max(0.0, best_hp - played_hp)
+        hp_drop = _hp_gap(best, played)
     severity = max(regret * 100.0, hp_drop or 0.0)
     if matched_best:
         verdict = "best"

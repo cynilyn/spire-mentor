@@ -153,7 +153,8 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
 |---|---|---|
 | `port` | `9002` | TCP listen port (loopback only) |
 | `auto_start` | `false` | Launch Autopilot at boot (the unattended sweep lane). `false` = Off, or Advisor if the "Turn the coach on when the game starts" setting is ticked (default; Windows only) |
-| `advisor_autoplay` | `false` | Testing: once a run is live, switch to Advisor mode and toggle AI autoplay (the F8+F7 path) unattended |
+| `advisor_autoplay` | `false` | Testing: once a run is live, switch to Advisor mode and toggle AI autoplay (the F8+F7 path) unattended. Forces `pause_on` empty |
+| `pause_on` | `"unsupported"` | Where F7 stops and hands the decision back (F7 resumes). `unsupported` = decisions the AI has no real policy for (the advisor's `hand_back`, the crystal sphere); add event ids / `advice_for` values to always play those yourself, e.g. `"unsupported, Neow"`; `""` = never pause. A JSON array works too |
 | `character` / `ascension` / `seed` | `"Ironclad"` / `0` / `null` | Run setup for Autopilot; `seed: null` = fresh random seed |
 | `num_runs` | `1` | Runs to play in sequence before going idle |
 | `resume_run` | `false` | Click Continue instead of starting a new run (recover a run after a game crash) |
