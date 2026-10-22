@@ -585,9 +585,22 @@ pub fn battleworn_dummy_resume(
     }
     match setting {
         BattlewornDummySetting::Setting1 => {
-            state
-                .pending_rewards
-                .push(Reward::Potion(PotionReward::empty()));
+            if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+                // BattlewornDummy.cs:62-71 (v0.111.0): `Rewards.NextItem` over the full character++shared
+                // potion pool (one int read, no rarity float) and the reward is offered pre-populated.
+                if let Some(kind) = crate::potions::all::roll_event_potion_full_pool(
+                    &mut state.rng.rewards,
+                    state.character_id,
+                ) {
+                    state
+                        .pending_rewards
+                        .push(Reward::Potion(PotionReward::with_kind(kind)));
+                }
+            } else {
+                state
+                    .pending_rewards
+                    .push(Reward::Potion(PotionReward::empty()));
+            }
         }
         BattlewornDummySetting::Setting2 => {
             // C# `BattlewornDummy.cs:97` (v0.107.1):
@@ -2031,6 +2044,27 @@ mod tests {
         battleworn_dummy_resume(&mut rs, BattlewornDummySetting::Setting1, true);
         assert_eq!(rs.pending_rewards.len(), 1);
         assert!(matches!(rs.pending_rewards[0], Reward::Potion(_)));
+    }
+
+    /// v0.111.0 `BattlewornDummy.Resume` (Setting 1) reads ONE `Rewards.NextItem` over the full pool;
+    /// v0.107.1 keeps the unpopulated sentinel (rolled at drain time as rarity float + item).
+    #[test]
+    fn battleworn_setting_1_potion_roll_is_one_read_in_v0111() {
+        for (version, pre_populated, reads) in [
+            (sts2_core::GameVersion::V0_107_1, false, 0),
+            (sts2_core::GameVersion::V0_111_0, true, 1),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            let before = rs.rng.rewards.counter();
+            battleworn_dummy_resume(&mut rs, BattlewornDummySetting::Setting1, true);
+            assert_eq!(rs.pending_rewards.len(), 1, "{version:?}");
+            assert_eq!(rs.rng.rewards.counter() - before, reads, "{version:?}");
+            match &rs.pending_rewards[0] {
+                Reward::Potion(p) => assert_eq!(p.potion_kind.is_some(), pre_populated, "{version:?}"),
+                other => panic!("expected a potion reward, got {other:?}"),
+            }
+        }
     }
 
     /// Each setting's option previews the HP of the dummy it will stage, so
