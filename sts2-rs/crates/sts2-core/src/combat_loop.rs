@@ -5091,21 +5091,6 @@ pub fn apply_damage_to_player(
     props: ValueProps,
     card: Option<crate::cards::CardId>,
 ) -> Option<StepResult> {
-    // v0.111.0 `CreatureCmd.Damage` (CreatureCmd.cs:135) returns before any hook when the dealer is
-    // already dead: the rest of a multi-hit attack whose attacker died to Thorns (and its
-    // PaperCuts max-HP loss) never lands.
-    if state.game_version >= crate::GameVersion::V0_111_0 {
-        if let CreatureRef::Enemy(uid) = dealer {
-            if state
-                .creatures
-                .iter()
-                .find(|c| c.id == uid.0)
-                .is_some_and(|c| c.current_hp <= 0)
-            {
-                return None;
-            }
-        }
-    }
     let target_ref = CreatureRef::Player;
     let ctx = DamageCtx {
         dealer,
@@ -10402,29 +10387,6 @@ mod tests {
             state.enemy_uids.push(CreatureUid(id));
         }
         state
-    }
-
-    /// v0.111.0: a dead enemy deals no damage (`CreatureCmd.cs:135`); v0.107.1 keeps applying it.
-    #[test]
-    fn dead_enemy_dealer_deals_no_damage_in_v0111_only() {
-        for (version, want_hp) in [
-            (crate::GameVersion::V0_107_1, 74),
-            (crate::GameVersion::V0_111_0, 80),
-        ] {
-            let mut state = state_with_cultists(1);
-            state.game_version = version;
-            state.init_player_creature();
-            state.creatures[0].current_hp = 0;
-            let uid = state.enemy_uids[0];
-            let _ = apply_damage_to_player(
-                &mut state,
-                CreatureRef::Enemy(uid),
-                6,
-                ValueProps::MOVE,
-                None,
-            );
-            assert_eq!(state.player.current_hp, want_hp, "{version:?}");
-        }
     }
 
     // ── FairyInABottle automatic trigger (A8 audit §7a companion) ───────
