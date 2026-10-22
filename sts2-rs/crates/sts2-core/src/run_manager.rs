@@ -1304,9 +1304,14 @@ impl RunManager {
         // TransformSelectionPrompt, N)` → min==max==N).
         // Bead 6ynt.4.deck-add / GH #34.
         if !self.run_state.pending_deck_transforms.is_empty() {
-            return (0..self.transform_eligible_deck_indices().len())
+            let len = self.transform_eligible_deck_indices().len();
+            let mut actions: Vec<_> = (0..len)
                 .map(|idx| RunAction::TransformDeckCard { idx })
                 .collect();
+            if self.run_state.pending_deck_transforms[0].claws_choice {
+                actions.push(RunAction::TransformDeckCard { idx: len });
+            }
+            return actions;
         }
         // Interactive deck enchant (Wood Carvings Snake → Slither). `idx`
         // indexes the eligible subset (C# `FromDeckForEnchantment` pool =
@@ -4181,11 +4186,28 @@ impl RunManager {
         if self.run_state.pending_deck_transforms.is_empty() {
             return ActionResult::InvalidForPhase;
         }
+        if self.run_state.pending_deck_transforms[0].claws_choice
+            && idx == self.transform_eligible_deck_indices().len()
+        {
+            self.run_state
+                .pending_deck_transforms
+                .retain(|entry| !entry.claws_choice);
+            self.settle_after_deck_pick();
+            return ActionResult::Advanced;
+        }
         let Some(&deck_idx) = self.transform_eligible_deck_indices().get(idx) else {
             return ActionResult::InvalidForPhase;
         };
         let entry = self.run_state.pending_deck_transforms.remove(0);
-        if let Some(replacement) = entry.fixed_target {
+        if let Some(mut replacement) = entry.fixed_target {
+            if entry.claws_choice {
+                let original = &self.run_state.master_deck[deck_idx];
+                replacement.uid = original.uid;
+                if original.upgraded {
+                    replacement.upgrade_for(self.run_state.game_version);
+                }
+                replacement.enchantments = original.enchantments.clone();
+            }
             self.run_state.master_deck.remove(deck_idx);
             self.run_state.master_deck.push(replacement);
         } else if let Some(roll) = self.callbacks.roll_transform_replacement {

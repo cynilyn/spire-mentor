@@ -4644,6 +4644,19 @@ fn listener_claws(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::Claws) {
         return EffectResult::NotImplemented;
     }
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 && rs.interactive_card_transform {
+        if let Some(maul) = crate::cards::spec_index::card_pod_from_id(CardId::Maul, false) {
+            for _ in 0..CLAWS_CARDS {
+                rs.pending_deck_transforms
+                    .push(sts2_core::PendingDeckTransform {
+                        claws_choice: true,
+                        fixed_target: Some(maul),
+                        ..Default::default()
+                    });
+            }
+        }
+        return EffectResult::Resolved;
+    }
     let mut transformed = 0_usize;
     for card in &mut rs.master_deck {
         if transformed >= CLAWS_CARDS {
@@ -9146,6 +9159,53 @@ mod tests {
             .filter(|c| c.card_id == CardId::Maul)
             .count();
         assert_eq!(n_maul, CLAWS_CARDS);
+    }
+
+    #[test]
+    fn claws_v0111_waits_for_optional_deck_selection() {
+        use sts2_core::cards::CardId;
+        use sts2_core::run_manager::{ActionResult, RunAction, RunManager};
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = RunManager::new(0, sts2_core::CharacterId::Ironclad);
+        rm.run_state.game_version = sts2_core::GameVersion::V0_111_0;
+        rm.run_state.interactive_card_transform = true;
+        rm.run_state.master_deck = vec![
+            crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false).unwrap(),
+            crate::cards::spec_index::card_pod_from_id(CardId::DefendIronclad, true).unwrap(),
+        ];
+        rm.run_state.relics.push(RelicId::Claws);
+        rm.run_state.last_obtained_relic = Some(RelicId::Claws);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rm.run_state);
+        assert_eq!(rm.run_state.pending_deck_transforms.len(), CLAWS_CARDS);
+        assert_eq!(rm.run_state.master_deck[0].card_id, CardId::StrikeIronclad);
+        assert!(rm
+            .get_available_actions()
+            .contains(&RunAction::TransformDeckCard { idx: 2 }));
+
+        let mut none = rm.clone();
+        assert_eq!(
+            none.take_action(RunAction::TransformDeckCard { idx: 2 }),
+            ActionResult::Advanced
+        );
+        assert!(none.run_state.pending_deck_transforms.is_empty());
+        assert!(none
+            .run_state
+            .master_deck
+            .iter()
+            .all(|card| card.card_id != CardId::Maul));
+
+        assert_eq!(
+            rm.take_action(RunAction::TransformDeckCard { idx: 1 }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.master_deck[1].card_id, CardId::Maul);
+        assert!(rm.run_state.master_deck[1].upgraded);
+        assert_eq!(
+            rm.take_action(RunAction::TransformDeckCard { idx: 2 }),
+            ActionResult::Advanced
+        );
+        assert!(rm.run_state.pending_deck_transforms.is_empty());
+        assert_eq!(rm.run_state.master_deck[0].card_id, CardId::StrikeIronclad);
     }
 
     /// Bead `sts2-rs-scds8`: a Claws transform must REBUILD the instance from
