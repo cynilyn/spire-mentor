@@ -2524,6 +2524,19 @@ impl RunState {
         self.max_potion_slots = self.max_potion_slots.saturating_add(amount).max(0);
     }
 
+    /// Run-side potion slot ceiling. C# `Player.MaxPotionCount` is the number of slots with no other cap
+    /// (`Entities.Players/Player.cs:43`), so a Potion Belt run can hold six. Before v0.111.0 the engine kept the
+    /// legacy `MAX_POTIONS` = 5 clamp.
+    #[must_use]
+    pub fn potion_belt_cap(&self) -> usize {
+        let slots = self.max_potion_slots.max(0) as usize;
+        if self.game_version >= crate::GameVersion::V0_111_0 {
+            slots
+        } else {
+            slots.min(crate::potions::MAX_POTIONS)
+        }
+    }
+
     /// Add `kind` to the run-level potion belt ([`Self::potions`]) if a
     /// free slot is available, returning `true` when the potion was
     /// added and `false` when the belt is already full (the potion is
@@ -2534,7 +2547,7 @@ impl RunState {
     /// [`Self::max_potion_slots`] clamped to the combat-side
     /// [`crate::potions::MAX_POTIONS`] hard cap. Bead `sts2-rs-01o`.
     pub fn add_potion_to_belt(&mut self, kind: crate::potions::PotionKind) -> bool {
-        let cap = (self.max_potion_slots.max(0) as usize).min(crate::potions::MAX_POTIONS);
+        let cap = self.potion_belt_cap();
         if self.potions.len() >= cap {
             return false;
         }

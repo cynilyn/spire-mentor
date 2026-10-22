@@ -1576,8 +1576,7 @@ impl RunManager {
                 // observation → identical argmax, forever, until the
                 // stall watchdog kills the run as a loss. C# greys the
                 // entry visually; this filter is the AI-side grey.
-                let potion_cap = (self.run_state.max_potion_slots.max(0) as usize)
-                    .min(crate::potions::MAX_POTIONS);
+                let potion_cap = self.run_state.potion_belt_cap();
                 let potion_row_locked = self.run_state.potions.len() >= potion_cap
                     || crate::run_effects::would_veto_procure_potion(&self.run_state);
                 if !potion_row_locked {
@@ -2097,6 +2096,9 @@ impl RunManager {
             if let Some(combat) = build(&mut self.run_state, act, room_type) {
                 self.combat = Some(combat);
                 self.phase = Phase::Combat;
+                if self.combat_ended_on_entry() {
+                    return self.exit_combat_and_transition();
+                }
                 return ActionResult::Advanced;
             }
         }
@@ -2109,7 +2111,18 @@ impl RunManager {
         let combat = enter(&self.run_state, spec);
         self.combat = Some(combat);
         self.phase = Phase::Combat;
+        if self.combat_ended_on_entry() {
+            return self.exit_combat_and_transition();
+        }
         ActionResult::Advanced
+    }
+
+    /// v0.111.0: a combat whose enemies all die from start-of-combat effects (a 1-HP start plus a start-of-combat
+    /// damage relic) ends before the first player action; C# `CombatManager` then goes straight to the rewards.
+    /// Without this the run sat in `Phase::Combat` with a finished combat and no legal action.
+    fn combat_ended_on_entry(&self) -> bool {
+        self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && self.combat.as_ref().is_some_and(|c| c.is_over)
     }
 
     fn do_combat_play_card(&mut self, hand_idx: usize, target: Option<u32>) -> ActionResult {
@@ -6728,6 +6741,56 @@ mod tests {
             rm.run_state.current_hp, 0,
             "heal must not fire on loss path"
         );
+    }
+
+    fn finished_combat_stub(
+        _rs: &mut RunState,
+        _act: u8,
+        _room: crate::runstate::RoomType,
+    ) -> Option<crate::CombatState> {
+        let mut c = crate::CombatState::default();
+        c.is_over = true;
+        c.player_won = true;
+        Some(c)
+    }
+
+    /// A combat whose enemies all die from start-of-combat effects (a 1-HP start plus a start-of-combat damage
+    /// relic) ends before the first player action. v0.111.0 leaves `Phase::Combat` at once (C# `CombatManager`
+    /// ends the combat and shows the rewards); v0.107.1 keeps the old behaviour.
+    #[test]
+    fn combat_over_on_entry_leaves_combat_phase_on_v0111_only() {
+        for (version, leaves) in [
+            (crate::GameVersion::V0_107_1, false),
+            (crate::GameVersion::V0_111_0, true),
+        ] {
+            let mut rm = RunManager::new(1, CharacterId::Ironclad);
+            rm.run_state.game_version = version;
+            rm.callbacks.build_combat_for_room = Some(finished_combat_stub);
+            let res = rm.enter_combat_phase(crate::runstate::RoomType::Monster);
+            assert_eq!(res, ActionResult::Advanced, "{version:?}");
+            assert_eq!(rm.phase() != Phase::Combat, leaves, "{version:?}");
+        }
+    }
+
+    /// C# `Player.MaxPotionCount` is the slot count (`Player.cs:43`): a six-slot belt holds six potions on
+    /// v0.111.0, while v0.107.1 keeps the legacy five-potion clamp.
+    #[test]
+    fn potion_belt_cap_follows_slot_count_on_v0111_only() {
+        for (version, expect) in [
+            (crate::GameVersion::V0_107_1, 5usize),
+            (crate::GameVersion::V0_111_0, 6),
+        ] {
+            let mut rs = RunState::default();
+            rs.game_version = version;
+            rs.max_potion_slots = 6;
+            let mut held = 0;
+            while rs.add_potion_to_belt(crate::potions::PotionKind::BlockPotion) {
+                held += 1;
+                assert!(held <= 6);
+            }
+            assert_eq!(held, expect, "{version:?}");
+            assert_eq!(rs.potion_belt_cap(), expect);
+        }
     }
 
     #[test]

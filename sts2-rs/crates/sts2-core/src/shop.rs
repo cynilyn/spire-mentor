@@ -992,7 +992,7 @@ pub fn buy_potion(
     // queues onto `pending_rewards` (the belt-cap drop happens later at
     // drain), so the capacity gate must be checked explicitly here, up
     // front, mirroring `add_potion_to_belt`'s ceiling.
-    let cap = (run_state.max_potion_slots.max(0) as usize).min(crate::potions::MAX_POTIONS);
+    let cap = run_state.potion_belt_cap();
     if run_state.potions.len() >= cap {
         return ShopPurchaseOutcome::PotionBeltFull;
     }
