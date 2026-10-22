@@ -202,6 +202,82 @@ pub const BASE_MAX_ENERGY: i32 = 3;
 // than an `intersects` against a one-kind mask; see the `PowerKindSet` docs
 // in lib.rs.
 
+/// v0.111.0 power order at the start of a fight. C# runs the relics' `AfterRoomEntered` grants (Vajra's
+/// Strength, Gorget's Plating, Philosopher's Stone's enemy Strength) from `CombatRoom.StartCombat`, and
+/// only afterwards each monster's `AfterAddedToRoom` powers (`CombatManager.StartCombatInternal`: Surrounded,
+/// Imbalanced, Artifact, Escape Artist, ...). The engine spawns the roster first, so the monsters' own
+/// powers hold the older arena ids and the wire (which lists a creature's powers in application order) put
+/// them first. Re-issue those ids after the relic grants so the order is the game's. `watermark` is the
+/// highest power id before the relic dispatch; the owner's powers at or below it are the spawn powers
+/// (every enemy's, and the player's Surrounded).
+fn resequence_spawn_powers_after_relic_grants(state: &mut CombatState, watermark: u32) {
+    let enemy_ids: smallvec::SmallVec<[std::num::NonZeroU32; 8]> =
+        state.enemy_uids.iter().map(|u| u.0).collect();
+    let player_id = state.player.creature_uid.map(|u| u.0);
+    let owners = enemy_ids.into_iter().chain(player_id);
+    for owner in owners {
+        let Some(idx) = state.creatures.iter().position(|c| c.id == owner) else {
+            continue;
+        };
+        let is_player = Some(owner) == player_id;
+        let mut uids: smallvec::SmallVec<[crate::PowerUid; 8]> =
+            state.creatures[idx].powers.iter().copied().collect();
+        if is_player {
+            for u in &state.player.powers {
+                if !uids.iter().any(|x| x.0 == u.0) {
+                    uids.push(*u);
+                }
+            }
+        }
+        let granted_after = uids.iter().any(|u| u.0.get() > watermark);
+        if !granted_after {
+            continue;
+        }
+        let mut spawn: smallvec::SmallVec<[std::num::NonZeroU32; 4]> = uids
+            .iter()
+            .filter(|u| u.0.get() <= watermark)
+            .filter(|u| {
+                !is_player
+                    || state
+                        .powers
+                        .get_by_id(u.0)
+                        .is_some_and(|p| p.kind == crate::PowerKind::Surrounded)
+            })
+            .map(|u| u.0)
+            .collect();
+        spawn.sort_by_key(|id| id.get());
+        for old in spawn {
+            let next = state
+                .powers
+                .iter()
+                .map(|p| p.id.get())
+                .max()
+                .map_or(1, |m| m.saturating_add(1));
+            let new_id = std::num::NonZeroU32::new(next).expect("power id non-zero");
+            let Some(power) = state.powers.get_by_id(old).copied() else {
+                continue;
+            };
+            state.powers.retain(|p| p.id != old);
+            state.powers.push(crate::Power {
+                id: new_id,
+                ..power
+            });
+            for c in &mut state.creatures {
+                for u in &mut c.powers {
+                    if u.0 == old {
+                        *u = crate::PowerUid(new_id);
+                    }
+                }
+            }
+            for u in &mut state.player.powers {
+                if u.0 == old {
+                    *u = crate::PowerUid(new_id);
+                }
+            }
+        }
+    }
+}
+
 /// Initialize combat scalars + fire `before_combat_start` + roll initial
 /// enemy intents + advance phase from `Setup` to `PlayerTurnStart`.
 ///
@@ -352,6 +428,7 @@ pub fn start_combat(state: &mut CombatState) -> StepResult {
     // primary_player relics). Phase 2 has no active
     // before_combat_start listeners; the dispatcher walks all
     // listeners but every per-listener fn is a no-op default.
+    let power_watermark = state.powers.iter().map(|p| p.id.get()).max().unwrap_or(0);
     hooks::dispatch_before_combat_start(state, &CombatLifecycleCtx::default());
     // VitalSpark (Infested Prism) `BeforeCombatStart`: taint every player Skill
     // card (bead `…wb8lk.4`). Dedicated pass because the generic
@@ -366,6 +443,9 @@ pub fn start_combat(state: &mut CombatState) -> StepResult {
     // listener bodies registered by `sts2-content`'s P7 pool beads.
     // Both must fire so future retrofits (bead `sts2-rs-01o`) light up.
     let _ = crate::relic_effects::dispatch_before_combat_start(state);
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        resequence_spawn_powers_after_relic_grants(state, power_watermark);
+    }
 
     // Step 5: roll initial intent for each enemy. We collect the
     // enemy UIDs into a fixed SmallVec first to release the immutable
@@ -6628,6 +6708,21 @@ pub struct CardPlayFinish {
 }
 
 pub fn play_card(state: &mut CombatState, hand_index: u8, target: Option<u8>) -> StepResult {
+    let result = play_card_impl(state, hand_index, target);
+    // v0.111.0: C# fires `AfterDeath` the moment a creature dies, so a witness's pending move
+    // (Queen's BurnBright -> Enrage when the Torch Head Amalgam falls) already changed for the rest of
+    // the player's turn. The carrier is otherwise drained when the enemies start acting, which left the
+    // telegraph stale for every decision between the killing card and the end of the turn.
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && state.pending_choice.is_none()
+        && !state.combat_log.newly_dead_this_turn.is_empty()
+    {
+        dispatch_after_death_listeners(state);
+    }
+    result
+}
+
+fn play_card_impl(state: &mut CombatState, hand_index: u8, target: Option<u8>) -> StepResult {
     // ── Pre-condition guards (illegal play → Advanced no-op) ─────────────
     if state.phase != CombatPhase::PlayerPlayPhase {
         return StepResult::Advanced;
@@ -20344,6 +20439,80 @@ mod tests {
             !state.player.request_end_turn_after_play,
             "start_player_turn should clear any stale end-turn-after-play flag",
         );
+    }
+
+    /// v0.111.0: a death during the player's turn reaches the witnesses' `AfterDeath` as soon as the
+    /// card that caused it finishes (C# fires it at the moment of death); v0.107.1 keeps draining at the
+    /// start of the enemy turn.
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn card_play_drains_after_death_listeners_on_v0111_only() {
+        use crate::monster_ai::{MonsterAi, MonsterState, MoveState};
+        use smallvec::smallvec as sv;
+        use std::collections::BTreeMap;
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        static FIRED: AtomicI32 = AtomicI32::new(0);
+        fn listener(_state: &mut CombatState, _dead: CreatureUid, _owner: CreatureUid) {
+            FIRED.fetch_add(1, Ordering::SeqCst);
+        }
+        fn noop_effect(_: &mut CombatState, _: CreatureUid) {}
+
+        crate::card_effects::ensure_installed();
+        for (version, want) in [
+            (crate::GameVersion::V0_111_0, 1),
+            (crate::GameVersion::V0_107_1, 0),
+        ] {
+            FIRED.store(0, Ordering::SeqCst);
+            let mut state = state_with_cultists(2);
+            state.game_version = version;
+            let mut states = BTreeMap::new();
+            states.insert(
+                "M",
+                MonsterState::Move(MoveState {
+                    id: "M",
+                    effect: noop_effect,
+                    intents: sv![Intent::Defend { block: 0 }],
+                    follow_up: Some("M"),
+                    must_perform_once: false,
+                }),
+            );
+            let mut ai = MonsterAi::new(states, "M");
+            ai.after_death = Some(listener);
+            state.creatures[0].ai = Some(ai);
+            let _ = start_combat(&mut state);
+            state.player.energy = 3;
+
+            let uid = crate::CardUid::new((state.cards.len() + 1) as u32).expect("non-zero");
+            state.cards.push(crate::cards::Card {
+                uid,
+                card_id: crate::cards::CardId::ParticleWall,
+                cost: 0,
+                card_type: crate::cards::CardType::Skill,
+                target_type: crate::cards::TargetType::Self_,
+                upgraded: false,
+                base_damage: 0,
+                base_block: 9,
+                combat_vars: crate::cards::CombatVars::new(),
+                enchantments: crate::cards::CardEnchantments::new(),
+                tags: crate::cards::CardTags::NONE,
+                energy_spent: 0,
+                base_replay_count: 0,
+                keyword_override: None,
+                affliction: None,
+            });
+            state.player.hand.push(uid);
+            state.phase = CombatPhase::PlayerPlayPhase;
+            let hand_idx = (state.player.hand.len() - 1) as u8;
+
+            // The second enemy died earlier in this play (as a card's damage would record it).
+            state.creatures[1].current_hp = 0;
+            let dead = CreatureUid(state.creatures[1].id);
+            state.combat_log.newly_dead_this_turn.push(dead);
+
+            let _ = play_card(&mut state, hand_idx, None);
+            assert_eq!(FIRED.load(Ordering::SeqCst), want, "{version:?}");
+        }
     }
 
     /// Bead `sts2-rs-79tv9` (dvqa1.2): the cross-creature AfterDeath

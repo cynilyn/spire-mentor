@@ -6704,6 +6704,139 @@ mod tests {
         );
     }
 
+    /// v0.111.0: the relics' `AfterRoomEntered` grants (Philosopher's Stone's enemy Strength) come before
+    /// each monster's own `AfterAddedToRoom` powers (`CombatManager.StartCombatInternal`), so an enemy lists
+    /// Strength ahead of its spawn power; v0.107.1 keeps the spawn power first.
+    #[test]
+    fn enemy_spawn_powers_follow_relic_grants_on_v0111_only() {
+        use smallvec::SmallVec;
+        use std::num::NonZeroU32;
+        use sts2_core::{
+            Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind, PowerKind, Relic,
+            RelicKind,
+        };
+
+        crate::relics::dispatch::ensure_installed();
+        for (version, want) in [
+            (
+                sts2_core::GameVersion::V0_111_0,
+                [PowerKind::Strength, PowerKind::Artifact],
+            ),
+            (
+                sts2_core::GameVersion::V0_107_1,
+                [PowerKind::Artifact, PowerKind::Strength],
+            ),
+        ] {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            state.player.current_hp = 80;
+            state.player.max_hp = 80;
+            let _ = state.init_player_creature();
+            let uid = CreatureUid::new(10).expect("non-zero");
+            state.creatures.push(Creature {
+                id: uid.0,
+                current_hp: 30,
+                max_hp: 30,
+                block: 0,
+                powers: SmallVec::new(),
+                species: Some(MonsterKind::Nibbit),
+                monster_id: MonsterId(""),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                ai: None,
+            });
+            state.enemy_uids.push(uid);
+            // The spawn power, applied before the fight starts like `spawn_roster` does.
+            sts2_core::card_effects::apply_power_to_creature(
+                &mut state,
+                uid,
+                PowerKind::Artifact,
+                2,
+            );
+            state.relics.push(Relic {
+                id: NonZeroU32::new(1).expect("non-zero"),
+                kind: RelicKind::PhilosophersStone,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+
+            let _ = sts2_core::combat_loop::start_combat(&mut state);
+
+            let mut listed: Vec<(u32, PowerKind)> = state
+                .creatures
+                .iter()
+                .find(|c| c.id == uid.0)
+                .expect("enemy")
+                .powers
+                .iter()
+                .filter_map(|u| state.powers.get_by_id(u.0))
+                .map(|p| (p.id.get(), p.kind))
+                .collect();
+            listed.sort_by_key(|(id, _)| *id);
+            let kinds: Vec<PowerKind> = listed.into_iter().map(|(_, k)| k).collect();
+            assert_eq!(kinds, want, "{version:?}");
+        }
+    }
+
+    /// v0.111.0: relic combat-start grants fire in equip order (Vajra owned before Bronze Scales lists
+    /// Strength before Thorns); v0.107.1 keeps the registry (`RelicId`) order.
+    #[test]
+    fn combat_start_relic_grants_follow_equip_order_on_v0111_only() {
+        use std::num::NonZeroU32;
+        use sts2_core::relic_effects::dispatch_before_combat_start;
+        use sts2_core::{PowerKind, Relic, RelicKind};
+
+        crate::relics::dispatch::ensure_installed();
+        let owned = |version: sts2_core::GameVersion, kinds: [RelicKind; 2]| -> Vec<PowerKind> {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            state.player.current_hp = 80;
+            state.player.max_hp = 80;
+            let player_uid = state.init_player_creature();
+            for (i, kind) in kinds.into_iter().enumerate() {
+                state.relics.push(Relic {
+                    id: NonZeroU32::new(i as u32 + 1).expect("non-zero"),
+                    kind,
+                    counter: 0,
+                    is_wax: false,
+                    is_melted: false,
+                });
+            }
+            let _ = dispatch_before_combat_start(&mut state);
+            let mut listed: Vec<(u32, PowerKind)> = state
+                .creatures
+                .iter()
+                .find(|c| c.id == player_uid.0)
+                .expect("player creature")
+                .powers
+                .iter()
+                .filter_map(|u| state.powers.get_by_id(u.0))
+                .map(|p| (p.id.get(), p.kind))
+                .collect();
+            listed.sort_by_key(|(id, _)| *id);
+            listed.into_iter().map(|(_, k)| k).collect()
+        };
+        let v111 = sts2_core::GameVersion::V0_111_0;
+        let v107 = sts2_core::GameVersion::V0_107_1;
+        let forward = [RelicKind::Vajra, RelicKind::BronzeScales];
+        let reverse = [RelicKind::BronzeScales, RelicKind::Vajra];
+        assert_eq!(
+            owned(v111, forward),
+            [PowerKind::Strength, PowerKind::Thorns]
+        );
+        assert_eq!(
+            owned(v111, reverse),
+            [PowerKind::Thorns, PowerKind::Strength]
+        );
+        // 0.107.1 ignores the equip order: both owned orders list the same powers the same way.
+        assert_eq!(owned(v107, forward), owned(v107, reverse));
+    }
+
     /// `Brimstone` is inert when the player does not own the relic
     /// (the listener's `player_owns_relic` gate must short-circuit
     /// before applying any Strength).

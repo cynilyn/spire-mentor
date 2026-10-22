@@ -76,14 +76,22 @@ const fn class_str_from_character(c: Option<CharacterId>) -> &'static str {
 /// The damage number the card's face carries now. v0.111.0 Rampage grows its own `DamageVar.BaseValue` by `Increase`
 /// after every play (`Rampage.cs`: `Damage.BaseValue += Increase`), so a replayed copy shows 15, 20, ... where the
 /// engine keeps the growth in `VarKey::RampageDamage` on top of the printed base. Earlier builds emit the printed base.
+/// A Wither status card likewise shows `3 + 3 * FakeUpgradeLevel` (`Wither.FakeUpgrade` raises its `DamageVar` by 3), which
+/// the engine keeps in `VarKey::WitherFakeUpgradeLevel` while `base_damage` stays 3.
 fn displayed_base_damage(state: &CombatState, card: &Card) -> i32 {
-    if card.card_id == sts2_core::cards::CardId::Rampage
-        && state.game_version >= sts2_core::GameVersion::V0_111_0
-    {
-        card.base_damage
-            .saturating_add(card.combat_var(sts2_core::cards::VarKey::RampageDamage))
-    } else {
-        card.base_damage
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return card.base_damage;
+    }
+    match card.card_id {
+        sts2_core::cards::CardId::Rampage => card
+            .base_damage
+            .saturating_add(card.combat_var(sts2_core::cards::VarKey::RampageDamage)),
+        sts2_core::cards::CardId::Wither => card.base_damage.saturating_add(
+            3 * card
+                .combat_var(sts2_core::cards::VarKey::WitherFakeUpgradeLevel)
+                .max(0),
+        ),
+        _ => card.base_damage,
     }
 }
 /// Serialize a single [`Card`] runtime POD into the wire-format
@@ -954,9 +962,16 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         set(&mut m, "max_hp", m_max_hp);
         set(&mut m, "hp", c.current_hp.clamp(0, m_max_hp));
         set(&mut m, "block", c.block.max(0));
+        // v0.111.0: C# `Creature._powers` is one application-ordered list, and arena ids are allocated in application
+        // order (a fight's opening spawn powers are re-issued after the relics' room-entry grants), so ascending id
+        // restores it, as for the player's list above.
+        let mut enemy_power_uids: Vec<PowerUid> = c.powers.iter().copied().collect();
+        if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+            enemy_power_uids.sort_by_key(|u| u.0);
+        }
         m.insert(
             "powers".to_owned(),
-            powers_to_value(&c.powers, &state.powers, "$.encounter.powers")?,
+            powers_to_value(&enemy_power_uids, &state.powers, "$.encounter.powers")?,
         );
         // `intents` carries the creature's currently-telegraphed move so
         // display consumers (workbench combat panel) can render it. C#
@@ -1520,6 +1535,80 @@ mod tests {
                 want,
                 "{version:?}"
             );
+        }
+    }
+
+    /// v0.111.0 Wither's face grows by 3 per `FakeUpgrade()` (`Wither.cs`), so a level-2 card shows 9 while the printed
+    /// base stays 3. v0.107.1 adds no key.
+    #[test]
+    fn wither_face_damage_follows_its_fake_upgrade_level_on_v0111_only() {
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, Some(9)),
+            (sts2_core::GameVersion::V0_107_1, None),
+        ] {
+            let state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            let mut card = Card::pod_defaults();
+            card.card_id = sts2_core::cards::CardId::Wither;
+            card.base_damage = 3;
+            card.set_combat_var(sts2_core::cards::VarKey::WitherFakeUpgradeLevel, 2);
+            let v = card_to_value(&state, &card);
+            assert_eq!(v["base_damage"], 3, "{version:?}");
+            assert_eq!(
+                v.get("face_damage").and_then(Value::as_i64),
+                want,
+                "{version:?}"
+            );
+        }
+    }
+
+    /// v0.111.0: an enemy's powers are listed in application (arena id) order; v0.107.1 keeps the creature's list order.
+    #[test]
+    fn enemy_powers_are_listed_in_application_order_on_v0111_only() {
+        use std::num::NonZeroU32;
+        use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind, PowerKind};
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, ["STRENGTH", "ARTIFACT"]),
+            (sts2_core::GameVersion::V0_107_1, ["ARTIFACT", "STRENGTH"]),
+        ] {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            let cid = NonZeroU32::new(10).expect("nz");
+            let (late, early) = (
+                NonZeroU32::new(5).expect("nz"),
+                NonZeroU32::new(3).expect("nz"),
+            );
+            state
+                .powers
+                .push(sts2_core::Power::new(late, PowerKind::Artifact, 2));
+            state
+                .powers
+                .push(sts2_core::Power::new(early, PowerKind::Strength, 1));
+            state.creatures.push(Creature {
+                id: cid,
+                current_hp: 30,
+                max_hp: 30,
+                block: 0,
+                powers: smallvec::smallvec![sts2_core::PowerUid(late), sts2_core::PowerUid(early)],
+                species: Some(MonsterKind::Nibbit),
+                monster_id: MonsterId(""),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                ai: None,
+            });
+            state.enemy_uids.push(CreatureUid(cid));
+            let v = combat_state_to_value(&state).expect("serializes");
+            let names: Vec<&str> = v["encounter"][0]["powers"]
+                .as_array()
+                .expect("powers")
+                .iter()
+                .map(|p| p["name"].as_str().expect("name"))
+                .collect();
+            assert_eq!(names, want, "{version:?}");
         }
     }
 
