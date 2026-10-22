@@ -6704,6 +6704,83 @@ mod tests {
         );
     }
 
+    /// v0.111.0: the relics' `AfterRoomEntered` grants (Philosopher's Stone's enemy Strength) come before
+    /// each monster's own `AfterAddedToRoom` powers (`CombatManager.StartCombatInternal`), so an enemy lists
+    /// Strength ahead of its spawn power; v0.107.1 keeps the spawn power first.
+    #[test]
+    fn enemy_spawn_powers_follow_relic_grants_on_v0111_only() {
+        use smallvec::SmallVec;
+        use std::num::NonZeroU32;
+        use sts2_core::{
+            Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind, PowerKind, Relic,
+            RelicKind,
+        };
+
+        crate::relics::dispatch::ensure_installed();
+        for (version, want) in [
+            (
+                sts2_core::GameVersion::V0_111_0,
+                [PowerKind::Strength, PowerKind::Artifact],
+            ),
+            (
+                sts2_core::GameVersion::V0_107_1,
+                [PowerKind::Artifact, PowerKind::Strength],
+            ),
+        ] {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            state.player.current_hp = 80;
+            state.player.max_hp = 80;
+            let _ = state.init_player_creature();
+            let uid = CreatureUid::new(10).expect("non-zero");
+            state.creatures.push(Creature {
+                id: uid.0,
+                current_hp: 30,
+                max_hp: 30,
+                block: 0,
+                powers: SmallVec::new(),
+                species: Some(MonsterKind::Nibbit),
+                monster_id: MonsterId(""),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                ai: None,
+            });
+            state.enemy_uids.push(uid);
+            // The spawn power, applied before the fight starts like `spawn_roster` does.
+            sts2_core::card_effects::apply_power_to_creature(
+                &mut state,
+                uid,
+                PowerKind::Artifact,
+                2,
+            );
+            state.relics.push(Relic {
+                id: NonZeroU32::new(1).expect("non-zero"),
+                kind: RelicKind::PhilosophersStone,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+
+            let _ = sts2_core::combat_loop::start_combat(&mut state);
+
+            let mut listed: Vec<(u32, PowerKind)> = state
+                .creatures
+                .iter()
+                .find(|c| c.id == uid.0)
+                .expect("enemy")
+                .powers
+                .iter()
+                .filter_map(|u| state.powers.get_by_id(u.0))
+                .map(|p| (p.id.get(), p.kind))
+                .collect();
+            listed.sort_by_key(|(id, _)| *id);
+            let kinds: Vec<PowerKind> = listed.into_iter().map(|(_, k)| k).collect();
+            assert_eq!(kinds, want, "{version:?}");
+        }
+    }
+
     /// `Brimstone` is inert when the player does not own the relic
     /// (the listener's `player_owns_relic` gate must short-circuit
     /// before applying any Strength).

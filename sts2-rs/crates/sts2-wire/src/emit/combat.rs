@@ -76,14 +76,22 @@ const fn class_str_from_character(c: Option<CharacterId>) -> &'static str {
 /// The damage number the card's face carries now. v0.111.0 Rampage grows its own `DamageVar.BaseValue` by `Increase`
 /// after every play (`Rampage.cs`: `Damage.BaseValue += Increase`), so a replayed copy shows 15, 20, ... where the
 /// engine keeps the growth in `VarKey::RampageDamage` on top of the printed base. Earlier builds emit the printed base.
+/// A Wither status card likewise shows `3 + 3 * FakeUpgradeLevel` (`Wither.FakeUpgrade` raises its `DamageVar` by 3), which
+/// the engine keeps in `VarKey::WitherFakeUpgradeLevel` while `base_damage` stays 3.
 fn displayed_base_damage(state: &CombatState, card: &Card) -> i32 {
-    if card.card_id == sts2_core::cards::CardId::Rampage
-        && state.game_version >= sts2_core::GameVersion::V0_111_0
-    {
-        card.base_damage
-            .saturating_add(card.combat_var(sts2_core::cards::VarKey::RampageDamage))
-    } else {
-        card.base_damage
+    if state.game_version < sts2_core::GameVersion::V0_111_0 {
+        return card.base_damage;
+    }
+    match card.card_id {
+        sts2_core::cards::CardId::Rampage => card
+            .base_damage
+            .saturating_add(card.combat_var(sts2_core::cards::VarKey::RampageDamage)),
+        sts2_core::cards::CardId::Wither => card.base_damage.saturating_add(
+            3 * card
+                .combat_var(sts2_core::cards::VarKey::WitherFakeUpgradeLevel)
+                .max(0),
+        ),
+        _ => card.base_damage,
     }
 }
 /// Serialize a single [`Card`] runtime POD into the wire-format
@@ -1515,6 +1523,32 @@ mod tests {
             card.set_combat_var(sts2_core::cards::VarKey::RampageDamage, 5);
             let v = card_to_value(&state, &card);
             assert_eq!(v["base_damage"], 10, "{version:?}");
+            assert_eq!(
+                v.get("face_damage").and_then(Value::as_i64),
+                want,
+                "{version:?}"
+            );
+        }
+    }
+
+    /// v0.111.0 Wither's face grows by 3 per `FakeUpgrade()` (`Wither.cs`), so a level-2 card shows 9 while the printed
+    /// base stays 3. v0.107.1 adds no key.
+    #[test]
+    fn wither_face_damage_follows_its_fake_upgrade_level_on_v0111_only() {
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, Some(9)),
+            (sts2_core::GameVersion::V0_107_1, None),
+        ] {
+            let state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            let mut card = Card::pod_defaults();
+            card.card_id = sts2_core::cards::CardId::Wither;
+            card.base_damage = 3;
+            card.set_combat_var(sts2_core::cards::VarKey::WitherFakeUpgradeLevel, 2);
+            let v = card_to_value(&state, &card);
+            assert_eq!(v["base_damage"], 3, "{version:?}");
             assert_eq!(
                 v.get("face_damage").and_then(Value::as_i64),
                 want,
