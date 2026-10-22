@@ -2129,6 +2129,12 @@ pub fn spawn_card_into_pile_with_origin(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
+    // DampenPower tracks the exact cards it downgraded, not future clones.
+    // A generated Anger copy inherits its current (downgraded) upgrade level
+    // but must not inherit the original card's restore-on-remove marker.
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        card.set_combat_var(crate::cards::VarKey::DampenDowngradedMarker, 0);
+    }
     if generation_blocked(state) {
         state.cards.push(card);
         return uid;

@@ -1169,3 +1169,58 @@ fn unceasing_top_draws_after_stampede_autoplay_at_turn_end_v0111() {
     assert!(state.player.draw.is_empty());
     assert!(state.player.hand.contains(&defend));
 }
+
+#[test]
+fn dampen_restores_original_anger_but_not_its_combat_clone_v0111() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    let original = add_to_hand(&mut state, CardId::Anger);
+    let original_idx = original.0.get() as usize - 1;
+    assert!(state.cards[original_idx].upgrade_for(GameVersion::V0_111_0));
+    sts2_core::monster_power_effects::install_dampen_power_handlers();
+    let player = player_uid(&state);
+    let _ = sts2_core::monster_power_effects::dispatch_after_applied_for_power(
+        &mut state,
+        player,
+        PowerKind::Dampen,
+        None,
+    );
+    assert!(!state.cards[original_idx].upgraded);
+
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    let clone = state
+        .cards
+        .iter()
+        .find(|card| card.card_id == CardId::Anger && card.uid != original)
+        .map(|card| card.uid)
+        .expect("Anger clone");
+    let _ = sts2_core::monster_power_effects::dispatch_after_removed_for_power(
+        &mut state,
+        player,
+        PowerKind::Dampen,
+    );
+
+    assert!(state.cards[original_idx].upgraded);
+    assert!(!state.cards[clone.0.get() as usize - 1].upgraded);
+}
+
+#[test]
+fn bone_tea_does_not_upgrade_spoils_map_v0111() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    sts2_content::relics::dispatch::ensure_installed();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::BoneTea,
+        counter: 1,
+        is_wax: false,
+        is_melted: false,
+    });
+    state.round = 1;
+    let map = add_to_hand(&mut state, CardId::SpoilsMap);
+    let strike = add_to_hand(&mut state, CardId::StrikeIronclad);
+
+    let _ = sts2_core::relic_effects::dispatch_after_player_turn_start(&mut state);
+
+    assert!(!state.cards[map.0.get() as usize - 1].upgraded);
+    assert!(state.cards[strike.0.get() as usize - 1].upgraded);
+    assert_eq!(state.relics[0].counter, 0);
+}
