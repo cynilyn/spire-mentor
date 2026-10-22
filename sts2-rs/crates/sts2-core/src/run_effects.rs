@@ -780,21 +780,52 @@ pub fn dispatch_on_card_added_to_deck(
     run_state: &mut RunState,
     ctx: &CardAddedRunCtx,
 ) -> EffectResult {
-    if is_empty_on_card_added_to_deck() {
-        return EffectResult::NotImplemented;
-    }
-    let listeners = listeners_on_card_added_to_deck();
     let mut any_resolved = false;
-    for (_id, f) in listeners {
-        if f(run_state, ctx) == EffectResult::Resolved {
-            any_resolved = true;
+    if !is_empty_on_card_added_to_deck() {
+        let listeners = listeners_on_card_added_to_deck();
+        for (_id, f) in listeners {
+            if f(run_state, ctx) == EffectResult::Resolved {
+                any_resolved = true;
+            }
         }
+    }
+    if bing_bong_duplicate_run_side(run_state, ctx) {
+        any_resolved = true;
     }
     if any_resolved {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
     }
+}
+
+/// v0.111.0 `BingBong.AfterCardChangedPiles` (decomp BingBong.cs:25-36): a card that enters the deck
+/// (and is not itself a clone) is cloned, and the clone goes to the bottom of the deck through the
+/// same add path (so the deck-add hooks see it; the clone is skipped by Bing Bong itself).
+/// The run layer calls this channel right after appending the card, so the card is the deck tail.
+fn bing_bong_duplicate_run_side(run_state: &mut RunState, ctx: &CardAddedRunCtx) -> bool {
+    if run_state.game_version < crate::GameVersion::V0_111_0
+        || ctx.source == AddSource::BingBongDuplicate
+        || !run_state.owns_active_relic(crate::RelicId::BingBong)
+    {
+        return false;
+    }
+    let Some(last) = run_state.master_deck.last() else {
+        return false;
+    };
+    if last.card_id != ctx.card_id {
+        return false;
+    }
+    let mut clone = last.clone();
+    run_state.modify_card_being_added_to_deck(&mut clone);
+    let dup_ctx = CardAddedRunCtx {
+        card_id: clone.card_id,
+        card_type: clone.card_type,
+        source: AddSource::BingBongDuplicate,
+    };
+    run_state.master_deck.push(clone);
+    let _ = dispatch_on_card_added_to_deck(run_state, &dup_ctx);
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -2803,5 +2834,30 @@ mod tests {
             !dispatch_should_generate_treasure(&mut rs),
             "any Resolved (SKIP) vote must veto treasure generation"
         );
+    }
+
+    /// v0.111.0 `BingBong.AfterCardChangedPiles` (decomp BingBong.cs:25-36): a card entering the deck is
+    /// cloned to the deck bottom once; the clone is not cloned again. v0.107.1 has no run-side duplicate.
+    #[test]
+    fn bing_bong_duplicates_a_run_side_deck_add_only_in_v0111() {
+        for (version, want_len) in [
+            (crate::GameVersion::V0_107_1, 1),
+            (crate::GameVersion::V0_111_0, 2),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::BingBong);
+            let mut card = Card::pod_defaults();
+            card.card_id = CardId::Anger;
+            rs.master_deck.push(card);
+            let ctx = CardAddedRunCtx {
+                card_id: CardId::Anger,
+                card_type: CardType::Attack,
+                source: AddSource::Reward,
+            };
+            let _ = dispatch_on_card_added_to_deck(&mut rs, &ctx);
+            assert_eq!(rs.master_deck.len(), want_len, "{version:?}");
+            assert!(rs.master_deck.iter().all(|c| c.card_id == CardId::Anger));
+        }
     }
 }
