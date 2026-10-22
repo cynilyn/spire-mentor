@@ -2061,7 +2061,9 @@ mod tests {
             assert_eq!(rs.pending_rewards.len(), 1, "{version:?}");
             assert_eq!(rs.rng.rewards.counter() - before, reads, "{version:?}");
             match &rs.pending_rewards[0] {
-                Reward::Potion(p) => assert_eq!(p.potion_kind.is_some(), pre_populated, "{version:?}"),
+                Reward::Potion(p) => {
+                    assert_eq!(p.potion_kind.is_some(), pre_populated, "{version:?}")
+                }
                 other => panic!("expected a potion reward, got {other:?}"),
             }
         }

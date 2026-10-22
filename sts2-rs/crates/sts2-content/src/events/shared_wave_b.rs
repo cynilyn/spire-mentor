@@ -2668,11 +2668,35 @@ const ZEN_WEAVER_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
+/// v0.111.0 `ZenWeaver.GenerateInitialOptions` (decomp `Models.Events/ZenWeaver.cs:38-46`): a removal
+/// option the player cannot pay for is replaced by the shared LOCKED option (no handler). Older builds
+/// keep presenting all three as live.
+fn zen_weaver_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let mut opts = default_option_info_from_spec(state, spec);
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        for (id, cost) in [
+            ("emotional", ZEN_WEAVER_EMOTIONAL_COST),
+            ("acupuncture", ZEN_WEAVER_ACUPUNCTURE_COST),
+        ] {
+            if state.gold >= cost {
+                continue;
+            }
+            if let Some(opt) = opts.iter_mut().find(|o| o.option_id == id) {
+                opt.enabled = false;
+                opt.loc_key = "ZEN_WEAVER.pages.INITIAL.options.LOCKED";
+                opt.label = "Locked".to_string();
+                opt.description = "Not enough gold.".to_string();
+            }
+        }
+    }
+    opts
+}
+
 pub const ZEN_WEAVER: EventSpec = EventSpec {
     id: EventId::ZenWeaver,
     python_name: "ZenWeaver",
     is_allowed: zen_weaver_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: zen_weaver_generate_options,
     options: ZEN_WEAVER_OPTIONS,
 };
 
@@ -2682,6 +2706,30 @@ mod tests {
 
     fn fresh_state() -> RunState {
         RunState::new()
+    }
+
+    /// v0.111.0 locks an unaffordable Zen Weaver removal option (`ZenWeaver.cs:38-46`); v0.107.1 keeps it live.
+    #[test]
+    fn zen_weaver_locks_unaffordable_removals_in_v0111_only() {
+        for (version, locked) in [
+            (sts2_core::GameVersion::V0_107_1, false),
+            (sts2_core::GameVersion::V0_111_0, true),
+        ] {
+            let mut rs = fresh_state();
+            rs.game_version = version;
+            rs.gold = 233;
+            let opts = zen_weaver_generate_options(&rs, &ZEN_WEAVER);
+            assert!(opts[0].enabled && opts[1].enabled, "{version:?}");
+            assert_eq!(!opts[2].enabled, locked, "{version:?}");
+            if locked {
+                assert_eq!(opts[2].loc_key, "ZEN_WEAVER.pages.INITIAL.options.LOCKED");
+            }
+            rs.gold = 250;
+            assert!(
+                zen_weaver_generate_options(&rs, &ZEN_WEAVER)[2].enabled,
+                "{version:?}"
+            );
+        }
     }
 
     /// `Nimble.CanEnchant` requires `card.GainsBlock` (`Nimble.cs:7-14`):
