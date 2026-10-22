@@ -377,7 +377,7 @@ def reward_taken(ps: dict[str, Any], relics: list[str], deck: list[str]) -> bool
 
 
 def _loc_ids(name: str) -> frozenset[str]:
-    with open(os.path.join(LOC_DIR, f"{name}.json")) as f:
+    with open(os.path.join(LOC_DIR, f"{name}.json"), encoding="utf-8") as f:
         return frozenset(k.split(".", 1)[0] for k in json.load(f))
 
 
@@ -946,7 +946,10 @@ def rl2_pools(hbank: list[dict[str, Any]], recipe_dir: str) -> tuple[set[str], s
         `(gen_keys, rl_keys, holdout_files)`, before the buildability check
         (`gen`/`rl` skip fights the engine cannot build).
     """
-    holdout = {json.loads(line)["file"] for line in open(os.path.join(recipe_dir, "boss800.jsonl"))}
+    holdout = {
+        json.loads(line)["file"]
+        for line in open(os.path.join(recipe_dir, "boss800.jsonl"), encoding="utf-8")
+    }
     holdout |= {f["file"] for f in hbank if f["encounter"] == "WATERFALL_GIANT_BOSS"}
 
     def key(f: dict[str, Any]) -> str:
@@ -1151,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
     # Earlier versions' dev sets (never this build's own names): their dev
     # panels' fights were screened on, so a later pro set leaves them out.
     ref_sets = {
-        os.path.basename(p): [json.loads(line) for line in open(p)]
+        os.path.basename(p): [json.loads(line) for line in open(p, encoding="utf-8")]
         for p in sorted(glob.glob(os.path.join(args.bench_dir, "ironclad_dev*_v*.jsonl")))
         if os.path.basename(p) not in own
     }
@@ -1170,12 +1173,12 @@ def main(argv: list[str] | None = None) -> int:
     index_path = args.index or os.path.join(priv, index_file(args.version))
     scan: dict[str, int] = {}
     if args.index:
-        rows = [json.loads(line) for line in open(index_path)]
+        rows = [json.loads(line) for line in open(index_path, encoding="utf-8")]
         _log(f"index: {len(rows)} rows from {index_path}")
     else:
         rows, reasons = human_players.scan_corpus(args.root, CHARACTER, args.procs, True)
         scan = dict(reasons)
-        with open(index_path, "w") as f:
+        with open(index_path, "w", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps(r) + "\n")
         _log(f"index: scanned {reasons['files']} files -> {len(rows)} rows ({index_path})")
@@ -1217,8 +1220,11 @@ def main(argv: list[str] | None = None) -> int:
     pros = [u for u, *_ in ranked[: args.top]]
     # The widest cohort extracted; each --extra-top set is a prefix of the ranking.
     n_cohort = max([args.top, *extra])
-    old_pros = {canon(u) for u in json.load(open(os.path.join(args.recipe_dir, "pros25.json")))}
-    with open(os.path.join(priv, cohort_file(args.version)), "w") as f:
+    old_pros = {
+        canon(u)
+        for u in json.load(open(os.path.join(args.recipe_dir, "pros25.json"), encoding="utf-8"))
+    }
+    with open(os.path.join(priv, cohort_file(args.version)), "w", encoding="utf-8") as f:
         json.dump(
             [
                 {
@@ -1268,7 +1274,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in DEV_SOURCES:
         ks = {
             f"{x['file']}:{x['floor']}"
-            for x in map(json.loads, open(os.path.join(args.recipe_dir, name)))
+            for x in map(json.loads, open(os.path.join(args.recipe_dir, name), encoding="utf-8"))
         }
         source_counts[name] = len(ks)
         dev_keys |= ks
@@ -1354,7 +1360,7 @@ def main(argv: list[str] | None = None) -> int:
                 _log(f"verify {i + 1}/{len(verify_jobs)} fights")
 
     # 5. in_rl2_* flags from the training bank.
-    hbank = [json.loads(line) for line in open(args.hbank)]
+    hbank = [json.loads(line) for line in open(args.hbank, encoding="utf-8")]
     gen_keys, rl_keys, _ = rl2_pools(hbank, args.recipe_dir)
     ours = {rec["key"] for recs in sets.values() for rec in recs}
     need = ours & (gen_keys | rl_keys)
@@ -1424,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
             rec.pop("_roster")
             out.append(rec)
         path = os.path.join(args.out_dir, fname)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             for rec in out:
                 f.write(json.dumps(rec) + "\n")
         held_out |= {rec["file"] for rec in out}
@@ -1595,7 +1601,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "held_out_runs": sorted(held_out),
     }
-    with open(os.path.join(args.out_dir, manifest_file(args.version)), "w") as f:
+    with open(os.path.join(args.out_dir, manifest_file(args.version)), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=1)
         f.write("\n")
     _log(f"done in {time.time() - t0:.0f}s -> {args.out_dir}")

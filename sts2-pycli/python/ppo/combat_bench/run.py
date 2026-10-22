@@ -431,7 +431,7 @@ def machine() -> dict[str, Any]:
     """Where and under what load a cell ran: `load1` (1-minute load average) and `host`."""
     try:
         load1: float | None = round(os.getloadavg()[0], 2)
-    except OSError:  # not every platform has a load average
+    except (OSError, AttributeError):  # Windows has no os.getloadavg
         load1 = None
     return {"load1": load1, "host": socket.gethostname()}
 

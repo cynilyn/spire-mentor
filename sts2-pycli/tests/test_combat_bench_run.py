@@ -16,6 +16,7 @@ import json
 import os
 import signal
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,10 @@ POTION = _fight(
     max_hp=91,
 )
 FIGHTS = [CLEAN, THORNS, ELITE, POTION]
+
+
+# The CLI arms its per-cell watchdog with SIGALRM, which Windows lacks.
+_SIGALRM = pytest.mark.skipif(sys.platform == "win32", reason="no SIGALRM on Windows")
 
 
 @pytest.fixture
@@ -587,6 +592,7 @@ def _argv(set_path: Path, out: Path, *extra: str) -> list[str]:
     ]  # fmt: skip
 
 
+@_SIGALRM
 def test_cli_writes_header_and_cells_matching_in_process_play(engine_env, tmp_path: Path):
     set_path, out = tmp_path / "ironclad_toy_v1.jsonl", tmp_path / "played.jsonl"
     _write_set(set_path, [CLEAN, POTION])
@@ -614,6 +620,7 @@ def test_cli_writes_header_and_cells_matching_in_process_play(engine_env, tmp_pa
         assert rep == here  # a spawned worker plays exactly what this process plays
 
 
+@_SIGALRM
 def test_cli_resume_skips_done_cells_and_refuses_a_changed_header(engine_env, tmp_path: Path):
     set_path, out = tmp_path / "ironclad_toy_v1.jsonl", tmp_path / "played.jsonl"
     _write_set(set_path, [CLEAN])
@@ -650,6 +657,7 @@ def test_cli_rejects_reps_past_the_seed_space(tmp_path: Path):
     assert not (tmp_path / "o.jsonl").exists()
 
 
+@_SIGALRM
 def test_cli_watchdog_ends_a_stuck_cell(engine_env, tmp_path: Path):
     set_path, out = tmp_path / "s.jsonl", tmp_path / "o.jsonl"
     _write_set(set_path, [CLEAN])
@@ -669,6 +677,7 @@ def test_cli_watchdog_ends_a_stuck_cell(engine_env, tmp_path: Path):
     assert header["caps"]["max_sims_per_fight"] == run.Caps.max_sims_per_fight  # no budget
 
 
+@_SIGALRM
 def test_cli_records_a_dead_cell_process_and_never_hangs(engine_env, tmp_path: Path):
     """A cell whose process dies outright is an `error` cell; the run never hangs.
 
@@ -692,6 +701,7 @@ def test_cli_records_a_dead_cell_process_and_never_hangs(engine_env, tmp_path: P
     assert not out2.exists()
 
 
+@_SIGALRM
 def test_cli_kills_a_cell_stuck_inside_one_engine_call(
     engine_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -740,6 +750,7 @@ def test_cli_refuses_a_spec_that_panics_at_its_first_search(engine_env, tmp_path
     assert not out.exists()
 
 
+@_SIGALRM
 def test_cli_aborts_when_the_whole_first_block_errors(engine_env, tmp_path: Path):
     """A fight that cannot build passes the probe (a cell failure), but a first
     block of nothing but errors stops the run."""
@@ -750,6 +761,7 @@ def test_cli_aborts_when_the_whole_first_block_errors(engine_env, tmp_path: Path
     assert cells and all(c["rep"]["end"] == "error" for c in cells)
 
 
+@_SIGALRM
 def test_cli_retry_ends_replays_watchdog_cells(engine_env, tmp_path: Path):
     """`--retry-ends watchdog` replays such cells; resume alone never does."""
     from ppo.combat_bench import report
@@ -776,6 +788,7 @@ def test_cli_retry_ends_replays_watchdog_cells(engine_env, tmp_path: Path):
     assert played.cells[good["key"], good["rep"]["rep"]]["end"] == good["rep"]["end"]
 
 
+@_SIGALRM
 def test_cli_keys_file_selection_is_what_the_report_expects(engine_env, tmp_path: Path):
     """The header carries a keys-file selection, and `report` rebuilds the same plan."""
     from ppo.combat_bench import report

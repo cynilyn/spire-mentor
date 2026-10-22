@@ -391,7 +391,7 @@ def filter_scores(
 
 def _model_meta(d: str) -> dict[str, Any]:
     path = Path(d) / "meta.json"
-    meta = json.loads(path.read_text()) if path.exists() else {}
+    meta = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     keep = ("best_epoch", "best_val_loss", "n_train", "n_val", "n_train_files", "n_val_files")
     return {"dir": str(d), **{k: meta[k] for k in keep if k in meta}}
 
@@ -423,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
 
     positions, scores = filter_scores(args.data, args.model, args.model_nodeck, log)
     headers = [Path(d) / "header.json" for d in args.data]
-    heads = [json.loads(h.read_text()) for h in headers if h.exists()]
+    heads = [json.loads(h.read_text(encoding="utf-8")) for h in headers if h.exists()]
     qualifiers = {
         "data": list(args.data),
         "sims_per_plan": [h["sims_per_plan"] for h in heads if "sims_per_plan" in h],
@@ -433,8 +433,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     log(f"bootstrapping {args.n_boot} run-file resamples")
     rep = report(positions, scores, n_boot=args.n_boot, seed=args.seed, qualifiers=qualifiers)
-    (out / "recall.json").write_text(json.dumps(rep, indent=2) + "\n")
-    (out / "recall.md").write_text(render_md(rep))
+    (out / "recall.json").write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
+    (out / "recall.md").write_text(render_md(rep), encoding="utf-8")
     log(f"{rep['verdict']['line']} -> {out}")
     return 0
 

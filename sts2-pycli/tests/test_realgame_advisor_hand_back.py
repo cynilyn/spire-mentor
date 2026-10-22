@@ -110,9 +110,7 @@ class TestUncoveredSurfacesHandBack:
     ) -> None:
         # GH #379: ranked by a different question's head. The ranking still
         # renders (the player may want it), but it is not the AI deciding.
-        advice = ra.compute_screen_advice(
-            state, advice_for, _StubPolicies(_StubPolicy([0.2, 0.8]))
-        )
+        advice = ra.compute_screen_advice(state, advice_for, _StubPolicies(_StubPolicy([0.2, 0.8])))
         assert advice["best"]["index"] == 1
         assert advice["hand_back"] == ra._HAND_BACK_SURFACES[advice_for]
 
