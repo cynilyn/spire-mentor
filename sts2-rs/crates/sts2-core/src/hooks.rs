@@ -27259,6 +27259,89 @@ mod tests {
             })
     }
 
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn stampede_without_enemy_does_not_advance_nunchaku_v0111() {
+        crate::card_effects::ensure_installed();
+        crate::relic_effects::ensure_installed();
+        for (version, expected_counter) in [
+            (crate::GameVersion::V0_111_0, 9),
+            (crate::GameVersion::V0_107_1, 10),
+        ] {
+            let mut state = CombatState::default();
+            state.game_version = version;
+            state.player.current_hp = 50;
+            state.player.max_hp = 50;
+            state.player.energy = 0;
+            state.init_player_creature();
+            state.phase = crate::CombatPhase::PlayerPlayPhase;
+            let strike = crate::cards::Card {
+                card_type: crate::cards::CardType::Attack,
+                target_type: crate::cards::TargetType::Enemy,
+                cost: 1,
+                card_id: CardId::StrikeIronclad,
+                base_damage: 6,
+                ..crate::cards::Card::pod_defaults()
+            };
+            let uid = crate::card_effects::spawn_card_into_hand(&mut state, strike);
+            let stampede_uid = power_uid(1);
+            state
+                .powers
+                .push(Power::new(stampede_uid.0, PowerKind::Stampede, 1));
+            state.player.powers.push(stampede_uid);
+            state.relics.push(crate::Relic {
+                id: std::num::NonZeroU32::new(100).unwrap(),
+                kind: crate::RelicKind::Nunchaku,
+                counter: 9,
+                is_wax: false,
+                is_melted: false,
+            });
+            let targets_before = state.run_rng.combat_targets.counter();
+            assert!(crate::combat_loop::run_stampede_auto_post_play(&mut state));
+            assert!(state.player.discard.contains(&uid));
+            assert_eq!(state.run_rng.combat_targets.counter(), targets_before);
+            assert_eq!(
+                state.player.energy,
+                if version >= crate::GameVersion::V0_111_0 {
+                    0
+                } else {
+                    1
+                },
+                "targetless auto-play must not award Nunchaku energy in v0.111",
+            );
+            assert_eq!(
+                state
+                    .relics
+                    .iter()
+                    .find(|r| r.kind == crate::RelicKind::Nunchaku)
+                    .unwrap()
+                    .counter,
+                expected_counter,
+                "Nunchaku count for {version:?}",
+            );
+            assert_eq!(
+                state.player.cards_first_in_series_this_turn,
+                if version >= crate::GameVersion::V0_111_0 {
+                    0
+                } else {
+                    1
+                },
+            );
+            let next_attack = crate::relic_effects::CardEventCtx {
+                card_id: CardId::StrikeIronclad,
+                card_uid: Some(uid),
+                target: None,
+                card_tags: crate::cards::CardTags::NONE,
+                energy_spent: 0,
+            };
+            crate::relic_effects::dispatch_after_card_played(&mut state, &next_attack);
+            assert_eq!(
+                state.player.energy, 1,
+                "next real attack threshold for {version:?}"
+            );
+        }
+    }
+
     fn state_with_player_tender() -> CombatState {
         use crate::card_effects::apply_power_to_creature;
         let mut state = CombatState::default();

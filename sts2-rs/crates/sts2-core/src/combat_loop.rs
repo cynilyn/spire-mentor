@@ -8983,6 +8983,34 @@ pub(crate) fn resolve_auto_played_card_at_target(
             c.set_combat_var(crate::cards::VarKey::PendingBatchAutoPlay, 0);
         }
     }
+    // CardCmd.AutoPlay sends an AnyEnemy card to its result pile without
+    // playing it when no hittable enemy remains. Stampede can reach this
+    // after an attack kills the last enemy but before the next wave spawns.
+    // In particular, AfterCardPlayed must not advance Nunchaku here.
+    let card_idx = top_uid.0.get() as usize - 1;
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && target_override.is_none()
+        && cards::effective_target_type(state, &state.cards[card_idx]) == cards::TargetType::Enemy
+        && !state.enemy_uids.iter().any(|uid| {
+            state
+                .creatures
+                .iter()
+                .any(|c| c.id == uid.0 && c.current_hp > 0)
+        })
+    {
+        let card = &state.cards[card_idx];
+        let (card_id, card_type, card_tags) = (card.card_id, card.card_type, card.tags);
+        let exhausts = force_exhaust || crate::card_effects::card_exhausts_for(state, card);
+        let dest = if exhausts {
+            PileKind::Exhaust
+        } else {
+            PileKind::Discard
+        };
+        if cards::move_card(&mut state.player, top_uid, PileKind::Play, dest).is_ok() && exhausts {
+            fire_after_card_exhausted(state, card_id, top_uid, None, card_tags, card_type);
+        }
+        return;
+    }
     // Bead `sts2-rs-8ett`: an auto-played card (Havoc/Cascade/DistilledChaos/
     // KnifeTrap/Catastrophe/IAmInvincible…) is a first-in-series card play in
     // C# — `CardCmd.AutoPlay` records a `CardPlayStartedEntry` with
