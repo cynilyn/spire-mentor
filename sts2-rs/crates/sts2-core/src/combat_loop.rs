@@ -10224,6 +10224,22 @@ pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFini
             }
         }
     }
+
+    // CardModel.OnPlayWrapper finishes every play, including CardCmd.AutoPlay,
+    // with CheckForEmptyHand (v0.111.0). A Hellraiser auto-play of a Strike
+    // drawn by Unceasing Top can therefore empty the hand and trigger another
+    // Top draw before the outer hand-play returns (RT0_99). Stampede's turn-end
+    // auto-play uses the same check (RT0_6).
+    if state.game_version >= crate::GameVersion::V0_111_0
+        && state.phase == CombatPhase::PlayerPlayPhase
+        && state.player.hand.is_empty()
+        && !combat_is_ending(state)
+    {
+        let _ = crate::relic_effects::dispatch_after_hand_emptied(
+            state,
+            &crate::hooks::CombatLifecycleCtx::default(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

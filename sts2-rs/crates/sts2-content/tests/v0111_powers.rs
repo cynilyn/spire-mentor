@@ -1082,3 +1082,56 @@ fn unceasing_top_draws_after_the_hand_empties_on_v0111_only() {
         assert_eq!(state.player.hand.len(), want, "{version:?}");
     }
 }
+
+#[test]
+fn unceasing_top_repeats_after_hellraiser_autoplays_the_drawn_strike_v0111() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    sts2_content::relics::dispatch::ensure_installed();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::UnceasingTop,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Hellraiser, 1);
+    let setup = add_to_hand(&mut state, CardId::SetupStrikeCard);
+    let defend = add_to_hand(&mut state, CardId::DefendIronclad);
+    for uid in [setup, defend] {
+        state.player.hand.retain(|u| *u != uid);
+        state.player.draw.push(uid);
+    }
+    let last = add_to_hand(&mut state, CardId::DefendIronclad);
+    assert_eq!(state.player.hand.as_slice(), &[last]);
+
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    assert_eq!(state.player.hand.as_slice(), &[defend]);
+    assert!(state.player.draw.is_empty());
+    assert!(!state.player.hand.contains(&setup));
+    assert_eq!(state.player_power_amount(PowerKind::Strength), 3);
+    assert_eq!(state.player_power_amount(PowerKind::SetupStrike), 3);
+}
+
+#[test]
+fn unceasing_top_draws_after_stampede_autoplay_at_turn_end_v0111() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    sts2_content::relics::dispatch::ensure_installed();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::UnceasingTop,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let p = player_uid(&state);
+    give(&mut state, p, PowerKind::Stampede, 1);
+    let defend = add_to_hand(&mut state, CardId::DefendIronclad);
+    state.player.hand.retain(|u| *u != defend);
+    state.player.draw.push(defend);
+    add_to_hand(&mut state, CardId::Unrelenting);
+
+    let _ = sts2_core::combat_loop::end_player_turn_phase_one(&mut state);
+    assert!(state.player.draw.is_empty());
+    assert!(state.player.hand.contains(&defend));
+}
