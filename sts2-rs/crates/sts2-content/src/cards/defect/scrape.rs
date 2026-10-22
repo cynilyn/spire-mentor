@@ -36,7 +36,7 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
                 // CardEnergyCost.GetWithModifiers returns the negative base
                 // unchanged for unplayable statuses; Rust's generic effective
                 // cost helper clamps it to zero. Scrape must discard those
-                // statuses too (RT0_73: Infection).
+                // statuses too (for example Infection).
                 card.cost < 0
                     || card.is_x_cost()
                     || sts2_core::hooks::effective_card_cost_inst(state, card, uid) != 0

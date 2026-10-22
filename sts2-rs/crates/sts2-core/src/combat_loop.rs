@@ -3215,7 +3215,7 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
 
     // `DisintegrationPower.AfterSideTurnEndLate` runs after all early
     // listeners, including relics. A lethal ParryingShield hit above ends
-    // combat before this self-damage can occur (RT0_36).
+    // combat before this self-damage can occur.
     if state.game_version >= crate::GameVersion::V0_111_0 {
         if combat_is_ending(state) {
             match check_combat_end(state) {

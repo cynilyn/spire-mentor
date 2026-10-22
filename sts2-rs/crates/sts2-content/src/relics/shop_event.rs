@@ -4717,8 +4717,8 @@ fn listener_nutritious_soup(rs: &mut RunState) -> EffectResult {
         if is_basic_strike(card.card_id) {
             if on_enchant {
                 // EnchantmentModel.CanEnchant rejects a card that already has
-                // another enchantment. RT0_84's first Strike has Sharp(2),
-                // so C# leaves it at cost 1 while enchanting the other four.
+                // another enchantment (for example a Strike with Sharp(2)),
+                // so C# leaves it at cost 1 while enchanting the other Strikes.
                 if card.enchantments.iter().any(|(_, amount)| *amount > 0) {
                     continue;
                 }

@@ -3928,7 +3928,7 @@ mod tests {
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         state.game_version = sts2_core::GameVersion::V0_111_0;
-        // Blood Vial was obtained first in RT0_85. Its late heal must still
+        // Blood Vial was obtained first. Its late heal must still
         // follow Royal Poison's 4 HP loss, rather than vanish at full HP.
         push_relic(&mut state, RelicKind::BloodVial);
         push_relic(&mut state, RelicKind::RoyalPoison);
