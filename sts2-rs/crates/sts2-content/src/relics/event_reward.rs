@@ -397,6 +397,10 @@ fn install_listeners() {
         RelicId::RoyalPoison,
         listener_royal_poison as AfterSideTurnStartFn,
     );
+    register_after_player_turn_start(
+        RelicId::RoyalPoison,
+        listener_royal_poison_v111 as AfterPlayerTurnStartFn,
+    );
     // C# `MrStruggles.AfterPlayerTurnStart` (MrStruggles.cs:15-22) — fires
     // BEFORE the side-hook walk where an enemy LivingShield's RampartPower
     // arms its teammate's block, so the round-number damage lands on bare
@@ -1538,9 +1542,27 @@ fn listener_fake_blood_vial(state: &mut CombatState, side: Side) -> EffectResult
 /// identical for the relevant fixtures because no `modify_damage`
 /// listener at this pin gates on `dealer == None`.
 fn listener_royal_poison(state: &mut CombatState, side: Side) -> EffectResult {
-    if side != Side::Player || !player_owns(state, RelicKind::RoyalPoison) {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0
+        || side != Side::Player
+        || !player_owns(state, RelicKind::RoyalPoison)
+    {
         return EffectResult::NotImplemented;
     }
+    apply_royal_poison(state)
+}
+
+// v0.111.0 RoyalPoison.cs uses AfterPlayerTurnStart, while BloodVial.cs
+// heals on AfterPlayerTurnStartLate. Their order must not depend on equip order.
+fn listener_royal_poison_v111(state: &mut CombatState) -> EffectResult {
+    if state.game_version < sts2_core::GameVersion::V0_111_0
+        || !player_owns(state, RelicKind::RoyalPoison)
+    {
+        return EffectResult::NotImplemented;
+    }
+    apply_royal_poison(state)
+}
+
+fn apply_royal_poison(state: &mut CombatState) -> EffectResult {
     if state.turn_number() != 1 {
         return EffectResult::NotImplemented;
     }
@@ -3899,6 +3921,27 @@ mod tests {
         let _ = sts2_core::relic_effects::dispatch_after_side_turn_start(&mut state, Side::Player);
         assert_eq!(state.player.current_hp, 46, "4 HP loss bypasses block");
         assert_eq!(state.player.block, 10, "block untouched");
+    }
+
+    #[test]
+    fn royal_poison_precedes_blood_vial_heal_in_v111() {
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.game_version = sts2_core::GameVersion::V0_111_0;
+        // Blood Vial was obtained first in RT0_85. Its late heal must still
+        // follow Royal Poison's 4 HP loss, rather than vanish at full HP.
+        push_relic(&mut state, RelicKind::BloodVial);
+        push_relic(&mut state, RelicKind::RoyalPoison);
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        let _ = state.init_player_creature();
+        state.sync_player_creature();
+        state.round = 1;
+
+        let _ = sts2_core::relic_effects::dispatch_after_player_turn_start(&mut state);
+        assert_eq!(state.player.current_hp, 76);
+        let _ = sts2_core::relic_effects::dispatch_after_side_turn_start(&mut state, Side::Player);
+        assert_eq!(state.player.current_hp, 78);
     }
 
     /// `MrStruggles` deals damage = `round_no` to every alive enemy on the
