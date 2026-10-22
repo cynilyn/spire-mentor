@@ -102,6 +102,22 @@ fn whistle_stuns_a_surviving_enemy_before_its_first_move_v0111() {
         lethal.creatures[0].ai.as_ref().unwrap().current_state_id(),
         "STUNNED"
     );
+
+    let (mut legacy, target) = fresh_state(CardId::Whistle, 33, 0);
+    legacy.game_version = sts2_core::GameVersion::V0_107_1;
+    let ai = crate::monsters::act3_glory::create_the_lost_ai();
+    let original_move = ai.current_state_id();
+    legacy.creatures[0].intent = ai.current_move().intents.first().copied();
+    legacy.creatures[0].ai = Some(ai);
+    assert_eq!(
+        play_whistle(&mut legacy, Some(target)),
+        EffectResult::Resolved
+    );
+    assert_eq!(legacy.creatures[0].current_hp, 67);
+    assert_eq!(
+        legacy.creatures[0].ai.as_ref().unwrap().current_state_id(),
+        original_move
+    );
 }
 
 /// Push a fresh card into the draw pile (test scaffolding for the
