@@ -1147,6 +1147,16 @@ pub(crate) fn resume_after_relic_hand_draw_select(
         return StepResult::PendingChoice;
     }
 
+    // v0.111.0 `DrawInternal` stops the turn when an on-draw auto-play
+    // (Hellraiser) kills the last enemy. Resolve victory before
+    // `AfterPlayerTurnStart` powers such as CrimsonMantle can fire.
+    if state.game_version >= crate::GameVersion::V0_111_0 && combat_is_ending(state) {
+        match check_combat_end(state) {
+            StepResult::Advanced => {}
+            ended => return ended,
+        }
+    }
+
     finish_player_turn_setup(state)
 }
 
@@ -11509,6 +11519,71 @@ mod tests {
             state.player.draw.push(CardUid::new(i).expect("non-zero"));
         }
         state
+    }
+
+    #[test]
+    fn hellraiser_draw_victory_precedes_crimson_mantle_v0111() {
+        use crate::cards::{Card, CardEnchantments, CardTags, CardType, CombatVars, TargetType};
+
+        crate::card_effects::install_default_registry();
+
+        for (version, expected_hp, expected_result) in [
+            (crate::GameVersion::V0_107_1, 49, StepResult::CombatWon),
+            (crate::GameVersion::V0_111_0, 50, StepResult::CombatWon),
+        ] {
+            let mut state = state_for_turn_start(2, 0);
+            state.game_version = version;
+            state.player.current_hp = 50;
+            state.player.max_hp = 80;
+            let enemy = state.spawn_enemy(MonsterKind::ShrinkerBeetle);
+            state
+                .creatures
+                .iter_mut()
+                .find(|c| c.id == enemy.0)
+                .expect("enemy")
+                .current_hp = 1;
+            let player = state.init_player_creature();
+            for (id, kind, amount, counter) in [
+                (1, crate::PowerKind::Hellraiser, 1, 0),
+                (2, crate::PowerKind::CrimsonMantle, 7, 1),
+            ] {
+                let id = NonZeroU32::new(id).expect("power uid");
+                let mut power = crate::Power::new(id, kind, amount);
+                power.counter = counter;
+                state.powers.push(power);
+                state.player.powers.push(crate::PowerUid(id));
+                state
+                    .creatures
+                    .iter_mut()
+                    .find(|c| c.id == player.0)
+                    .expect("player creature")
+                    .powers
+                    .push(crate::PowerUid(id));
+            }
+            let uid = CardUid::new(1).expect("card uid");
+            state.cards.push(Card {
+                uid,
+                card_id: crate::cards::CardId::StrikeIronclad,
+                cost: 1,
+                card_type: CardType::Attack,
+                target_type: TargetType::Enemy,
+                upgraded: false,
+                base_damage: 6,
+                base_block: 0,
+                combat_vars: CombatVars::new(),
+                enchantments: CardEnchantments::new(),
+                tags: CardTags::one(crate::cards::CardTag::Strike),
+                energy_spent: 0,
+                base_replay_count: 0,
+                keyword_override: None,
+                affliction: None,
+            });
+            state.player.draw.push(uid);
+
+            let result = start_player_turn(&mut state);
+            assert_eq!(result, expected_result);
+            assert_eq!(state.player.current_hp, expected_hp, "{version:?}");
+        }
     }
 
     /// Bolas / ThrummingHatchet `BeforeHandDraw`: a card played LAST round
