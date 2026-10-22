@@ -658,6 +658,14 @@ pub struct RunManager {
     /// alongside `card_reward_upgraded`. Empty when the offering carries none.
     /// GH #806 (SilkenTress's Glam stamp survives the pick).
     card_reward_enchantments: Vec<crate::cards::CardEnchantments>,
+    /// The normal combat CardReward, already populated before a lower-index
+    /// SpecialCardReward is offered. Keep its exact options and modifiers
+    /// until the special card has been taken or skipped.
+    deferred_combat_card_reward: Option<(
+        Vec<crate::cards::CardId>,
+        Vec<bool>,
+        Vec<crate::cards::CardEnchantments>,
+    )>,
     /// `Some` while the open offering is a `SpecialCardReward` (see [`crate::runstate::CardReward::special`]): picking
     /// it adds exactly that card instance to the deck and no card-reward modifier (Pael's Wing) applies.
     card_reward_special: Option<crate::cards::Card>,
@@ -967,6 +975,7 @@ impl RunManager {
             card_reward_options: Vec::new(),
             card_reward_upgraded: Vec::new(),
             card_reward_enchantments: Vec::new(),
+            deferred_combat_card_reward: None,
             card_reward_special: None,
             card_reward_bundles: None,
             boss_relic_options: Vec::new(),
@@ -2543,7 +2552,6 @@ impl RunManager {
             Vec::new()
         };
         self.collect_extra_combat_rewards(extra_rewards);
-        self.open_card_reward_phase();
         let mut elite_relic = None;
         // Elite rooms append a 5th reward: C# `RewardsSet.GenerateRewardsFor`
         // (Elite case) adds `new RelicReward(player)` LAST, whose `Populate`
@@ -2613,6 +2621,26 @@ impl RunManager {
             {
                 self.run_state.drain_relic_rewards_directly();
             }
+        }
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && self.run_state.pending_rewards.iter().any(|reward| {
+                matches!(reward, crate::runstate::Reward::Card(card) if card.special.is_some())
+            })
+        {
+            // RewardsSet.GenerateWithoutOffering populates the ordinary CardReward
+            // before it sorts by RewardsSetIndex. Preserve the rolled slate (and
+            // its upgrade/enchantment flags), but offer index 4 special cards
+            // before the index 5 ordinary card screen.
+            self.deferred_combat_card_reward = Some((
+                std::mem::take(&mut self.card_reward_options),
+                std::mem::take(&mut self.card_reward_upgraded),
+                std::mem::take(&mut self.card_reward_enchantments),
+            ));
+            self.card_offer_choose_screen = false;
+            self.phase = Phase::CardReward;
+            let _ = self.drain_pending_rewards();
+        } else {
+            self.open_card_reward_phase();
         }
         ActionResult::Advanced
     }
@@ -3259,6 +3287,28 @@ impl RunManager {
         if !self.run_state.relic_rewards.is_empty() {
             // Stay in CardReward; the caller picks PickRelicReward/SkipRelic next.
             return;
+        }
+        if self.deferred_combat_card_reward.is_some() {
+            // A combat can return more than one stolen card. Every special
+            // reward has index 4; the pre-rolled ordinary reward has index 5.
+            if self.run_state.pending_rewards.iter().any(|reward| {
+                matches!(reward, crate::runstate::Reward::Card(card) if card.special.is_some())
+            }) && self.drain_pending_rewards()
+            {
+                return;
+            }
+            let (options, upgraded, enchantments) = self
+                .deferred_combat_card_reward
+                .take()
+                .expect("deferred combat reward was present");
+            self.card_reward_options = options;
+            self.card_reward_upgraded = upgraded;
+            self.card_reward_enchantments = enchantments;
+            self.card_reward_special = None;
+            self.card_offer_choose_screen = false;
+            if !self.card_reward_options.is_empty() {
+                return;
+            }
         }
         // Drain any pending custom card-select (HeftyTablet's 3-Rare /
         // LeadPaperweight's 2-Colorless offer) once the relic-reward queue
@@ -8308,6 +8358,74 @@ mod tests {
         assert_eq!(rm.card_reward_kind(), "card");
     }
 
+    /// RewardsSet.Populate rolls the normal card slate before sorting, but
+    /// SpecialCardReward (index 4) must be offered before CardReward (index 5).
+    #[test]
+    fn returned_card_precedes_prerolled_combat_card_reward() {
+        use crate::cards::CardId;
+        use crate::runstate::{CardReward, Reward, RoomType};
+        fn cards(rs: &mut RunState) -> Vec<CardId> {
+            rs.gold += 1; // one population call, before either screen resolves
+            rs.card_reward_upgraded_flags = vec![false, true, false];
+            vec![CardId::Bash, CardId::Anger, CardId::ShrugItOff]
+        }
+        let callbacks = ContentCallbacks {
+            generate_card_reward_options: Some(cards),
+            ..ContentCallbacks::default()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_game_version(crate::GameVersion::V0_111_0)
+            .with_content_callbacks(callbacks);
+        let stolen = crate::Card {
+            card_id: CardId::Bludgeon,
+            ..crate::Card::pod_defaults()
+        };
+        rm.run_state
+            .pending_rewards
+            .push(Reward::Card(CardReward::special_card(stolen)));
+        rm.run_state
+            .pending_rewards
+            .push(Reward::Card(CardReward::special_card(crate::Card {
+                card_id: CardId::Headbutt,
+                ..crate::Card::pod_defaults()
+            })));
+        let gold_before = rm.run_state.gold;
+        let deck_before = rm.run_state.master_deck.len();
+        assert_eq!(
+            rm.offer_combat_room_rewards(RoomType::Monster, &[]),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.gold, gold_before + 1);
+        assert_eq!(rm.card_reward_kind(), "special_card");
+        assert_eq!(rm.card_reward_options(), &[CardId::Bludgeon]);
+        assert_eq!(
+            rm.take_action(RunAction::PickCardReward { idx: None }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.card_reward_kind(), "special_card");
+        assert_eq!(rm.card_reward_options(), &[CardId::Headbutt]);
+        assert_eq!(
+            rm.take_action(RunAction::PickCardReward { idx: Some(0) }),
+            ActionResult::Advanced
+        );
+        assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
+        assert_eq!(
+            rm.run_state.master_deck.last().unwrap().card_id,
+            CardId::Headbutt
+        );
+        assert_eq!(
+            rm.run_state.gold,
+            gold_before + 1,
+            "the ordinary slate was not re-rolled"
+        );
+        assert_eq!(rm.card_reward_kind(), "card");
+        assert_eq!(
+            rm.card_reward_options(),
+            &[CardId::Bash, CardId::Anger, CardId::ShrugItOff]
+        );
+        assert_eq!(rm.card_reward_upgraded_flags(), &[false, true, false]);
+    }
+
     /// Orobas' empty third pool is a LOCKED option (`Orobas.cs:88`): the slot stays in the offer list but has no
     /// pick action and cannot be taken.
     #[test]
@@ -10859,7 +10977,7 @@ mod tests {
     }
 
     /// v0.111.0 `TheLanternKey.cs:52`: the knight's LanternKey is a `SpecialCardReward` -- skippable, not added on
-    /// its own. After the room's card reward the special screen opens; taking it adds the card, declining leaves it.
+    /// its own. The special screen opens before the room's card reward; taking it adds the card, declining leaves it.
     fn lantern_key_special_flow(take: bool) -> (usize, usize, &'static str) {
         fn stage(rs: &mut RunState, _idx: usize) -> bool {
             rs.game_version = crate::GameVersion::V0_111_0;
@@ -10884,20 +11002,22 @@ mod tests {
         assert_eq!(rm.phase(), Phase::CardReward);
         assert_eq!(
             rm.card_reward_kind(),
-            "card",
-            "the room's own card reward comes first"
+            "special_card",
+            "RewardsSetIndex 4 precedes the room's CardReward at index 5"
         );
         assert_eq!(
             rm.run_state.master_deck.len(),
             deck_before,
             "nothing auto-added"
         );
-        rm.take_action(RunAction::PickCardReward { idx: None });
-        assert_eq!(rm.phase(), Phase::CardReward, "then the special reward");
         let kind = rm.card_reward_kind();
         rm.take_action(RunAction::PickCardReward {
             idx: if take { Some(0) } else { None },
         });
+        assert_eq!(rm.phase(), Phase::CardReward, "then the room card reward");
+        assert_eq!(rm.card_reward_kind(), "card");
+        assert_eq!(rm.card_reward_options().len(), 3);
+        rm.take_action(RunAction::PickCardReward { idx: None });
         assert_eq!(rm.phase(), Phase::MapChoice);
         let has_key = rm
             .run_state

@@ -497,8 +497,8 @@ const VERSIONS: [sts2_core::GameVersion; 2] = [
 
 /// C# `TheLanternKey.Fight` → MysteriousKnight in a Monster `CombatRoom`:
 /// the win grants Monster gold (10-20), the card reward, and the
-/// `SpecialCardReward(LanternKey)` extra, which the headless auto-collects
-/// before the card reward it presents.
+/// `SpecialCardReward(LanternKey)` extra. v0.111.0 offers the special card
+/// first (RewardsSetIndex 4), followed by the ordinary card reward (5).
 #[test]
 fn lantern_key_fight_win_grants_room_rewards_and_the_key() {
     for version in VERSIONS {
@@ -521,22 +521,28 @@ fn lantern_key_fight_win_grants_room_rewards_and_the_key() {
                 .count()
         };
         assert_eq!(rm.phase(), Phase::CardReward);
-        assert_eq!(rm.card_reward_options().len(), 3, "{version:?}");
-        assert!(!rm
-            .card_reward_options()
-            .contains(&sts2_core::cards::CardId::LanternKey));
         assert!(rm.run_state.current_event.is_none());
         if version == sts2_core::GameVersion::V0_111_0 {
             // `TheLanternKey.cs:52`: a skippable SpecialCardReward, not added on its own.
             assert_eq!(rm.run_state.master_deck.len(), deck_before);
             assert_eq!(key_count(&rm), 0);
-            rm.take_action(RunAction::PickCardReward { idx: None });
-            assert_eq!(rm.phase(), Phase::CardReward, "then the special reward");
             assert_eq!(rm.card_reward_kind(), "special_card");
+            assert_eq!(
+                rm.card_reward_options(),
+                &[sts2_core::cards::CardId::LanternKey]
+            );
             rm.take_action(RunAction::PickCardReward { idx: Some(0) });
             assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
             assert_eq!(key_count(&rm), 1);
+            assert_eq!(rm.phase(), Phase::CardReward, "then the ordinary reward");
+            assert_eq!(rm.card_reward_kind(), "card");
+            assert_eq!(rm.card_reward_options().len(), 3);
+            rm.take_action(RunAction::PickCardReward { idx: None });
         } else {
+            assert_eq!(rm.card_reward_options().len(), 3);
+            assert!(!rm
+                .card_reward_options()
+                .contains(&sts2_core::cards::CardId::LanternKey));
             assert_eq!(rm.run_state.master_deck.len(), deck_before + 1);
             assert_eq!(key_count(&rm), 1);
             rm.take_action(RunAction::PickCardReward { idx: None });
