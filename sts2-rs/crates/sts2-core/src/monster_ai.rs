@@ -605,6 +605,26 @@ impl MonsterAi {
         self.forced_next_state = None;
     }
 
+    /// C# `Creature.StunInternal` replaces the telegraphed move immediately
+    /// with a no-op Stun move, then resumes the last performed move. Before
+    /// the first enemy turn the state log is empty, so resume the initial
+    /// telegraph instead (Whistle against The Lost, RT0_22).
+    pub fn stun_immediate(&mut self) {
+        fn no_effect(_: &mut CombatState, _: CreatureUid) {}
+        let resume = self.state_log.last().copied().unwrap_or(self.current);
+        std::sync::Arc::make_mut(&mut self.states).insert(
+            "STUNNED",
+            MonsterState::Move(MoveState {
+                id: "STUNNED",
+                effect: no_effect,
+                intents: smallvec::smallvec![Intent::Stun],
+                follow_up: Some(resume),
+                must_perform_once: true,
+            }),
+        );
+        self.force_current_state("STUNNED");
+    }
+
     /// Restore the current move-state from a serialized [`current_state_id`]
     /// string. Looks the runtime `target` up among this AI's own move-state
     /// ids (which are `&'static str`) and, when found, forces it as the

@@ -71,6 +71,39 @@ fn fresh_state(card_id: CardId, base_damage: i32, base_block: i32) -> (CombatSta
     (state, euid)
 }
 
+#[test]
+fn whistle_stuns_a_surviving_enemy_before_its_first_move_v0111() {
+    let (mut state, target) = fresh_state(CardId::Whistle, 33, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let ai = crate::monsters::act3_glory::create_the_lost_ai();
+    state.creatures[0].intent = ai.current_move().intents.first().copied();
+    state.creatures[0].ai = Some(ai);
+
+    assert_eq!(
+        play_whistle(&mut state, Some(target)),
+        EffectResult::Resolved
+    );
+    assert_eq!(state.creatures[0].current_hp, 67);
+    assert_eq!(state.creatures[0].intent, Some(sts2_core::Intent::Stun));
+    let ai = state.creatures[0].ai.as_mut().unwrap();
+    assert_eq!(ai.current_state_id(), "STUNNED");
+    ai.on_move_performed();
+    assert_eq!(ai.roll_move_seeded(0).id, "DEBILITATING_SMOG");
+
+    let (mut lethal, target) = fresh_state(CardId::Whistle, 33, 0);
+    lethal.game_version = sts2_core::GameVersion::V0_111_0;
+    lethal.creatures[0].current_hp = 20;
+    lethal.creatures[0].ai = Some(crate::monsters::act3_glory::create_the_lost_ai());
+    assert_eq!(
+        play_whistle(&mut lethal, Some(target)),
+        EffectResult::Resolved
+    );
+    assert_ne!(
+        lethal.creatures[0].ai.as_ref().unwrap().current_state_id(),
+        "STUNNED"
+    );
+}
+
 /// Push a fresh card into the draw pile (test scaffolding for the
 /// draw/select cards below). Returns its uid.
 fn push_draw_card_id(state: &mut CombatState, card_id: CardId) -> CardUid {
