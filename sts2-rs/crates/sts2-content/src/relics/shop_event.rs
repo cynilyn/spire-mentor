@@ -1548,9 +1548,23 @@ fn listener_jewelry_box(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::JewelryBox) {
         return EffectResult::NotImplemented;
     }
-    let mut card = sts2_core::cards::Card::pod_defaults();
-    card.card_id = sts2_core::cards::CardId::Apotheosis;
-    card.upgraded = false;
+    let card = if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // The generic POD costs 1; the v0.111.0 Apotheosis added by
+        // JewelryBox has its canonical cost 2 (and Skill/Self metadata).
+        let Some(card) = crate::cards::v0111::card_pod_for(
+            sts2_core::cards::CardId::Apotheosis,
+            false,
+            rs.game_version,
+        ) else {
+            return EffectResult::NotImplemented;
+        };
+        card
+    } else {
+        let mut card = sts2_core::cards::Card::pod_defaults();
+        card.card_id = sts2_core::cards::CardId::Apotheosis;
+        card.upgraded = false;
+        card
+    };
     rs.master_deck.push(card);
     EffectResult::Resolved
 }
@@ -5792,6 +5806,7 @@ mod tests {
     #[test]
     fn listener_jewelry_box_adds_apotheosis_to_master_deck_on_obtain() {
         use sts2_core::runstate::RunState;
+        crate::cards::dispatch::ensure_installed();
         crate::relics::dispatch::ensure_installed();
 
         // Without ownership: dispatcher fires the registered listener
@@ -5801,16 +5816,26 @@ mod tests {
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs_noop);
         assert_eq!(rs_noop.master_deck.len(), pre_len);
 
-        // With ownership: master_deck grows by 1 with the Apotheosis
-        // POD (unupgraded). Default RunState has an empty master_deck.
-        let mut rs = RunState::new();
-        rs.relics.push(RelicId::JewelryBox);
-        rs.last_obtained_relic = Some(RelicId::JewelryBox);
-        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        assert_eq!(rs.master_deck.len(), 1);
-        let added = &rs.master_deck[0];
-        assert_eq!(added.card_id, sts2_core::cards::CardId::Apotheosis);
-        assert!(!added.upgraded, "Python pin adds the un-upgraded card");
+        for (version, cost) in [
+            (sts2_core::GameVersion::V0_107_1, 1),
+            (sts2_core::GameVersion::V0_111_0, 2),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::JewelryBox);
+            rs.last_obtained_relic = Some(RelicId::JewelryBox);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(rs.master_deck.len(), 1);
+            let added = &rs.master_deck[0];
+            assert_eq!(added.card_id, sts2_core::cards::CardId::Apotheosis);
+            assert!(!added.upgraded);
+            assert_eq!(added.cost, cost, "{version:?}");
+            if version >= sts2_core::GameVersion::V0_111_0 {
+                assert_eq!(added.card_type, sts2_core::cards::CardType::Skill);
+                assert_eq!(added.target_type, sts2_core::cards::TargetType::Self_);
+                assert!(sts2_core::card_effects::card_exhausts_inst(added));
+            }
+        }
     }
 
     /// Bead `sts2-rs-70anj.4` (Wave 4 body-fill, batch 1):
