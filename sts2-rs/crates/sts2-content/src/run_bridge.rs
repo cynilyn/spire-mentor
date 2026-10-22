@@ -711,6 +711,31 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // inverse of the carry-in. Bead `sts2-rs-jenwp` (M3b monster_ai).
     rs.rng = combat.run_rng.clone();
 
+    // ImprovementPower.AfterCombatEnd (Mad Science's Improvement rider):
+    // select without replacement from the upgradable run-deck cards, using
+    // CombatCardSelection after the combat RNG streams have been flushed.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 && combat.player_won {
+        let stacks = combat
+            .player_power_amount(sts2_core::PowerKind::Improvement)
+            .max(0);
+        let mut candidates: Vec<usize> = rs
+            .master_deck
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, card)| card.is_upgradable().then_some(idx))
+            .collect();
+        for _ in 0..stacks {
+            if candidates.is_empty() {
+                break;
+            }
+            let pick = rs
+                .rng
+                .combat_card_selection
+                .next_int(0, candidates.len() as i32 - 1) as usize;
+            rs.master_deck[candidates.remove(pick)].upgrade_for(rs.game_version);
+        }
+    }
+
     // Bead `sts2-rs-v0107-content-port-wb8lk.6`: FishingRod.AfterCombatEnd
     // (v0.107.1 `FishingRod.cs:42-60`). On every normal (`RoomType.Monster`)
     // combat the relic's `CombatsSeen` counter ticks; on every 3rd one it
@@ -2966,6 +2991,74 @@ mod tests {
             post_combat_counter + 1,
             "FishingRod's niche advance persists into the run stream"
         );
+    }
+
+    #[test]
+    fn improvement_upgrades_distinct_deck_cards_on_combat_end_v0111() {
+        use sts2_core::cards::CardId;
+
+        let mut rs = fresh_run();
+        rs.game_version = sts2_core::GameVersion::V0_111_0;
+        rs.master_deck = [
+            CardId::Offering,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+        ]
+        .into_iter()
+        .map(|id| crate::cards::spec_index::card_pod_from_id(id, false).expect("deck card"))
+        .collect();
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        combat.player_won = true;
+        let player = combat.player.creature_uid.expect("player uid");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut combat,
+            player,
+            sts2_core::PowerKind::Improvement,
+            2,
+        );
+        let mut expected_rng = combat.run_rng.combat_card_selection.clone();
+        let mut candidates = vec![0, 1, 2];
+        let mut picked = Vec::new();
+        for _ in 0..2 {
+            let idx = expected_rng.next_int(0, candidates.len() as i32 - 1) as usize;
+            picked.push(candidates.remove(idx));
+        }
+
+        exit_combat(&mut rs, &combat);
+
+        for (idx, card) in rs.master_deck.iter().enumerate() {
+            assert_eq!(card.upgraded, picked.contains(&idx), "deck index {idx}");
+        }
+        assert_eq!(
+            rs.rng.combat_card_selection.counter(),
+            expected_rng.counter()
+        );
+    }
+
+    #[test]
+    fn improvement_keeps_legacy_combat_end_behavior() {
+        use sts2_core::cards::CardId;
+
+        let mut rs = fresh_run();
+        rs.game_version = sts2_core::GameVersion::V0_107_1;
+        rs.master_deck = vec![
+            crate::cards::spec_index::card_pod_from_id(CardId::Offering, false).expect("Offering"),
+        ];
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        combat.player_won = true;
+        let player = combat.player.creature_uid.expect("player uid");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut combat,
+            player,
+            sts2_core::PowerKind::Improvement,
+            1,
+        );
+        let counter = combat.run_rng.combat_card_selection.counter();
+
+        exit_combat(&mut rs, &combat);
+
+        assert!(!rs.master_deck[0].upgraded);
+        assert_eq!(rs.rng.combat_card_selection.counter(), counter);
     }
 
     /// FishingRod ignores Elite/Boss combats (`RoomType != Monster`): the
