@@ -962,9 +962,16 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         set(&mut m, "max_hp", m_max_hp);
         set(&mut m, "hp", c.current_hp.clamp(0, m_max_hp));
         set(&mut m, "block", c.block.max(0));
+        // v0.111.0: C# `Creature._powers` is one application-ordered list, and arena ids are allocated in application
+        // order (a fight's opening spawn powers are re-issued after the relics' room-entry grants), so ascending id
+        // restores it, as for the player's list above.
+        let mut enemy_power_uids: Vec<PowerUid> = c.powers.iter().copied().collect();
+        if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+            enemy_power_uids.sort_by_key(|u| u.0);
+        }
         m.insert(
             "powers".to_owned(),
-            powers_to_value(&c.powers, &state.powers, "$.encounter.powers")?,
+            powers_to_value(&enemy_power_uids, &state.powers, "$.encounter.powers")?,
         );
         // `intents` carries the creature's currently-telegraphed move so
         // display consumers (workbench combat panel) can render it. C#
@@ -1554,6 +1561,54 @@ mod tests {
                 want,
                 "{version:?}"
             );
+        }
+    }
+
+    /// v0.111.0: an enemy's powers are listed in application (arena id) order; v0.107.1 keeps the creature's list order.
+    #[test]
+    fn enemy_powers_are_listed_in_application_order_on_v0111_only() {
+        use std::num::NonZeroU32;
+        use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, MonsterKind, PowerKind};
+        for (version, want) in [
+            (sts2_core::GameVersion::V0_111_0, ["STRENGTH", "ARTIFACT"]),
+            (sts2_core::GameVersion::V0_107_1, ["ARTIFACT", "STRENGTH"]),
+        ] {
+            let mut state = CombatState {
+                game_version: version,
+                ..CombatState::default()
+            };
+            let cid = NonZeroU32::new(10).expect("nz");
+            let (late, early) = (
+                NonZeroU32::new(5).expect("nz"),
+                NonZeroU32::new(3).expect("nz"),
+            );
+            state
+                .powers
+                .push(sts2_core::Power::new(late, PowerKind::Artifact, 2));
+            state
+                .powers
+                .push(sts2_core::Power::new(early, PowerKind::Strength, 1));
+            state.creatures.push(Creature {
+                id: cid,
+                current_hp: 30,
+                max_hp: 30,
+                block: 0,
+                powers: smallvec::smallvec![sts2_core::PowerUid(late), sts2_core::PowerUid(early)],
+                species: Some(MonsterKind::Nibbit),
+                monster_id: MonsterId(""),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                ai: None,
+            });
+            state.enemy_uids.push(CreatureUid(cid));
+            let v = combat_state_to_value(&state).expect("serializes");
+            let names: Vec<&str> = v["encounter"][0]["powers"]
+                .as_array()
+                .expect("powers")
+                .iter()
+                .map(|p| p["name"].as_str().expect("name"))
+                .collect();
+            assert_eq!(names, want, "{version:?}");
         }
     }
 

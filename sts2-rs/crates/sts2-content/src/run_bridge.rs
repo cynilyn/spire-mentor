@@ -1394,6 +1394,66 @@ mod tests {
         );
     }
 
+    /// v0.111.0 fight-start power order through the run path: Philosopher's Stone's `AfterRoomEntered` Strength
+    /// comes before the monster's own `AfterAddedToRoom` power (Chomper's Artifact), and the player lists
+    /// Vajra's Strength before Rocket's Surrounded. v0.107.1 keeps the spawn power first.
+    #[test]
+    fn fight_start_power_order_follows_relic_grants_on_v0111_only() {
+        use sts2_core::{GameVersion, PowerKind};
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        sts2_core::relic_effects::ensure_installed();
+        let listed = |state: &CombatState, owner: std::num::NonZeroU32| -> Vec<PowerKind> {
+            let mut v: Vec<(u32, PowerKind)> = state
+                .creatures
+                .iter()
+                .find(|c| c.id == owner)
+                .expect("creature")
+                .powers
+                .iter()
+                .filter_map(|u| state.powers.get_by_id(u.0))
+                .map(|p| (p.id.get(), p.kind))
+                .collect();
+            v.sort_by_key(|(id, _)| *id);
+            v.into_iter().map(|(_, k)| k).collect()
+        };
+        for (version, want_enemy, want_player) in [
+            (
+                GameVersion::V0_111_0,
+                [PowerKind::Strength, PowerKind::Artifact],
+                [PowerKind::Strength, PowerKind::Surrounded],
+            ),
+            (
+                GameVersion::V0_107_1,
+                [PowerKind::Artifact, PowerKind::Strength],
+                [PowerKind::Surrounded, PowerKind::Strength],
+            ),
+        ] {
+            let mut rs = fresh_run();
+            rs.game_version = version;
+            rs.relics.push(sts2_core::RelicId::PhilosophersStone);
+            rs.relics.push(sts2_core::RelicId::Vajra);
+            let roster = [
+                (MonsterKind::Chomper, MonsterSpawnArgs::None, 60),
+                (MonsterKind::Rocket, MonsterSpawnArgs::None, 60),
+            ];
+            let state =
+                enter_combat_from_roster(&rs, &roster, sts2_core::runstate::RoomType::Monster);
+            let chomper = state.enemy_uids[0].0;
+            let player = state.player.creature_uid.expect("player creature").0;
+            assert_eq!(
+                listed(&state, chomper)[..2],
+                want_enemy,
+                "{version:?} enemy"
+            );
+            assert_eq!(
+                listed(&state, player)[..2],
+                want_player,
+                "{version:?} player"
+            );
+        }
+    }
+
     #[test]
     fn enter_combat_preserves_relic_order() {
         // Relic trigger order is observable — the mirror must keep
