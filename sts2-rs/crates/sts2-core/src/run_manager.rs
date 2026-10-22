@@ -2557,6 +2557,9 @@ impl RunManager {
             Vec::new()
         };
         self.collect_extra_combat_rewards(extra_rewards);
+        if self.run_state.game_version < crate::GameVersion::V0_111_0 {
+            self.open_card_reward_phase();
+        }
         let mut elite_relic = None;
         // Elite rooms append a 5th reward: C# `RewardsSet.GenerateRewardsFor`
         // (Elite case) adds `new RelicReward(player)` LAST, whose `Populate`
@@ -2644,7 +2647,7 @@ impl RunManager {
             self.card_offer_choose_screen = false;
             self.phase = Phase::CardReward;
             let _ = self.drain_pending_rewards();
-        } else {
+        } else if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
             self.open_card_reward_phase();
         }
         ActionResult::Advanced
@@ -2741,9 +2744,20 @@ impl RunManager {
                     ) =>
                 {
                     self.run_state.offer_random_relic_rewards(1, &[None]);
+                    // v0.111.0 drains these after the before-offered hook instead.
+                    if self.run_state.game_version < crate::GameVersion::V0_111_0
+                        && self.run_state.direct_event_relic_grant
+                    {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
                 }
                 Reward::Relic(rr) => {
                     self.run_state.offer_relic_rewards(rr.relic_id, 1);
+                    if self.run_state.game_version < crate::GameVersion::V0_111_0
+                        && self.run_state.direct_event_relic_grant
+                    {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
                 }
                 Reward::Card(cr) if cr.options.is_empty() && cr.room_context.is_some() => {
                     self.run_state.card_reward_context_override = cr.room_context;
