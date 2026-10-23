@@ -18,7 +18,20 @@ use super::prelude::*;
 /// [`card_rarity_for_id`] sort last (rarity_key = u8::MAX) so they
 /// don't poison the chosen-card calc. No-op when the draw pile is
 /// empty. Bead `sts2-rs-d8i4` (6ynt.8-wish).
+///
+/// Version split. On `>= V0_111_0` the card follows the game's
+/// `Wish.cs` `OnPlay` (a `CardSelectCmd.FromCombatPile` over the whole
+/// draw pile, `prefs(1)`): the draw pile is offered as a single-pick
+/// choice sorted by `(rarity, name)`, via
+/// [`move_card_from_draw_to_hand_filtered`] with no type filter (0
+/// cards = no-op, exactly 1 = moved with no prompt). On earlier builds
+/// the deterministic auto-pick described above is kept unchanged so the
+/// v0.107.1 trace regression is unaffected.
 pub(crate) fn play_wish(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+        move_card_from_draw_to_hand_filtered(state, None);
+        return EffectResult::Resolved;
+    }
     if state.player.draw.is_empty() {
         return EffectResult::Resolved;
     }

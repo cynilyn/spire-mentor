@@ -2267,37 +2267,24 @@ fn play_secret_technique_with_no_skills_is_noop() {
     assert_eq!(state.player.hand.len(), hand_before);
 }
 
+/// Wish on v0.107.1 keeps the deterministic auto-pick: the lowest
+/// `(rarity, card id)` draw-pile card goes to hand with no prompt.
 #[test]
-fn play_wish_picks_lowest_rarity_card_from_draw() {
-    use sts2_core::cards::{Card, CardType, TargetType};
-    use sts2_core::CardUid;
+fn play_wish_auto_picks_lowest_rarity_card_before_v0111() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
-    // Seed draw with one Rare (DemonForm) and one Common (Anger).
-    // Wish must pick Anger (lower rarity_key).
-    let push = |state: &mut CombatState, card_id: CardId| {
-        let raw = u32::try_from(state.cards.len() + 1).unwrap();
-        let uid = CardUid(NonZeroU32::new(raw).unwrap());
-        state.cards.push(Card {
-            uid,
-            card_id,
-            cost: 1,
-            card_type: CardType::Skill,
-            target_type: TargetType::Self_,
-            upgraded: false,
-            base_damage: 0,
-            base_block: 0,
-            ..Card::pod_defaults()
-        });
-        state.player.draw.push(uid);
-        uid
-    };
-    let _rare = push(&mut state, CardId::DemonFormCard);
-    let common = push(&mut state, CardId::Anger);
+    state.game_version = sts2_core::GameVersion::V0_107_1;
+    // One Rare (DemonForm) and one Common (Anger): Anger is picked.
+    let _rare = push_draw_card_id(&mut state, CardId::DemonFormCard);
+    let common = push_draw_card_id(&mut state, CardId::Anger);
     let draw_before = state.player.draw.len();
     let hand_before = state.player.hand.len();
     let f = lookup(CardId::Wish).expect("registered");
     f(&mut state, None);
+    assert!(
+        state.pending_choice.is_none(),
+        "v0.107.1 Wish must not open a choice"
+    );
     assert_eq!(state.player.draw.len(), draw_before - 1);
     assert_eq!(state.player.hand.len(), hand_before + 1);
     assert!(
@@ -2306,16 +2293,93 @@ fn play_wish_picks_lowest_rarity_card_from_draw() {
     );
 }
 
+/// Wish on v0.111.0 with 2+ draw-pile cards opens a single-pick
+/// `AddFromDrawByType` choice over the whole draw pile, ordered by
+/// `(rarity rank, python name)`; resolving it moves exactly the picked card.
 #[test]
-fn play_wish_with_empty_draw_is_noop() {
+fn play_wish_opens_draw_pile_choice_on_v0111_only() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let pushed = [CardId::DemonFormCard, CardId::Finesse, CardId::Anger];
+    for id in pushed {
+        push_draw_card_id(&mut state, id);
+    }
+    let version = state.game_version;
+    let key = |id: CardId| {
+        (
+            crate::cards::spec_index::card_rarity_rank_csharp_in(id, version),
+            id.to_python_name(),
+        )
+    };
+    let mut expected: Vec<CardId> = pushed.to_vec();
+    expected.sort_by(|&a, &b| key(a).cmp(&key(b)));
     let draw_before = state.player.draw.len();
     let hand_before = state.player.hand.len();
+
     let f = lookup(CardId::Wish).expect("registered");
-    f(&mut state, None);
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    let pc = state
+        .pending_choice
+        .as_ref()
+        .expect("2+ draw cards must open a choice");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawByType);
+    assert_eq!(pc.min_select, 1);
+    assert_eq!(pc.max_select, 1);
+    let got: Vec<CardId> = pc.options.iter().map(|o| o.card_id).collect();
+    assert_eq!(got, expected, "options sorted by (rarity rank, name)");
+    // Nothing moves until the choice is resolved.
     assert_eq!(state.player.draw.len(), draw_before);
     assert_eq!(state.player.hand.len(), hand_before);
+
+    // Pick the second option (not the first).
+    let picked_uid = pc.options[1].card_uid.expect("draw option carries uid");
+    let selection: smallvec::SmallVec<[u8; 4]> = [1u8].into_iter().collect();
+    let res = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    assert_eq!(res, sts2_core::StepResult::Advanced);
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.player.draw.len(), draw_before - 1);
+    assert_eq!(state.player.hand.len(), hand_before + 1);
+    assert!(state.player.hand.contains(&picked_uid));
+    assert!(!state.player.draw.contains(&picked_uid));
+}
+
+/// Wish on v0.111.0 with exactly one draw-pile card moves it to hand with
+/// no prompt.
+#[test]
+fn play_wish_single_draw_card_auto_adds_on_v0111_only() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let only = push_draw_card_id(&mut state, CardId::DemonFormCard);
+    let f = lookup(CardId::Wish).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert!(
+        state.pending_choice.is_none(),
+        "single candidate must auto-add, not open a choice"
+    );
+    assert!(state.player.hand.contains(&only));
+    assert!(!state.player.draw.contains(&only));
+}
+
+/// Wish with an empty draw pile is a no-op on both builds.
+#[test]
+fn play_wish_with_empty_draw_is_noop() {
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        install_pool();
+        let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+        state.game_version = version;
+        let draw_before = state.player.draw.len();
+        let hand_before = state.player.hand.len();
+        let f = lookup(CardId::Wish).expect("registered");
+        f(&mut state, None);
+        assert!(state.pending_choice.is_none());
+        assert_eq!(state.player.draw.len(), draw_before);
+        assert_eq!(state.player.hand.len(), hand_before);
+    }
 }
 
 #[test]

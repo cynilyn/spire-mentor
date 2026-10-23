@@ -209,6 +209,17 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
     state: &mut CombatState,
     kind: sts2_core::cards::CardType,
 ) {
+    move_card_from_draw_to_hand_filtered(state, Some(kind));
+}
+
+/// Same behaviour as [`move_card_from_draw_to_hand_by_type`], with an
+/// optional type filter: `None` makes every draw-pile card a candidate
+/// (Wish on v0.111.0, `Wish.cs` `CardSelectCmd.FromCombatPile` with no
+/// filter).
+pub(crate) fn move_card_from_draw_to_hand_filtered(
+    state: &mut CombatState,
+    filter: Option<sts2_core::cards::CardType>,
+) {
     let mut candidates: SmallVec<[sts2_core::CardUid; 16]> = state
         .player
         .draw
@@ -216,7 +227,7 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
         .copied()
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
-            state.cards[idx].card_type == kind
+            filter.map_or(true, |kind| state.cards[idx].card_type == kind)
         })
         .collect();
     // Mirror C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(Id)` Draw-pile

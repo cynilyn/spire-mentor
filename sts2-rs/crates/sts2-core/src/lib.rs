@@ -2268,7 +2268,9 @@ pub enum ChoiceKind {
     /// Pick one draw-pile card (pre-filtered to a single `CardType` at
     /// request time) and move it to hand. Mirrors C# `SecretTechnique`
     /// (Skill) / `SecretWeapon` (Attack) `CardSelectCmd.FromSimpleGrid`
-    /// `prefs(1)`. Each option's `card_uid` names the concrete draw-pile
+    /// `prefs(1)`. The same kind is also used with no type filter (every
+    /// draw-pile card is offered) by Wish on v0.111.0. Each option's
+    /// `card_uid` names the concrete draw-pile
     /// card; resolution removes it from `draw` and pushes it onto `hand`
     /// via [`resolve_add_from_draw_by_type`]. Single-pick
     /// (`min=max=1`), so [`legal_actions`] enumerates one option per
@@ -9827,7 +9829,10 @@ fn resolve_upgrade_in_hand(state: &mut CombatState, pc: &PendingChoice, selectio
 /// from `draw` and pushed onto `hand`. Empty/invalid selection, or a
 /// uid no longer in the draw pile, is a defensive no-op. Mirrors C#
 /// `SecretTechnique`/`SecretWeapon` `CardSelectCmd.FromSimpleGrid` →
-/// `CardPileCmd.Move(.., Hand)`. Bead `sts2-rs-1xmxp`.
+/// `CardPileCmd.Move(.., Hand)`. The resolver only checks that the picked
+/// card is still in the draw pile (it does not re-check the card type), so
+/// it also serves the unfiltered Wish selection on v0.111.0.
+/// Bead `sts2-rs-1xmxp`.
 fn resolve_add_from_draw_by_type(state: &mut CombatState, pc: &PendingChoice, selection: &[u8]) {
     let Some(uid) = selected_card_uid(pc, selection) else {
         return;
