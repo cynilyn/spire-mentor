@@ -117,7 +117,7 @@ class Log:
     def __call__(self, msg: str) -> None:
         line = f"{time.strftime('%H:%M:%S')} [{time.time() - self.t0:7.0f}s] {msg}"
         print(line, flush=True)
-        with open(self.path, "a") as f:
+        with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
 
@@ -445,7 +445,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if args.overfit:
             row["train_top1"] = train_top1()
         history.append(row)
-        with open(os.path.join(args.out, "metrics.jsonl"), "a") as f:
+        with open(os.path.join(args.out, "metrics.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(json_safe(row)) + "\n")
         log(
             f"epoch {epoch}/{args.epochs}: loss {tot / nb:.4f} vmse {vtot / nb:.4f} DEV R {ds['R']:.5f} "
@@ -461,7 +461,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             save(args, net, rare, best, "best", torch)
             np.savez(os.path.join(args.out, "dev_picks.npz"), pick=pick, ids_sha=ids_sha(dsp))
             if args.arm == "S_rl2arch":
-                with open(os.path.join(args.out, "rl2.json"), "w") as f:
+                with open(os.path.join(args.out, "rl2.json"), "w", encoding="utf-8") as f:
                     json.dump(
                         net.to_json(
                             key_names, 1.0, json_safe({"combat_ctx": _settings(args), "best": best})
@@ -482,7 +482,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     save(args, net, rare, best, "last", torch)
     if args.arm == "S_rl2arch":
         # The final epoch, unselected: what the unchanged trainer writes (§3).
-        with open(os.path.join(args.out, "rl2_last.json"), "w") as f:
+        with open(os.path.join(args.out, "rl2_last.json"), "w", encoding="utf-8") as f:
             json.dump(net.to_json(key_names, 1.0, json_safe({"combat_ctx": _settings(args)})), f)
     last_epochs = len(history)
     rs = [h["dev"]["R"] for h in history]
@@ -508,7 +508,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "settings": _settings(args),
         "unk_share_dev": rare.report(dsp),
     }
-    with open(os.path.join(args.out, "summary.json"), "w") as f:
+    with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(json_safe(summary), f, indent=1)
     log(f"done: best DEV R {best['R']:.5f} at epoch {best['epoch']}")
     return summary
@@ -602,7 +602,7 @@ def rl2_json_picks(json_path: str, sp: Split) -> np.ndarray:
 
     from ppo.rollout_learn import _load_playout_net
 
-    with open(json_path) as f:
+    with open(json_path, encoding="utf-8") as f:
         net_json = json.load(f)
     net = _load_playout_net(torch, net_json).eval()
     rows = {k: i for i, k in enumerate(net_json["keys"])}
@@ -641,7 +641,7 @@ def cmd_crosscheck(args: argparse.Namespace) -> int:
     res = {"unchanged": a, "compat_twin": b, "diff_pp": 100 * (a - b), "pass": abs(a - b) <= 0.015}
     print(json.dumps(res, indent=1))
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             json.dump(res, f, indent=1)
     return 0
 
@@ -700,7 +700,7 @@ def ctx_unk(ckpt_path: str, sp: Split) -> np.ndarray:
 def rl2_json_unk(json_path: str, sp: Split) -> np.ndarray:
     """Per decision: does an rl2-format net map one of its action keys to
     row 0 (UNK)."""
-    with open(json_path) as f:
+    with open(json_path, encoding="utf-8") as f:
         keys = json.load(f)["keys"]
     rows = {k: i for i, k in enumerate(keys)}
     names = T.vocab().tables[T.S["rl2key"]].names

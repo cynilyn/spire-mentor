@@ -53,12 +53,12 @@ def main() -> None:
     for spec in args.net:
         name, rest = spec.split("=", 1)
         path, _, temp = rest.partition("@")
-        nets[name] = (json.load(open(path)), float(temp) if temp else 1.0)
+        nets[name] = (json.load(open(path, encoding="utf-8")), float(temp) if temp else 1.0)
     first = next(iter(nets.values()))[0]
     nets = {"heuristic": (heuristic_net(first), 1.0)} | nets
 
     for fpath in args.fights:
-        fights = [json.loads(line) for line in open(fpath)]
+        fights = [json.loads(line) for line in open(fpath, encoding="utf-8")]
         ev = _combat_states(sts2_rs, fights)
         jobs = [st for _, st in ev for _ in range(args.reps)]
         seeds = [1_000_003 * i + 17 for i in range(len(jobs))]

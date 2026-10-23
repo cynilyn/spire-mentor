@@ -87,16 +87,16 @@ def score_decision(job: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]
 def cmd_referee(args: argparse.Namespace) -> int:
     os.makedirs(args.out, exist_ok=True)
     log = vd.Progress(os.path.join(args.out, "progress.log"), "combat_ctx referee")
-    with open(args.ids) as f:
+    with open(args.ids, encoding="utf-8") as f:
         want = {line.strip() for line in f if line.strip()}
     path = os.path.join(args.out, "scores.jsonl")
     done = set()
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             done = {json.loads(line)["id"] for line in f if line.strip()}
     trajs = {}
     for g in args.gen:
-        with open(os.path.join(g, "traj.jsonl")) as f:
+        with open(os.path.join(g, "traj.jsonl"), encoding="utf-8") as f:
             next(f)
             for line in f:
                 t = json.loads(line)
@@ -111,7 +111,7 @@ def cmd_referee(args: argparse.Namespace) -> int:
     t0 = time.time()
     with (
         get_context("spawn").Pool(args.procs, initializer=vd.init_worker, initargs=({},)) as pool,
-        open(path, "a") as f,
+        open(path, "a", encoding="utf-8") as f,
     ):
         for n, res in enumerate(pool.imap_unordered(score_decision, jobs), 1):
             f.write(json.dumps(res) + "\n")

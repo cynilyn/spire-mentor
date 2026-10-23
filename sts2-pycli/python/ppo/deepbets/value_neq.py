@@ -612,7 +612,7 @@ def load_refs(ref_dir: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """`(manifest, {stratum: {"groups": [...], "member": [[ids]], "fight", "crn", "room"}})`."""
     from ppo.deepbets import value_data as vd
 
-    meta = json.load(open(os.path.join(ref_dir, "manifest.json")))
+    meta = json.load(open(os.path.join(ref_dir, "manifest.json"), encoding="utf-8"))
     out: dict[str, Any] = {}
     for p in vd.shard_paths(ref_dir, "refs-", ".npz"):
         # Read each array ONCE: `NpzFile[key]` decompresses the whole array on
@@ -654,7 +654,7 @@ def padded_values(d: dict[str, Any], value_of: dict[str, float]) -> np.ndarray:
 def _looks(path: str) -> list[dict[str, Any]]:
     if not os.path.exists(path):
         return []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
@@ -665,7 +665,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     dmeta, dev = load_refs(args.refs_dev)
     tmeta, test = load_refs(args.refs_test) if args.refs_test else (None, None)
     ldir = args.labels
-    lmeta = json.load(open(os.path.join(ldir, "manifest.json")))
+    lmeta = json.load(open(os.path.join(ldir, "manifest.json"), encoding="utf-8"))
     vd.check_same_net(lmeta["playout_net"], dmeta["playout_net"], "labels vs dev refs")
     if tmeta:
         vd.check_same_net(lmeta["playout_net"], tmeta["playout_net"], "labels vs test refs")
@@ -722,7 +722,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     report["secs"] = round(time.time() - t0, 1)
     if test is not None:
         report["verdict"] = verdict(report, args.bar)
-        with open(looks_path, "a") as f:
+        with open(looks_path, "a", encoding="utf-8") as f:
             f.write(
                 json.dumps(
                     {

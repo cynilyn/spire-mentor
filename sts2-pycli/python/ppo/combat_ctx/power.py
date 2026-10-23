@@ -133,7 +133,7 @@ def cmd_power(args: argparse.Namespace) -> int:
     d = pilot_diffs(args.gen)
     res = project(d, {s: test_runs(args.fights, s) for s in ("S1", "S2")})
     res["pilot"] = os.path.abspath(args.gen)
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=1)
     print(json.dumps(res, indent=1))
     return 0

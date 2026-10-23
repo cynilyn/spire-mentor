@@ -91,7 +91,7 @@ def holdout_union(manifests: Iterable[str]) -> tuple[set[str], dict[str, int]]:
     out: set[str] = set()
     counts = {}
     for path in manifests:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             runs = set(json.load(f)["held_out_runs"])
         counts[os.path.basename(path)] = len(runs)
         out |= runs
@@ -121,7 +121,7 @@ def load_source(
 
     header, recs = rollout_starts.read_traj(traj)
     held, per_manifest = holdout_union(manifests)
-    with open(hbank) as f:
+    with open(hbank, encoding="utf-8") as f:
         bank_files = {json.loads(line)["file"] for line in f if line.strip()}
     kept = []
     dropped = {"error": 0, "room": 0, "bench": 0, "empty": 0}
@@ -336,13 +336,13 @@ class Progress:
         line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [{self.tag}] {msg}"
         print(line, flush=True)
         if self.path:
-            with open(self.path, "a") as f:
+            with open(self.path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
 
 def write_json(path: str, obj: Any) -> None:
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1, sort_keys=True, default=str)
     pathlib.Path(tmp).replace(path)
 
@@ -350,7 +350,7 @@ def write_json(path: str, obj: Any) -> None:
 def read_jsonl(paths: Iterable[str]) -> list[dict[str, Any]]:
     out = []
     for p in paths:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             out.extend(json.loads(line) for line in f if line.strip())
     return out
 

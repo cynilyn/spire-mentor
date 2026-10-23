@@ -306,7 +306,7 @@ def dump(ckpt: str, out: str, seeds: list[int], max_rows: int, asc_seeds: list[i
     assert tmax_seen <= T_MAX and amax_seen <= A_MAX, (tmax_seen, amax_seen)
     p = Path(out)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w") as f:
+    with p.open("w", encoding="utf-8") as f:
         for r in rows:
             # allow_nan=False: NaN/Infinity would serialize as invalid-for-serde
             # JSON tokens: fail loudly here rather than write a broken fixture.

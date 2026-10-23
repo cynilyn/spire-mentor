@@ -179,7 +179,7 @@ def c_bench(
 ) -> dict[str, Any]:
     src = os.path.join(workdir, f"rvnet_bench_{march}.c")
     exe = src[:-2]
-    with open(src, "w") as f:
+    with open(src, "w", encoding="utf-8") as f:
         f.write(C_SRC % {**d, "tok": max(1, tok), "reps": reps})
     subprocess.run(["gcc", "-O3", f"-march={march}", "-o", exe, src, "-lm"], check=True)
     out = subprocess.run(
@@ -200,7 +200,7 @@ def python_feature_costs(specs_dir: str | None, n: int) -> dict[str, float]:
     if not specs_dir:
         states = [sts2_rs.CombatState(seed=s, encounter="Nibbit") for s in range(n)]
     else:
-        smeta = json.load(open(os.path.join(specs_dir, "manifest.json")))
+        smeta = json.load(open(os.path.join(specs_dir, "manifest.json"), encoding="utf-8"))
         groups = vl._spec_groups(specs_dir, None)
         random.Random(1).shuffle(groups)
         states = []
@@ -217,7 +217,7 @@ def python_feature_costs(specs_dir: str | None, n: int) -> dict[str, float]:
                 fn(b)
         return (time.process_time() - t0) / (reps * len(bvs)) * 1e6
 
-    lp = sts2_rs.LearnedPlayout(open(vd.playout_net_identity()["path"]).read())
+    lp = sts2_rs.LearnedPlayout(open(vd.playout_net_identity()["path"], encoding="utf-8").read())
     t0 = time.process_time()
     res = lp.play_many(
         [b for b in bvs for _ in range(8)], list(range(8 * len(bvs))), 1.0, False, 200, True
@@ -250,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
     if args.net:
-        net = json.load(open(args.net))
+        net = json.load(open(args.net, encoding="utf-8"))
     else:
         from ppo.deepbets.value_train import D_CARD, D_MON
 

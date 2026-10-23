@@ -173,11 +173,15 @@ class ShardWriter:
         os.makedirs(out_dir, exist_ok=True)
         vocab_path = os.path.join(out_dir, "vocab.json")
         self.vocab: dict[str, int] = (
-            json.load(open(vocab_path)) if os.path.exists(vocab_path) else {"<unk>": 0}
+            json.load(open(vocab_path, encoding="utf-8"))
+            if os.path.exists(vocab_path)
+            else {"<unk>": 0}
         )
         mvocab_path = os.path.join(out_dir, "monster_vocab.json")
         self.mvocab: dict[str, int] = (
-            json.load(open(mvocab_path)) if os.path.exists(mvocab_path) else {"<none>": 0}
+            json.load(open(mvocab_path, encoding="utf-8"))
+            if os.path.exists(mvocab_path)
+            else {"<none>": 0}
         )
         self.n_shard = len([f for f in os.listdir(out_dir) if f.startswith("shard-")])
         self.buf: list[dict[str, Any]] = []
@@ -214,18 +218,21 @@ class ShardWriter:
                 ],
                 np.int32,
             )
-            json.dump(self.mvocab, open(os.path.join(self.out_dir, "monster_vocab.json"), "w"))
+            json.dump(
+                self.mvocab,
+                open(os.path.join(self.out_dir, "monster_vocab.json"), "w", encoding="utf-8"),
+            )
         np.savez_compressed(os.path.join(self.out_dir, f"shard-{self.n_shard:04d}.npz"), **arrays)
-        json.dump(self.vocab, open(os.path.join(self.out_dir, "vocab.json"), "w"))
+        json.dump(self.vocab, open(os.path.join(self.out_dir, "vocab.json"), "w", encoding="utf-8"))
         self.n_shard += 1
         self.buf = []
 
 
 def gen(args: argparse.Namespace) -> int:
-    fights = [json.loads(line) for line in open(args.fights)]
+    fights = [json.loads(line) for line in open(args.fights, encoding="utf-8")]
     holdout: set[str] = set()
     for path in args.holdout or []:
-        holdout |= {json.loads(line)["file"] for line in open(path)}
+        holdout |= {json.loads(line)["file"] for line in open(path, encoding="utf-8")}
     if args.holdout_encounter:
         holdout |= {f["file"] for f in fights if f["encounter"] in args.holdout_encounter}
     rooms = set(args.rooms.split(","))
@@ -236,7 +243,7 @@ def gen(args: argparse.Namespace) -> int:
         pool, lambda p: p[1]["file"], args.allow_bench_overlap, tag="[rollout_learn]"
     )
     os.makedirs(args.out_dir, exist_ok=True)
-    with open(os.path.join(args.out_dir, BENCH_META), "w") as f:
+    with open(os.path.join(args.out_dir, BENCH_META), "w", encoding="utf-8") as f:
         json.dump(bench_meta, f)
     features: dict[str, Any] = {"feature_version": args.feature_version}
     if args.feature_version == TABLE_VERSION:
@@ -244,9 +251,9 @@ def gen(args: argparse.Namespace) -> int:
         # which are exactly these.
         features.update(feature_tables())
     feat_path = os.path.join(args.out_dir, FEATURES_META)
-    if os.path.exists(feat_path) and json.load(open(feat_path)) != features:
+    if os.path.exists(feat_path) and json.load(open(feat_path, encoding="utf-8")) != features:
         raise SystemExit(f"{feat_path} records other features; use a new --out-dir")
-    json.dump(features, open(feat_path, "w"))
+    json.dump(features, open(feat_path, "w", encoding="utf-8"))
     rng = random.Random(args.sample_seed)
     if args.max_monster:
         mon = [p for p in pool if p[1]["room_type"] == "monster"]
@@ -254,7 +261,11 @@ def gen(args: argparse.Namespace) -> int:
         pool = [p for p in pool if p[1]["room_type"] != "monster" or p[0] in keep]
     rng.shuffle(pool)
     done_path = os.path.join(args.out_dir, "done.txt")
-    done = set(open(done_path).read().split()) if os.path.exists(done_path) else set()
+    done = (
+        set(open(done_path, encoding="utf-8").read().split())
+        if os.path.exists(done_path)
+        else set()
+    )
     jobs = [
         (f, i, args.reps, args.rep0, args.sims, args.boss_sims, args.clair, args.feature_version)
         for i, f in pool
@@ -268,7 +279,10 @@ def gen(args: argparse.Namespace) -> int:
     writer = ShardWriter(args.out_dir, args.per_shard)
     t0 = time.time()
     n = n_dec = err = unmatched = 0
-    with get_context("spawn").Pool(args.procs) as pool_, open(done_path, "a") as done_f:
+    with (
+        get_context("spawn").Pool(args.procs) as pool_,
+        open(done_path, "a", encoding="utf-8") as done_f,
+    ):
         for row in pool_.imap_unordered(gen_fight, jobs):
             n += 1
             err += "error" in row
@@ -300,7 +314,9 @@ def data_features(data_dirs: list[str]) -> dict[str, Any]:
     seen = []
     for d in data_dirs:
         p = os.path.join(d, FEATURES_META)
-        seen.append(json.load(open(p)) if os.path.exists(p) else {"feature_version": 1})
+        seen.append(
+            json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {"feature_version": 1}
+        )
     if any(s != seen[0] for s in seen[1:]):
         raise SystemExit(f"gen dirs disagree on their features: {seen}")
     return seen[0]
@@ -317,12 +333,14 @@ def load_shards(data_dirs: list[str]) -> tuple[dict[str, np.ndarray], list[str],
     parts: dict[str, list[np.ndarray]] = collections.defaultdict(list)
     fight_offset = 0
     for d in data_dirs:
-        local = json.load(open(os.path.join(d, "vocab.json")))
+        local = json.load(open(os.path.join(d, "vocab.json"), encoding="utf-8"))
         remap = np.zeros(max(local.values()) + 1, np.int32)
         for k, i in local.items():
             remap[i] = vocab.setdefault(k, len(vocab))
         mpath = os.path.join(d, "monster_vocab.json")
-        mlocal = json.load(open(mpath)) if os.path.exists(mpath) else {"<none>": 0}
+        mlocal = (
+            json.load(open(mpath, encoding="utf-8")) if os.path.exists(mpath) else {"<none>": 0}
+        )
         mremap = np.zeros(max(mlocal.values()) + 1, np.int32)
         for k, i in mlocal.items():
             mremap[i] = mvocab.setdefault(k, len(mvocab))
@@ -696,7 +714,7 @@ def train(args: argparse.Namespace) -> int:
     # The combat-bench holdout each gen run applied (absent for gen runs made
     # before GH #830, which held nothing out).
     meta["bench_holdout"] = {
-        d: json.load(open(os.path.join(d, BENCH_META)))
+        d: json.load(open(os.path.join(d, BENCH_META), encoding="utf-8"))
         for d in args.data
         if os.path.exists(os.path.join(d, BENCH_META))
     }
@@ -708,7 +726,7 @@ def train(args: argparse.Namespace) -> int:
         monster_keys=mkeys[1:] if use_mon else None,
         encounter_act=features.get("encounter_act"),
     )
-    json.dump(out, open(args.out, "w"))
+    json.dump(out, open(args.out, "w", encoding="utf-8"))
     print(f"[rollout_learn] wrote {args.out}", flush=True)
     return 0
 
@@ -941,7 +959,7 @@ def _truncate_metrics(path: str, it0: int) -> int:
     if not os.path.exists(path):
         return 0
     keep, dropped = [], 0
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
@@ -952,7 +970,7 @@ def _truncate_metrics(path: str, it0: int) -> int:
             else:
                 keep.append(line if line.endswith("\n") else line + "\n")
     tmp = f"{path}.tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         f.writelines(keep)
     Path(tmp).replace(path)
     return dropped
@@ -1017,7 +1035,7 @@ def rl(args: argparse.Namespace) -> int:
     # restored by --resume on any device.
     perm_gen = torch.Generator().manual_seed(args.seed)
     dev = torch.device(args.device)
-    init = json.load(open(args.init))
+    init = json.load(open(args.init, encoding="utf-8"))
     init_version = int(init.get("feature_version", 1))
     version = args.feature_version or init_version
     if version != init_version and init_version != 1:
@@ -1055,10 +1073,10 @@ def rl(args: argparse.Namespace) -> int:
             rollout_starts.read_headers(args.starts[1:]), env, args.allow_env_mismatch
         )
 
-    fights = [json.loads(line) for line in open(args.fights)]
+    fights = [json.loads(line) for line in open(args.fights, encoding="utf-8")]
     holdout: set[str] = set()
     for path in args.holdout or []:
-        holdout |= {json.loads(line)["file"] for line in open(path)}
+        holdout |= {json.loads(line)["file"] for line in open(path, encoding="utf-8")}
     if args.holdout_encounter:
         holdout |= {f["file"] for f in fights if f["encounter"] in args.holdout_encounter}
     rooms = set(args.rooms.split(","))
@@ -1090,7 +1108,9 @@ def rl(args: argparse.Namespace) -> int:
         evals.append(
             (
                 os.path.basename(path),
-                _combat_states(sts2_rs, [json.loads(line) for line in open(path)]),
+                _combat_states(
+                    sts2_rs, [json.loads(line) for line in open(path, encoding="utf-8")]
+                ),
             )
         )
     print(
@@ -1150,7 +1170,7 @@ def rl(args: argparse.Namespace) -> int:
         print(f"[rollout_learn rl] --resume: no {ckpt_path}, starting fresh", flush=True)
 
     def log(row: dict[str, Any]) -> None:
-        with open(metrics_path, "a") as f:
+        with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
 
     def net_json(temperature: float, meta: dict | None = None) -> dict:
@@ -1228,7 +1248,7 @@ def rl(args: argparse.Namespace) -> int:
             }
             out = net_json(args.temperature, meta)
             tmp = f"{args.out}.tmp"
-            json.dump(out, open(tmp, "w"))
+            json.dump(out, open(tmp, "w", encoding="utf-8"))
             Path(tmp).replace(args.out)
         if it == args.iters:
             break

@@ -113,14 +113,14 @@ def select_files(
     unknown uploaders sort last. Ties break by file name.
     """
     listing = {}
-    with open(f"{root}/_listing.jsonl") as fh:
+    with open(f"{root}/_listing.jsonl", encoding="utf-8") as fh:
         for line in fh:
             d = json.loads(line)
             listing[d["run_hash"]] = d
     strength = {}
-    for p in json.load(open(f"{root}/_players.json")):
+    for p in json.load(open(f"{root}/_players.json", encoding="utf-8")):
         strength[p["player_token"]] = p.get("a10_win_rate_lo95") or 0.0
-    pro_ids = {json.loads(line)["player"] for line in open(pro_set)}
+    pro_ids = {json.loads(line)["player"] for line in open(pro_set, encoding="utf-8")}
     rows, census = [], Counter()
     for path in sorted(Path(root, character.lower()).glob("*/*.replay.ndjson.gz")):
         h = _header(str(path))

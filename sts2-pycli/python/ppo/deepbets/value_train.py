@@ -401,7 +401,7 @@ def cmd_train(args: argparse.Namespace) -> int:
     rng = np.random.default_rng(args.seed)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     log = vd.Progress(args.out + ".log", f"train {os.path.basename(args.out)}")
-    lmeta = json.load(open(os.path.join(args.labels, "manifest.json")))
+    lmeta = json.load(open(os.path.join(args.labels, "manifest.json"), encoding="utf-8"))
     t0 = time.time()
     d = load_label_data(args.labels)
     rows = train_rows(d, args.frac)
@@ -429,7 +429,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         f"species {len(d.species)}, variant {args.variant}, hidden {args.hidden}, device {dev_t}, "
         f"load {time.time() - t0:.0f}s")  # fmt: skip
     metrics_path = args.out + ".metrics.jsonl"
-    with open(metrics_path, "w"):
+    with open(metrics_path, "w", encoding="utf-8"):
         pass
     for ep in range(args.epochs):
         model.train()
@@ -459,7 +459,7 @@ def cmd_train(args: argparse.Namespace) -> int:
             row |= {
                 f"dev_{k}": v for k, v in eval_rows(torch, model, bt, ys, gid_t, dev, dev_t).items()
             }
-        with open(metrics_path, "a") as f:
+        with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
         if (ep + 1) % max(1, args.log_every) == 0 or ep + 1 == args.epochs:
             log(json.dumps({k: round(v, 5) if isinstance(v, float) else v for k, v in row.items()}))
@@ -530,7 +530,7 @@ def load_net(path: str) -> dict[str, Any]:
     """`{"model", "norm", "vocab", "species", "variant", "meta", ...}` on the CPU."""
     import torch
 
-    obj = json.load(open(path))
+    obj = json.load(open(path, encoding="utf-8"))
     if obj.get("schema") != SCHEMA:
         raise SystemExit(f"{path}: schema {obj.get('schema')!r}, expected {SCHEMA!r}")
     model = build_model(
@@ -694,7 +694,7 @@ def _dev_eval(args: argparse.Namespace, net: str, log: vd.Progress) -> dict[str,
     if not os.path.exists(out):
         value_neq.main(["eval", "--net", net, "--labels", args.labels, "--refs-dev", args.refs_dev,
                         "--out", out, "--n-boot", str(args.n_boot)])  # fmt: skip
-    return json.load(open(out))
+    return json.load(open(out, encoding="utf-8"))
 
 
 def _brief(rep: dict[str, Any]) -> dict[str, Any]:

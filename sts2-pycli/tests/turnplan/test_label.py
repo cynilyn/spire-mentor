@@ -35,7 +35,7 @@ def _weak_fights(n: int) -> list[dict[str, Any]]:
 
 
 def _write_set(path: Path, fights: list[dict[str, Any]]) -> str:
-    path.write_text("".join(json.dumps(f) + "\n" for f in fights))
+    path.write_text("".join(json.dumps(f) + "\n" for f in fights), encoding="utf-8")
     return str(path)
 
 

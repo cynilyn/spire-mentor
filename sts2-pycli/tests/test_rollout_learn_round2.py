@@ -432,7 +432,10 @@ def _rl_argv(out: Path, fights: Path, *extra: str) -> list[str]:
 
 
 def _metrics(out: Path) -> list[dict[str, Any]]:
-    rows = [json.loads(line) for line in Path(f"{out}.metrics.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line)
+        for line in Path(f"{out}.metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     for r in rows:
         r.pop("time_s", None)
     return rows
@@ -667,7 +670,10 @@ def test_rl_mid_starts_search_reward_sb_v2_and_resume(tmp_path: Path) -> None:
     assert net["feature_version"] == 2 and net["monster_keys"]
     assert sts2_rs.LearnedPlayout(out.read_text()).state_dim == 96
     assert net["meta"]["starts"]["trajectories"] == 2
-    metrics = [json.loads(line) for line in Path(f"{out}.metrics.jsonl").read_text().splitlines()]
+    metrics = [
+        json.loads(line)
+        for line in Path(f"{out}.metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     its = [m for m in metrics if "eval" not in m]
     assert [m["it"] for m in its] == [1, 2]
     assert all(m["n_sb"] > 0 and np.isfinite(m["sb_gap"]) for m in its)
@@ -679,7 +685,10 @@ def test_rl_mid_starts_search_reward_sb_v2_and_resume(tmp_path: Path) -> None:
     i = argv.index("--iters")
     argv[i + 1] = "3"
     assert rollout_learn.main([*argv, "--resume"]) == 0
-    metrics = [json.loads(line) for line in Path(f"{out}.metrics.jsonl").read_text().splitlines()]
+    metrics = [
+        json.loads(line)
+        for line in Path(f"{out}.metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert [m["it"] for m in metrics if "eval" not in m] == [1, 2, 3]
 
 

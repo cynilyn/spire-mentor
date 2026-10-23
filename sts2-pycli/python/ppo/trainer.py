@@ -794,7 +794,7 @@ def _parse_proc_stat(line: str) -> tuple[int, int] | None:
 def _cpu_busy() -> tuple[int, int] | None:
     """Current (busy, total) CPU jiffies, or None where ``/proc/stat`` is absent."""
     try:
-        with open("/proc/stat") as f:
+        with open("/proc/stat", encoding="utf-8") as f:
             return _parse_proc_stat(f.readline())
     except OSError:
         return None
@@ -1110,7 +1110,7 @@ def train(cfg: PPOConfig, wheel: dict | None = None) -> RunPolicyNet:
             "wheel": worker_wheel,
             "py_src": run_py_src,
         }
-        with open(f"{cfg.save_path}.stats.jsonl", "a") as f:
+        with open(f"{cfg.save_path}.stats.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(stats) + "\n")
         if wb is not None:
             wb.log(

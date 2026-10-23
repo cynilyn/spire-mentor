@@ -758,7 +758,7 @@ def load_set(path: str) -> list[dict[str, Any]]:
     Raises:
         ValueError: On a duplicate key.
     """
-    fights = [json.loads(line) for line in open(path) if line.strip()]
+    fights = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
     seen: set[str] = set()
     for f in fights:
         if f["key"] in seen:
@@ -769,7 +769,7 @@ def load_set(path: str) -> list[dict[str, Any]]:
 
 def read_keys(path: str) -> list[str]:
     """Keys from a JSON list or a file of one key per line."""
-    text = open(path).read()
+    text = open(path, encoding="utf-8").read()
     try:
         keys = json.loads(text)
     except json.JSONDecodeError:
@@ -831,7 +831,7 @@ def slowest_first(cells: list[tuple[int, str, int]], hint_path: str) -> list[tup
     twice keeps its later line, as a retry appends it.
     """
     cost: dict[tuple[str, int], float] = {}
-    for line in open(hint_path):
+    for line in open(hint_path, encoding="utf-8"):
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
@@ -965,7 +965,7 @@ class _Progress:
         line = f"[combat_bench.run] {msg}"
         print(line, file=sys.stderr, flush=True)
         if self.path:
-            with open(self.path, "a") as f:
+            with open(self.path, "a", encoding="utf-8") as f:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
 
     def cell(self, end: str, block: int, n_blocks: int, force: bool = False) -> None:
@@ -1175,7 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
         if probe is not None:
             progress.emit(f"REFUSED: the spec cannot search ({key0} rep {rep0}): {probe}")
             return 2
-        with open(args.out, "a") as sink:
+        with open(args.out, "a", encoding="utf-8") as sink:
             if Path(args.out).stat().st_size == 0:
                 sink.write(json.dumps({"header": header}) + "\n")
                 sink.flush()

@@ -71,12 +71,13 @@ class Vocab:
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(
-            json.dumps({"card": self.card, "relic": self.relic, "power": self.power}) + "\n"
+            json.dumps({"card": self.card, "relic": self.relic, "power": self.power}) + "\n",
+            encoding="utf-8",
         )
 
     @classmethod
     def load(cls, path: str | Path) -> Vocab:
-        d = json.loads(Path(path).read_text())
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(d["card"], d["relic"], d["power"])
 
 

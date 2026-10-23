@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     md = render_run_markdown(a.log)
     if a.out:
-        Path(a.out).write_text(md)
+        Path(a.out).write_text(md, encoding="utf-8")
     else:
         sys.stdout.write(md)
     return 0

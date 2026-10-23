@@ -128,7 +128,7 @@ def scan_corpus(
 
 def index(args: argparse.Namespace) -> int:
     rows, reasons = scan_corpus(args.root, args.character, args.procs, args.include_abandoned)
-    with open(args.out, "w") as sink:
+    with open(args.out, "w", encoding="utf-8") as sink:
         for r in rows:
             sink.write(json.dumps(r) + "\n")
     print(
@@ -194,7 +194,7 @@ def rank_players(
 
 
 def select(args: argparse.Namespace) -> int:
-    rows = [json.loads(line) for line in open(args.index)]
+    rows = [json.loads(line) for line in open(args.index, encoding="utf-8")]
     ranked, ev = rank_players(
         rows, args.ascension, args.eval_build, args.min_runs, args.abandoned_as_losses
     )
@@ -217,7 +217,7 @@ def select(args: argparse.Namespace) -> int:
             f"[{lo:.1%}, {hi:.1%}] from {sum(1 for u in users if u in ev)} players"
         )
     if args.out_users:
-        with open(args.out_users, "w") as f:
+        with open(args.out_users, "w", encoding="utf-8") as f:
             json.dump([u for u, *_ in ranked[: args.top]], f)
     return 0
 

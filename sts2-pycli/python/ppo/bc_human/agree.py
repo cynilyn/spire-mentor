@@ -24,7 +24,7 @@ ROOM_NAMES = {0: "monster", 1: "elite", 2: "boss"}
 
 def load(data_dir: str) -> dict[str, Any]:
     parts = [dict(np.load(f)) for f in sorted(glob.glob(os.path.join(data_dir, "shard-*.npz")))]
-    vocab = json.load(open(os.path.join(data_dir, "vocab.json")))
+    vocab = json.load(open(os.path.join(data_dir, "vocab.json"), encoding="utf-8"))
     inv = {i: k for k, i in vocab.items()}
     return {"parts": parts, "inv": inv}
 
@@ -33,7 +33,7 @@ class Net:
     """Numpy twin of `sts2_mcts::rollout_net` for v1 files (no species table)."""
 
     def __init__(self, path: str) -> None:
-        d = json.load(open(path))
+        d = json.load(open(path, encoding="utf-8"))
         if d.get("feature_version", 1) not in (1, 3):
             raise ValueError(f"{path}: only v1/v3 nets are supported here")
         self.w1, self.b1 = np.asarray(d["w1"]), np.asarray(d["b1"])

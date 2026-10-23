@@ -577,11 +577,11 @@ def test_honest_search_ignores_run_level_stream_cursors(engine_env):
 
 
 def _write_set(path: Path, fights: list[dict[str, Any]]) -> None:
-    path.write_text("".join(json.dumps(f) + "\n" for f in fights))
+    path.write_text("".join(json.dumps(f) + "\n" for f in fights), encoding="utf-8")
 
 
 def _lines(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text().splitlines()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def _argv(set_path: Path, out: Path, *extra: str) -> list[str]:

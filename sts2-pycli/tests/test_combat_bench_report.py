@@ -686,10 +686,10 @@ def test_expected_cells_follow_the_header_selection(tmp_path: Path) -> None:
         R.selected_keys({"select": sel(["z"], keys=["z"])}, fs)
 
     path = _write_played(tmp_path, "x", sha, [_cell(k, r) for k in ("b", "d") for r in (0, 1)])
-    text = Path(path).read_text().splitlines()
+    text = Path(path).read_text(encoding="utf-8").splitlines()
     head = json.loads(text[0])
     head["header"]["select"] = sel(["b", "d"], keys=["b", "d"])
-    Path(path).write_text("\n".join([json.dumps(head), *text[1:]]) + "\n")
+    Path(path).write_text("\n".join([json.dumps(head), *text[1:]]) + "\n", encoding="utf-8")
     out = tmp_path / "r.json"
     assert R.main(["--set", set_path, path, "--json", str(out), "--boot", "99"]) == 0
     rep = json.loads(out.read_text())

@@ -106,13 +106,13 @@ def split_of(run_file: str, scheme: str) -> str | None:
 
 
 def read_bank(path: str) -> list[dict[str, Any]]:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
 def holdout(rows: list[dict[str, Any]], boss800: str = BOSS800) -> dict[str, set[str]]:
     """The three held-out run sets and their union (`all`)."""
-    with open(boss800) as f:
+    with open(boss800, encoding="utf-8") as f:
         b8 = {json.loads(line)["file"] for line in f if line.strip()}
     wg = {r["file"] for r in rows if r["encounter"] == WG}
     bench = holdout_runs()
@@ -279,7 +279,7 @@ def _builtin_playout() -> Any:
     if _LP is None:
         import sts2_rs
 
-        with open(vd.BUILTIN_NET) as f:
+        with open(vd.BUILTIN_NET, encoding="utf-8") as f:
             _LP = sts2_rs.LearnedPlayout(f.read())
     return _LP
 
@@ -584,7 +584,7 @@ class Parts:
 
     def write(self, recs: list[dict[str, Any]]) -> None:
         if self.f is None:
-            self.f = open(os.path.join(self.d, f"part-{self.n:04d}.jsonl"), "w")
+            self.f = open(os.path.join(self.d, f"part-{self.n:04d}.jsonl"), "w", encoding="utf-8")
         for r in recs:
             self.f.write(json.dumps(r, separators=(",", ":")) + "\n")
         self.f.flush()
@@ -684,7 +684,7 @@ def run_gen(args: argparse.Namespace) -> int:
     held = holdout(rows, args.boss800)
     power = None
     if args.power and os.path.exists(args.power):
-        with open(args.power) as f:
+        with open(args.power, encoding="utf-8") as f:
             power = json.load(f)
     scheme = args.scheme or (power or {}).get("scheme")
     if args.mode == "pilot":
@@ -706,7 +706,7 @@ def run_gen(args: argparse.Namespace) -> int:
     hdr = header(args, scheme, power)
     hpath = os.path.join(args.out, "header.json")
     if os.path.exists(hpath):
-        with open(hpath) as f:
+        with open(hpath, encoding="utf-8") as f:
             old = json.load(f)
         diff = [
             k
@@ -719,10 +719,14 @@ def run_gen(args: argparse.Namespace) -> int:
         vd.write_json(hpath, hdr)
     traj_path = os.path.join(args.out, "traj.jsonl")
     if not os.path.exists(traj_path):
-        with open(traj_path, "w") as f:
+        with open(traj_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(hdr) + "\n")
     done_path = os.path.join(args.out, "done.txt")
-    done = set(open(done_path).read().split()) if os.path.exists(done_path) else set()
+    done = (
+        set(open(done_path, encoding="utf-8").read().split())
+        if os.path.exists(done_path)
+        else set()
+    )
     todo = [j for j in jobs if f"{fight_key(j['row'])}|{j['rep']}" not in done]
     # Long fights first (bosses), so the tail is short; stable random within.
     rnd = random.Random(0)
@@ -747,8 +751,8 @@ def run_gen(args: argparse.Namespace) -> int:
     failed = None
     with (
         get_context("spawn").Pool(args.procs, initializer=worker_init) as pool,
-        open(traj_path, "a") as tf,
-        open(done_path, "a") as df,
+        open(traj_path, "a", encoding="utf-8") as tf,
+        open(done_path, "a", encoding="utf-8") as df,
     ):
         for res in pool.imap_unordered(play_job, todo):
             if res["env_hash"] != want_hash:
@@ -842,10 +846,10 @@ def export_rl2(gen_dir: str, per_shard: int = 20000) -> dict[str, int]:
         if s not in writers:
             d = os.path.join(root, s)
             writers[s] = ShardWriter(d, per_shard)
-            with open(os.path.join(d, FEATURES_META), "w") as f:
+            with open(os.path.join(d, FEATURES_META), "w", encoding="utf-8") as f:
                 json.dump({"feature_version": 1}, f)
             _, meta = subtract_bench_runs([], lambda x: x, tag="[combat_ctx export]")
-            with open(os.path.join(d, BENCH_META), "w") as f:
+            with open(os.path.join(d, BENCH_META), "w", encoding="utf-8") as f:
                 json.dump(meta, f)
         writers[s].add([rl2_row(r)])
         counts[s] += 1

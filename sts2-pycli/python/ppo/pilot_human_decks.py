@@ -136,7 +136,7 @@ def tagged_cards(pool_path: str | None = None, loc_path: str = LOC_CARDS) -> dic
     Exhaust keyword is not in the description). `selfdmg`: "Lose {HpLoss}" or
     pays off losing HP.
     """
-    loc = json.load(open(loc_path))
+    loc = json.load(open(loc_path, encoding="utf-8"))
     exhaust, selfdmg = set(), set()
     for k, v in loc.items():
         if not k.endswith(".description"):
@@ -150,7 +150,7 @@ def tagged_cards(pool_path: str | None = None, loc_path: str = LOC_CARDS) -> dic
         # Card text matches other characters' cards and curses too; restrict
         # to the character's reward pool (`--pool`: ids offered in >= 0.3% of
         # its human combat rewards).
-        pool = set(json.load(open(pool_path)))
+        pool = set(json.load(open(pool_path, encoding="utf-8")))
         exhaust &= pool
         selfdmg &= pool
     return {"exhaust": exhaust, "selfdmg": selfdmg}
@@ -758,15 +758,15 @@ def extract_run(
 
 
 def extract(args: argparse.Namespace) -> int:
-    rows = [json.loads(line) for line in open(args.index)]
+    rows = [json.loads(line) for line in open(args.index, encoding="utf-8")]
     rows = [r for r in rows if r["build"] == args.build and r["ascension"] == args.ascension]
-    users = set(json.load(open(args.users))) if args.users else set()
+    users = set(json.load(open(args.users, encoding="utf-8"))) if args.users else set()
     pro = [r for r in rows if r["username"] in users]
     rest = [r for r in rows if r["username"] not in users]
     rng = random.Random(args.sample_seed)
     others = rng.sample(rest, min(args.sample_others, len(rest)))
     n_runs = n_fights = 0
-    with open(args.out, "w") as sink:
+    with open(args.out, "w", encoding="utf-8") as sink:
         for cohort, rs in (("pro", pro), ("other", others)):
             for r in rs:
                 fights = extract_run(r["file"], args.ascension, args.build, args.character)
@@ -931,7 +931,7 @@ def play_fight(job: tuple[Any, ...]) -> dict[str, Any]:
 def play(args: argparse.Namespace) -> int:
     t = tagged_cards(args.pool)
     tags = set(args.focus.split(",")) if args.focus else t["exhaust"] | t["selfdmg"]
-    fights = [json.loads(line) for line in open(args.fights)]
+    fights = [json.loads(line) for line in open(args.fights, encoding="utf-8")]
     if args.only_tagged:
         fights = [
             f
@@ -946,7 +946,7 @@ def play(args: argparse.Namespace) -> int:
     arms_sel = set(args.arms.split(",")) if args.arms else None
     done = set()
     if os.path.exists(args.out):
-        done = {json.loads(line)["key"] for line in open(args.out)}
+        done = {json.loads(line)["key"] for line in open(args.out, encoding="utf-8")}
 
     def seed_of(i: int, f: dict[str, Any]) -> int:
         return i + 1 if args.seed_by == "index" else _fight_seed(f"{f['file']}:{f['floor']}")
@@ -958,7 +958,10 @@ def play(args: argparse.Namespace) -> int:
     ]
     t0 = time.time()
     n = err = 0
-    with get_context("spawn").Pool(args.procs) as pool, open(args.out, "a") as sink:
+    with (
+        get_context("spawn").Pool(args.procs) as pool,
+        open(args.out, "a", encoding="utf-8") as sink,
+    ):
         for row in pool.imap_unordered(play_fight, jobs):
             sink.write(json.dumps(row) + "\n")
             sink.flush()
@@ -979,9 +982,11 @@ def play(args: argparse.Namespace) -> int:
 def report(args: argparse.Namespace) -> int:
     t = tagged_cards(args.pool)
     tags = set(args.focus.split(",")) if args.focus else t["exhaust"] | t["selfdmg"]
-    fights = {f"{f['file']}:{f['floor']}": f for f in map(json.loads, open(args.fights))}
-    played = [r for r in map(json.loads, open(args.played)) if "error" not in r]
-    errors = sum(1 for r in map(json.loads, open(args.played)) if "error" in r)
+    fights = {
+        f"{f['file']}:{f['floor']}": f for f in map(json.loads, open(args.fights, encoding="utf-8"))
+    }
+    played = [r for r in map(json.loads, open(args.played, encoding="utf-8")) if "error" not in r]
+    errors = sum(1 for r in map(json.loads, open(args.played, encoding="utf-8")) if "error" in r)
     print(f"fights played {len(played)}, unbuildable {errors}")
     print(f"exhaust ({len(t['exhaust'])}): {sorted(t['exhaust'])}")
     print(f"self-damage ({len(t['selfdmg'])}): {sorted(t['selfdmg'])}\n")

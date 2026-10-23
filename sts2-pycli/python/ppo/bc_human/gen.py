@@ -111,7 +111,10 @@ def main() -> None:
     tot: Counter[str] = Counter()
     fight_id = 0
     t0 = time.time()
-    with Pool(args.procs) as p, open(os.path.join(args.out, "runs.jsonl"), "w") as log:
+    with (
+        Pool(args.procs) as p,
+        open(os.path.join(args.out, "runs.jsonl"), "w", encoding="utf-8") as log,
+    ):
         for n, res in enumerate(p.imap_unordered(run_rows, files, chunksize=2), 1):
             split = "holdout" if is_holdout(res["file"], args.holdout_frac) else "train"
             remap: dict[int, int] = {}
@@ -143,7 +146,7 @@ def main() -> None:
                 )
     for w in writers.values():
         w.flush()
-    with open(os.path.join(args.out, "summary.json"), "w") as fh:
+    with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(dict(tot), fh, indent=1)
     print(json.dumps(dict(tot), indent=1))
 

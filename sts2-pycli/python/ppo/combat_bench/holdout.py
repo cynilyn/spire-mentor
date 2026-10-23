@@ -46,7 +46,7 @@ def holdout_runs(manifest_path: str | None = None) -> set[str]:
         raise FileNotFoundError(f"no combat bench MANIFEST next to {MANIFEST_PATH}")
     runs: set[str] = set()
     for path in paths:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             runs |= set(json.load(f)["held_out_runs"])
     return runs
 

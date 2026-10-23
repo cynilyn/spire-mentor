@@ -409,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     def log(msg: str) -> None:
         line = f"[turnplan.train] {msg}"
         print(line, file=sys.stderr, flush=True)
-        with open(log_path, "a") as f:
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
 
     cfg = TrainConfig(

@@ -81,7 +81,7 @@ def _write_dir(out: Path, records: list[dict[str, Any]]) -> None:
     cells: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for r in records:
         cells.setdefault((r["key"], r["rep"]), []).append(r)
-    with open(out / "cells.jsonl", "w") as ledger:
+    with open(out / "cells.jsonl", "w", encoding="utf-8") as ledger:
         for n, ((key, rep), recs) in enumerate(cells.items()):
             shard = f"shard-0-{n}.jsonl.gz"
             with gzip.open(out / shard, "wt") as f:

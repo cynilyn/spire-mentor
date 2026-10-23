@@ -40,7 +40,7 @@ def read_cells(path: str) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]
     """Header and the cells per key; a retried cell keeps its last record."""
     header: dict[str, Any] = {}
     last: dict[tuple[str, int], dict[str, Any]] = {}
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             row = json.loads(line)
             if "header" in row:
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = [json.loads(line) for line in pool_raw.decode().splitlines() if line.strip()]
     kept = [r for r in rows if r["key"] in cells and contested(cells[r["key"]])]
     played_keys = sum(1 for r in rows if r["key"] in cells)
-    with open(args.out, "w") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         for r in kept:
             fh.write(json.dumps(r, sort_keys=True) + "\n")
     sha = hashlib.sha256(open(args.out, "rb").read()).hexdigest()
@@ -114,9 +114,9 @@ def main(argv: list[str] | None = None) -> int:
             "note": args.note,
         },
     }
-    manifest = json.load(open(args.manifest))
+    manifest = json.load(open(args.manifest, encoding="utf-8"))
     manifest["sets"][args.out.rsplit("/", 1)[-1]] = entry
-    with open(args.manifest, "w") as fh:
+    with open(args.manifest, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=1, sort_keys=False)
         fh.write("\n")
     print(json.dumps({k: v for k, v in entry.items() if k != "selection"}, indent=1))

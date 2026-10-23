@@ -337,7 +337,7 @@ class _Progress:
     def emit(self, msg: str) -> None:
         line = f"[turnplan.label] {msg}"
         print(line, file=sys.stderr, flush=True)
-        with open(self.path, "a") as f:
+        with open(self.path, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
 
     def position(self, p: dict[str, Any]) -> None:
@@ -548,7 +548,10 @@ def main(argv: list[str] | None = None) -> int:
             f.write(b"\n")
 
     try:
-        with open(ledger_path, "a") as ledger, open(out / "errors.jsonl", "a") as errors:
+        with (
+            open(ledger_path, "a", encoding="utf-8") as ledger,
+            open(out / "errors.jsonl", "a", encoding="utf-8") as errors,
+        ):
 
             def finish(conn: Any, rec: dict[str, Any]) -> None:
                 cell = running.pop(conn)

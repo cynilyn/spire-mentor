@@ -280,7 +280,7 @@ def read_traj(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     header = None
     recs: list[dict[str, Any]] = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
@@ -322,7 +322,7 @@ def select_fights(
     """
     holdout: set[str] = set()
     for path in holdout_files or []:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             holdout |= {json.loads(line)["file"] for line in f if line.strip()}
     if holdout_encounters:
         holdout |= {f["file"] for f in fights if f["encounter"] in holdout_encounters}
@@ -332,7 +332,7 @@ def select_fights(
 
 
 def traj(args: argparse.Namespace) -> int:
-    with open(args.fights) as f:
+    with open(args.fights, encoding="utf-8") as f:
         fights = [json.loads(line) for line in f if line.strip()]
     rooms = set(args.rooms.split(","))
     pool, bench_meta, holdout = select_fights(
@@ -380,7 +380,7 @@ def traj(args: argparse.Namespace) -> int:
             raise SystemExit(f"{args.out}: header differs in {diff}; use a new --out")
     else:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             f.write(json.dumps(header) + "\n")
     jobs = [
         (fight, rep, args.rep0, spec, args.max_steps, args.branch_reps, args.branch_frac)
@@ -398,7 +398,7 @@ def traj(args: argparse.Namespace) -> int:
     ends: dict[str, int] = {}
     with (
         get_context("spawn").Pool(args.procs, initializer=_worker_init, initargs=(env,)) as p,
-        open(args.out, "a") as out,
+        open(args.out, "a", encoding="utf-8") as out,
     ):
         for rec in p.imap_unordered(traj_fight, jobs):
             out.write(json.dumps(rec) + "\n")
@@ -641,7 +641,7 @@ class SearchTargets:
         self.values: dict[str, float | None] = {}
         self.ignored = 0
         if os.path.exists(path):
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         row = json.loads(line)
@@ -660,7 +660,7 @@ class SearchTargets:
                 self._pool = get_context("spawn").Pool(
                     self.procs, initializer=_worker_init, initargs=(self.env,)
                 )
-            with open(self.path, "a") as f:
+            with open(self.path, "a", encoding="utf-8") as f:
                 for sid, v in self._pool.imap_unordered(
                     _search_worker, [(s, self.sims) for s in need]
                 ):

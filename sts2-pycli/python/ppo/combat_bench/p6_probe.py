@@ -113,7 +113,7 @@ def log(path: str | None, msg: str) -> None:
     line = f"{_now()} {msg}"
     print(line, flush=True)
     if path:
-        with open(path, "a") as fh:
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
 
@@ -422,7 +422,7 @@ def cmd_positions(args: argparse.Namespace) -> int:
         "fights": fight_log,
         "wall_s": round(time.perf_counter() - t_start, 1),
     }
-    with open(args.out, "w") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"header": header}) + "\n")
         for r in out_rows:
             fh.write(json.dumps(r) + "\n")
@@ -579,7 +579,7 @@ def _done_ids(path: str) -> set[str]:
     done: set[str] = set()
     if not os.path.exists(path):
         return done
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             row = json.loads(line)
             if "header" in row or "error" in row:
@@ -590,7 +590,7 @@ def _done_ids(path: str) -> set[str]:
 
 def cmd_probe(args: argparse.Namespace) -> int:
     fights, set_sha = load_fights(args.set)
-    with open(args.positions) as fh:
+    with open(args.positions, encoding="utf-8") as fh:
         pos_header = json.loads(fh.readline())["header"]
         positions = [json.loads(line) for line in fh if line.strip()]
     if pos_header["set_sha256"] != set_sha:
@@ -624,10 +624,10 @@ def cmd_probe(args: argparse.Namespace) -> int:
     }
     done = _done_ids(args.out)
     if not os.path.exists(args.out):
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"header": header}) + "\n")
     else:
-        with open(args.out) as fh:
+        with open(args.out, encoding="utf-8") as fh:
             old = json.loads(fh.readline())["header"]
         for k in ("positions_sha256", "n", "k_chance", "leaf_cap", "pilot", "env"):
             if old.get(k) != header[k]:
@@ -664,7 +664,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
             k += 1
             if "error" in out:
                 out = {"pos_id": pid} | out
-            with open(args.out, "a") as fh:
+            with open(args.out, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(out) + "\n")
             if "error" in out:
                 log(plog, f"  {pid} ERROR {out['error']}")
@@ -783,7 +783,7 @@ def verdict(s: dict[str, Any]) -> list[str]:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    with open(args.results) as fh:
+    with open(args.results, encoding="utf-8") as fh:
         header = json.loads(fh.readline())["header"]
         rows = [json.loads(line) for line in fh if line.strip()]
     last: dict[str, dict[str, Any]] = {}
@@ -796,7 +796,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     rep["verdict"] = verdict(rep["all"])
     print(json.dumps({k: v for k, v in rep.items() if k != "header"}, indent=1))
     if args.json:
-        with open(args.json, "w") as fh:
+        with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(rep, fh, indent=1)
     return 0
 

@@ -95,7 +95,7 @@ class Rl2Explain:
     def __init__(self, path: str | None) -> None:
         import sts2_rs
 
-        with open(path or vd.BUILTIN_NET) as f:
+        with open(path or vd.BUILTIN_NET, encoding="utf-8") as f:
             text = f.read()
         self.no_early_end = bool(json.loads(text).get("no_early_end_turn"))
         self.lp = sts2_rs.LearnedPlayout(text)
@@ -120,7 +120,7 @@ class Rl2Torch:
         from ppo.rollout_learn import _load_playout_net
 
         torch.set_num_threads(1)
-        with open(path or vd.BUILTIN_NET) as f:
+        with open(path or vd.BUILTIN_NET, encoding="utf-8") as f:
             net = json.load(f)
         self.torch = torch
         self.net = _load_playout_net(torch, net).eval()
@@ -461,7 +461,7 @@ def cmd_anchor(args: argparse.Namespace) -> int:
     t0 = time.time()
     res["parity"] = logit_parity(None, jobs[: args.parity_jobs])
     log(f"logit parity: {res['parity']} ({time.time() - t0:.0f}s)")
-    with open(vd.BUILTIN_NET) as f:
+    with open(vd.BUILTIN_NET, encoding="utf-8") as f:
         lp = sts2_rs.LearnedPlayout(f.read())
     t0 = time.time()
     states = [rollout_starts.build_fight(j["row"], j["build_seed"]).combat_state() for j in jobs]
@@ -488,7 +488,7 @@ def cmd_anchor(args: argparse.Namespace) -> int:
     d["pass"] = abs(d["diff"]) <= 0.02 and d["lo"] <= 0 <= d["hi"]
     res["py_minus_rust"] = d
     log(f"W_py {res['py']}; W_py - W_rust {d} ({time.time() - t0:.0f}s)")
-    with open(os.path.join(args.out, "anchor.json"), "w") as f:
+    with open(os.path.join(args.out, "anchor.json"), "w", encoding="utf-8") as f:
         json.dump(res, f, indent=1)
     print(json.dumps(res, indent=1))
     return 0
@@ -507,7 +507,7 @@ def select_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     rows = select_rows(args)
-    with open(G.BOSS800) as f:
+    with open(G.BOSS800, encoding="utf-8") as f:
         b8 = {json.loads(line)["file"] for line in f if line.strip()}
     if is_student(args.policy) and any(r["file"] in b8 for r in rows):
         if not args.final:
@@ -539,7 +539,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     }
     print(json.dumps(out, indent=1))
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             json.dump({"summary": out, "results": res}, f)
     return 0
 
@@ -567,7 +567,7 @@ def load_play(paths: list[str]) -> tuple[np.ndarray, list[dict[str, Any]], list[
     that played the same jobs under the same protocol."""
     won, jobs, summ = [], None, []
     for p in paths:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             d = json.load(f)
         res = sorted(d["results"], key=lambda r: r["i"])
         if any("file" not in r for r in res):
@@ -621,7 +621,7 @@ def cmd_contrast(args: argparse.Namespace) -> int:
     }  # fmt: skip
     print(json.dumps(out, indent=1))
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=1)
     return 0
 
@@ -653,7 +653,7 @@ def cmd_select_temperature(args: argparse.Namespace) -> int:
            "wins": {str(k): v for k, v in wins.items()}, "T_star": best}  # fmt: skip
     print(json.dumps(out, indent=1))
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=1)
     return 0
 

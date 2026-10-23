@@ -86,7 +86,7 @@ def main() -> None:
                 break
     with Pool(args.workers, _init, (args.mai_offset,)) as p:
         rows = [r for rs in p.imap_unordered(one, picked) for r in rs]
-    with open(args.out, "w") as fh:
+    with open(args.out, "w", encoding="utf-8") as fh:
         for r in rows:
             fh.write(json.dumps(r) + "\n")
     fights = [r for r in rows if "crash" not in r]

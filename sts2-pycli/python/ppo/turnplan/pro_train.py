@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
 
         def log(msg: str, path: Path = log_path) -> None:
             print(f"[pro_train] {msg}", file=sys.stderr, flush=True)
-            with path.open("a") as f:
+            with path.open("a", encoding="utf-8") as f:
                 f.write(msg + "\n")
 
         log(f"{len(tr)} fit / {len(val)} val / {len(holdout)} holdout positions")

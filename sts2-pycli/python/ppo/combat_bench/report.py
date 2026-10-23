@@ -121,7 +121,7 @@ def load_set(path: str) -> dict[str, dict[str, Any]]:
         BenchError: on a duplicate key.
     """
     fights: dict[str, dict[str, Any]] = {}
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             if not line.strip():
                 continue
@@ -200,7 +200,7 @@ def load_played(path: str, name: str, fights: dict[str, dict[str, Any]]) -> Play
     Raises:
         BenchError: when line 1 is not a `combat_bench.played.v1` header.
     """
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         lines = [ln for ln in fh if ln.strip()]
     if not lines:
         raise BenchError(f"{path}: empty played file")
@@ -1817,7 +1817,7 @@ def main(argv: list[str] | None = None) -> int:
     rep["set"]["fights_in_set"] = n_set
     print_report(rep)
     if args.json:
-        with open(args.json, "w") as fh:
+        with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(_jsonable(rep), fh, indent=1)
         print(f"wrote {args.json}")
     return 0

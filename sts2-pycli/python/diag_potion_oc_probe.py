@@ -126,7 +126,7 @@ def main() -> int:
     jobs = [(args.seed_base + i, args.ascension) for i in range(args.runs)]
     with (
         Pool(args.procs) as pool,
-        open(out / "probe_critic_rows.jsonl", "w") as sink,
+        open(out / "probe_critic_rows.jsonl", "w", encoding="utf-8") as sink,
     ):
         for i, (rows, summary) in enumerate(pool.imap_unordered(_one_run, jobs), 1):
             wins += summary["won"]

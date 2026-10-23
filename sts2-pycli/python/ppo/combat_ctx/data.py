@@ -229,7 +229,7 @@ def build_cache(gen_dirs: list[str], out_dir: str, procs: int, log: Any = print)
         meta = {"ids": [m[0] for m in d["meta"]], "files": [m[1] for m in d["meta"]],
                 "keys": [m[2] for m in d["meta"]], "reps": [m[3] for m in d["meta"]],
                 "ts": [m[4] for m in d["meta"]]}  # fmt: skip
-        with open(os.path.join(out_dir, f"{s}.meta.json"), "w") as f:
+        with open(os.path.join(out_dir, f"{s}.meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f)
         summary["splits"][s] = {
             "decisions": len(d["n_tok"]),
@@ -240,7 +240,7 @@ def build_cache(gen_dirs: list[str], out_dir: str, procs: int, log: Any = print)
     summary["skipped"] = dict(skipped)
     summary["vocab"] = T.vocab().digest()
     summary["n_cont"] = T.N_CONT
-    with open(os.path.join(out_dir, "cache.json"), "w") as f:
+    with open(os.path.join(out_dir, "cache.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=1)
     return summary
 
@@ -297,7 +297,7 @@ class Split:
     def __init__(self, cache_dir: str, split: str) -> None:
         z = np.load(os.path.join(cache_dir, f"{split}.npz"))
         self.a: dict[str, np.ndarray] = {k: z[k] for k in z.files}
-        with open(os.path.join(cache_dir, f"{split}.meta.json")) as f:
+        with open(os.path.join(cache_dir, f"{split}.meta.json"), encoding="utf-8") as f:
             self.meta = json.load(f)
         self.split = split
         self.n = len(self.a["n_tok"])
@@ -419,7 +419,7 @@ def cmd_cache(args: argparse.Namespace) -> int:
     print(json.dumps(s, indent=1))
     if os.path.exists(os.path.join(args.out, "train.npz")):
         rep = vocab_report(args.out)
-        with open(os.path.join(args.out, "vocab_report.json"), "w") as f:
+        with open(os.path.join(args.out, "vocab_report.json"), "w", encoding="utf-8") as f:
             json.dump(rep, f, indent=1)
         print(json.dumps(rep, indent=1))
     return 0

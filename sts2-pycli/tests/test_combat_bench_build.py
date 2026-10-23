@@ -755,7 +755,7 @@ def _bench_corpus(tmp_path: Path) -> list[str]:
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text().splitlines()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def test_a_default_build_writes_the_frozen_v1_outputs(tmp_path: Path) -> None:

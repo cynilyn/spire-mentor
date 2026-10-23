@@ -70,7 +70,7 @@ def _playout_net() -> Any:
         import sts2_rs
 
         ident = vd.playout_net_identity()
-        with open(ident["path"]) as f:
+        with open(ident["path"], encoding="utf-8") as f:
             _LP = sts2_rs.LearnedPlayout(f.read())
     return _LP
 
@@ -426,7 +426,7 @@ def cmd_states(args: argparse.Namespace) -> int:
         if not shard:
             return
         path = os.path.join(args.out, f"specs-{shard_i:05d}.jsonl")
-        with open(path + ".tmp", "w") as f:
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
             for s in shard:
                 f.write(json.dumps(s, separators=(",", ":")) + "\n")
         pathlib.Path(path + ".tmp").replace(path)
@@ -466,7 +466,7 @@ def cmd_states(args: argparse.Namespace) -> int:
 
 def _iter_kinds(d: str):
     for p in vd.shard_paths(d, "specs-", ".jsonl"):
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             for line in f:
                 s = json.loads(line)
                 yield s["split"], s["kind"]
@@ -649,7 +649,7 @@ def cmd_label(args: argparse.Namespace) -> int:
     log = vd.Progress(os.path.join(args.out, "progress.log"), "label")
     env = vd.worker_env(args.rollout_net)
     vd.init_worker(env)
-    smeta = json.load(open(os.path.join(args.specs, "manifest.json")))
+    smeta = json.load(open(os.path.join(args.specs, "manifest.json"), encoding="utf-8"))
     net = vd.playout_net_identity()
     vd.check_same_net(smeta["playout_net"], net, "specs vs this run")
     traj = smeta["args"]["traj"]
@@ -667,7 +667,7 @@ def cmd_label(args: argparse.Namespace) -> int:
     }
     mpath = os.path.join(args.out, "manifest.json")
     if os.path.exists(mpath):
-        old = json.load(open(mpath))
+        old = json.load(open(mpath, encoding="utf-8"))
         vd.check_same_net(old["playout_net"], net, "existing labels vs this run")
         if old["k"] != args.k:
             raise SystemExit(f"{args.out} holds K={old['k']} labels; this run asks K={args.k}")
@@ -809,8 +809,8 @@ def cmd_refs(args: argparse.Namespace) -> int:
     log = vd.Progress(os.path.join(args.out, "progress.log"), f"refs-{args.split}")
     env = vd.worker_env(args.rollout_net)
     vd.init_worker(env)
-    smeta = json.load(open(os.path.join(args.specs, "manifest.json")))
-    lmeta = json.load(open(os.path.join(args.labels, "manifest.json")))
+    smeta = json.load(open(os.path.join(args.specs, "manifest.json"), encoding="utf-8"))
+    lmeta = json.load(open(os.path.join(args.labels, "manifest.json"), encoding="utf-8"))
     net = vd.playout_net_identity()
     vd.check_same_net(smeta["playout_net"], net, "specs vs this run")
     vd.check_same_net(lmeta["playout_net"], net, "labels vs this run")
@@ -847,7 +847,7 @@ def cmd_refs(args: argparse.Namespace) -> int:
     }
     mpath = os.path.join(args.out, "manifest.json")
     if os.path.exists(mpath):
-        old = json.load(open(mpath))
+        old = json.load(open(mpath, encoding="utf-8"))
         same = ("n_ref", "n_r", "n_fresh", "split")
         if any(old[k] != meta[k] for k in same) or old["strata"] != meta["strata"]:
             raise SystemExit(f"{args.out} holds references of another design; use a new --out")
@@ -925,7 +925,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
     """values_many playouts per CPU second on spec states, single-threaded."""
     os.environ["RAYON_NUM_THREADS"] = "1"
     vd.init_worker(vd.worker_env(args.rollout_net))
-    smeta = json.load(open(os.path.join(args.specs, "manifest.json")))
+    smeta = json.load(open(os.path.join(args.specs, "manifest.json"), encoding="utf-8"))
     traj = smeta["args"]["traj"]
     groups = _spec_groups(args.specs, None)
     rng = random.Random(args.seed)

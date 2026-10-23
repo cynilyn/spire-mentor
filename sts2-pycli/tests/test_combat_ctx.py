@@ -92,7 +92,7 @@ def _toks(snap: dict, cs, acts, arm: str = "S_ctx") -> dict:
 
 
 def _read(path) -> str:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -376,7 +376,7 @@ def test_split_schemes() -> None:
 
 
 def test_jobs_hold_out_every_holdout_run() -> None:
-    with open(G.BOSS800) as f:
+    with open(G.BOSS800, encoding="utf-8") as f:
         b8 = [json.loads(line) for line in f][:5]
     bench = sorted(G.holdout_runs())[:5]
     rows = []
@@ -1196,7 +1196,7 @@ def test_honesty_on_200_real_pilot_decisions() -> None:
 
     gdir = os.environ["COMBAT_CTX_GEN"]
     trajs = {}
-    with open(os.path.join(gdir, "traj.jsonl")) as f:
+    with open(os.path.join(gdir, "traj.jsonl"), encoding="utf-8") as f:
         next(f)
         for line in f:
             t = json.loads(line)

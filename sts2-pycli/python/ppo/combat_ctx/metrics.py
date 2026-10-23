@@ -430,7 +430,7 @@ def check_frozen(final_dir: str, ckpts: list[str]) -> dict[str, Any]:
     path = os.path.join(final_dir, "FROZEN.json")
     if not os.path.exists(path):
         raise SystemExit(f"{path} missing: freeze every student first (PREREG §2 Sealing)")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         frozen = json.load(f)
     want = frozen["checkpoints"]
     for c in ckpts:
@@ -449,7 +449,7 @@ def ckpt_identity(path: str) -> dict[str, Any]:
             written by `train`).
     """
     if path.endswith(".json"):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             meta = (json.load(f).get("meta") or {}).get("combat_ctx") or {}
         arm, seed, mode = meta.get("arm"), meta.get("seed"), meta.get("rl2_mode")
     else:
@@ -471,7 +471,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     path = os.path.join(args.final_dir, "FROZEN.json")
     if os.path.exists(path):
         raise SystemExit(f"{path} exists: the students are already frozen")
-    with open(args.dev_reads) as f:
+    with open(args.dev_reads, encoding="utf-8") as f:
         dev = json.load(f)
     identity = {}
     for c in args.ckpt:
@@ -505,7 +505,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         "tau": dev.get("tau"),
         "dev_reads": dev,
     }
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(frozen, f, indent=1)
     print(json.dumps({k: v for k, v in frozen.items() if k != "dev_reads"}, indent=1))
     return 0
@@ -650,7 +650,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         text = json.dumps(rep, indent=1)
         print(text)
         if args.out:
-            with open(args.out, "w") as f:
+            with open(args.out, "w", encoding="utf-8") as f:
                 f.write(text)
         return 0
     if not args.picks:
@@ -667,7 +667,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if args.stage == 2:
             if not os.path.exists(os.path.join(args.final_dir, "SEALED-1")):
                 raise SystemExit("stage 2 needs a stage-1 read")
-            with open(os.path.join(args.final_dir, "stage1.json")) as f:
+            with open(os.path.join(args.final_dir, "stage1.json"), encoding="utf-8") as f:
                 if (
                     json.load(f)["contrasts"]["S_ctxarch_rl2in-S_ctx"].get("outcome")
                     != "INCONCLUSIVE"
@@ -682,13 +682,13 @@ def cmd_eval(args: argparse.Namespace) -> int:
     picks, unk = load_picks(args.picks, sp, frozen)
     if args.disagreements:
         ids = disagreement_ids(sp, picks)
-        with open(args.disagreements, "w") as f:
+        with open(args.disagreements, "w", encoding="utf-8") as f:
             f.write("\n".join(ids) + "\n")
         print(f"{len(ids)} disagreement decisions written to {args.disagreements}")
         return 0
     scores = None
     if args.referee:
-        with open(args.referee) as f:
+        with open(args.referee, encoding="utf-8") as f:
             scores = {r["id"]: r for r in (json.loads(line) for line in f if line.strip())}
         missing = set(disagreement_ids(sp, picks)) - set(scores)
         if missing:
@@ -730,17 +730,19 @@ def cmd_eval(args: argparse.Namespace) -> int:
         if split != "dev":
             raise SystemExit("--dev-reads-out reads DEV only")
         reads = {"R": {k: v["R"] for k, v in table["arms"].items()}, "tau": contested_tau(sp)}
-        with open(args.dev_reads_out, "w") as f:
+        with open(args.dev_reads_out, "w", encoding="utf-8") as f:
             json.dump(reads, f, indent=1)
     text = json.dumps(table, indent=1)
     print(text)
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             f.write(text)
     if split == "test":
-        with open(os.path.join(args.final_dir, f"stage{args.stage}.json"), "w") as f:
+        with open(
+            os.path.join(args.final_dir, f"stage{args.stage}.json"), "w", encoding="utf-8"
+        ) as f:
             f.write(text)
-        with open(os.path.join(args.final_dir, f"SEALED-{args.stage}"), "w") as f:
+        with open(os.path.join(args.final_dir, f"SEALED-{args.stage}"), "w", encoding="utf-8") as f:
             f.write(sha256(os.path.join(args.final_dir, f"stage{args.stage}.json")) + "\n")
     return 0
 

@@ -482,7 +482,7 @@ def play_batch(
     # COMPLETION order — a straggler no longer blocks flushing the runs that
     # already finished, so a crash mid-batch never loses completed rows.
     results: list[dict[str, Any] | None] = [None] * len(jobs)
-    sink = open(out_path, "w") if out_path else None
+    sink = open(out_path, "w", encoding="utf-8") if out_path else None
 
     def _emit(i: int, row: dict[str, Any]) -> None:
         results[i] = row
