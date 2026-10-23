@@ -2301,19 +2301,22 @@ fn play_wish_opens_draw_pile_choice_on_v0111_only() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
     state.game_version = sts2_core::GameVersion::V0_111_0;
-    let pushed = [CardId::DemonFormCard, CardId::Finesse, CardId::Anger];
-    for id in pushed {
+    // Rare, Uncommon, then a same-rarity (Common) pair pushed against their
+    // name order to cover the name tie-break.
+    for id in [
+        CardId::DemonFormCard,
+        CardId::Finesse,
+        CardId::Armaments,
+        CardId::Anger,
+    ] {
         push_draw_card_id(&mut state, id);
     }
-    let version = state.game_version;
-    let key = |id: CardId| {
-        (
-            crate::cards::spec_index::card_rarity_rank_csharp_in(id, version),
-            id.to_python_name(),
-        )
-    };
-    let mut expected: Vec<CardId> = pushed.to_vec();
-    expected.sort_by(|&a, &b| key(a).cmp(&key(b)));
+    let expected = vec![
+        CardId::Anger,
+        CardId::Armaments,
+        CardId::Finesse,
+        CardId::DemonFormCard,
+    ];
     let draw_before = state.player.draw.len();
     let hand_before = state.player.hand.len();
 
@@ -2360,6 +2363,88 @@ fn play_wish_single_draw_card_auto_adds_on_v0111_only() {
     );
     assert!(state.player.hand.contains(&only));
     assert!(!state.player.draw.contains(&only));
+}
+
+/// Fill the player's hand up to `HAND_LIMIT` with throwaway cards.
+fn fill_hand_to_limit(state: &mut CombatState) {
+    while state.player.hand.len() < sts2_core::cards::HAND_LIMIT {
+        let uid = push_draw_card_id(state, CardId::Anger);
+        state.player.draw.pop();
+        state.player.hand.push(uid);
+    }
+}
+
+/// Wish on v0.111.0 with a full hand: the single auto-added card goes to
+/// the discard pile instead of overflowing the hand.
+#[test]
+fn play_wish_single_card_full_hand_goes_to_discard_on_v0111_only() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    fill_hand_to_limit(&mut state);
+    let only = push_draw_card_id(&mut state, CardId::DemonFormCard);
+    let f = lookup(CardId::Wish).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.player.hand.len(), sts2_core::cards::HAND_LIMIT);
+    assert!(!state.player.hand.contains(&only));
+    assert!(state.player.discard.contains(&only));
+    assert!(!state.player.draw.contains(&only));
+}
+
+/// Wish on v0.111.0 with a full hand: the card picked through the choice
+/// goes to the discard pile.
+#[test]
+fn play_wish_choice_full_hand_goes_to_discard_on_v0111_only() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    fill_hand_to_limit(&mut state);
+    push_draw_card_id(&mut state, CardId::DemonFormCard);
+    push_draw_card_id(&mut state, CardId::Finesse);
+    let f = lookup(CardId::Wish).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    let pc = state.pending_choice.as_ref().expect("opens a choice");
+    let picked = pc.options[0].card_uid.expect("draw option carries uid");
+    let selection: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let res = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    assert_eq!(res, sts2_core::StepResult::Advanced);
+    assert_eq!(state.player.hand.len(), sts2_core::cards::HAND_LIMIT);
+    assert!(!state.player.hand.contains(&picked));
+    assert!(state.player.discard.contains(&picked));
+    assert!(!state.player.draw.contains(&picked));
+}
+
+/// The pre-0.111 fetch path is unchanged: with a full hand the
+/// SecretTechnique pick (single card and via the choice) still lands in
+/// the hand.
+#[test]
+fn secret_technique_full_hand_still_pushes_to_hand_before_v0111() {
+    install_pool();
+    // Single candidate.
+    let (mut state, _euid) = fresh_state(CardId::SecretTechnique, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_107_1;
+    fill_hand_to_limit(&mut state);
+    let only = push_draw_card_id(&mut state, CardId::Finesse);
+    let f = lookup(CardId::SecretTechnique).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert!(state.player.hand.contains(&only));
+    assert!(!state.player.discard.contains(&only));
+
+    // Two candidates, resolved through the choice.
+    let (mut state, _euid) = fresh_state(CardId::SecretTechnique, 0, 0);
+    state.game_version = sts2_core::GameVersion::V0_107_1;
+    fill_hand_to_limit(&mut state);
+    push_draw_card_id(&mut state, CardId::Finesse);
+    push_draw_card_id(&mut state, CardId::FlashOfSteel);
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    let pc = state.pending_choice.as_ref().expect("opens a choice");
+    let picked = pc.options[0].card_uid.expect("draw option carries uid");
+    let selection: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let res = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    assert_eq!(res, sts2_core::StepResult::Advanced);
+    assert!(state.player.hand.contains(&picked));
+    assert!(!state.player.discard.contains(&picked));
 }
 
 /// Wish with an empty draw pile is a no-op on both builds.

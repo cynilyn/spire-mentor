@@ -227,7 +227,7 @@ pub(crate) fn move_card_from_draw_to_hand_filtered(
         .copied()
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
-            filter.map_or(true, |kind| state.cards[idx].card_type == kind)
+            filter.is_none_or(|kind| state.cards[idx].card_type == kind)
         })
         .collect();
     // Mirror C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(Id)` Draw-pile
@@ -248,7 +248,19 @@ pub(crate) fn move_card_from_draw_to_hand_filtered(
             // FirstOrDefault: exactly one candidate, no prompt.
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
-                state.player.hand.push(card);
+                if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+                    // Raw removal from draw: clear any stale pin, and send
+                    // the card to discard when the hand is full
+                    // (`CardPileCmd.cs:402-406`).
+                    sts2_core::cards::unpin(&mut state.player, card);
+                    if state.player.hand.len() >= sts2_core::cards::HAND_LIMIT {
+                        state.player.discard.push(card);
+                    } else {
+                        state.player.hand.push(card);
+                    }
+                } else {
+                    state.player.hand.push(card);
+                }
             }
         }
         _ => {

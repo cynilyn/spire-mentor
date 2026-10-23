@@ -2627,12 +2627,10 @@ fn test_subject_skull_bash_effect(state: &mut CombatState, _owner: CreatureUid) 
 /// (C# `BurningGrowlMove` `PowerCmd.Apply<StrengthPower>(base.Creature,
 /// BurningGrowlStrengthGain, …)`) and adds `BurningGrowlBurnCount` Burn
 /// cards to the player's discard pile (C# `BurningGrowlMove`,
-/// `PileType.Discard`).
+/// `PileType.Discard`) in both builds.
 /// Non-ascension: Strength = 2, Burn = 3 (ascension is identity at pin
 /// `01c094d`). Bead `sts2-rs-jnf4a` slice — the BURNING_GROWL_MOVE state
-/// itself is unreachable until the AdaptablePower.AfterDeath → DeadState
-/// → REVIVE_BRANCH pipeline lands; this effect_fn is wired now so the
-/// state-machine scaffold is ready when that infra arrives.
+/// is reachable in phase 3, after the REVIVE/RESPAWN handling.
 fn test_subject_burning_growl_effect(state: &mut CombatState, owner: CreatureUid) {
     use sts2_core::ascension::{get_value_if_ascension, AscensionLevel::DeadlyEnemies};
     use sts2_core::card_effects::PileKind;

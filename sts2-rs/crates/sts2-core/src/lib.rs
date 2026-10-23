@@ -9846,7 +9846,15 @@ fn resolve_add_from_draw_by_type(state: &mut CombatState, pc: &PendingChoice, se
         // `pop_next_card` doesn't short-circuit to a deterministic pop for
         // a now-possibly-heterogeneous draw and skip a chance node.
         crate::cards::unpin(&mut state.player, card);
-        state.player.hand.push(card);
+        // From v0.111.0 a full hand sends the card to the discard pile
+        // (`CardPileCmd.cs:402-406`); older builds keep the plain push.
+        if state.game_version >= GameVersion::V0_111_0
+            && state.player.hand.len() >= crate::cards::HAND_LIMIT
+        {
+            state.player.discard.push(card);
+        } else {
+            state.player.hand.push(card);
+        }
     }
 }
 
