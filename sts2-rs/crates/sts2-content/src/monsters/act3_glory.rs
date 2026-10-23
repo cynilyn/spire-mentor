@@ -2626,8 +2626,8 @@ fn test_subject_skull_bash_effect(state: &mut CombatState, _owner: CreatureUid) 
 /// BURNING_GROWL applies `StrengthPower(BurningGrowlStrengthGain)` to self
 /// (C# `BurningGrowlMove` `PowerCmd.Apply<StrengthPower>(base.Creature,
 /// BurningGrowlStrengthGain, …)`) and adds `BurningGrowlBurnCount` Burn
-/// cards to the player's hand (C# `CardPileCmd.AddToCombatAndPreview<Burn>(
-/// player.PlayerCombatState, PileType.Hand, BurningGrowlBurnCount)`).
+/// cards to the player's discard pile (C# `BurningGrowlMove`,
+/// `PileType.Discard`).
 /// Non-ascension: Strength = 2, Burn = 3 (ascension is identity at pin
 /// `01c094d`). Bead `sts2-rs-jnf4a` slice — the BURNING_GROWL_MOVE state
 /// itself is unreachable until the AdaptablePower.AfterDeath → DeadState
@@ -2652,15 +2652,10 @@ fn test_subject_burning_growl_effect(state: &mut CombatState, owner: CreatureUid
         test_subject::BURNING_GROWL_BURN_COUNT_DEADLY,
         test_subject::BURNING_GROWL_BURN_COUNT,
     );
-    // v0.111.0 `TestSubject.cs:332`: the Burns go to the DISCARD pile
-    // (`AddToCombatAndPreview<Burn>(targets, PileType.Discard, ..)`), not the hand.
-    let pile = if state.game_version >= sts2_core::GameVersion::V0_111_0 {
-        PileKind::Discard
-    } else {
-        PileKind::Hand
-    };
+    // The Burns go to the DISCARD pile in both builds (v0.107.1 and v0.111.0
+    // `TestSubject.cs`, BurningGrowlMove).
     for _ in 0..burns {
-        let _ = crate::cards::status::spawn_burn(state, pile);
+        let _ = crate::cards::status::spawn_burn(state, PileKind::Discard);
     }
 }
 
@@ -3220,14 +3215,14 @@ mod tests {
             );
         }
 
-        // BURNING_GROWL effect: +2 Strength to self, 3 Burn into hand.
+        // BURNING_GROWL effect: +2 Strength to self, 3 Burn into discard.
         let mut combat = combat_with_monster(sts2_core::MonsterKind::TestSubject, "TestSubject");
         let owner = sts2_core::CreatureUid::new(1).expect("nz");
-        let pre_hand = combat.player.hand.len();
+        let pre_discard = combat.player.discard.len();
         test_subject_burning_growl_effect(&mut combat, owner);
         assert_eq!(self_power(&combat, PowerKind::Strength), 2);
-        assert_eq!(combat.player.hand.len(), pre_hand + 3);
-        for &uid in combat.player.hand.iter().skip(pre_hand) {
+        assert_eq!(combat.player.discard.len(), pre_discard + 3);
+        for &uid in combat.player.discard.iter().skip(pre_discard) {
             assert_eq!(
                 combat.cards[uid.0.get() as usize - 1].card_id,
                 CardId::Burn,
@@ -3236,12 +3231,12 @@ mod tests {
         }
     }
 
-    /// v0.111.0 `TestSubject.cs:332`: BURNING_GROWL puts its Burns in the DISCARD pile.
+    /// BURNING_GROWL puts its Burns in the DISCARD pile in both builds.
     #[test]
-    fn test_subject_burning_growl_burns_go_to_discard_on_v0111_only() {
+    fn test_subject_burning_growl_burns_go_to_discard() {
         for (version, in_discard) in [
             (sts2_core::GameVersion::V0_111_0, 3),
-            (sts2_core::GameVersion::V0_107_1, 0),
+            (sts2_core::GameVersion::V0_107_1, 3),
         ] {
             let mut combat =
                 combat_with_monster(sts2_core::MonsterKind::TestSubject, "TestSubject");
