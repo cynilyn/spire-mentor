@@ -2012,8 +2012,20 @@ fn trial_reject(state: &mut RunState) -> EventOutcome {
     }
 }
 
-/// `DoubleDown` opens the abandon-run confirmation and does nothing else.
-fn trial_double_down(_state: &mut RunState) -> EventOutcome {
+/// `DoubleDown` only opens the abandon-run confirmation (Trial.cs:128-132); confirming it abandons
+/// the run (NAbandonRunConfirmPopup.cs:110-121), which ends it as a loss. Headless there is no popup,
+/// so on v0.111.0 the option settles the run as a defeat: HP is set to 0 directly (not through HP
+/// loss, so damage reducers cannot soften it) and the run manager ends the run. Earlier versions
+/// never reach this page.
+fn trial_double_down(state: &mut RunState) -> EventOutcome {
+    if trial_v0111(state) {
+        state.current_hp = 0;
+        return EventOutcome {
+            finished: true,
+            description: "You abandon the run.".to_string(),
+            effects: Vec::new(),
+        };
+    }
     EventOutcome {
         finished: false,
         description: "Abandon the run?".to_string(),

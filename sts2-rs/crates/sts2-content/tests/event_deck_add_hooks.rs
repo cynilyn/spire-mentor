@@ -98,6 +98,37 @@ fn trial_accept_opens_a_judgment_page_on_v0111_only() {
     assert!(resolve(&mut old, "accept").expect("event active").finished);
 }
 
+/// Rejecting the trial opens the Accept / Double Down page on v0.111.0; Double Down abandons the run
+/// (HP 0, which the run manager turns into a defeat). The older build finishes at once on Reject.
+#[test]
+fn trial_double_down_abandons_the_run_on_v0111() {
+    use sts2_content::events::dispatch::{present, resolve};
+    sts2_content::relics::dispatch::ensure_installed();
+    for seed in 1..6u64 {
+        for rod in [false, true] {
+            let mut rs = RunState::new();
+            rs.game_version = GameVersion::V0_111_0;
+            rs.rng = sts2_core::run_rng_set::RunRngSet::new_for(GameVersion::V0_111_0, seed);
+            if rod {
+                rs.relics.push(RelicId::TungstenRod);
+            }
+            rs.enter_event_room(EventId::Trial);
+            let out = resolve(&mut rs, "reject").expect("event active");
+            assert!(!out.finished);
+            let opts = present(&rs).expect("still in the event");
+            let ids: Vec<_> = opts.iter().map(|o| o.option_id).collect();
+            assert_eq!(ids, ["accept", "double_down"]);
+            let out = resolve(&mut rs, "double_down").expect("event active");
+            assert!(out.finished);
+            assert_eq!(rs.current_hp, 0, "seed {seed} rod {rod}");
+        }
+    }
+    let mut old = RunState::new();
+    old.game_version = GameVersion::V0_107_1;
+    old.enter_event_room(EventId::Trial);
+    assert!(resolve(&mut old, "reject").expect("event active").finished);
+}
+
 /// The Nondescript judgment's two card rewards are populated up front (`OfferCustom`) and draw no upgrade
 /// float (`ForNonCombatWithDefaultOdds` sets `NoUpgradeRoll`): 6 draws each, 12 in all (v0.111.0).
 #[test]
