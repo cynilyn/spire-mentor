@@ -41,7 +41,7 @@ MAI_OFFSET: int | None = None
 
 
 def _init(off: int | None) -> None:
-    global MAI_OFFSET  # noqa: PLW0603 - per-worker config
+    global MAI_OFFSET
     MAI_OFFSET = off
 
 
@@ -63,7 +63,7 @@ def one(path: str) -> list[dict[str, Any]]:
                     "desync": r["desync"],
                 }
             )
-    except Exception as e:  # noqa: BLE001 - census: record and move on
+    except Exception as e:
         rows.append({"file": path, "crash": repr(e)[:300]})
     return rows
 

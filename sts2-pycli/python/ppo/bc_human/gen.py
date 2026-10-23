@@ -75,7 +75,7 @@ def run_rows(path: str) -> dict[str, Any]:
                         "fight": fi,  # re-keyed globally by the writer loop
                     }
                 )
-    except Exception as e:  # noqa: BLE001 - keep the batch going, report it
+    except Exception as e:
         out["error"] = repr(e)[:300]
     return out
 

@@ -73,7 +73,9 @@ def main() -> None:
             d = won - base
             per = d.reshape(len(ev), args.reps).mean(1)  # cluster by start
             se = per.std(ddof=1) / np.sqrt(len(per))
-            print(f"  {name:<14} {100 * won.mean():5.1f}%   vs heuristic {100 * d.mean():+5.1f} ± {100 * se:.1f}pp")
+            print(
+                f"  {name:<14} {100 * won.mean():5.1f}%   vs heuristic {100 * d.mean():+5.1f} ± {100 * se:.1f}pp"
+            )
 
 
 if __name__ == "__main__":

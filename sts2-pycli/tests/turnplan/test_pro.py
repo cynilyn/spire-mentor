@@ -204,4 +204,4 @@ def test_scraper_dir_honours_the_env_override(monkeypatch) -> None:
     from ppo.bc_human.replay import scraper_dir
 
     monkeypatch.setenv("STS2_RUN_SCRAPER", "/x/scraper")
-    assert scraper_dir("replays-spire-codex") == "/x/scraper/data/replays-spire-codex"
+    assert Path(scraper_dir("replays-spire-codex")) == Path("/x/scraper/data/replays-spire-codex")

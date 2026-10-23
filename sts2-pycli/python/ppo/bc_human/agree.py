@@ -72,7 +72,6 @@ def main() -> None:
     hits: dict[str, dict[str, list[int]]] = {p: defaultdict(lambda: [0, 0]) for p in policies}
     n_rows = 0
     for part in data["parts"]:
-        off = 0
         offs = np.concatenate([[0], np.cumsum(part["n_act"])])
         for r in range(len(part["n_act"])):
             a, b = offs[r], offs[r + 1]
@@ -90,7 +89,6 @@ def main() -> None:
                     hits[name][bucket][0] += ok
                     hits[name][bucket][1] += 1
             n_rows += 1
-            off += 1
             if args.max_rows and n_rows >= args.max_rows:
                 break
         if args.max_rows and n_rows >= args.max_rows:
