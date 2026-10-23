@@ -492,6 +492,58 @@ pub struct MctsCombatPolicy<M> {
     /// Root visits the most recent combat search started with: `Some(n)`
     /// when it reused a tree (`n` retained visits), `None` otherwise.
     last_retained_visits: Option<u32>,
+    /// Turn-plan root filter (GH #830): the pro-trained plan scorer and K,
+    /// from `STS2_RUNAI_TURNPLAN_ROOT_FILTER=<weights.json>:<K>`, resolved
+    /// once in `new`. `None` (unset, the default) ⇒ the root is never
+    /// filtered and nothing below runs.
+    root_filter: Option<(Arc<sts2_mcts::turn_plan_scorer::PlanScorer>, usize)>,
+    /// What the root filter did at the most recent combat decision (`None`
+    /// with the knob off).
+    last_root_filter: Option<RootFilterRecord>,
+}
+
+/// What the turn-plan root filter did at one combat decision (GH #830),
+/// for the bench record. See [`sts2_mcts::turn_plan_scorer::root_filter`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RootFilterRecord {
+    /// The search root was restricted.
+    pub applied: bool,
+    /// Why it was not: `"forced"`, `"cap"` or `"empty"`.
+    pub fallback: Option<&'static str>,
+    /// Canonical legal root actions.
+    pub legal_n: usize,
+    /// Enumerated plans (0 for a forced root).
+    pub plans_n: usize,
+    /// Plans kept (top-K ∪ anchors).
+    pub kept_n: usize,
+    /// Root actions the search could pick.
+    pub allowed_n: usize,
+    /// `"topk"` when a top-K plan starts with the chosen action,
+    /// `"anchor_only"` when only anchor plans do; `None` when not applied.
+    pub chosen_via: Option<&'static str>,
+    /// Wall time of the filter (enumerate, score, anchors), microseconds.
+    pub filter_us: u64,
+}
+
+/// `STS2_RUNAI_TURNPLAN_ROOT_FILTER` → (scorer, K). Unset or empty ⇒
+/// `None`. A malformed value or an unreadable weight file panics: the knob
+/// only gates measurement runs, which must not silently fall back to the
+/// unfiltered search.
+fn resolve_root_filter(
+    raw: Option<&str>,
+) -> Option<(Arc<sts2_mcts::turn_plan_scorer::PlanScorer>, usize)> {
+    let raw = raw.filter(|v| !v.is_empty())?;
+    let (path, k) = raw.rsplit_once(':').unwrap_or_else(|| {
+        panic!("STS2_RUNAI_TURNPLAN_ROOT_FILTER={raw:?}: expected <weights.json>:<K>")
+    });
+    let k: usize = k.parse().ok().filter(|&k| k >= 1).unwrap_or_else(|| {
+        panic!("STS2_RUNAI_TURNPLAN_ROOT_FILTER: K={k:?} is not an integer >= 1")
+    });
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("STS2_RUNAI_TURNPLAN_ROOT_FILTER: {path}: {e}"));
+    let scorer = sts2_mcts::turn_plan_scorer::PlanScorer::from_json(&text)
+        .unwrap_or_else(|e| panic!("STS2_RUNAI_TURNPLAN_ROOT_FILTER: {path}: {e}"));
+    Some((Arc::new(scorer), k))
 }
 
 /// A combat search kept for the policy's next decision (GH #830
@@ -1317,7 +1369,20 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
             retained: None,
             tree_reuse: TreeReuseCounts::default(),
             last_retained_visits: None,
+            root_filter: resolve_root_filter(
+                std::env::var("STS2_RUNAI_TURNPLAN_ROOT_FILTER")
+                    .ok()
+                    .as_deref(),
+            ),
+            last_root_filter: None,
         }
+    }
+
+    /// What the turn-plan root filter did at the most recent combat
+    /// decision; `None` with `STS2_RUNAI_TURNPLAN_ROOT_FILTER` unset.
+    #[must_use]
+    pub fn last_root_filter(&self) -> Option<&RootFilterRecord> {
+        self.last_root_filter.as_ref()
     }
 
     /// What `tree_reuse` (GH #830) did over this policy's lifetime. All
@@ -1585,6 +1650,7 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
         // must not surface a record from a prior decision.
         self.last_combat_search = None;
         self.last_retained_visits = None;
+        self.last_root_filter = None;
 
         let counter = self.decisions;
         self.decisions += 1;
@@ -1621,6 +1687,18 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
         // counter above has already advanced, so every later decision keeps
         // its seed.
         if let Some(only) = self.forced_root_action(combat, sims) {
+            if self.root_filter.is_some() {
+                self.last_root_filter = Some(RootFilterRecord {
+                    applied: false,
+                    fallback: Some("forced"),
+                    legal_n: 1,
+                    plans_n: 0,
+                    kept_n: 0,
+                    allowed_n: 1,
+                    chosen_via: None,
+                    filter_us: 0,
+                });
+            }
             // `tree_reuse`: carry a kept tree across the move it did not
             // search, rooted where this decision would have searched it.
             if retained.is_some() {
@@ -1656,6 +1734,20 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
         self.sims_spent += u64::from(sims);
 
         let (config, leaf_eval, prior) = self.pick_search_setup(rm, combat, is_boss, sims, seed);
+        // Turn-plan root filter (GH #830): which root actions the search may
+        // pick. Computed from `combat` alone (no search state), so it is the
+        // same whether or not a tree is reused below.
+        let filter = self.root_filter.as_ref().map(|(scorer, k)| {
+            let t0 = std::time::Instant::now();
+            let f = sts2_mcts::turn_plan_scorer::root_filter(
+                combat,
+                scorer,
+                *k,
+                sts2_mcts::turn_plan::PlanCap::default(),
+            );
+            let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+            (f, us)
+        });
         let reuse = self.tree_reuse_on();
         let reused = if reuse {
             self.tree_reuse.searched += 1;
@@ -1674,6 +1766,10 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
             }
             None => Mcts::with_policy(combat.clone(), config, prior).with_leaf_eval(leaf_eval),
         };
+        if let Some((f, _)) = filter.as_ref().filter(|(f, _)| f.fallback.is_none()) {
+            let allowed: Vec<Action> = f.allowed.iter().map(|(a, _)| a.clone()).collect();
+            mcts = mcts.with_root_allowed(&allowed);
+        }
 
         // THE pick is `Mcts::pick_root_action` (via `try_search_n`) —
         // lost-position override (GH #32), draw-window bonus (GH #403)
@@ -1689,6 +1785,30 @@ impl<M: RunPolicy> MctsCombatPolicy<M> {
         let expand_order = mcts.expand_order_stats();
         // Record *why* a fallback fires instead of collapsing every cause
         // to a silent `None` (issue #164).
+        if let Some((f, us)) = filter {
+            let via = chosen.as_ref().and_then(|c| {
+                f.allowed
+                    .iter()
+                    .find(|(a, _)| a == c)
+                    .map(|&(_, top)| if top { "topk" } else { "anchor_only" })
+            });
+            self.last_root_filter = Some(RootFilterRecord {
+                applied: f.fallback.is_none(),
+                fallback: f
+                    .fallback
+                    .map(sts2_mcts::turn_plan_scorer::FilterFallback::as_str),
+                legal_n: f.legal_n,
+                plans_n: f.plans_n,
+                kept_n: f.kept_n,
+                allowed_n: if f.fallback.is_none() {
+                    f.allowed.len()
+                } else {
+                    f.legal_n
+                },
+                chosen_via: if f.fallback.is_none() { via } else { None },
+                filter_us: us,
+            });
+        }
         let Some(chosen) = chosen else {
             self.fallbacks.no_outcome += 1;
             self.log_fallback("no_outcome", None);
@@ -3892,6 +4012,138 @@ mod tests {
     /// commit's own pre-fix rate). Byte-identical config on both sides,
     /// so agreement is exact, and the agreed pick must be FTL (hand
     /// slot 5) inside its open window.
+    /// A valid root-filter scorer whose score is the plan's enemy damage
+    /// (feature 3), written to a fresh temp file; returns its path.
+    fn damage_scorer_file(tag: &str) -> std::path::PathBuf {
+        let dim = sts2_mcts::turn_plan_features::PLAN_DIM;
+        let eye: Vec<Vec<f32>> = (0..dim)
+            .map(|i| (0..dim).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
+            .collect();
+        let mut l2 = vec![vec![0.0f32; dim]; 2];
+        l2[0][3] = 1.0;
+        let mut s1 = vec![0.0f32; 8];
+        s1[6] = 1.0;
+        let v = serde_json::json!({
+            "format": sts2_mcts::turn_plan_scorer::FORMAT,
+            "ctx_mean": vec![0.0; 6], "ctx_std": vec![1.0; 6],
+            "plan_mean": vec![0.0; dim], "plan_std": vec![1.0; dim],
+            "plan_l1": {"w": eye, "b": vec![0.0; dim]},
+            "plan_l2": {"w": l2, "b": [0.0, 0.0]},
+            "card_vocab": {},
+            "card_emb": [[0.0, 0.0]],
+            "score_l1": {"w": [s1], "b": [0.0]},
+            "score_l2": {"w": [[1.0]], "b": [0.0]},
+        });
+        let path = std::env::temp_dir().join(format!(
+            "sts2-root-filter-{tag}-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, v.to_string()).expect("temp file");
+        path
+    }
+
+    #[test]
+    fn resolve_root_filter_unset_is_off_and_a_valid_value_loads() {
+        assert!(resolve_root_filter(None).is_none());
+        assert!(resolve_root_filter(Some("")).is_none());
+        let path = damage_scorer_file("resolve");
+        let (_, k) = resolve_root_filter(Some(&format!("{}:6", path.display()))).expect("on");
+        assert_eq!(k, 6);
+    }
+
+    #[test]
+    #[should_panic(expected = "STS2_RUNAI_TURNPLAN_ROOT_FILTER")]
+    fn resolve_root_filter_refuses_a_missing_k() {
+        let _ = resolve_root_filter(Some("weights.json"));
+    }
+
+    #[test]
+    #[should_panic(expected = "K=\"0\"")]
+    fn resolve_root_filter_refuses_k_zero() {
+        let path = damage_scorer_file("k0");
+        let _ = resolve_root_filter(Some(&format!("{}:0", path.display())));
+    }
+
+    fn ftl_pick(root_filter: Option<usize>) -> (Action, Option<RootFilterRecord>, CombatState) {
+        let run_seed = 3;
+        let state = build_ftl_busy_hand_state(run_seed);
+        let rm = new_run_manager_for_character(run_seed, CharacterId::Ironclad);
+        let budget = CombatBudget {
+            sims: 400,
+            boss_sims: 400,
+            elite_sims: None,
+            motif_sims: None,
+            leaf: LeafKind::TexelWide,
+        };
+        let mut policy = MctsCombatPolicy::new(FirstOptionPolicy, budget, run_seed);
+        assert!(policy.root_filter.is_none(), "the knob must default to off");
+        if let Some(k) = root_filter {
+            let text = std::fs::read_to_string(damage_scorer_file("pick")).unwrap();
+            let scorer = sts2_mcts::turn_plan_scorer::PlanScorer::from_json(&text).unwrap();
+            policy.root_filter = Some((Arc::new(scorer), k));
+        }
+        let mut actions: Vec<RunAction> = vec![RunAction::EndTurn];
+        for hand_idx in 0..6 {
+            for target in [None, Some(0), Some(1), Some(2)] {
+                actions.push(RunAction::PlayCard { hand_idx, target });
+            }
+        }
+        policy
+            .mcts_pick(&rm, &state, &actions)
+            .expect("translatable pick");
+        let chosen = policy
+            .last_combat_search()
+            .expect("searched")
+            .chosen
+            .clone();
+        (chosen, policy.last_root_filter().cloned(), state)
+    }
+
+    /// A K that keeps every plan restricts nothing: the pick is the
+    /// unfiltered search's, and the record says the filter ran.
+    #[test]
+    fn root_filter_keeping_every_plan_leaves_the_pick_unchanged() {
+        let (base, rec, _) = ftl_pick(None);
+        assert!(rec.is_none());
+        let (all, rec, _) = ftl_pick(Some(100_000));
+        assert_eq!(all, base);
+        let rec = rec.expect("recorded");
+        assert!(rec.applied);
+        assert_eq!(
+            rec.allowed_n,
+            legal_actions_len(&build_ftl_busy_hand_state(3))
+        );
+        assert_eq!(rec.chosen_via, Some("topk"));
+    }
+
+    fn legal_actions_len(state: &CombatState) -> usize {
+        sts2_core::legal_actions(state).len()
+    }
+
+    /// K = 1 restricts the root to the top plan's and the anchors' first
+    /// actions, and the pick is one of them.
+    #[test]
+    fn root_filter_k1_picks_an_allowed_action() {
+        let (chosen, rec, state) = ftl_pick(Some(1));
+        let rec = rec.expect("recorded");
+        assert!(rec.applied, "{rec:?}");
+        let text = std::fs::read_to_string(damage_scorer_file("check")).unwrap();
+        let scorer = sts2_mcts::turn_plan_scorer::PlanScorer::from_json(&text).unwrap();
+        let f = sts2_mcts::turn_plan_scorer::root_filter(
+            &state,
+            &scorer,
+            1,
+            sts2_mcts::turn_plan::PlanCap::default(),
+        );
+        assert_eq!(rec.allowed_n, f.allowed.len());
+        assert!(rec.allowed_n < legal_actions_len(&state), "{rec:?}");
+        assert!(
+            f.allowed.iter().any(|(a, _)| *a == chosen),
+            "{chosen:?} not allowed"
+        );
+        assert!(rec.chosen_via.is_some());
+    }
+
     #[test]
     fn mcts_pick_matches_engine_pick_and_applies_draw_window_bonus() {
         let run_seed = 3;

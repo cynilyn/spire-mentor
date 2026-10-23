@@ -240,11 +240,11 @@ def test_cli_writes_json_and_md(tmp_path: Path) -> None:
     args += [str(tmp_path / "nodeck"), "--out", str(out), "--n-boot", "50"]
     assert recall.main(args) == 0
 
-    rep = json.loads((out / "recall.json").read_text())
+    rep = json.loads((out / "recall.json").read_text(encoding="utf-8"))
     n_holdout = len(data.load([d], "holdout"))
     assert rep["n"]["positions"] == n_holdout > 0
     assert rep["qualifiers"]["sims_per_plan"] == [77]
     assert set(rep["subsets"]["all"]["filters"]) == set(recall.FILTERS)
     assert rep["verdict"]["verdict"] in ("PASS", "KILL")
-    md = (out / "recall.md").read_text()
+    md = (out / "recall.md").read_text(encoding="utf-8")
     assert rep["verdict"]["line"] in md and "Ironclad A10" in md

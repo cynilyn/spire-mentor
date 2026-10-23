@@ -85,7 +85,7 @@ from dataclasses import asdict, dataclass
 from multiprocessing import get_context
 from multiprocessing.connection import wait as wait_conns
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ppo.combat_bench import agents
 from ppo.pilot_human_decks import _fight_seed, fight_character
@@ -331,6 +331,7 @@ def play(rm: Any, agent: agents.CombatAgent, fight: dict[str, Any], caps: Caps) 
     """
     ledger = HpLedger(int(fight["hp_before"]))
     steps = decisions = seen = 0
+    filt = RootFilterLog()
     end: str | None = None
     spent = agents.sims_spent(agent)
     # The scenario builder already ran combat start (Blood Vial and the like)
@@ -349,7 +350,9 @@ def play(rm: Any, agent: agents.CombatAgent, fight: dict[str, Any], caps: Caps) 
             if spent is not None and spent >= caps.max_sims_per_fight:
                 end = "sims_cap"
                 break
+            t0 = time.perf_counter()
             rec = agent.step(rm)
+            filt.step(rec, time.perf_counter() - t0)
             if rec is None:
                 end = "no_action"
                 break
@@ -424,7 +427,62 @@ def play(rm: Any, agent: agents.CombatAgent, fight: dict[str, Any], caps: Caps) 
     reuse = agents.tree_reuse_stats(agent)
     if reuse is not None:
         out["tree_reuse"] = reuse
+    if filt.rows:
+        out["root_filter"] = filt.summary()
     return out
+
+
+class RootFilterLog:
+    """The turn-plan root filter's per-decision records of one cell (GH #830).
+
+    `MctsCombatAgent.step` carries `root_filter` only when the spec sets
+    `STS2_RUNAI_TURNPLAN_ROOT_FILTER`; a cell whose agent never reports one
+    gets no `root_filter` field, so records of other arms keep their shape.
+    """
+
+    FALLBACK: ClassVar[dict[str | None, str]] = {None: "", "forced": "f", "cap": "c", "empty": "e"}
+    VIA: ClassVar[dict[str | None, str]] = {None: "", "topk": "t", "anchor_only": "a"}
+
+    def __init__(self) -> None:
+        self.rows: list[list[Any]] = []
+
+    def step(self, rec: dict[str, Any] | None, wall_s: float) -> None:
+        f = (rec or {}).get("root_filter")
+        if f is None:
+            return
+        self.rows.append(
+            [
+                int(f["applied"]),
+                self.FALLBACK[f["fallback"]],
+                int(f["legal_n"]),
+                int(f["plans_n"]),
+                int(f["kept_n"]),
+                int(f["allowed_n"]),
+                self.VIA[f["chosen_via"]],
+                round(int(f["filter_us"]) / 1000.0, 2),
+                round(wall_s * 1000.0, 1),
+            ]
+        )
+
+    def summary(self) -> dict[str, Any]:
+        """Counts over the cell plus the per-decision rows (SCHEMA `root_filter`)."""
+        rows = self.rows
+        fb = collections.Counter(r[1] for r in rows if r[1])
+        via = collections.Counter(r[6] for r in rows if r[6])
+        return {
+            "decisions": len(rows),
+            "applied": sum(r[0] for r in rows),
+            "fallback_forced": fb["f"],
+            "fallback_cap": fb["c"],
+            "fallback_empty": fb["e"],
+            "chosen_topk": via["t"],
+            "chosen_anchor_only": via["a"],
+            "legal_n": sum(r[2] for r in rows if r[0]),
+            "allowed_n": sum(r[5] for r in rows if r[0]),
+            "filter_ms": round(sum(r[7] for r in rows), 1),
+            "decide_ms": round(sum(r[8] for r in rows), 1),
+            "rows": rows,
+        }
 
 
 def machine() -> dict[str, Any]:

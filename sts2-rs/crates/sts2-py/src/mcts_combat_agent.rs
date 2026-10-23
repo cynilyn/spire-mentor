@@ -22,7 +22,7 @@ use sts2_core::run_manager::Phase;
 use sts2_core::run_rng_set::splitmix64;
 use sts2_core::Side;
 use sts2_mcts::rollout_net::{heuristic_mirror_net, net_for};
-use sts2_mcts::turn_plan::{enumerate_plans, PlanCap, PlanEnd};
+use sts2_mcts::turn_plan::{enumerate_plans, locate_plan, PlanCap, PlanEnd};
 use sts2_mcts::turn_plan_features::{
     anchors, deck_context, plan_cards, plan_features, plan_logprob,
 };
@@ -148,6 +148,27 @@ impl PyMctsCombatAgent {
             None
         };
 
+        // Turn-plan root filter (GH #830); `None` with the knob off.
+        let root_filter: Option<Bound<'py, PyDict>> = if is_combat {
+            self.policy
+                .last_root_filter()
+                .map(|f| -> PyResult<Bound<'py, PyDict>> {
+                    let d = PyDict::new(py);
+                    d.set_item("applied", f.applied)?;
+                    d.set_item("fallback", f.fallback)?;
+                    d.set_item("legal_n", f.legal_n)?;
+                    d.set_item("plans_n", f.plans_n)?;
+                    d.set_item("kept_n", f.kept_n)?;
+                    d.set_item("allowed_n", f.allowed_n)?;
+                    d.set_item("chosen_via", f.chosen_via)?;
+                    d.set_item("filter_us", f.filter_us)?;
+                    Ok(d)
+                })
+                .transpose()?
+        } else {
+            None
+        };
+
         // Apply the chosen action.
         rm.ensure_play_log_flag();
         let result = rm.inner.take_action(action);
@@ -165,6 +186,7 @@ impl PyMctsCombatAgent {
         // `tree_reuse` (GH #830): root visits this decision's search kept
         // from the one before (`None`: fresh tree, no search, or knob off).
         out.set_item("retained_visits", retained_visits)?;
+        out.set_item("root_filter", root_filter)?;
         out.set_item("result", format!("{result:?}"))?;
         Ok(Some(out))
     }
@@ -188,13 +210,20 @@ impl PyMctsCombatAgent {
     /// (None without a playout net), "anchors": {"lethal", "max_block",
     /// "max_damage", "heuristic", "rl2"}, "q", "visits", "q_var",
     /// "final_hp"}]}`.
-    #[pyo3(signature = (rm, sims_per_plan, max_plans = 512))]
+    ///
+    /// `sims_per_plan == 0` skips the pricing: `q`, `visits`, `q_var` and
+    /// `final_hp` are `None`. With `locate` (a played turn, as bridge action
+    /// dicts against the current state) the result also holds
+    /// `"locate": {"index", "used", "end", "failure"}` from
+    /// `turn_plan::locate_plan`: the plan the played turn is, if listed.
+    #[pyo3(signature = (rm, sims_per_plan, max_plans = 512, locate = None))]
     fn turn_plan_labels<'py>(
         &mut self,
         py: Python<'py>,
         rm: &PyRunManager,
         sims_per_plan: u32,
         max_plans: usize,
+        locate: Option<Vec<Bound<'py, PyDict>>>,
     ) -> PyResult<Option<Bound<'py, PyDict>>> {
         if rm.inner.phase() != Phase::Combat {
             return Ok(None);
@@ -218,14 +247,21 @@ impl PyMctsCombatAgent {
         let seed = splitmix64(
             splitmix64(seed_bits ^ TURN_PLAN_SEED_SALT) ^ self.policy.combat_decisions(),
         );
-        let prices = price_plans(
-            &mut self.policy,
-            &rm.inner,
-            combat,
-            &set.plans,
-            sims_per_plan,
-            seed,
-        );
+        let prices = if sims_per_plan == 0 {
+            vec![None; set.plans.len()]
+        } else {
+            price_plans(
+                &mut self.policy,
+                &rm.inner,
+                combat,
+                &set.plans,
+                sims_per_plan,
+                seed,
+            )
+            .into_iter()
+            .map(Some)
+            .collect()
+        };
 
         let ctx = deck_context(combat);
         let deck = PyDict::new(py);
@@ -268,10 +304,10 @@ impl PyMctsCombatAgent {
             a.set_item("heuristic", flag.heuristic)?;
             a.set_item("rl2", flag.rl2)?;
             d.set_item("anchors", a)?;
-            d.set_item("q", price.mean_value)?;
-            d.set_item("visits", price.visits)?;
-            d.set_item("q_var", price.value_variance)?;
-            d.set_item("final_hp", price.mean_final_hp)?;
+            d.set_item("q", price.as_ref().map(|p| p.mean_value))?;
+            d.set_item("visits", price.as_ref().map(|p| p.visits))?;
+            d.set_item("q_var", price.as_ref().map(|p| p.value_variance))?;
+            d.set_item("final_hp", price.as_ref().and_then(|p| p.mean_final_hp))?;
             plans.append(d)?;
         }
 
@@ -280,6 +316,26 @@ impl PyMctsCombatAgent {
         out.set_item("n_plans", set.plans.len())?;
         out.set_item("deck", deck)?;
         out.set_item("plans", plans)?;
+        if let Some(played) = locate {
+            let actions = played
+                .iter()
+                .map(crate::parse_bridge_action)
+                .collect::<PyResult<Vec<_>>>()?;
+            let loc = locate_plan(combat, deployed_hidden_info(), &set, &actions);
+            let d = PyDict::new(py);
+            d.set_item("index", loc.index)?;
+            d.set_item("used", loc.used)?;
+            d.set_item(
+                "end",
+                loc.end.map(|e| match e {
+                    PlanEnd::EndTurn => "end_turn",
+                    PlanEnd::Chance => "chance",
+                    PlanEnd::Terminal => "terminal",
+                }),
+            )?;
+            d.set_item("failure", loc.failure)?;
+            out.set_item("locate", d)?;
+        }
         Ok(Some(out))
     }
 
@@ -346,4 +402,74 @@ fn root_outcome_to_pydict<'py>(
     // the shared wire shape (`action_score_value`) that the workbench pins.
     d.set_item("value_var", o.value_variance())?;
     Ok(d)
+}
+
+/// The turn-plan root filter (GH #830) outside the search, for the offline
+/// flip-rate measurement: which root actions the filtered search could
+/// pick. `TurnPlanRootFilter(weights_path)` loads the exported scorer once.
+#[pyclass(name = "TurnPlanRootFilter", module = "sts2_rs")]
+#[derive(Debug)]
+pub struct PyTurnPlanRootFilter {
+    scorer: sts2_mcts::turn_plan_scorer::PlanScorer,
+}
+
+#[pymethods]
+impl PyTurnPlanRootFilter {
+    #[new]
+    fn new(weights_path: &str) -> PyResult<Self> {
+        let text = std::fs::read_to_string(weights_path)
+            .map_err(|e| pyo3::exceptions::PyOSError::new_err(format!("{weights_path}: {e}")))?;
+        let scorer = sts2_mcts::turn_plan_scorer::PlanScorer::from_json(&text)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{weights_path}: {e}")))?;
+        Ok(Self { scorer })
+    }
+
+    /// `turn_plan_scorer::root_filter` at `rm`'s combat with top-`k`, or
+    /// `None` off the player's turn of a live combat: `{"fallback": None |
+    /// "forced" | "cap" | "empty", "legal_n", "plans_n", "kept_n",
+    /// "allowed": [(action dict, via_topk)], "filter_us"}`.
+    #[pyo3(signature = (rm, k, max_plans = 512))]
+    fn filter<'py>(
+        &self,
+        py: Python<'py>,
+        rm: &PyRunManager,
+        k: usize,
+        max_plans: usize,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        if rm.inner.phase() != Phase::Combat {
+            return Ok(None);
+        }
+        let Some(combat) = rm.inner.combat.as_ref() else {
+            return Ok(None);
+        };
+        if combat.is_over || combat.side != Side::Player {
+            return Ok(None);
+        }
+        let t0 = std::time::Instant::now();
+        let cap = PlanCap {
+            max_plans,
+            ..PlanCap::default()
+        };
+        let f = sts2_mcts::turn_plan_scorer::root_filter(combat, &self.scorer, k, cap);
+        let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let d = PyDict::new(py);
+        d.set_item(
+            "fallback",
+            f.fallback
+                .map(sts2_mcts::turn_plan_scorer::FilterFallback::as_str),
+        )?;
+        d.set_item("legal_n", f.legal_n)?;
+        d.set_item("plans_n", f.plans_n)?;
+        d.set_item("kept_n", f.kept_n)?;
+        let allowed = PyList::empty(py);
+        for (a, top) in &f.allowed {
+            let pair = PyList::empty(py);
+            pair.append(crate::action_to_pydict(py, a)?)?;
+            pair.append(*top)?;
+            allowed.append(pair)?;
+        }
+        d.set_item("allowed", allowed)?;
+        d.set_item("filter_us", us)?;
+        Ok(Some(d))
+    }
 }

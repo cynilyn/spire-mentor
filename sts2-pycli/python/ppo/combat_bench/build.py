@@ -1178,7 +1178,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rows, reasons = human_players.scan_corpus(args.root, CHARACTER, args.procs, True)
         scan = dict(reasons)
-        with open(index_path, "w", encoding="utf-8") as f:
+        with open(index_path, "w", encoding="utf-8", newline="\n") as f:
             for r in rows:
                 f.write(json.dumps(r) + "\n")
         _log(f"index: scanned {reasons['files']} files -> {len(rows)} rows ({index_path})")
@@ -1224,7 +1224,9 @@ def main(argv: list[str] | None = None) -> int:
         canon(u)
         for u in json.load(open(os.path.join(args.recipe_dir, "pros25.json"), encoding="utf-8"))
     }
-    with open(os.path.join(priv, cohort_file(args.version)), "w", encoding="utf-8") as f:
+    with open(
+        os.path.join(priv, cohort_file(args.version)), "w", encoding="utf-8", newline="\n"
+    ) as f:
         json.dump(
             [
                 {
@@ -1430,7 +1432,7 @@ def main(argv: list[str] | None = None) -> int:
             rec.pop("_roster")
             out.append(rec)
         path = os.path.join(args.out_dir, fname)
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             for rec in out:
                 f.write(json.dumps(rec) + "\n")
         held_out |= {rec["file"] for rec in out}
@@ -1601,7 +1603,9 @@ def main(argv: list[str] | None = None) -> int:
         },
         "held_out_runs": sorted(held_out),
     }
-    with open(os.path.join(args.out_dir, manifest_file(args.version)), "w", encoding="utf-8") as f:
+    with open(
+        os.path.join(args.out_dir, manifest_file(args.version)), "w", encoding="utf-8", newline="\n"
+    ) as f:
         json.dump(manifest, f, indent=1)
         f.write("\n")
     _log(f"done in {time.time() - t0:.0f}s -> {args.out_dir}")

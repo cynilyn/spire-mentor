@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use sts2_core::cards::CardId;
 use sts2_core::potions::PotionKind;
 use sts2_core::{apply, is_terminal, legal_actions, tt_hash_v2, Action, CombatState, CreatureUid};
-use sts2_mcts::turn_plan::{enumerate_plans, PlanCap, PlanEnd, TurnPlan};
+use sts2_mcts::turn_plan::{enumerate_plans, locate_plan, PlanCap, PlanEnd, TurnPlan};
 use sts2_mcts::HiddenInfoMode;
 
 /// Add a second enemy, a copy of the first with the next creature uid.
@@ -238,4 +238,118 @@ fn every_plan_replays_legally() {
             let _ = apply(&mut s, a.clone());
         }
     }
+}
+
+fn five_card_state() -> CombatState {
+    fixture(
+        &[
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::Bash,
+            CardId::StrikeIronclad,
+            CardId::Inflame,
+        ],
+        60,
+        &[PotionKind::BlockPotion],
+        3,
+    )
+}
+
+fn play(hand_index: u8, target: Option<u8>) -> Action {
+    Action::PlayCard { hand_index, target }
+}
+
+#[test]
+fn locate_finds_every_enumerated_plan_at_its_own_index() {
+    let state = five_card_state();
+    let set = enumerate_plans(&state, HiddenInfoMode::BeliefDraw, PlanCap::default());
+    assert!(!set.cap_hit);
+    for (i, plan) in set.plans.iter().enumerate() {
+        let loc = locate_plan(&state, HiddenInfoMode::BeliefDraw, &set, &plan.actions);
+        assert_eq!(loc.index, Some(i), "{plan:?} -> {loc:?}");
+        assert_eq!(loc.end, Some(plan.end));
+        assert_eq!(loc.used, plan.actions.len());
+        assert_eq!(loc.failure, None);
+    }
+}
+
+/// The second Strike copy, then Defend, in an order the enumerator's DFS
+/// reached first another way: the played turn still lands on the plan
+/// reaching the same state, and it is an `EndTurn` plan with the same cards.
+#[test]
+fn locate_matches_a_transposed_turn_played_with_another_copy() {
+    let state = five_card_state();
+    let set = enumerate_plans(&state, HiddenInfoMode::BeliefDraw, PlanCap::default());
+    let target = match legal_actions(&state)
+        .iter()
+        .find(|a| matches!(a, Action::PlayCard { hand_index: 3, .. }))
+    {
+        Some(Action::PlayCard { target, .. }) => *target,
+        other => panic!("no Strike play: {other:?}"),
+    };
+    // Hand [Strike, Defend, Bash, Strike, Inflame]: Strike (slot 3), then
+    // Defend (still slot 1), then end the turn.
+    let played = [play(3, target), play(1, None), Action::EndTurn];
+    let loc = locate_plan(&state, HiddenInfoMode::BeliefDraw, &set, &played);
+    assert_eq!(loc.used, 3, "{loc:?} legal {:?}", legal_actions(&state));
+    assert_eq!(loc.end, Some(PlanEnd::EndTurn));
+    let i = loc.index.expect("transposed turn not located");
+    let (ids, _) = replay(&state, &set.plans[i]);
+    let mut got: Vec<_> = ids.into_iter().flatten().collect();
+    got.sort_by_key(|c| format!("{c:?}"));
+    assert_eq!(got, vec![CardId::DefendIronclad, CardId::StrikeIronclad]);
+}
+
+#[test]
+fn locate_cuts_the_played_turn_at_its_first_draw() {
+    let mut state = fixture(&[CardId::PommelStrike, CardId::DefendIronclad], 40, &[], 3);
+    push_draw(
+        &mut state,
+        &[CardId::StrikeIronclad, CardId::DefendIronclad],
+    );
+    let set = enumerate_plans(&state, HiddenInfoMode::BeliefDraw, PlanCap::default());
+    let pommel = legal_actions(&state)
+        .into_iter()
+        .find(|a| matches!(a, Action::PlayCard { hand_index: 0, .. }))
+        .expect("Pommel Strike playable");
+    let played = [play(1, None), pommel, play(0, None), Action::EndTurn];
+    let loc = locate_plan(&state, HiddenInfoMode::BeliefDraw, &set, &played);
+    assert_eq!(loc.used, 2, "{loc:?}");
+    assert_eq!(loc.end, Some(PlanEnd::Chance));
+    let plan = &set.plans[loc.index.expect("Defend, Pommel not located")];
+    assert_eq!(plan.end, PlanEnd::Chance);
+    assert_eq!(plan.actions.len(), 2);
+}
+
+#[test]
+fn locate_reports_illegal_and_incomplete_turns() {
+    let state = five_card_state();
+    let set = enumerate_plans(&state, HiddenInfoMode::BeliefDraw, PlanCap::default());
+    let illegal = locate_plan(&state, HiddenInfoMode::BeliefDraw, &set, &[play(9, None)]);
+    assert_eq!(illegal.failure, Some("illegal"));
+    assert_eq!((illegal.used, illegal.end, illegal.index), (0, None, None));
+    let incomplete = locate_plan(&state, HiddenInfoMode::BeliefDraw, &set, &[play(1, None)]);
+    assert_eq!(incomplete.failure, Some("incomplete"));
+    assert_eq!(incomplete.index, None);
+}
+
+/// A capped set lacks most plans: a played plan it does not hold is cut
+/// (`end` set) but not located.
+#[test]
+fn locate_misses_a_plan_the_cap_cut_off() {
+    let state = five_card_state();
+    let full = enumerate_plans(&state, HiddenInfoMode::BeliefDraw, PlanCap::default());
+    let capped = enumerate_plans(
+        &state,
+        HiddenInfoMode::BeliefDraw,
+        PlanCap {
+            max_plans: 1,
+            max_nodes: 20_000,
+        },
+    );
+    let last = full.plans.last().expect("plans");
+    let loc = locate_plan(&state, HiddenInfoMode::BeliefDraw, &capped, &last.actions);
+    assert_eq!(loc.end, Some(last.end));
+    assert_eq!(loc.index, None);
+    assert_eq!(loc.failure, None);
 }

@@ -93,6 +93,10 @@ _REQUIREMENTS: dict[str, tuple[Path, str]] = {
         _PYCLI / "data" / "combat_bench" / "ironclad_dev_v1.jsonl",
         "private: built from the scraped human-run corpus (D6)",
     ),
+    "rollout_recipe": (
+        _MONO / "logs" / "2026-10-18-rollout-net-recipe" / "boss800.jsonl",
+        "private run logs (logs/ is not exported)",
+    ),
 }
 
 # Node-id prefix (relative to tests/) -> requirement. A bare module prefix
@@ -149,6 +153,8 @@ _NEEDS: dict[str, str] = {
     "turnplan/test_label.py::test_resume_refuses_a_changed_config": "combat_bench",
     "turnplan/test_label.py::test_a_cell_killed_mid_run_is_replayed_and_read_once": "combat_bench",
     "turnplan/test_label.py::test_a_cell_over_the_timeout_is_booked_as_watchdog": "combat_bench",
+    # --- the rollout-net recipe's boss800 holdout list (private logs/)
+    "test_combat_ctx.py::test_jobs_hold_out_every_holdout_run": "rollout_recipe",
 }
 
 

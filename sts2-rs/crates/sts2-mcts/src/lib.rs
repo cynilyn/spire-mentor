@@ -73,6 +73,7 @@ pub mod rollout_net;
 pub mod tt;
 pub mod turn_plan;
 pub mod turn_plan_features;
+pub mod turn_plan_scorer;
 pub mod value_net;
 pub mod values;
 
@@ -2326,6 +2327,9 @@ pub struct Mcts<P: Policy = UniformPolicy> {
     /// simulation must take. `None` (always, unless SH is running) leaves the
     /// root to UCT like every other node.
     forced_root_child: Option<NodeId>,
+    /// The root edges the search may expand ([`Self::with_root_allowed`],
+    /// the turn-plan root filter, GH #830); `None` expands every legal one.
+    root_allowed: Option<SmallVec<[EdgeAction; 16]>>,
     /// Number of simulations whose leaf was `proven_win` / `proven_loss`
     /// (either by construction on a terminal state, or via backup
     /// propagation from earlier sims) and therefore short-circuited
@@ -2635,6 +2639,7 @@ impl<P: Policy> Mcts<P> {
             tree_q_sq_sum: 0.0,
             tree_q_count: 0,
             forced_root_child: None,
+            root_allowed: None,
             rollouts_skipped: 0,
             rollouts_total: 0,
             depth_cap_hits: 0,
@@ -2661,6 +2666,35 @@ impl<P: Policy> Mcts<P> {
     #[must_use]
     pub fn with_leaf_eval(mut self, leaf_eval: LeafEval) -> Self {
         self.leaf_eval = leaf_eval;
+        self
+    }
+
+    /// Restrict the root to the moves in `allowed` (legal actions of the
+    /// root state; every hand copy of a card is one edge). The turn-plan
+    /// root filter (GH #830) uses it: only the root's children change,
+    /// everything below is the unrestricted search. A root that is already
+    /// expanded (a reused tree) drops its other children and untried
+    /// edges. An `allowed` set that matches no root edge leaves the root
+    /// unrestricted, so the search can never be stranded.
+    #[must_use]
+    pub fn with_root_allowed(mut self, allowed: &[Action]) -> Self {
+        let state = self.tree.root_state.clone();
+        let edges: SmallVec<[EdgeAction; 16]> = allowed
+            .iter()
+            .map(|a| EdgeAction::from_action(a, &state))
+            .collect();
+        let root = self.tree.root;
+        let node = self.tree.node_mut(root);
+        if node.is_expanded {
+            let keeps = |e: &EdgeAction| edges.contains(e);
+            if node.children.iter().any(|(e, _)| keeps(e)) || node.untried_actions.iter().any(keeps)
+            {
+                node.children.retain(|(e, _)| keeps(e));
+                node.untried_actions.retain(|e| keeps(e));
+            }
+        }
+        self.root_allowed = Some(edges);
+        self.root_stats.clear();
         self
     }
 
@@ -4586,6 +4620,13 @@ impl<P: Policy> Mcts<P> {
                     let pruned = &self.tree.node(node_id).dominance_pruned;
                     if !pruned.is_empty() {
                         untried.retain(|e| !pruned.contains(e));
+                    }
+                    if node_id == self.tree.root {
+                        if let Some(allowed) = self.root_allowed.as_ref() {
+                            if untried.iter().any(|e| allowed.contains(e)) {
+                                untried.retain(|e| allowed.contains(e));
+                            }
+                        }
                     }
                     // A8 audit §7b: `canonicalize_actions` dedups on
                     // exactly the `EdgeAction::PlayCard` identity tuple,

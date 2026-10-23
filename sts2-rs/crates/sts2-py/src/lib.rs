@@ -499,7 +499,7 @@ fn heuristic_play_to_terminal(
 /// `"action"` value raises `ValueError` rather than silently ending the
 /// turn — masking that bug previously produced false-positive `STATE_DRIFT`
 /// in the parity-fuzz harness.
-fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> {
+pub(crate) fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> {
     let action_kind: String = dict
         .get_item("action")?
         .ok_or_else(|| {
@@ -3990,6 +3990,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::run_manager::PyRunManager>()?;
     m.add_class::<crate::heuristic_agent::PyHeuristicRunAgent>()?;
     m.add_class::<crate::mcts_combat_agent::PyMctsCombatAgent>()?;
+    m.add_class::<crate::mcts_combat_agent::PyTurnPlanRootFilter>()?;
     m.add_class::<crate::combat_surrogate::PyCombatSurrogate>()?;
     m.add_class::<crate::ppo_agent::PyPpoRunAgent>()?;
     m.add_function(wrap_pyfunction!(crate::ppo_agent::ppo_observe_json, m)?)?;
@@ -4155,6 +4156,8 @@ fn state_from_dict_py(d: &Bound<'_, PyDict>) -> PyResult<PyCombatState> {
     move_states = None,
     potion_slots = None,
     game_version = None,
+    run_seed = None,
+    rng_counters = None,
 ))]
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn build_scenario_state_py(
@@ -4171,13 +4174,22 @@ fn build_scenario_state_py(
     move_states: Option<Vec<Option<String>>>,
     potion_slots: Option<u8>,
     game_version: Option<&str>,
+    run_seed: Option<u64>,
+    rng_counters: Option<Vec<(String, u32)>>,
 ) -> PyResult<PyCombatState> {
     let potions = potions.unwrap_or_default();
+    let rng_counters = rng_counters.unwrap_or_default();
     let game_version = parse_game_version(game_version)?;
     // `potion_slots=None` keeps the harness's default belt (3, or 2 from A4
     // Tight Belt, GH #893); a fight rebuilt from a human run passes the
     // human's belt size (GH #830).
-    let inner = sts2_wire::scenario::build_scenario_state_for_version_with_slots(
+    // `run_seed=` (+ `rng_counters=`) rebuilds a recorded fight on the run's
+    // own RNG streams, e.g. a SpireCodex replay's `combat_start.rng_state`.
+    let run_rng_init = run_seed.map(|run_seed| sts2_wire::scenario::RunRngInit {
+        run_seed,
+        counters: &rng_counters,
+    });
+    let inner = sts2_wire::scenario::build_scenario_state_with_run_rng(
         game_version,
         seed,
         character,
@@ -4191,6 +4203,7 @@ fn build_scenario_state_py(
         monsters.as_deref(),
         move_states.as_deref(),
         potion_slots,
+        run_rng_init,
     )
     .map_err(pyo3::exceptions::PyValueError::new_err)?;
     Ok(PyCombatState {

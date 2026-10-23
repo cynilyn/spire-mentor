@@ -93,3 +93,5 @@ sts2_rs-pin/
 # Turn-plan G0 label shards and scorer weights (GH #830): ~100 MB, reproducible
 # from docs/experiments/2026-10-22-turnplan-g0.md; the small report files live there.
 experiments/turnplan-g0/
+# Turn-plan pro-replay feasibility shards (docs/experiments/2026-10-22-turnplan-pro-feasibility.md).
+experiments/turnplan-pro/

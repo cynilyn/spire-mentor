@@ -234,6 +234,56 @@ pub fn build_scenario_state_for_version_with_slots(
     monster_move_states: Option<&[Option<String>]>,
     potion_slots: Option<u8>,
 ) -> Result<CoreCombatState, String> {
+    build_scenario_state_with_run_rng(
+        game_version,
+        seed,
+        character,
+        deck_ids,
+        hp,
+        max_hp,
+        relic_ids,
+        potion_ids,
+        encounter,
+        ascension,
+        monster_override,
+        monster_move_states,
+        potion_slots,
+        None,
+    )
+}
+
+/// The real run's RNG at the moment a recorded combat starts: the run's
+/// master seed (hashed, as `$.rng.run_seed` on the wire) and every stream's
+/// read count (a SpireCodex replay's `combat_start.rng_state`).
+#[derive(Debug)]
+pub struct RunRngInit<'a> {
+    pub run_seed: u64,
+    pub counters: &'a [(String, u32)],
+}
+
+/// [`build_scenario_state_for_version_with_slots`] that can replace the
+/// scenario's synthetic run RNG with a recorded run's, so a human fight is
+/// rebuilt with the game's own opening shuffle and monster rolls.
+///
+/// The recorded counters are read before the room's monsters are created,
+/// so the streams are replaced before the roster's HP rolls.
+#[allow(clippy::too_many_arguments)]
+pub fn build_scenario_state_with_run_rng(
+    game_version: sts2_core::GameVersion,
+    seed: u64,
+    character: &str,
+    deck_ids: &[String],
+    hp: i32,
+    max_hp: i32,
+    relic_ids: &[String],
+    potion_ids: &[String],
+    encounter: &str,
+    ascension: u8,
+    monster_override: Option<&[String]>,
+    monster_move_states: Option<&[Option<String>]>,
+    potion_slots: Option<u8>,
+    run_rng_init: Option<RunRngInit<'_>>,
+) -> Result<CoreCombatState, String> {
     if let Some(potion_slots) = potion_slots {
         if usize::from(potion_slots) > sts2_core::MAX_POTIONS {
             return Err(format!(
@@ -461,6 +511,15 @@ pub fn build_scenario_state_for_version_with_slots(
     // GH #788: seeded in the scenario's game build (v0.107.1 keeps the low
     // 32 bits of `seed`, exactly the old `RunRngSet::new(seed as i32)`).
     let mut run_rng = sts2_core::run_rng_set::RunRngSet::new_for(game_version, seed);
+    if let Some(init) = run_rng_init {
+        run_rng = sts2_core::run_rng_set::RunRngSet::new_for(game_version, init.run_seed);
+        for (name, counter) in init.counters {
+            let stream = run_rng
+                .stream_mut(name.as_str())
+                .ok_or_else(|| format!("build_scenario_state: unknown rng stream {name:?}"))?;
+            stream.fast_forward_counter(*counter);
+        }
+    }
 
     // sts2-rs-3010t: when the harness passes an explicit monster_list
     // (resolved on the C# side post-EnterRoom), use it verbatim so
