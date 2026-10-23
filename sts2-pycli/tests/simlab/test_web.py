@@ -626,3 +626,25 @@ def test_position_import_and_mcts(tmp_path) -> None:
     assert r.status_code == 200, r.text
     rows = r.json()["rows"]
     assert rows and rows[0]["is_best"]
+
+
+def test_status_retries_a_read_refused_mid_replace(tmp_path: Path, monkeypatch) -> None:
+    """Windows refuses to open progress.json while a writer's os.replace swaps it."""
+    from simlab.web import jobs
+
+    sweep = tmp_path / "s1"
+    sweep.mkdir()
+    (sweep / "progress.json").write_text(json.dumps({"status": "running"}), encoding="utf-8")
+    real_read_text = Path.read_text
+    refusals = [2]
+
+    def flaky_read_text(self: Path, *args, **kwargs) -> str:
+        if self.name == "progress.json" and refusals[0]:
+            refusals[0] -= 1
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    monkeypatch.setattr(jobs, "_REPLACE_BACKOFF_S", 0)
+    assert JobManager(results_root=tmp_path).status("s1") == {"status": "running"}
+    assert refusals == [0]
