@@ -423,6 +423,21 @@ impl SphereReward {
     }
 }
 
+/// The order `RewardsSet.GenerateWithoutOffering` leaves the rewards in: `Rewards.Sort(by RewardsSetIndex)`
+/// (`RewardsSet.cs`). `List<T>.Sort` is .NET's introsort, which is not stable for equal keys (a
+/// 3-element list goes through a swap network), so v0.111.0 replays it; older builds keep the stable order.
+fn rewards_set_order(keys: &[u8], dotnet_sort: bool) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..keys.len()).collect();
+    if dotnet_sort {
+        sts2_core::cards::dotnet_list_sort(idx.as_mut_slice(), &|a: usize, b: usize| {
+            keys[a].cmp(&keys[b])
+        });
+    } else {
+        idx.sort_by_key(|&i| keys[i]);
+    }
+    idx
+}
+
 /// `OfferCrystalSphereRewards` + `RewardsCmd.OfferCustom`, on the event Rng:
 ///
 /// 1. `ToReward` per revealed item, in reveal order. Only the potion rolls
@@ -478,7 +493,19 @@ fn offer_rewards(state: &mut RunState, rng: &mut Rng, revealed: &[CrystalSphereI
             }
         }
     }
-    rewards.sort_by_key(|(reward, _)| reward.rewards_set_index());
+    let order = rewards_set_order(
+        &rewards
+            .iter()
+            .map(|(reward, _)| reward.rewards_set_index())
+            .collect::<Vec<_>>(),
+        state.game_version >= sts2_core::GameVersion::V0_111_0,
+    );
+    let mut slots: Vec<Option<(SphereReward, Option<CardRarity>)>> =
+        rewards.into_iter().map(Some).collect();
+    let rewards: Vec<(SphereReward, Option<CardRarity>)> = order
+        .into_iter()
+        .map(|i| slots[i].take().expect("each reward is placed once"))
+        .collect();
     for (reward, _) in rewards {
         match reward {
             SphereReward::Gold(amount) => state.gain_gold(amount),
@@ -647,6 +674,16 @@ mod tests {
     /// Rewards: `ToReward` rolls each potion in reveal order, `Populate`
     /// then rolls cards, gold and relic in reveal order, all on the event
     /// Rng; selection runs gold, potion, relic, then the card reward.
+    /// Two equal-index rewards trailing a lower-index one swap places under .NET's 3-element sort network.
+    #[test]
+    fn rewards_set_order_replays_the_dotnet_tie_order_in_v0111_only() {
+        assert_eq!(rewards_set_order(&[5, 5, 1], false), vec![2, 0, 1]);
+        assert_eq!(rewards_set_order(&[5, 5, 1], true), vec![2, 1, 0]);
+        // Distinct keys: both agree.
+        assert_eq!(rewards_set_order(&[5, 1, 3], true), vec![1, 2, 0]);
+        assert_eq!(rewards_set_order(&[5, 1, 3], false), vec![1, 2, 0]);
+    }
+
     #[test]
     fn rewards_roll_in_reveal_order_and_take_in_rewards_set_order() {
         use CrystalSphereItemKind as K;
