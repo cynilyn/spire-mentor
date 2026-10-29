@@ -3575,6 +3575,18 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     hooks::dispatch_after_turn_end(state, &TurnSideCtx { side: Side::Player });
     after_turn_end_seated(state);
     crate::coop::each_teammate(state, after_turn_end_seated);
+    // v0.111.0 `DisintegrationPower.AfterSideTurnEndLate` runs after every
+    // early listener, relics included: a lethal Parrying Shield hit above ends
+    // the combat before this self-damage can land (RT0_36).
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        if combat_is_ending(state) {
+            match check_combat_end(state) {
+                StepResult::Advanced => {}
+                ended => return ended,
+            }
+        }
+        hooks::dispatch_after_turn_end_late(state, &TurnSideCtx { side: Side::Player });
+    }
 
     // Step 8: combat-end re-check. This is the Rust analogue of C#'s single
     // `await CheckWinCondition();` (`CombatManager.cs:963`) — fired ONCE,
@@ -11149,6 +11161,55 @@ mod tests {
     /// Build a `CombatState` with `n` Cultists pre-loaded into the creature
     /// arena and `enemy_uids`. Cultists start with `intent: None` so the
     /// roll-intent step is observable. RNG is seeded for determinism.
+    #[test]
+    fn parrying_shield_victory_precedes_disintegration_late_v0111() {
+        crate::relic_effects::ensure_installed();
+        for (version, expected_hp) in [
+            (crate::GameVersion::V0_107_1, 49),
+            (crate::GameVersion::V0_111_0, 50),
+        ] {
+            let mut state = state_with_cultists(1);
+            state.game_version = version;
+            state.phase = CombatPhase::PlayerEndTurnPhaseOne;
+            state.round = 2;
+            state.player.current_hp = 50;
+            state.player.max_hp = 80;
+            state.player.block = 20;
+            let enemy = state.enemy_uids[0];
+            state
+                .creatures
+                .iter_mut()
+                .find(|c| c.id == enemy.0)
+                .expect("enemy")
+                .current_hp = 1;
+            let player = state.init_player_creature();
+            let power_id = NonZeroU32::new(1).expect("power uid");
+            state.powers.push(crate::Power::new(
+                power_id,
+                crate::PowerKind::Disintegration,
+                21,
+            ));
+            state.player.powers.push(crate::PowerUid(power_id));
+            state
+                .creatures
+                .iter_mut()
+                .find(|c| c.id == player.0)
+                .expect("player creature")
+                .powers
+                .push(crate::PowerUid(power_id));
+            state.relics.push(crate::Relic {
+                id: NonZeroU32::new(1).expect("relic uid"),
+                kind: crate::RelicKind::ParryingShield,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+
+            assert_eq!(end_player_turn_phase_two(&mut state), StepResult::CombatWon);
+            assert_eq!(state.player.current_hp, expected_hp, "{version:?}");
+        }
+    }
+
     fn state_with_cultists(n: u32) -> CombatState {
         let mut state = CombatState {
             rng: crate::dotnet_rng::Rng::new(0_i32),

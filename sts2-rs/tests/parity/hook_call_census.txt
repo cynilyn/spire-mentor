@@ -14,6 +14,7 @@ dispatch_after_shuffle
 dispatch_after_side_turn_start
 dispatch_after_taking_extra_turn
 dispatch_after_turn_end
+dispatch_after_turn_end_late
 dispatch_before_card_played_powers
 dispatch_before_combat_start
 dispatch_before_damage_received
