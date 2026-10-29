@@ -2436,7 +2436,9 @@ impl RunManager {
                     apply(&mut self.run_state, reward_room_type);
                 }
                 let card_options = self.enter_card_reward_phase();
+                self.apply_modify_rewards(reward_room_type);
                 self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
+                self.drain_modify_rewards_relics();
                 return ActionResult::Advanced;
             }
             // Act-1/2 boss kill: grant the combat card reward FIRST (3
@@ -2484,7 +2486,9 @@ impl RunManager {
             // calls `advance_boss_act`.
             self.pending_boss_act_advance = true;
             let card_options = self.enter_card_reward_phase();
+            self.apply_modify_rewards(reward_room_type);
             self.fire_before_combat_reward_offered(reward_room_type, card_options, None);
+            self.drain_modify_rewards_relics();
             return ActionResult::Advanced;
         }
         // Normal / Elite combat win → combat rewards + CardReward.
@@ -2533,7 +2537,10 @@ impl RunManager {
             Vec::new()
         };
         self.collect_extra_combat_rewards(extra_rewards);
-        self.open_card_reward_phase();
+        let v0111 = self.run_state.game_version >= crate::GameVersion::V0_111_0;
+        if !v0111 {
+            self.open_card_reward_phase();
+        }
         let mut elite_relic = None;
         // Elite rooms append a 5th reward: C# `RewardsSet.GenerateRewardsFor`
         // (Elite case) adds `new RelicReward(player)` LAST, whose `Populate`
@@ -2567,21 +2574,178 @@ impl RunManager {
             // list — and the rewards-stream cursor — in lockstep with the
             // oracle. Without this the relic surfaced one step late, so the
             // card-reward-screen relic-list diff diverged (RP109/RP72).
-            self.run_state.drain_relic_rewards_directly();
+            if !v0111 {
+                self.run_state.drain_relic_rewards_directly();
+            }
             // BlackStar's `TryModifyRewards` appends one more
             // `RelicReward(player)` to an Elite's set (decomp
             // `Models.Relics/BlackStar.cs:13`), populated after the base
             // rewards (`Rewards/RewardsSet.cs:139-146`): a second rarity roll
             // on `Rewards` and grab-bag pull, auto-collected by the oracle like
             // the first. Identical in v0.107.1 and v0.111.0, so both builds
-            // (GH #806).
+            // (GH #806). On v0.111.0 it is queued here, ahead of the other
+            // relics' additions, and collected with them below.
             if self.run_state.owns_active_relic(crate::RelicId::BlackStar) {
                 self.run_state.offer_random_relic_rewards(1, &[None]);
-                self.run_state.drain_relic_rewards_directly();
+                if !v0111 {
+                    self.run_state.drain_relic_rewards_directly();
+                }
             }
         }
+        if !v0111 {
+            self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
+            return ActionResult::Advanced;
+        }
+        // v0.111.0: every relic's `TryModifyRewards` (`Hook.cs:1584-1600`) runs on
+        // the populated base set and its additions populate after it
+        // (`RewardsSet.cs:139-146`) — PrayerWheel's and WhiteStar's extra card
+        // rewards, AmethystAubergine's gold, LavaRock's and Wongo's relics.
+        // `Hook.BeforeCombatRewardOffered` then fires on the populated set
+        // (`CombatRoom.OfferRoomEndRewards`), and only `Offer` collects the
+        // relics: so a LastingCandy that IS this room's relic does not count
+        // this set, and a WhiteStar / BlackStar that is does not modify it.
+        self.apply_modify_rewards(reward_room_type);
+        let relic_count_before_grants = self.run_state.relics.len();
         self.fire_before_combat_reward_offered(reward_room_type, card_options, elite_relic);
+        self.run_state.drain_relic_rewards_directly();
+        self.apply_new_egg_relics_to_open_card_reward(relic_count_before_grants);
+        self.open_card_reward_phase();
         ActionResult::Advanced
+    }
+
+    /// v0.111.0: a boss room's `ModifyRewards` relic additions (LavaRock's act-1
+    /// boss relics) are collected by `Offer`, after `BeforeCombatRewardOffered`.
+    fn drain_modify_rewards_relics(&mut self) {
+        if self.run_state.game_version >= crate::GameVersion::V0_111_0
+            && self.run_state.direct_event_relic_grant
+        {
+            self.run_state.drain_relic_rewards_directly();
+        }
+    }
+
+    /// A populated C# CardReward subscribes to RelicObtained and applies the
+    /// newly gained relic's option hooks (CardReward.cs:98-105,140-154).
+    /// Elite relics are claimed after the card slate is rolled, so an Egg
+    /// gained from this same reward set must upgrade its matching options.
+    /// Keep this bridge to the three Egg late hooks: mid-hook relics need the
+    /// original CardCreationOptions and are not represented by this callback.
+    fn apply_new_egg_relics_to_open_card_reward(&mut self, prior_relic_count: usize) {
+        if self.run_state.game_version < crate::GameVersion::V0_111_0
+            || self.card_reward_options.is_empty()
+        {
+            return;
+        }
+        let new_eggs: Vec<_> = self.run_state.relics[prior_relic_count..]
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(
+                    id,
+                    crate::RelicId::FrozenEgg
+                        | crate::RelicId::MoltenEgg
+                        | crate::RelicId::ToxicEgg
+                )
+            })
+            .collect();
+        if new_eggs.is_empty() {
+            return;
+        }
+        let mut cards: Vec<_> = self
+            .card_reward_options
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                let upgraded = self.card_reward_upgraded.get(i).copied().unwrap_or(false);
+                crate::build_card_for_version(id, upgraded, self.run_state.game_version)
+                    .unwrap_or_else(|| {
+                        let mut card = crate::cards::Card::pod_defaults();
+                        card.card_id = id;
+                        card.upgraded = upgraded;
+                        card
+                    })
+            })
+            .collect();
+        for id in new_eggs {
+            if let Some(hook) = crate::run_effects::lookup_modify_card_reward_options_late(id) {
+                let _ = hook(&mut self.run_state, &mut cards);
+            }
+        }
+        self.card_reward_upgraded = cards.iter().map(|card| card.upgraded).collect();
+    }
+
+    /// `Hook.ModifyRewards` over a combat room's reward set, v0.111.0 only
+    /// (`RewardsSet.GenerateWithoutOffering`, `RewardsSet.cs:131-149`).
+    ///
+    /// The base rewards (gold, potion, card, Elite relic) are already populated
+    /// when this runs; the relic listeners then append their rewards and each
+    /// addition is populated IN LIST ORDER, which is what fixes the `Rewards`
+    /// stream position every later roll starts from:
+    ///   * a relic sentinel (BlackStar / LavaRock / Wongo's own id) is a
+    ///     `RelicReward(player)`: one rarity `NextFloat` and a grab-bag pull,
+    ///     collected on the spot under `direct_event_relic_grant` like the
+    ///     Elite relic;
+    ///   * an empty `CardReward` carrying a `room_context` (PrayerWheel,
+    ///     WhiteStar) rolls its three cards NOW with `ForRoom(context)` odds and
+    ///     no `IsFromCombat` flag, and is queued pre-resolved on
+    ///     `pending_rewards`, so it surfaces as its own card screen once the
+    ///     room's card reward resolves — the same stream order as C#, where
+    ///     all rewards are populated before the first screen opens;
+    ///   * a gold reward (AmethystAubergine) is claimed at once.
+    fn apply_modify_rewards(&mut self, room_type: crate::runstate::RoomType) {
+        use crate::runstate::Reward;
+        if self.run_state.game_version < crate::GameVersion::V0_111_0 {
+            return;
+        }
+        let mut extras: Vec<Reward> = Vec::new();
+        let _ = crate::run_effects::dispatch_modify_rewards(
+            &mut self.run_state,
+            &mut extras,
+            room_type,
+        );
+        for reward in extras {
+            match reward {
+                Reward::Gold { amount } => self.run_state.gain_gold(amount),
+                // BlackStar's sentinel: its relic was already rolled in the Elite arm.
+                Reward::Relic(rr) if rr.relic_id == crate::RelicId::BlackStar => {}
+                Reward::Relic(rr)
+                    if matches!(
+                        rr.relic_id,
+                        crate::RelicId::LavaRock | crate::RelicId::WongosMysteryTicket
+                    ) =>
+                {
+                    self.run_state.offer_random_relic_rewards(1, &[None]);
+                    // v0.111.0 drains these after the before-offered hook instead.
+                    if self.run_state.game_version < crate::GameVersion::V0_111_0
+                        && self.run_state.direct_event_relic_grant
+                    {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
+                }
+                Reward::Relic(rr) => {
+                    self.run_state.offer_relic_rewards(rr.relic_id, 1);
+                    if self.run_state.game_version < crate::GameVersion::V0_111_0
+                        && self.run_state.direct_event_relic_grant
+                    {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
+                }
+                Reward::Card(cr) if cr.options.is_empty() && cr.room_context.is_some() => {
+                    self.run_state.card_reward_context_override = cr.room_context;
+                    let options = self
+                        .callbacks
+                        .generate_card_reward_options
+                        .map(|f| f(&mut self.run_state))
+                        .unwrap_or_default();
+                    self.run_state.card_reward_context_override = None;
+                    let mut rolled = crate::runstate::CardReward::from_options(options);
+                    rolled.upgraded =
+                        std::mem::take(&mut self.run_state.card_reward_upgraded_flags);
+                    self.run_state.card_reward_enchantments.clear();
+                    self.run_state.pending_rewards.push(Reward::Card(rolled));
+                }
+                other => self.run_state.pending_rewards.push(other),
+            }
+        }
     }
 
     /// Collect a combat room's `ExtraRewards` the way the C# headless does,
@@ -6382,6 +6546,7 @@ mod tests {
     /// BlackStar (`BlackStar.cs:13`, same in both builds) appends a second
     /// relic reward to an Elite's set; the oracle auto-collects both (GH #806).
     #[test]
+    #[serial_test::serial(global_registry)]
     fn black_star_elite_gives_two_relics_both_versions() {
         for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
             assert_eq!(black_star_elite_relics(version).len(), 2, "{version:?}");
@@ -6814,6 +6979,184 @@ mod tests {
                 assert!(seen.is_empty(), "{version}: no hook");
             }
         }
+    }
+
+    /// v0.111.0: a boss room's `ModifyRewards` relic addition (LavaRock's) is collected by `Offer`, after
+    /// `BeforeCombatRewardOffered`, so a hook listener does not see it owned (`CombatRoom.cs:264-276`).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn boss_extra_relic_is_claimed_after_reward_offered_hook_v0111() {
+        use std::cell::RefCell;
+        thread_local! {
+            static OWNED_AT_HOOK: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+        }
+        fn add_candy(
+            rs: &mut RunState,
+            rewards: &mut Vec<crate::runstate::Reward>,
+            room: crate::runstate::RoomType,
+        ) -> crate::card_effects::EffectResult {
+            if room != crate::runstate::RoomType::Boss
+                || !rs.owns_active_relic(crate::RelicId::LavaRock)
+            {
+                return crate::card_effects::EffectResult::NotImplemented;
+            }
+            rewards.push(crate::runstate::Reward::Relic(
+                crate::runstate::RelicReward::new(crate::RelicId::LastingCandy),
+            ));
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn observe(
+            rs: &mut RunState,
+            _set: &crate::run_effects::CombatRewardsSet,
+        ) -> crate::card_effects::EffectResult {
+            OWNED_AT_HOOK.with(|seen| {
+                seen.borrow_mut()
+                    .push(rs.owns_active_relic(crate::RelicId::LastingCandy));
+            });
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+            vec![crate::cards::CardId::Bash]
+        }
+        crate::run_effects::register_modify_rewards(crate::RelicId::LavaRock, add_candy);
+        crate::run_effects::register_before_combat_reward_offered(crate::RelicId::Anchor, observe);
+        OWNED_AT_HOOK.with(|seen| seen.borrow_mut().clear());
+        let cb = ContentCallbacks {
+            generate_card_reward_options: Some(cards),
+            ..ContentCallbacks::default()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.game_version = crate::GameVersion::V0_111_0;
+        rm.run_state.direct_event_relic_grant = true;
+        rm.run_state.relics.push(crate::RelicId::LavaRock);
+        rm.run_state.act_index = 1;
+        rm.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Boss));
+        rm.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        rm.set_phase(Phase::Combat);
+
+        assert_eq!(rm.exit_combat_and_transition(), ActionResult::Advanced);
+        OWNED_AT_HOOK.with(|seen| assert_eq!(*seen.borrow(), vec![false]));
+        assert!(rm.run_state.relics.contains(&crate::RelicId::LastingCandy));
+        assert_eq!(rm.phase(), Phase::CardReward);
+
+        OWNED_AT_HOOK.with(|seen| seen.borrow_mut().clear());
+        let mut legacy =
+            RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(ContentCallbacks {
+                generate_card_reward_options: Some(cards),
+                ..ContentCallbacks::default()
+            });
+        legacy.run_state.game_version = crate::GameVersion::V0_107_1;
+        legacy.run_state.direct_event_relic_grant = true;
+        legacy.run_state.relics.push(crate::RelicId::LavaRock);
+        legacy.run_state.act_index = 1;
+        legacy.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Boss));
+        legacy.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        legacy.set_phase(Phase::Combat);
+        assert_eq!(legacy.exit_combat_and_transition(), ActionResult::Advanced);
+        OWNED_AT_HOOK.with(|seen| assert!(seen.borrow().is_empty()));
+        assert!(!legacy
+            .run_state
+            .relics
+            .contains(&crate::RelicId::LastingCandy));
+    }
+
+    /// v0.111.0: the same order on a Monster/Elite set: relic additions are collected after
+    /// `BeforeCombatRewardOffered` (a LastingCandy won in this room does not count this room's set).
+    #[test]
+    #[serial_test::serial(global_registry)]
+    fn elite_relic_additions_are_claimed_after_reward_offered_hook_v0111() {
+        use std::cell::RefCell;
+        thread_local! {
+            static OWNED_AT_HOOK: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+        }
+        fn add_candy(
+            rs: &mut RunState,
+            rewards: &mut Vec<crate::runstate::Reward>,
+            room: crate::runstate::RoomType,
+        ) -> crate::card_effects::EffectResult {
+            if room != crate::runstate::RoomType::Elite
+                || !rs.owns_active_relic(crate::RelicId::LavaRock)
+            {
+                return crate::card_effects::EffectResult::NotImplemented;
+            }
+            rewards.push(crate::runstate::Reward::Relic(
+                crate::runstate::RelicReward::new(crate::RelicId::LastingCandy),
+            ));
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn observe(
+            rs: &mut RunState,
+            _set: &crate::run_effects::CombatRewardsSet,
+        ) -> crate::card_effects::EffectResult {
+            OWNED_AT_HOOK.with(|seen| {
+                seen.borrow_mut()
+                    .push(rs.owns_active_relic(crate::RelicId::LastingCandy));
+            });
+            crate::card_effects::EffectResult::Resolved
+        }
+        fn cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+            vec![crate::cards::CardId::Bash]
+        }
+        crate::run_effects::register_modify_rewards(crate::RelicId::LavaRock, add_candy);
+        crate::run_effects::register_before_combat_reward_offered(crate::RelicId::Anchor, observe);
+        OWNED_AT_HOOK.with(|seen| seen.borrow_mut().clear());
+        let cb = ContentCallbacks {
+            generate_card_reward_options: Some(cards),
+            ..ContentCallbacks::default()
+        };
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+        rm.run_state.game_version = crate::GameVersion::V0_111_0;
+        rm.run_state.direct_event_relic_grant = true;
+        rm.run_state.relics.push(crate::RelicId::LavaRock);
+        rm.run_state.act_index = 1;
+        rm.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Elite));
+        rm.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        rm.set_phase(Phase::Combat);
+
+        assert_eq!(rm.exit_combat_and_transition(), ActionResult::Advanced);
+        OWNED_AT_HOOK.with(|seen| assert_eq!(*seen.borrow(), vec![false]));
+        assert!(rm.run_state.relics.contains(&crate::RelicId::LastingCandy));
+        assert_eq!(rm.phase(), Phase::CardReward);
+
+        OWNED_AT_HOOK.with(|seen| seen.borrow_mut().clear());
+        let mut legacy =
+            RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(ContentCallbacks {
+                generate_card_reward_options: Some(cards),
+                ..ContentCallbacks::default()
+            });
+        legacy.run_state.game_version = crate::GameVersion::V0_107_1;
+        legacy.run_state.direct_event_relic_grant = true;
+        legacy.run_state.relics.push(crate::RelicId::LavaRock);
+        legacy.run_state.act_index = 1;
+        legacy.run_state.current_room =
+            Some(crate::runstate::Room::new(crate::runstate::RoomType::Elite));
+        legacy.combat = Some(crate::CombatState {
+            is_over: true,
+            player_won: true,
+            ..crate::CombatState::default()
+        });
+        legacy.set_phase(Phase::Combat);
+        assert_eq!(legacy.exit_combat_and_transition(), ActionResult::Advanced);
+        OWNED_AT_HOOK.with(|seen| assert!(seen.borrow().is_empty()));
+        assert!(!legacy
+            .run_state
+            .relics
+            .contains(&crate::RelicId::LastingCandy));
     }
 
     #[test]

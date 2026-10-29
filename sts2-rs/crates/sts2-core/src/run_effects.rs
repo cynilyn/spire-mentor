@@ -2495,10 +2495,16 @@ mod tests {
 
     static C_MODIFY_REWARDS: AtomicUsize = AtomicUsize::new(0);
     fn h_modify_rewards(
-        _rs: &mut RunState,
+        rs: &mut RunState,
         rewards: &mut Vec<Reward>,
         _room_type: RoomType,
     ) -> EffectResult {
+        // Ownership-gated like the real listeners: the registry is process-global, and the
+        // v0.111.0 combat reward path walks it, so an unconditional push would add a relic
+        // to every other test's Monster/Elite reward set.
+        if !rs.owns_active_relic(RelicId::WongosMysteryTicket) {
+            return EffectResult::NotImplemented;
+        }
         C_MODIFY_REWARDS.fetch_add(1, Ordering::SeqCst);
         rewards.push(Reward::Relic(RelicReward::new(RelicId::Akabeko)));
         EffectResult::Resolved
@@ -2513,6 +2519,7 @@ mod tests {
             h_modify_rewards as ModifyRewardsRunFn,
         );
         let mut rs = RunState::new();
+        rs.relics.push(RelicId::WongosMysteryTicket);
         let mut rewards: Vec<Reward> = Vec::new();
         let result = dispatch_modify_rewards(&mut rs, &mut rewards, RoomType::Monster);
         assert_eq!(result, EffectResult::Resolved);
