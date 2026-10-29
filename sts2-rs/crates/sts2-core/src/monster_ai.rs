@@ -636,6 +636,27 @@ impl MonsterAi {
         self.forced_next_state = None;
     }
 
+    /// The generic no-op `Intent::Stun` move `CreatureCmd.Stun` installs on a
+    /// monster whose own move table has no stun state (Whistle against The
+    /// Lost): adds a `"STUNNED"` move (`must_perform_once`) if missing and
+    /// returns its id, for [`Self::stun_immediate`].
+    pub fn ensure_generic_stun_state(&mut self) -> StateId {
+        fn no_effect(_: &mut CombatState, _: CreatureUid) {}
+        if self.states.get("STUNNED").is_none() {
+            std::sync::Arc::make_mut(&mut self.states).insert(
+                "STUNNED",
+                MonsterState::Move(MoveState {
+                    id: "STUNNED",
+                    effect: no_effect,
+                    intents: smallvec::smallvec![Intent::Stun],
+                    follow_up: None,
+                    must_perform_once: true,
+                }),
+            );
+        }
+        "STUNNED"
+    }
+
     /// Restore the current move-state from a serialized [`current_state_id`]
     /// string. Looks the runtime `target` up among this AI's own move-state
     /// ids (which are `&'static str`) and, when found, forces it as the
