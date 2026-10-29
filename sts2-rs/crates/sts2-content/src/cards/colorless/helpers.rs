@@ -209,6 +209,17 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
     state: &mut CombatState,
     kind: sts2_core::cards::CardType,
 ) {
+    move_card_from_draw_to_hand_filtered(state, Some(kind));
+}
+
+/// Same behaviour as [`move_card_from_draw_to_hand_by_type`], with an
+/// optional type filter: `None` makes every draw-pile card a candidate
+/// (Wish on v0.111.0, `Wish.cs` `CardSelectCmd.FromCombatPile` with no
+/// filter).
+pub(crate) fn move_card_from_draw_to_hand_filtered(
+    state: &mut CombatState,
+    filter: Option<sts2_core::cards::CardType>,
+) {
     let mut candidates: SmallVec<[sts2_core::CardUid; 16]> = state
         .player
         .draw
@@ -216,7 +227,7 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
         .copied()
         .filter(|uid| {
             let idx = uid.0.get() as usize - 1;
-            state.cards[idx].card_type == kind
+            filter.is_none_or(|kind| state.cards[idx].card_type == kind)
         })
         .collect();
     // Mirror C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(Id)` Draw-pile
@@ -237,7 +248,19 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
             // FirstOrDefault: exactly one candidate, no prompt.
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
-                state.player.hand.push(card);
+                if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+                    // Raw removal from draw: clear any stale pin, and send
+                    // the card to discard when the hand is full
+                    // (`CardPileCmd.cs:402-406`).
+                    sts2_core::cards::unpin(&mut state.player, card);
+                    if state.player.hand.len() >= sts2_core::cards::HAND_LIMIT {
+                        state.player.discard.push(card);
+                    } else {
+                        state.player.hand.push(card);
+                    }
+                } else {
+                    state.player.hand.push(card);
+                }
             }
         }
         _ => {
