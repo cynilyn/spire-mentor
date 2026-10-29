@@ -387,17 +387,19 @@ fn after_player_turn_start_stub(state: &mut CombatState) {
             state.player.draw.insert(0, uid);
             crate::cards::pin_top(&mut state.player, uid);
         } else if pos != 0 {
-            // KNOWN PARITY DIVERGENCE (pre-existing; found in the GH #785
-            // review, left as is so clairvoyant mode stays byte-stable): the
-            // swap moves the old top card down to the Imbued card's slot.
-            // C# `CardCmd.AutoPlay(card)` plays the card where it sits and
-            // leaves the rest of the pile in order, so the next turn's draws
-            // differ. The fix is the remove + insert(0) shape above. (C#
-            // also moves Imbued cards to the BOTTOM before the turn-1 hand
-            // draw — `ShouldStartAtBottomOfDrawPile`, `CombatManager.cs:662`
-            // — which this engine does not model either; see the round-1
-            // Innate float in `combat_loop.rs`.)
-            state.player.draw.swap(0, pos);
+            if state.game_version >= crate::GameVersion::V0_111_0 {
+                // C# `CardCmd.AutoPlay(card)` plays the card out of the draw pile without
+                // touching the others; moving it to the top (not swapping) keeps every
+                // other card's place.
+                state.player.draw.remove(pos);
+                state.player.draw.insert(0, uid);
+            } else {
+                // v0.107.1 keeps the legacy swap (clairvoyant traces stay byte-stable):
+                // the old top card moves down to the Imbued card's slot. (C# also moves
+                // Imbued cards to the BOTTOM before the turn-1 hand draw —
+                // `ShouldStartAtBottomOfDrawPile`, `CombatManager.cs:662`.)
+                state.player.draw.swap(0, pos);
+            }
         }
         // Imbued does NOT force-exhaust — C# `Imbued.cs` calls
         // `CardCmd.AutoPlay(card, null)` which leaves `ExhaustOnNextPlay`
