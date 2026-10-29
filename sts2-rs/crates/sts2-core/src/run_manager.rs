@@ -1505,8 +1505,7 @@ impl RunManager {
                 // observation → identical argmax, forever, until the
                 // stall watchdog kills the run as a loss. C# greys the
                 // entry visually; this filter is the AI-side grey.
-                let potion_cap = (self.run_state.max_potion_slots.max(0) as usize)
-                    .min(crate::potions::MAX_POTIONS);
+                let potion_cap = self.run_state.potion_belt_cap();
                 let potion_row_locked = self.run_state.potions.len() >= potion_cap
                     || crate::run_effects::would_veto_procure_potion(&self.run_state);
                 if !potion_row_locked {
@@ -6277,6 +6276,29 @@ mod tests {
             rm.run_state.current_hp, 0,
             "heal must not fire on loss path"
         );
+    }
+
+    /// C# `Player.MaxPotionCount` is the slot count (`Player.cs:43`): a six-slot belt holds six potions on
+    /// v0.111.0, while v0.107.1 keeps the legacy five-potion clamp.
+    #[test]
+    fn potion_belt_cap_follows_slot_count_on_v0111_only() {
+        for (version, expect) in [
+            (crate::GameVersion::V0_107_1, 5usize),
+            (crate::GameVersion::V0_111_0, 6),
+        ] {
+            let mut rs = RunState {
+                game_version: version,
+                max_potion_slots: 6,
+                ..RunState::default()
+            };
+            let mut held = 0;
+            while rs.add_potion_to_belt(crate::potions::PotionKind::BlockPotion) {
+                held += 1;
+                assert!(held <= 6);
+            }
+            assert_eq!(held, expect, "{version:?}");
+            assert_eq!(rs.potion_belt_cap(), expect);
+        }
     }
 
     #[test]
