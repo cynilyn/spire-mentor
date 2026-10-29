@@ -1564,7 +1564,20 @@ fn listener_tanxs_whistle(rs: &mut RunState) -> EffectResult {
         return EffectResult::NotImplemented;
     }
     // `CardPileCmd.Add(CreateCard<Whistle>, Deck)` (`TanxsWhistle.cs:19-20`).
-    push_deck_card(rs, sts2_core::cards::CardId::Whistle);
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        // The v0.111.0 card costs 2 and deals 33 damage: use its full spec,
+        // not the generic deck-card pool's.
+        let Some(card) = crate::cards::v0111::card_pod_for(
+            sts2_core::cards::CardId::Whistle,
+            false,
+            rs.game_version,
+        ) else {
+            return EffectResult::NotImplemented;
+        };
+        rs.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::RelicGain);
+    } else {
+        push_deck_card(rs, sts2_core::cards::CardId::Whistle);
+    }
     EffectResult::Resolved
 }
 
@@ -5761,18 +5774,47 @@ mod tests {
     /// `TanxsWhistle::after_obtained` adds 1 unupgraded `Whistle` to
     /// the run-side master deck.
     #[test]
-    fn listener_tanxs_whistle_adds_whistle_to_master_deck_on_obtain() {
+    fn listener_tanxs_whistle_preserves_legacy_and_uses_v0111_whistle_spec() {
         use sts2_core::runstate::RunState;
+        crate::cards::dispatch::ensure_installed();
         crate::relics::dispatch::ensure_installed();
+        // v0.107.1 keeps the generic deck-card pool's Whistle (checked by id only).
+        let mut legacy = RunState::new();
+        legacy.relics.push(RelicId::TanxsWhistle);
+        legacy.last_obtained_relic = Some(RelicId::TanxsWhistle);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut legacy);
+        assert_eq!(legacy.master_deck.len(), 1);
+        assert_eq!(
+            legacy.master_deck[0].card_id,
+            sts2_core::cards::CardId::Whistle
+        );
+        {
+            let (version, cost, damage) = (sts2_core::GameVersion::V0_111_0, 2, 33);
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::TanxsWhistle);
+            rs.last_obtained_relic = Some(RelicId::TanxsWhistle);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(rs.master_deck.len(), 1, "{version:?}");
+            let added = &rs.master_deck[0];
+            assert_eq!(added.card_id, sts2_core::cards::CardId::Whistle);
+            assert!(!added.upgraded);
+            assert_eq!(added.cost, cost, "{version:?}");
+            assert_eq!(added.base_damage, damage, "{version:?}");
+            assert_eq!(added.card_type, sts2_core::cards::CardType::Attack);
+            assert_eq!(added.target_type, sts2_core::cards::TargetType::Enemy);
+            assert_eq!(added.base_block, 0);
+            assert!(sts2_core::card_effects::card_exhausts_inst(added));
+        }
 
-        let mut rs = RunState::new();
-        rs.relics.push(RelicId::TanxsWhistle);
-        rs.last_obtained_relic = Some(RelicId::TanxsWhistle);
-        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        assert_eq!(rs.master_deck.len(), 1);
-        let added = &rs.master_deck[0];
-        assert_eq!(added.card_id, sts2_core::cards::CardId::Whistle);
-        assert!(!added.upgraded);
+        let upgraded = crate::cards::v0111::card_pod_for(
+            sts2_core::cards::CardId::Whistle,
+            true,
+            sts2_core::GameVersion::V0_111_0,
+        )
+        .expect("upgraded Whistle spec");
+        assert_eq!(upgraded.cost, 2);
+        assert_eq!(upgraded.base_damage, 44);
     }
 
     /// Bead `sts2-rs-70anj.4` (Wave 4 body-fill, batch 2):
