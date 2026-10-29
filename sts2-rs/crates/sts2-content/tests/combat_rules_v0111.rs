@@ -146,3 +146,21 @@ fn brilliant_scarf_zeroes_the_fifth_card_cost_on_v0111_only() {
     assert_eq!(cost(GameVersion::V0_111_0, 3), 2);
     assert_eq!(cost(GameVersion::V0_107_1, 4), 2);
 }
+
+/// `SoulsPower.OnEnchant` removes Exhaust: an enchanted Offering goes to the discard pile (v0.111.0).
+#[test]
+fn souls_power_removes_exhaust_on_v0111_only() {
+    use sts2_core::cards::EnchantmentId;
+    for (version, want) in [
+        (GameVersion::V0_111_0, false),
+        (GameVersion::V0_107_1, true),
+    ] {
+        let (mut state, _) = board(version, CardId::Offering, TargetType::Self_);
+        state.cards[0].add_enchantment(EnchantmentId::SoulsPower, 1);
+        assert_eq!(
+            sts2_core::card_effects::card_exhausts_for(&state, &state.cards[0]),
+            want,
+            "{version:?}"
+        );
+    }
+}
