@@ -116,3 +116,37 @@ fn thunderclap_keeps_shrink_for_the_whole_attack_v0111() {
 fn thunderclap_shrink_removed_mid_attack_v0107_unchanged() {
     assert_eq!(thunderclap_shrink_other_hp(V107), 96);
 }
+
+// ── LoseMaxHp below current HP deals damage (seed LSA_34) ──────────────────────────────────────────
+
+/// Full-HP player with Centennial Puzzle plays Brightest Flame (draw 2, lose max HP). Returns the hand size.
+fn brightest_flame_puzzle_hand(version: GameVersion) -> usize {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    let _ = add_enemy(&mut state, 2, 100);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::CentennialPuzzle,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    for _ in 0..10 {
+        let uid = new_card(&mut state, CardId::StrikeIronclad, false);
+        state.player.draw.push(uid);
+    }
+    let i = push_hand(&mut state, CardId::BrightestFlame, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    state.player.hand.len()
+}
+
+/// `CreatureCmd.LoseMaxHp` (CreatureCmd.cs:655-658): newMaxHp < CurrentHp => Damage(Unblockable|Unpowered|Move) first,
+/// so Centennial Puzzle's AfterDamageReceived (CentennialPuzzle.cs: draw 3) fires: 2 (flame) + 3 (puzzle).
+#[test]
+fn lose_max_hp_below_current_triggers_after_damage_listeners_v0111() {
+    assert_eq!(brightest_flame_puzzle_hand(V111), 5);
+}
+
+#[test]
+fn lose_max_hp_plain_shrink_v0107_unchanged() {
+    assert_eq!(brightest_flame_puzzle_hand(V107), 2);
+}
