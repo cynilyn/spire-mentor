@@ -8,10 +8,9 @@ use super::prelude::*;
 /// `sts2-rl-agent@01c094d:sts2_env/cards/status.py::metamorphosis_effect`:
 /// `create_character_cards(.., card_type=ATTACK, distinct=False)` then
 /// `set_combat_cost(0)` + `insert_card_into_draw_pile(random_position=True)`
-/// per generated card. The Rust port elides the `set_combat_cost(0)`
-/// step (no per-card cost-override surface yet — Phase 7) so the
-/// generated attacks land at their native costs. Bead
-/// `sts2-rs-6ynt.8-metamorphosis`.
+/// per generated card. Generated cards live only in this combat's arena,
+/// so setting their local cost to 0 lasts through this combat, matching
+/// `MakeFreeThisCombat`. The star-cost flag covers star-using attacks.
 ///
 /// C# `Metamorphosis.cs` `CardsVar(3)` with `OnUpgrade UpgradeValueBy(2)`
 /// → 3 attacks base / 5 attacks upgraded. Bead `sts2-rs-k2rzs` lifts the
@@ -29,6 +28,11 @@ pub(crate) fn play_metamorphosis(state: &mut CombatState, _t: Option<CreatureUid
         false,
     );
     for uid in uids {
+        if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+            let card = &mut state.cards[uid.0.get() as usize - 1];
+            card.cost = 0;
+            card.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
+        }
         state.player.generated_cards_this_combat =
             state.player.generated_cards_this_combat.saturating_add(1);
         let len = state.player.draw.len();
