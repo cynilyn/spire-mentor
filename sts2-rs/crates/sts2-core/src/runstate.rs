@@ -2100,6 +2100,35 @@ impl Default for RunState {
     }
 }
 
+/// The pull-time half of C# `RelicModel.IsAllowed` for the relics gated by `IsBeforeAct3TreasureChest`
+/// (`TotalFloor < 41` in a single-player run); see [`RunState::relic_is_allowed_now`].
+fn relic_allowed_at(version: crate::GameVersion, total_floor: i32, id: RelicId) -> bool {
+    if version < crate::GameVersion::V0_111_0 {
+        return true;
+    }
+    let before_act3_chest_only = matches!(
+        id,
+        RelicId::AmethystAubergine
+            | RelicId::BookOfFiveRings
+            | RelicId::BowlerHat
+            | RelicId::DragonFruit
+            | RelicId::FrozenEgg
+            | RelicId::Girya
+            | RelicId::JuzuBracelet
+            | RelicId::LastingCandy
+            | RelicId::LuckyFysh
+            | RelicId::MealTicket
+            | RelicId::MoltenEgg
+            | RelicId::OldCoin
+            | RelicId::Planisphere
+            | RelicId::Shovel
+            | RelicId::ToxicEgg
+            | RelicId::WhiteBeastStatue
+            | RelicId::WhiteStar
+    );
+    !before_act3_chest_only || total_floor < 41
+}
+
 impl RunState {
     /// Construct a fresh, empty `RunState`.
     #[must_use]
@@ -3908,6 +3937,14 @@ impl RunState {
             .map(|(_, _, picked)| picked)
     }
 
+    /// C# `RelicModel.IsAllowed(runState)` for the relics gated by `IsBeforeAct3TreasureChest`
+    /// (`TotalFloor < 41` in a single-player run): from the Act 3 treasure chest on they are never
+    /// pulled from a grab bag (`RelicGrabBag.RemoveDisallowedRelicsFromDeques` runs on every pull).
+    /// Always `true` before v0.111.0, where this port had no such gate.
+    fn relic_is_allowed_now(&self, id: RelicId) -> bool {
+        relic_allowed_at(self.game_version, self.total_floor, id)
+    }
+
     /// The single grab-bag walk both the pop and the peek run: the first entry
     /// of `rarity`'s fallback chain that is unowned, un-`excluded` and passes
     /// `filter`, else the first such entry of the fallback vec.
@@ -3921,7 +3958,12 @@ impl RunState {
         excluded: &[RelicId],
     ) -> Option<(Option<RelicRarity>, usize, RelicId)> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
-        let eligible = |id: &RelicId| !owned.contains(id) && !excluded.contains(id) && filter(*id);
+        let eligible = |id: &RelicId| {
+            !owned.contains(id)
+                && !excluded.contains(id)
+                && self.relic_is_allowed_now(*id)
+                && filter(*id)
+        };
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get(&candidate_rarity) else {
                 continue;
@@ -3966,6 +4008,7 @@ impl RunState {
     /// modeled, consistent with the player-bag pop).
     pub fn pop_relic_from_shared_grab_bag(&mut self, rarity: RelicRarity) -> Option<RelicId> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
+        let (version, total_floor) = (self.game_version, self.total_floor);
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self
                 .shared_relic_grab_bag_by_rarity
@@ -3973,7 +4016,10 @@ impl RunState {
             else {
                 continue;
             };
-            if let Some(idx) = bucket.iter().position(|id| !owned.contains(id)) {
+            if let Some(idx) = bucket
+                .iter()
+                .position(|id| !owned.contains(id) && relic_allowed_at(version, total_floor, *id))
+            {
                 return Some(bucket.remove(idx));
             }
         }
@@ -4007,13 +4053,15 @@ impl RunState {
         filter: impl Fn(RelicId) -> bool,
     ) -> Option<(RelicId, RelicRarity)> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
+        let (version, total_floor) = (self.game_version, self.total_floor);
+        let allowed = |id: RelicId| relic_allowed_at(version, total_floor, id);
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get_mut(&candidate_rarity) else {
                 continue;
             };
             if let Some(idx) = bucket
                 .iter()
-                .rposition(|id| !owned.contains(id) && filter(*id))
+                .rposition(|id| !owned.contains(id) && allowed(*id) && filter(*id))
             {
                 let picked = bucket.remove(idx);
                 self.relic_grab_bag.retain(|&r| r != picked);
@@ -4024,7 +4072,7 @@ impl RunState {
         if let Some(idx) = self
             .relic_grab_bag_fallback
             .iter()
-            .rposition(|id| !owned.contains(id) && filter(*id))
+            .rposition(|id| !owned.contains(id) && allowed(*id) && filter(*id))
         {
             let picked = self.relic_grab_bag_fallback.remove(idx);
             self.relic_grab_bag.retain(|&r| r != picked);
@@ -6092,6 +6140,57 @@ mod tests {
         m.insert(RelicRarity::Rare, vec![RelicId::BlackBlood]);
         m.insert(RelicRarity::Shop, vec![RelicId::DivineRight]);
         m
+    }
+
+    /// `RelicModel.IsAllowed` (`IsBeforeAct3TreasureChest`): from total floor 41 on, Dragon Fruit and
+    /// the other early-game relics are skipped by every grab-bag pull (v0.111.0 only).
+    #[test]
+    fn grab_bag_pulls_skip_relics_barred_after_the_act3_chest_on_v0111_only() {
+        for (version, floor, want_front, want_back) in [
+            (
+                crate::GameVersion::V0_111_0,
+                30,
+                RelicId::DragonFruit,
+                RelicId::LuckyFysh,
+            ),
+            (
+                crate::GameVersion::V0_111_0,
+                45,
+                RelicId::Pendulum,
+                RelicId::Anchor,
+            ),
+            (
+                crate::GameVersion::V0_107_1,
+                45,
+                RelicId::DragonFruit,
+                RelicId::LuckyFysh,
+            ),
+        ] {
+            let mut rs = RunState {
+                game_version: version,
+                ..RunState::default()
+            };
+            rs.total_floor = floor;
+            let mut m = BTreeMap::new();
+            m.insert(
+                RelicRarity::Common,
+                vec![
+                    RelicId::DragonFruit,
+                    RelicId::Pendulum,
+                    RelicId::Anchor,
+                    RelicId::LuckyFysh,
+                ],
+            );
+            rs.populate_relic_grab_bag_by_rarity(m, Vec::new(), Vec::new());
+            let front = rs.peek_relic_from_grab_bag_where(RelicRarity::Common, |_| true, &[]);
+            assert_eq!(front, Some(want_front), "{version:?} floor {floor}");
+            let back = rs.pop_relic_from_grab_bag_back(RelicRarity::Common, |_| true);
+            assert_eq!(
+                back.map(|(id, _)| id),
+                Some(want_back),
+                "{version:?} floor {floor}"
+            );
+        }
     }
 
     /// Bead `sts2-rs-l9vkh`: per-rarity populator stores buckets and
