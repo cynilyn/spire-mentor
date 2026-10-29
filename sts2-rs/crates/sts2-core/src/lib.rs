@@ -7439,6 +7439,12 @@ impl CombatState {
             });
         let hellraiser_all_hittable_infinite =
             has_hellraiser && self.all_hittable_enemies_show_infinite_hp();
+        // v0.111.0 drops the "an alive enemy remains" guard: with no hittable
+        // enemy `HittableEnemies.All(infinite)` is vacuously true, so the drawn
+        // Strike is still handed to `CardCmd.AutoPlay` (which sends a targetless
+        // AnyEnemy card to its result pile) under the same 9-per-turn cap.
+        let hellraiser_may_play =
+            has_alive_enemy || (has_hellraiser && self.game_version >= GameVersion::V0_111_0);
 
         // Bead `sts2-rs-lj36b`: ConfusedPower.AfterCardDrawn (Snecko Eye /
         // FAKE_SNECKO_EYE). C# `ConfusedPower.cs::AfterCardDrawn` re-rolls
@@ -7791,7 +7797,7 @@ impl CombatState {
             }
             if is_strike
                 && self.hellraiser_infinite_auto_play_gate(hellraiser_all_hittable_infinite)
-                && has_alive_enemy
+                && hellraiser_may_play
             {
                 auto_play_uids.push(uid);
             }
