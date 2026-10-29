@@ -2424,8 +2424,23 @@ pub fn dispatch_before_combat_start(state: &mut CombatState) -> EffectResult {
     if is_empty_before_combat_start() {
         return EffectResult::NotImplemented;
     }
-    let listeners = listeners_before_combat_start();
     let mut any_resolved = false;
+    // v0.111.0: the relics' combat-start grants fire in EQUIP order (`player.Relics` via
+    // `CombatState.IterateHookListeners`), so Vajra's Strength lands before a later Bronze Scales' Thorns;
+    // the registry walk below is `RelicId` order.
+    if state.game_version >= crate::GameVersion::V0_111_0 {
+        for (_, _, f) in collect_equip_order_listeners(registry_before_combat_start(), state) {
+            if f(state) == EffectResult::Resolved {
+                any_resolved = true;
+            }
+        }
+        return if any_resolved {
+            EffectResult::Resolved
+        } else {
+            EffectResult::NotImplemented
+        };
+    }
+    let listeners = listeners_before_combat_start();
     for (_id, f) in listeners {
         if f(state) == EffectResult::Resolved {
             any_resolved = true;
