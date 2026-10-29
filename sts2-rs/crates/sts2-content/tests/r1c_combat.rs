@@ -189,3 +189,30 @@ fn burning_sticks_latch_is_rearmed_at_combat_end_v0111() {
 fn burning_sticks_latch_stays_spent_v0107_unchanged() {
     assert_eq!(burning_sticks_latch_after_combat(V107), (1, 1));
 }
+
+// ── Draws issued after the lethal hit move no card (seeds LSA_59/71, shuffle & energy-cost counter drift) ─────────
+
+/// Pommel Strike (9 damage, draw 1) against a 1-HP enemy with Strikes in the draw pile. Returns the hand size.
+fn pommel_strike_lethal_hand(version: GameVersion) -> usize {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    let _enemy = add_enemy(&mut state, 2, 1);
+    for _ in 0..5 {
+        let uid = new_card(&mut state, CardId::StrikeIronclad, false);
+        state.player.draw.push(uid);
+    }
+    let i = push_hand(&mut state, CardId::PommelStrike, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    state.player.hand.len()
+}
+
+/// `CardPileCmd.DrawInternal` returns an empty draw when `CombatManager.IsOverOrEnding` (CardPileCmd.cs, head of
+/// DrawInternal): the post-attack draw after a killing blow moves no card in C#.
+#[test]
+fn draw_after_lethal_hit_draws_nothing_v0111() {
+    assert_eq!(pommel_strike_lethal_hand(V111), 0);
+}
+
+#[test]
+fn draw_after_lethal_hit_still_draws_v0107_unchanged() {
+    assert_eq!(pommel_strike_lethal_hand(V107), 1);
+}
