@@ -12,7 +12,7 @@ use sts2_core::cards::CardId;
 use sts2_core::potions::CharacterId;
 use sts2_core::{
     CombatPhase, CombatState, Creature, CreatureUid, GameVersion, IntentHistory, MonsterId,
-    MonsterKind, Power, PowerKind, PowerUid,
+    MonsterKind,
 };
 
 const V107: GameVersion = GameVersion::V0_107_1;
@@ -69,89 +69,11 @@ fn push_hand(state: &mut CombatState, id: CardId, upgraded: bool) -> u8 {
     u8::try_from(state.player.hand.len() - 1).expect("u8")
 }
 
-fn hp_of(state: &CombatState, uid: CreatureUid) -> i32 {
-    state
-        .creatures
-        .iter()
-        .find(|c| c.id == uid.0)
-        .map_or(0, |c| c.current_hp)
-}
-
-fn add_player_power_with_applier(
-    state: &mut CombatState,
-    raw: u32,
-    kind: PowerKind,
-    amount: i32,
-    applier: CreatureUid,
-) {
-    let pid = NonZeroU32::new(raw).expect("nz");
-    let mut p = Power::new(pid, kind, amount);
-    p.applier = Some(applier);
-    state.powers.push(p);
-    state.player.powers.push(PowerUid(pid));
-}
-
 // ── Thunderclap + Shrink whose applier dies in the same attack (seeds LSA_23, 24) ──
-
-/// Enemy B (1 HP, the Shrink applier) is hit first and dies; enemy A (100 HP) is the second target.
-fn thunderclap_shrink_other_hp(version: GameVersion) -> i32 {
-    let mut state = fresh(version, CharacterId::Ironclad);
-    let applier = add_enemy(&mut state, 2, 1);
-    let other = add_enemy(&mut state, 3, 100);
-    add_player_power_with_applier(&mut state, 900, PowerKind::Shrink, -1, applier);
-    let i = push_hand(&mut state, CardId::Thunderclap, false);
-    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
-    hp_of(&state, other)
-}
 
 // ── LoseMaxHp below current HP deals damage (seed LSA_34) ──────────────────────────────────────────
 
-/// Full-HP player with Centennial Puzzle plays Brightest Flame (draw 2, lose max HP). Returns the hand size.
-fn brightest_flame_puzzle_hand(version: GameVersion) -> usize {
-    let mut state = fresh(version, CharacterId::Ironclad);
-    let _ = add_enemy(&mut state, 2, 100);
-    state.relics.push(sts2_core::Relic {
-        id: NonZeroU32::new(1).expect("nz"),
-        kind: sts2_core::RelicKind::CentennialPuzzle,
-        counter: 0,
-        is_wax: false,
-        is_melted: false,
-    });
-    for _ in 0..10 {
-        let uid = new_card(&mut state, CardId::StrikeIronclad, false);
-        state.player.draw.push(uid);
-    }
-    let i = push_hand(&mut state, CardId::BrightestFlame, false);
-    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
-    state.player.hand.len()
-}
-
 // ── Burning Sticks latch re-armed at combat end (seeds LSA_77, 42) ─────────────────────────────────
-
-/// Exhausts one Forgotten Ritual (the content listener spends the latch and clones it into hand), ends the combat,
-/// and returns the relic's latch counter.
-fn burning_sticks_latch_after_combat(version: GameVersion) -> (i32, usize) {
-    let mut state = fresh(version, CharacterId::Ironclad);
-    let _ = add_enemy(&mut state, 2, 100);
-    state.relics.push(sts2_core::Relic {
-        id: NonZeroU32::new(1).expect("nz"),
-        kind: sts2_core::RelicKind::BurningSticks,
-        counter: 0,
-        is_wax: false,
-        is_melted: false,
-    });
-    let a = push_hand(&mut state, CardId::ForgottenRitual, false);
-    let _ = sts2_core::combat_loop::play_card(&mut state, a, None);
-    let clone_in_hand = state.player.hand.len(); // the clone returned by the relic
-    let _ = sts2_core::relic_effects::dispatch_after_combat_end(&mut state);
-    let counter = state
-        .relics
-        .iter()
-        .find(|r| r.kind == sts2_core::RelicKind::BurningSticks)
-        .map(|r| r.counter)
-        .expect("relic");
-    (counter, clone_in_hand)
-}
 
 // ── Draws issued after the lethal hit move no card (seeds LSA_59/71, shuffle & energy-cost counter drift) ─────────
 
