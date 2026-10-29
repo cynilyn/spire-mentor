@@ -5087,6 +5087,35 @@ mod tests {
 
     #[test]
     #[serial_test::serial(global_registry)]
+    fn v111_deferred_amalgamator_card_fires_deck_add_hook_once() {
+        register_map_gold_necro_stub();
+        let mut rm = RunManager::new(0, CharacterId::Ironclad)
+            .with_game_version(crate::GameVersion::V0_111_0);
+        rm.run_state.interactive_card_removal = true;
+        rm.run_state.relics.push(RelicId::LuckyFysh);
+        rm.run_state.master_deck = vec![crate::Card {
+            uid: crate::CardUid::new(1).expect("nz"),
+            card_id: crate::cards::CardId::StrikeIronclad,
+            ..crate::Card::pod_defaults()
+        }];
+        rm.run_state.pending_deck_removals = 1;
+        rm.run_state.pending_post_removal_cards.push(crate::Card {
+            uid: crate::CardUid::new(2).expect("nz"),
+            card_id: crate::cards::CardId::UltimateStrike,
+            ..crate::Card::pod_defaults()
+        });
+        let gold_before = rm.run_state.gold;
+        assert_eq!(rm.do_remove_deck_card_at(0), ActionResult::Advanced);
+        assert_eq!(rm.run_state.master_deck.len(), 1);
+        assert_eq!(
+            rm.run_state.master_deck[0].card_id,
+            crate::cards::CardId::UltimateStrike
+        );
+        assert_eq!(rm.run_state.gold, gold_before + 15);
+    }
+
+    #[test]
+    #[serial_test::serial(global_registry)]
     fn map_gold_necro_single_pick_fires_card_added_channel() {
         register_map_gold_necro_stub();
         let mut rm = RunManager::new(0, CharacterId::Ironclad);
