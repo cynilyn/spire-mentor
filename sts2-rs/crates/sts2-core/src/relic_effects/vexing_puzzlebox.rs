@@ -39,9 +39,15 @@ pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
     if uids.is_empty() {
         return EffectResult::NotImplemented;
     }
+    let free_this_turn = state.game_version >= crate::GameVersion::V0_111_0;
     for &uid in &uids {
         if let Some(card) = crate::card_by_uid_mut(&mut state.cards, uid) {
-            card.cost = 0;
+            if free_this_turn {
+                // C# `SetToFreeThisTurn()`: free until played or the turn ends, not for the rest of the combat.
+                card.set_combat_var(crate::cards::VarKey::FreeThisTurn, 1);
+            } else {
+                card.cost = 0;
+            }
         }
     }
     crate::card_effects::route_generated_into_hand(state, &uids);
