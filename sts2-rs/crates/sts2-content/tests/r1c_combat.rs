@@ -150,3 +150,42 @@ fn lose_max_hp_below_current_triggers_after_damage_listeners_v0111() {
 fn lose_max_hp_plain_shrink_v0107_unchanged() {
     assert_eq!(brightest_flame_puzzle_hand(V107), 2);
 }
+
+// ── Burning Sticks latch re-armed at combat end (seeds LSA_77, 42) ─────────────────────────────────
+
+/// Exhausts one Forgotten Ritual (the content listener spends the latch and clones it into hand), ends the combat,
+/// and returns the relic's latch counter.
+fn burning_sticks_latch_after_combat(version: GameVersion) -> (i32, usize) {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    let _ = add_enemy(&mut state, 2, 100);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::BurningSticks,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let a = push_hand(&mut state, CardId::ForgottenRitual, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, a, None);
+    let clone_in_hand = state.player.hand.len(); // the clone returned by the relic
+    let _ = sts2_core::relic_effects::dispatch_after_combat_end(&mut state);
+    let counter = state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::BurningSticks)
+        .map(|r| r.counter)
+        .expect("relic");
+    (counter, clone_in_hand)
+}
+
+/// `BurningSticks.AfterCombatEnd` (BurningSticks.cs:56-60) re-arms `WasUsedThisCombat`, so the next combat's first
+/// exhausted Skill returns again. The latch was never re-armed before: dead for the rest of the run.
+#[test]
+fn burning_sticks_latch_is_rearmed_at_combat_end_v0111() {
+    assert_eq!(burning_sticks_latch_after_combat(V111), (0, 1));
+}
+
+#[test]
+fn burning_sticks_latch_stays_spent_v0107_unchanged() {
+    assert_eq!(burning_sticks_latch_after_combat(V107), (1, 1));
+}
