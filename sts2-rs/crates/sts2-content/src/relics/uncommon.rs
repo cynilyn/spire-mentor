@@ -699,12 +699,12 @@ fn listener_planisphere(rs: &mut RunState, room_type: RoomType) -> EffectResult 
         // `CurrentMapPoint.PointType == Unknown && CurrentRoomCount <= 1`
         // (decomp Planisphere.cs:28). The point type is the map node's, not
         // the resolved room's, so it is read off `current_room` (set by
-        // `enter_room` before this dispatch). Rust enters exactly one room
-        // per map point (an event's combat does not re-enter), so every
-        // dispatch at a `?` point is its first room.
+        // `enter_room` before this dispatch). The map move enters the resolved room once; an event then
+        // enters its own room on the same coord again, which `rooms_at_point` counts as a second room.
         let at_unknown_point = rs.current_room.and_then(|r| r.map_point_type)
             == Some(sts2_core::map::MapPointType::Unknown);
-        if !at_unknown_point || rs.current_hp <= 0 {
+        // `CurrentRoomCount <= 1`: an event entered on the same `?` point after the map move is a second room.
+        if !at_unknown_point || rs.rooms_at_point > 1 || rs.current_hp <= 0 {
             return EffectResult::NotImplemented;
         }
         rs.heal(PLANISPHERE_HEAL);
@@ -2242,6 +2242,36 @@ mod tests {
             before_hp + PLANISPHERE_HEAL,
             "a Monster point does not heal"
         );
+    }
+
+    /// v0.111.0 `CurrentRoomCount <= 1` (Planisphere.cs:28): the event room entered on the SAME `?` point after the
+    /// map move is a second room, so the relic heals once, not twice. 0.107.1 only heals when the entered room type is itself `?`, so it never heals here.
+    #[test]
+    fn planisphere_heals_once_per_unknown_point_when_an_event_re_enters_its_room_v0111() {
+        use sts2_core::map::{MapCoord, MapPointType};
+        use sts2_core::runstate::{Room, RoomType};
+        crate::relics::dispatch::ensure_installed();
+        for (version, heals) in [
+            (sts2_core::GameVersion::V0_111_0, 1),
+            (sts2_core::GameVersion::V0_107_1, 0),
+        ] {
+            let mut rs = sts2_core::runstate::RunState::new();
+            rs.game_version = version;
+            rs.current_hp = rs.max_hp - 40;
+            rs.relics.push(RelicId::Planisphere);
+            let before_hp = rs.current_hp;
+            rs.enter_room(Room::at(
+                MapCoord::new(0, 1),
+                MapPointType::Unknown,
+                RoomType::Event,
+            ));
+            rs.enter_event_room(sts2_core::EventId::TheLanternKey);
+            assert_eq!(
+                rs.current_hp,
+                before_hp + heals * PLANISPHERE_HEAL,
+                "{version:?}"
+            );
+        }
     }
 
     /// No-op on non-Unknown room types.

@@ -3082,7 +3082,7 @@ fn enchantable_candidate_card_ids(
         .collect()
 }
 
-fn enchant_eligible_deck_cards(
+pub(crate) fn enchant_eligible_deck_cards(
     rs: &mut RunState,
     ench: sts2_core::cards::EnchantmentId,
     amount: i32,
@@ -3147,7 +3147,7 @@ fn enchant_card_type_restriction(
 /// interactive, or when `candidates <= count` so every eligible card is
 /// enchanted regardless of the pick — matching the SelfHelpBook/Wood
 /// Carvings `eligible > 1` convention generalized to `count`.
-fn try_queue_interactive_enchant(
+pub(crate) fn try_queue_interactive_enchant(
     rs: &mut RunState,
     ench: sts2_core::cards::EnchantmentId,
     amount: i32,
@@ -8251,6 +8251,31 @@ mod tests {
         assert_eq!(rs.master_deck.len(), before_len + PAELS_HORN_CARDS);
         let added = &rs.master_deck[before_len..];
         assert!(added.iter().all(|c| c.card_id == CardId::Relax));
+    }
+
+    /// `PaelsHorn.AfterObtained` adds its Relax cards through `CardPileCmd.Add(.., Deck)`, so a held LuckyFysh pays
+    /// 15 gold per card, in both builds (GH #806).
+    #[test]
+    fn relic_added_cards_fire_the_deck_add_hooks() {
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        for (version, per_card) in [
+            (sts2_core::GameVersion::V0_111_0, 15),
+            (sts2_core::GameVersion::V0_107_1, 15),
+        ] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::LuckyFysh);
+            let gold = rs.gold;
+            rs.relics.push(RelicId::PaelsHorn);
+            rs.last_obtained_relic = Some(RelicId::PaelsHorn);
+            let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+            assert_eq!(
+                rs.gold,
+                gold + PAELS_HORN_CARDS as i32 * per_card,
+                "{version:?}"
+            );
+        }
     }
 
     /// Bead `sts2-rs-a49q3`: PaelsHorn listener is noop without
