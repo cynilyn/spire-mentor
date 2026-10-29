@@ -34,6 +34,12 @@ use super::prelude::*;
 ///
 /// Bead `sts2-rs-6ynt.8.4`.
 pub(crate) fn play_enlightenment(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // v0.111.0 C# `Enlightenment.OnPlay`: the upgraded card `SetThisCombat(1, reduceOnly)`
+    // (lasts the combat); the plain card `SetThisTurnOrUntilPlayed(1, reduceOnly)`, which
+    // reverts when the card is played or the turn ends. The delta is banked in the Snecko
+    // slot, whose existing restore (next turn start / on play) undoes exactly that.
+    let this_turn_only =
+        !current_upgraded(state) && state.game_version >= sts2_core::GameVersion::V0_111_0;
     let hand_uids: SmallVec<[CardUid; 16]> = state.player.hand.iter().copied().collect();
     for uid in hand_uids {
         let idx = uid.0.get() as usize - 1;
@@ -42,7 +48,12 @@ pub(crate) fn play_enlightenment(state: &mut CombatState, _t: Option<CreatureUid
                 continue;
             }
             if card.cost > ENLIGHTENMENT_COST_CAP {
+                let drop = i32::from(card.cost - ENLIGHTENMENT_COST_CAP);
                 card.cost = ENLIGHTENMENT_COST_CAP;
+                if this_turn_only {
+                    let banked = card.combat_var(VarKey::SneckoCostDeltaThisTurn);
+                    card.set_combat_var(VarKey::SneckoCostDeltaThisTurn, banked - drop);
+                }
             }
         }
     }
