@@ -1207,3 +1207,25 @@ fn fur_coat_room_spawns_enemies_at_one_hp() {
     assert_eq!(hp.0, 1);
     assert!(hp.1 > 1);
 }
+
+/// `Hook.ModifyDamage` applies the enchantment to the base before the listeners' additive: a Corrupted
+/// Strike with 6 Strength deals `6 * 1.5 + 6 = 15`, not `(6 + 6) * 1.5 = 18` (v0.111.0 only).
+#[test]
+fn corrupted_multiplier_applies_before_strength_on_v0111_only() {
+    for (version, want) in [(GameVersion::V0_111_0, 15), (GameVersion::V0_107_1, 18)] {
+        let (mut state, enemy) = fresh(version);
+        let p = player_uid(&state);
+        give(&mut state, p, PowerKind::Strength, 6);
+        let uid = add_to_hand(&mut state, CardId::StrikeIronclad);
+        let idx = uid.0.get() as usize - 1;
+        state.cards[idx].add_enchantment(sts2_core::cards::EnchantmentId::Corrupted, 1);
+        state.player.hand.retain(|u| *u != uid);
+        state.player.play.push(uid);
+        let ctx = DamageCtx {
+            dealer: hooks::CreatureRef::Player,
+            target: hooks::CreatureRef::Enemy(enemy),
+            props: ValueProps::MOVE,
+        };
+        assert_eq!(hooks::modify_damage(&state, 6, &ctx), want, "{version:?}");
+    }
+}
