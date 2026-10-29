@@ -176,6 +176,33 @@ pin_registered!(pin_refract, Refract);
 pin_registered!(pin_rocket_punch, RocketPunch);
 pin_registered!(pin_scavenge, Scavenge);
 pin_registered!(pin_scrape, Scrape);
+
+#[test]
+fn scrape_discards_drawn_infection_but_keeps_zero_cost_attack_v0111() {
+    use sts2_core::card_effects::PileKind;
+
+    let (mut state, target) = fresh_state(CardId::Scrape, 7, 0);
+    state.game_version = sts2_core::GameVersion::V0_111_0;
+    let infection = crate::cards::status::spawn_infection(&mut state, PileKind::Draw);
+    let attack_uid = sts2_core::CardUid(NonZeroU32::new(3).unwrap());
+    state.cards.push(Card {
+        uid: attack_uid,
+        card_id: CardId::StrikeDefect,
+        cost: 0,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(attack_uid);
+
+    assert_eq!(
+        play_scrape(&mut state, Some(target)),
+        EffectResult::Resolved
+    );
+    assert!(state.player.discard.contains(&infection));
+    assert!(!state.player.hand.contains(&infection));
+    assert!(state.player.hand.contains(&attack_uid));
+}
 pin_registered!(pin_shadow_shield, ShadowShield);
 pin_registered!(pin_skim, Skim);
 pin_registered!(pin_smokestack, Smokestack);
