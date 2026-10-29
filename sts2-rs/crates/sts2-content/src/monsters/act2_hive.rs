@@ -690,7 +690,11 @@ fn thievery_steal_from_seated(state: &mut CombatState, owner: CreatureUid) -> bo
     let _ = sts2_core::card_effects::remove_card_from_any_pile(state, stolen);
     // The run deck is seat 0's; a teammate's deck lives only for the fight.
     if state.coop.seated == 0 {
-        state.record_swipe_steal(owner, stolen_card_id, stolen_upgraded);
+        if state.game_version >= sts2_core::GameVersion::V0_111_0 {
+            state.record_swipe_steal_uid(owner, stolen_card_id, stolen_upgraded, stolen.get());
+        } else {
+            state.record_swipe_steal(owner, stolen_card_id, stolen_upgraded);
+        }
     }
     true
 }
