@@ -1,4 +1,4 @@
-//! A hit that kills skips `AfterDamageReceived`, and `Hook.ShouldPlay` vetoes auto-plays (v0.111.0).
+//! Combat rules that changed in v0.111.0 (v0.107.1 keeps the old behaviour), on a one-enemy board.
 
 use std::num::NonZeroU32;
 
@@ -121,4 +121,28 @@ fn normality_vetoes_an_auto_played_attack_on_v0111_only() {
     assert_eq!(run(GameVersion::V0_111_0), (0, 0));
     let (dmg, rolls) = run(GameVersion::V0_107_1);
     assert!(dmg > 0 && rolls == 1, "{dmg} {rolls}");
+}
+
+/// Brilliant Scarf: the fifth card of a turn costs 0 (`TryModifyEnergyCostInCombatLate`),
+/// so every hand card reads 0 once four have been played (v0.111.0).
+#[test]
+fn brilliant_scarf_zeroes_the_fifth_card_cost_on_v0111_only() {
+    let cost = |version: GameVersion, plays: i32| -> i32 {
+        let (mut state, _) = board(version, CardId::StrikeIronclad, TargetType::Enemy);
+        let uid = state.player.play.pop().expect("strike in play");
+        state.player.hand.push(uid);
+        state.cards[0].cost = 2;
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(100).expect("non-zero"),
+            kind: sts2_core::RelicKind::BrilliantScarf,
+            counter: plays,
+            is_wax: false,
+            is_melted: false,
+        });
+        state.relics.ensure_plan();
+        sts2_core::hooks::effective_card_cost(&state, uid)
+    };
+    assert_eq!(cost(GameVersion::V0_111_0, 4), 0);
+    assert_eq!(cost(GameVersion::V0_111_0, 3), 2);
+    assert_eq!(cost(GameVersion::V0_107_1, 4), 2);
 }
