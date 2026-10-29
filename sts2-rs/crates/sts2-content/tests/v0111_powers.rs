@@ -1191,3 +1191,19 @@ fn bone_tea_does_not_upgrade_spoils_map_v0111() {
     assert!(state.cards[strike.0.get() as usize - 1].upgraded);
     assert_eq!(state.relics[0].counter, 0);
 }
+
+/// On a Fur Coat room every enemy spawns at 1 HP, a later summon too (v0.111.0 `FurCoat`).
+#[test]
+fn fur_coat_room_spawns_enemies_at_one_hp() {
+    let (mut state, _) = fresh(GameVersion::V0_111_0);
+    state.combat_log.fur_coat_one_hp = true;
+    let uid = state.spawn_enemy(MonsterKind::Nibbit);
+    let hp = state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .map(|c| (c.current_hp, c.max_hp))
+        .expect("spawned");
+    assert_eq!(hp.0, 1);
+    assert!(hp.1 > 1);
+}
