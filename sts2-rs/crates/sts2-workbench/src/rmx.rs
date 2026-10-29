@@ -358,6 +358,15 @@ pub fn pending_card_grants(rm: &RunManager) -> u32 {
         .map_or(0, |g| u32::try_from(g.pick).unwrap_or(u32::MAX))
 }
 
+/// `pending_card_grant_min` (picks the FRONT grant still REQUIRES; `0` = optional grid).
+#[must_use]
+pub fn pending_card_grant_min(rm: &RunManager) -> u32 {
+    rm.run_state
+        .pending_card_grants
+        .first()
+        .map_or(0, |g| u32::try_from(g.min_pick).unwrap_or(u32::MAX))
+}
+
 /// `pending_deck_removals`.
 #[must_use]
 pub fn pending_deck_removals(rm: &RunManager) -> u32 {
