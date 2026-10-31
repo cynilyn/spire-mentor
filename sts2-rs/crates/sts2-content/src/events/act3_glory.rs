@@ -1,7 +1,5 @@
 //! Act3-pool event specs. Bead `sts2-rs-6ynt.4.3`.
 //!
-//! Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act3.py`.
-//!
 //! All 5 act3 events have `is_allowed = False` in Python — none spawn
 //! from the random room-roll. They are reachable only via special
 //! game logic:

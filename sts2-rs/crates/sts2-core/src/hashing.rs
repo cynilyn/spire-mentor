@@ -330,6 +330,12 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
     0x0Du8.hash(h);
     state.combat_log.doom_applied_by_player_this_turn.hash(h);
     state.combat_log.osty_attacks_this_turn.hash(h);
+    // PenNib's marked Attack only exists mid-play (a choice inside the 10th
+    // Attack); folded in only when set so every other digest is unchanged.
+    if let Some(marked) = state.combat_log.pen_nib_attack_to_double {
+        0x0Fu8.hash(h);
+        marked.hash(h);
+    }
     // GH #806 per-turn Fetch / GangUp tallies: folded in only when non-empty
     // so every digest of a position without them is unchanged.
     if !state.combat_log.fetch_played_this_turn.is_empty()
@@ -370,6 +376,11 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         0x30u8.hash(h);
         state.coop.to_play.hash(h);
         state.coop.seat_index.hash(h);
+        // A joint search's seated teammate: whose move it is.
+        if let Some(ally) = state.coop.joint_acting {
+            0x31u8.hash(h);
+            ally.hash(h);
+        }
         for seat in &state.coop.stash {
             seat.seat.hash(h);
             (seat.relics.len() as u64).hash(h);
@@ -392,6 +403,15 @@ fn hash_scalars<H: Hasher>(state: &CombatState, h: &mut H) {
         0x2Fu8.hash(h);
         for (id, seat) in &state.coop.power_seat {
             id.hash(h);
+            seat.hash(h);
+        }
+    }
+    // A card held in Play across an open choice still owes its hand-over to
+    // the teammate rolled at play start (The Ball, GH #1017).
+    if !state.coop.result_player.is_empty() {
+        0x31u8.hash(h);
+        for (uid, seat) in &state.coop.result_player {
+            uid.hash(h);
             seat.hash(h);
         }
     }
@@ -1315,6 +1335,11 @@ mod legacy_run {
         rs.is_over.hash(&mut h);
         rs.player_won.hash(&mut h);
         rs.pending_deck_removals.hash(&mut h);
+        // Hashed only when set so every pre-existing run hash stays frozen
+        // (the filter is `None` outside an Amalgamator removal batch).
+        if let Some(tag) = rs.pending_removal_basic_tag {
+            tag.hash(&mut h);
+        }
         rs.interactive_card_removal.hash(&mut h);
         rs.pending_deck_upgrades.hash(&mut h);
         rs.interactive_card_upgrade.hash(&mut h);

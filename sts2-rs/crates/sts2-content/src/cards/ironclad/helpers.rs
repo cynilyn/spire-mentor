@@ -198,9 +198,11 @@ pub(crate) fn enemy_vulnerable(state: &CombatState, target: CreatureUid) -> i32 
 /// the power-arena and relic buses so exhaust synergies (Dark Embrace, Feel No
 /// Pain, …) tick. Mirrors the inline `CardCmd.Exhaust` path in
 /// [`sts2_core::combat_loop`]; used by FiendFire / Thrash which exhaust
-/// hand cards mid-play. No-op if `uid` is not in hand.
+/// hand cards mid-play. No-op if `uid` is not in hand, or once the combat is
+/// ending (`CardCmd.Exhaust` is refused then, `CardCmd.cs:239`: Cinder's
+/// random exhaust after its killing blow).
 pub(crate) fn exhaust_hand_card(state: &mut CombatState, uid: sts2_core::CardUid) {
-    if !state.player.hand.contains(&uid) {
+    if !state.player.hand.contains(&uid) || !sts2_core::combat_loop::exhaust_may_begin(state) {
         return;
     }
     let idx = uid.0.get() as usize - 1;
@@ -266,6 +268,23 @@ pub(crate) fn hand_exhaust_options(state: &CombatState) -> Vec<sts2_core::Choice
 /// `-Strength` debuff legs (Mangle's `BeforeApplied`) route through this
 /// direct-arena push. Bead `sts2-rs-q6bix` (F-K).
 pub(crate) fn apply_power_signed_to_creature(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
+    // A landed player drain fires SleightOfFlesh & co. (C#
+    // `Hook.AfterPowerAmountChanged` runs for silent applies too).
+    sts2_core::card_effects::signed_power_apply_with_reactors(
+        state,
+        target_uid,
+        kind,
+        amount,
+        |s| apply_power_signed_to_creature_raw(s, target_uid, kind, amount),
+    );
+}
+
+fn apply_power_signed_to_creature_raw(
     state: &mut CombatState,
     target_uid: CreatureUid,
     kind: PowerKind,

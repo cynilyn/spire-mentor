@@ -341,15 +341,43 @@ pub enum VarKey {
     ///
     /// Appended after `Generic` so no existing discriminant moves.
     SneckoRollLive,
-    /// v0.111.0 (GH #793): energy-cost reduction that lasts until the card is
-    /// played — the running total of C# `EnergyCost.AddUntilPlayed(-1)`
-    /// (a `Relative`, `WhenPlayed` local modifier, `CardEnergyCost.cs:258`).
-    /// v0.111.0 RocketPunch banks one per player-generated Status card
+    /// Energy-cost reduction that lasts until the card is played — the
+    /// running total of C# `EnergyCost.AddUntilPlayed(-1)` (a `Relative`,
+    /// `WhenPlayed` local modifier, `CardEnergyCost.cs:258`). Banked by the
+    /// Bookmark relic and the SlumberingEssence enchantment on both builds,
+    /// and by v0.111.0 RocketPunch once per player-generated Status card
     /// (`RocketPunch.cs:49`) instead of v0.107.1's `SetUntilPlayed(0)`
     /// ([`VarKey::FreeUntilPlayed`]). Folded into the local base cost before the
     /// global `modify_card_cost` walk and cleared on play with the other
-    /// `WhenPlayed` riders. Never set at v0.107.1.
+    /// `WhenPlayed` riders.
     CostReductionUntilPlayed,
+    /// v0.111.0 Midnight: how many of the combat's exhausts this card's cost
+    /// already reflects. Every exhaust bumps it along with the cost, and a
+    /// Midnight entering combat is shaved by the exhausts it has not yet
+    /// counted (C# `AfterCardEnteredCombat`). A copy (C# `CreateClone`, which
+    /// keeps the cost modifiers and skips the catch-up) carries the count, so
+    /// it is not shaved twice.
+    MidnightExhaustsCounted,
+    /// Per-combat "used" bits of the card's enchantments (Vigorous, Glam,
+    /// Swift, Sown: `enchantment_hooks`). They lived on [`VarKey::Generic`],
+    /// where MadScience keeps its packed TinkerTime variant, so a Glam
+    /// MadScience changed rider after its first play and its replay hit as
+    /// another variant. Appended so no existing discriminant moves.
+    EnchantmentUsed,
+    /// The STAR half of C# `SetToFreeThisTurn` (`CardModel.cs:1267-1271`:
+    /// `EnergyCost.SetThisTurnOrUntilPlayed(0)` + `SetStarCostThisTurn(0)`),
+    /// kept after a Snecko Oil roll clears [`VarKey::FreeThisTurn`]: the roll
+    /// only overrides the ENERGY cost (`SneckoOil.cs` `EnergyCost.Set…`), so the
+    /// star cost stays 0 this turn. A `ThisTurn` cost, so it clears on play
+    /// (`CardModel.cs:1998`) and at turn end, alongside `FreeThisTurn`.
+    /// Appended so no existing discriminant moves.
+    StarCostFreeThisTurn,
+    /// Momentum's running damage bonus (C# `Momentum._extraDamage`, grown by
+    /// `Amount` in every `OnPlay` and returned by `EnchantDamageAdditive`).
+    /// It shared [`VarKey::RampageDamage`] with Rampage's own growth, so a
+    /// Momentum Rampage counted both twice (GH #1021). Appended so no existing
+    /// discriminant moves.
+    MomentumDamage,
 }
 
 /// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
@@ -855,10 +883,12 @@ impl crate::inline_kv::InlineKvKey for EnchantmentId {
 /// generic flags any card can carry (`FreeThisTurn`, `EtherealThisCombat`,
 /// `StarCostFreeThisCombat`, `SneckoCostDeltaThisTurn`, `SneckoRollLive`,
 /// `CostAbsolutelySet`, `IsDupe`, `GeneratedInCombat`,
-/// `PendingBatchAutoPlay`, `DampenDowngradedMarker`, `Generic`) + the
-/// wire-reconstruction cost trio + at most 2 card-specific keys on one
+/// `PendingBatchAutoPlay`, `DampenDowngradedMarker`, `EnchantmentUsed`) +
+/// the wire-reconstruction cost trio + at most 2 card-specific keys on one
 /// card (Thrash's remainder pair; every other card-specific key excludes
-/// the rest). The previous capacity 8 sized for "1–2 scaling keys + a few
+/// the rest — `Generic` is one of them now that the enchantment bits moved
+/// to `EnchantmentUsed`: MadScience's variant, Dowsing's and Guilty's
+/// counters). The previous capacity 8 sized for "1–2 scaling keys + a few
 /// flags" and panicked mid-run on a legitimate 9th distinct key (GH #474:
 /// Ironclad A10 seed 41100016, `CostAbsolutelySet` via net_search forks).
 /// Overflow still panics loudly (see [`crate::inline_kv`]); the guard test
@@ -1074,6 +1104,58 @@ impl Card {
         self.combat_vars.set(key, value);
     }
 
+    /// C# `EnergyCost.AddUntilPlayed(-amount)`: bank `amount` more energy off
+    /// this card until it is played ([`VarKey::CostReductionUntilPlayed`]).
+    pub fn add_cost_reduction_until_played(&mut self, amount: i32) {
+        let banked = self.combat_var(VarKey::CostReductionUntilPlayed);
+        self.set_combat_var(VarKey::CostReductionUntilPlayed, banked + amount);
+    }
+
+    /// C# `CardModel.SetToFreeThisCombat` (TouchOfInsanity): energy cost 0 and
+    /// star cost 0 for the rest of combat. `EnergyCost.SetThisCombat(0)` adds an
+    /// *Absolute* local modifier ([`VarKey::CostAbsolutelySet`]) AFTER any live
+    /// Snecko Oil roll, and `GetWithModifiers` applies local modifiers in order
+    /// (CardEnergyCost.cs:110-115), so the later Absolute(0) owns the cost and the
+    /// roll's expiry reveals 0, not the pre-roll base. Drop the Snecko bank so
+    /// [`Self::expire_snecko_roll`] does not subtract it from the new 0 (a -1
+    /// cost reads as X-cost and drained all energy: Defect full seed 3863).
+    pub fn set_free_this_combat(&mut self) {
+        self.cost = 0;
+        self.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
+        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
+        self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
+        self.set_combat_var(VarKey::SneckoRollLive, 0);
+    }
+
+    /// C# `EnergyCost.SetThisTurnOrUntilPlayed(cost, reduceOnly: true)`
+    /// (`CardEnergyCost.cs:197-203`): an Absolute modifier that drops at the
+    /// owner's end-of-turn cleanup or when the card is played. It rides the
+    /// same banked-delta slots as a Snecko Oil roll (the identical C#
+    /// modifier), so [`Self::expire_snecko_roll`] reverts it on either edge.
+    /// Reduce-only: a card already at or below `cost` is left alone. X-cost
+    /// cards are skipped.
+    pub fn set_this_turn_or_until_played_reduce_only(&mut self, cost: i8) {
+        if self.is_x_cost() || self.cost <= cost {
+            return;
+        }
+        let delta = i32::from(cost) - i32::from(self.cost);
+        self.cost = cost;
+        let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
+        self.set_combat_var(
+            VarKey::SneckoCostDeltaThisTurn,
+            banked.saturating_add(delta),
+        );
+        if self.combat_var(VarKey::SneckoRollLive) == 0 {
+            let owner = if self.combat_var(VarKey::CostAbsolutelySet) != 0 {
+                SNECKO_ROLL_FLAG_PREOWNED
+            } else {
+                SNECKO_ROLL_RAISED_FLAG
+            };
+            self.set_combat_var(VarKey::SneckoRollLive, owner);
+        }
+        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
+    }
+
     /// Expire this card's Snecko Oil roll, if one is live: C#'s
     /// `SetThisTurnOrUntilPlayed` modifier dropping at `EndOfTurnCleanup` or
     /// `AfterCardPlayedCleanup` (`CardEnergyCost.cs:331-345`). Subtracts the
@@ -1190,10 +1272,49 @@ impl Card {
         // cards (A9P1: SpoilsMap counted as a 7th WarPaint candidate).
         !self.upgraded
             && !matches!(self.card_type, CardType::Curse | CardType::Status)
-            && !matches!(
-                self.card_id,
-                CardId::ByrdonisEgg | CardId::LanternKey | CardId::SpoilsMap | CardId::Dowsing
-            )
+            && !self.is_quest()
+    }
+
+    /// C# `CardType.Quest`, which the Rust `CardType` enum has no variant
+    /// for: the four Quest cards (`ByrdonisEgg`, `LanternKey`, `SpoilsMap`,
+    /// and v0.111.0's `Dowsing` — each `base(.., CardType.Quest, ..)`) are
+    /// modelled as Skills, so callers that mirror a C# `Type != Quest` gate
+    /// test this instead.
+    #[must_use]
+    pub fn is_quest(&self) -> bool {
+        matches!(
+            self.card_id,
+            CardId::ByrdonisEgg | CardId::LanternKey | CardId::SpoilsMap | CardId::Dowsing
+        )
+    }
+
+    /// C# `CardModel.GainsBlock` (`CardModel.cs:671`, `virtual => false`),
+    /// which `Nimble.CanEnchant` gates on. 76 v0.107.1 cards override it to
+    /// `true`. Almost all of them are exactly the cards with a base block, so
+    /// that is the default here. The exceptions (GH #1021):
+    /// - block that is not a `BlockVar` (Entrench doubles, Second Wind / Stack
+    ///   / ... compute it): `true` with `base_block == 0`;
+    /// - Pillar of Creation and Shroud carry a block value but do not
+    ///   override `GainsBlock`: `false`;
+    /// - Mad Science gains block in its Skill mode (`TinkerTimeType ==
+    ///   Skill`; `set_mad_science_variant` stamps that onto `card_type`);
+    /// - Sovereign Blade only while its owner has Parry, which no deck card's
+    ///   owner has outside combat: `false`.
+    #[must_use]
+    pub fn gains_block(&self) -> bool {
+        match self.card_id {
+            CardId::MadScience => self.card_type == CardType::Skill,
+            CardId::SovereignBlade | CardId::PillarOfCreation | CardId::Shroud => false,
+            CardId::DemonicShield
+            | CardId::Entrench
+            | CardId::Fisticuffs
+            | CardId::Mimic
+            | CardId::Mirage
+            | CardId::Sacrifice
+            | CardId::SecondWind
+            | CardId::Stack => true,
+            _ => self.base_block > 0,
+        }
     }
 
     /// The downstream relic bodies (`BoneTea`, `HistoryCourse`,
@@ -1286,7 +1407,14 @@ impl Card {
     }
 
     fn upgrade_with(&mut self, factory: impl Fn(CardId, bool) -> Option<Card>) -> bool {
-        if self.upgraded {
+        // C# `CardCmd.Upgrade` skips a card that isn't `IsUpgradable`
+        // (`CardCmd.cs:273-276`), and every gameplay upgrade goes through it
+        // (Bellows, Bone Tea, Armaments+, Apotheosis, the potions, the rest
+        // site, …). Gating here rather than at each caller means a curse,
+        // status or Quest card is never upgraded on ANY path: Bellows used to
+        // upgrade Ascender's Bane (`MaxUpgradeLevel => 0`,
+        // `AscendersBane.cs:10`) along with the rest of the opening hand.
+        if !self.is_upgradable() {
             return false;
         }
         self.upgraded = true;
@@ -1520,7 +1648,8 @@ impl CardId {
 /// The card ids [`CardStore`] tracks presence of (J02), one bit each. Every
 /// one gates an O(cards) sweep that acts only on cards with that id: the
 /// Stomp / Pinpoint discounts and their turn-start restores, Melancholy's
-/// on-death discount, and the Bolas / ThrummingHatchet return-to-hand scan.
+/// on-death discount, the Bolas / ThrummingHatchet return-to-hand scan, and
+/// Banshee's Cry's Ethereal-play discount.
 const fn card_gate_bit(id: CardId) -> u8 {
     match id {
         CardId::Stomp => 1,
@@ -1528,6 +1657,7 @@ const fn card_gate_bit(id: CardId) -> u8 {
         CardId::Melancholy => 1 << 2,
         CardId::Bolas => 1 << 3,
         CardId::ThrummingHatchet => 1 << 4,
+        CardId::BansheesCry => 1 << 5,
         _ => 0,
     }
 }
@@ -3095,7 +3225,7 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
     // Bead `sts2-rs-bsj93`: HellraiserPower also forces the per-card loop —
     // C# auto-plays drawn Strikes mid-draw on EVERY draw path, so the
     // played Strike can reshuffle back into the same draw.
-    if state.per_card_draw_loop_required() {
+    if state.per_card_draw_loop_required() || state.reshuffle_reorders_mid_draw(n) {
         return state.draw_suspending(n, false);
     }
     // C# `CardPileCmd.Draw` / `CardPileCmd.Shuffle` (CardPileCmd.cs:749,806)
@@ -3953,7 +4083,7 @@ mod tests {
             VarKey::GeneratedInCombat,
             VarKey::PendingBatchAutoPlay,
             VarKey::DampenDowngradedMarker,
-            VarKey::Generic,
+            VarKey::EnchantmentUsed,
             VarKey::WireTransientCostThisTurn,
             VarKey::WireCostExpiringOnPlay,
             VarKey::WireCostStable,
@@ -4130,6 +4260,28 @@ mod tests {
         assert!(!c.upgrade());
         assert!(c.upgraded);
         assert_eq!(c, before);
+    }
+
+    /// C# `CardCmd.Upgrade` skips a card that isn't `IsUpgradable`
+    /// (`CardCmd.cs:273-276`): a curse (Ascender's Bane), a status or a
+    /// Quest card is left as it is on every upgrade path, in either build.
+    #[test]
+    fn upgrade_refuses_a_card_that_is_not_upgradable() {
+        for (card_id, card_type) in [
+            (CardId::AscendersBane, CardType::Curse),
+            (CardId::Wound, CardType::Status),
+            (CardId::SpoilsMap, CardType::Skill),
+        ] {
+            let mut c = Card {
+                card_id,
+                card_type,
+                ..sample_card(1)
+            };
+            let before = c;
+            assert!(!c.upgrade(), "{card_id:?}");
+            assert!(!c.upgrade_for(crate::GameVersion::V0_111_0), "{card_id:?}");
+            assert_eq!(c, before, "{card_id:?}");
+        }
     }
 
     #[test]

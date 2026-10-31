@@ -118,6 +118,9 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
         }
         d.insert("combat_vars".to_owned(), Value::Object(cv));
     }
+    if card.base_replay_count != 0 {
+        set(&mut d, "base_replay_count", card.base_replay_count);
+    }
     // Base damage / block let display consumers fill the `{Damage}` /
     // `{Block}` template vars in card descriptions. Additive (not in
     // REQUIRED_CARDSPEC_KEYS); 0 for cards that deal/block neither.
@@ -194,9 +197,14 @@ pub fn card_to_value(state: &CombatState, card: &Card) -> Value {
             // Mirrors the adapter: keyword first, then the single-turn halves
             // with the keyword subtracted, so a card that is BOTH intrinsically
             // Sly and Hand-Tricked emits `sly` alone — as C# does, since
-            // `IsSlyThisTurn` short-circuits on the keyword.
-            let sly_keyword = sts2_core::card_effects::card_sly(card.card_id)
-                || state.player.sly_this_combat.contains(&card.uid);
+            // `IsSlyThisTurn` short-circuits on the keyword. Intrinsic Sly is
+            // read in the state's build (`card_sly_in`: v0.111.0 Haze lost
+            // it), the same predicate the parse uses to tell intrinsic from
+            // granted; a version-blind emit wrote `sly` on every v0.111.0
+            // Haze and the parse read that back as a MasterPlanner grant.
+            let sly_keyword =
+                sts2_core::card_effects::card_sly_in(card.card_id, state.game_version)
+                    || state.player.sly_this_combat.contains(&card.uid);
             if sly_keyword {
                 flags.push("sly");
             } else if state.player.sly_this_turn.contains(&card.uid) {
@@ -488,7 +496,12 @@ pub fn bare_intent_to_value(intent: Intent) -> Value {
 ///
 /// A power uid with no entry in `arena` — the state failed its own
 /// `assert_invariants` before we got here.
-pub fn powers_to_value(uids: &[PowerUid], arena: &[Power], path: &str) -> Result<Value, EmitError> {
+pub fn powers_to_value(
+    uids: &[PowerUid],
+    arena: &[Power],
+    seats: &[(std::num::NonZeroU32, u8)],
+    path: &str,
+) -> Result<Value, EmitError> {
     let mut list = Vec::with_capacity(uids.len());
     for uid in uids {
         let pow = arena.iter().find(|p| p.id == uid.0).ok_or_else(|| {
@@ -520,9 +533,147 @@ pub fn powers_to_value(uids: &[PowerUid], arena: &[Power], path: &str) -> Result
         // Slow's tally and Surrounded's facing at zero. See
         // `ParsedPower::counter`.
         set(&mut d, "counter", pow.counter);
+        // The co-op seat that applied it (`ParsedPower::applier_seat`), when
+        // one is recorded; never solo.
+        if let Some((_, seat)) = seats.iter().find(|(id, _)| *id == pow.id) {
+            set(&mut d, "applier_seat", *seat);
+        }
         list.push(Value::Object(d));
     }
     Ok(Value::Array(list))
+}
+
+/// A seat's Osty (`$.player.osty`, `$.allies[i].osty`) in the shape
+/// `ParsedOsty` reads, or `None` when the seat has none. The pet lives in
+/// `state.creatures` (referenced by the seat's `pet_uid`), deliberately not in
+/// `enemy_uids`, so the encounter loop skips it. The species is implied.
+fn osty_to_value(state: &CombatState, seat: &sts2_core::PlayerCombatState) -> Option<Value> {
+    let pet_uid = seat.pet_uid?;
+    let c = state.creatures.iter().find(|c| c.id == pet_uid.0)?;
+    let emitted_max_hp = c.max_hp.max(1);
+    let mut osty = obj();
+    set(&mut osty, "alive", c.current_hp > 0);
+    set(&mut osty, "hp", c.current_hp.clamp(0, emitted_max_hp));
+    set(&mut osty, "max_hp", emitted_max_hp);
+    set(&mut osty, "block", c.block.max(0));
+    Some(Value::Object(osty))
+}
+
+/// A seat's combat-history counters (`state_dict::SeatHistory`), each only
+/// when non-zero so a board without them emits the wire it always did. A
+/// per-enemy count is keyed by the enemy's `$.encounter` index.
+fn emit_seat_history(
+    state: &CombatState,
+    m: &mut serde_json::Map<String, Value>,
+    log: &sts2_core::TurnEvents,
+    powered_hits: &[(CreatureUid, u32)],
+) {
+    if log.unblocked_damage_received_this_combat > 0 {
+        set(
+            m,
+            "unblocked_hits_this_combat",
+            log.unblocked_damage_received_this_combat,
+        );
+    }
+    if log.cards_exhausted_this_combat > 0 {
+        set(
+            m,
+            "cards_exhausted_this_combat",
+            log.cards_exhausted_this_combat,
+        );
+    }
+    if log.cards_exhausted_this_turn > 0 {
+        set(
+            m,
+            "cards_exhausted_this_turn",
+            log.cards_exhausted_this_turn,
+        );
+    }
+    // Earlier plays' gains only, as the mod sends them: a gain tagged with
+    // the current play count is the resolving play's own (the count bumps when
+    // a play finishes), which C# Unmovable never counts against that play and
+    // which a rebuilt board could not tell from an earlier play's.
+    let earlier = log
+        .unmovable_card_block_plays
+        .iter()
+        .filter(|&&tag| tag != log.player_card_plays_this_combat)
+        .count();
+    if earlier > 0 {
+        set(m, "card_block_gains_this_turn", earlier);
+    }
+    let hits: Vec<Value> = powered_hits
+        .iter()
+        .filter_map(|&(uid, n)| {
+            let i = state.enemy_uids.iter().position(|u| *u == uid)?;
+            let mut e = obj();
+            set(&mut e, "enemy", i);
+            set(&mut e, "hits", n);
+            Some(Value::Object(e))
+        })
+        .collect();
+    if !hits.is_empty() {
+        m.insert("powered_hits_this_turn".to_owned(), Value::Array(hits));
+    }
+}
+
+/// A seat's channelled orbs (`$.player.orbs`, and a whole teammate seat's),
+/// with `focus` folded into their values as C#'s `PassiveVal` / `EvokeVal` do.
+fn orbs_to_value(belt: &sts2_core::OrbSlots, focus: i32) -> Value {
+    let mut orbs_list = Vec::new();
+    let mut idx: i32 = 0;
+    // Focus-scaled passive/evoke clamp at 0 (C# `FocusPower.ModifyOrbValue`
+    // → `Math.Max(value + focus, 0)`); `focus_scaled` applies the same clamp
+    // the engine effect sites use, so a negative-Focus orb serializes 0 (not
+    // a negative passive) to match the C# parity surface.
+    use sts2_core::orbs::focus_scaled;
+    for orb in &belt.slots {
+        let (type_str, loc_key, passive, evoke) = match orb {
+            Orb::Empty => continue,
+            Orb::Lightning => (
+                "Lightning",
+                "LIGHTNING_ORB.title",
+                focus_scaled(3, focus),
+                focus_scaled(8, focus),
+            ),
+            Orb::Frost => (
+                "Frost",
+                "FROST_ORB.title",
+                focus_scaled(2, focus),
+                focus_scaled(5, focus),
+            ),
+            // Dark's passive shows the per-turn increment (clamped 6 + focus).
+            // Its evoke is the C# `_evokeVal`, which STARTS at 6 and is grown
+            // by the passive (`DarkOrb.cs:17,25,39`) — no second Focus add.
+            // `stored` holds only the accumulated growth, so the base has to
+            // go back on: emitting `stored` raw put every mirror-channelled
+            // Dark orb 6 low on the wire (257 orb elements across the live
+            // A1 Defect corpus), and the matching parse leg subtracted
+            // nothing, so the two errors cancelled in any round-trip test.
+            Orb::Dark { stored } => (
+                "Dark",
+                "DARK_ORB.title",
+                focus_scaled(6, focus),
+                stored.saturating_add(DARK_ORB_BASE_EVOKE),
+            ),
+            // Plasma is unaffected by Focus (C# literal 1m / 2m).
+            Orb::Plasma => ("Plasma", "PLASMA_ORB.title", 1, 2),
+            // Glass: passive = clamp(current_passive + focus); evoke =
+            // passive * 2 (C# `GlassOrb.EvokeVal => PassiveVal * 2m`).
+            Orb::Glass { current_passive } => {
+                let passive = focus_scaled(*current_passive, focus);
+                ("Glass", "GLASS_ORB.title", passive, passive * 2)
+            }
+        };
+        let mut orb_dict = obj();
+        set(&mut orb_dict, "index", idx);
+        set(&mut orb_dict, "name", loc_key);
+        set(&mut orb_dict, "type", type_str);
+        set(&mut orb_dict, "passive", passive);
+        set(&mut orb_dict, "evoke", evoke);
+        orbs_list.push(Value::Object(orb_dict));
+        idx += 1;
+    }
+    Value::Array(orbs_list)
 }
 
 /// Build the wire-format dict for `state`. The dict round-trips through
@@ -561,6 +712,13 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     set(&mut d, "round", i32::from(state.round));
     set(&mut d, "side", side_to_str(state.side));
     set(&mut d, "is_elite", state.is_elite);
+    // Only off their defaults, so a fight's wire without them is unchanged.
+    if state.act_index != 1 {
+        set(&mut d, "act_index", state.act_index);
+    }
+    if state.is_boss {
+        set(&mut d, "is_boss", true);
+    }
     // Wire schema uses `turn`, which mirrors `round` in this Rust port
     // (Python sim splits them; the wire field name predates the merge).
     set(&mut d, "turn", i32::from(state.round));
@@ -599,16 +757,12 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     set(&mut player, "hp", emitted_hp);
     set(&mut player, "block", state.player.block.max(0));
     set(&mut player, "energy", i32::from(state.player.energy).max(0));
-    set(
-        &mut player,
-        "max_energy",
-        i32::from(state.player.max_energy).max(0),
-    );
-    set(
-        &mut player,
-        "energy_regen_per_turn",
-        i32::from(state.player.max_energy).max(0),
-    );
+    // C# `PlayerCombatState.MaxEnergy` is computed on every read; the stored
+    // `max_energy` is the last turn start's, so a max-energy power or relic
+    // gained this turn (Demesne, Pyre, Waste Away) would report a turn late.
+    let max_energy = sts2_core::combat_loop::effective_max_energy(state);
+    set(&mut player, "max_energy", max_energy);
+    set(&mut player, "energy_regen_per_turn", max_energy);
     // Gold: gates SealOfGold's turn-start hook, so an engine -> dict ->
     // engine round-trip must not silently zero it.
     set(&mut player, "gold", state.gold);
@@ -673,7 +827,12 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     };
     player.insert(
         "powers".to_owned(),
-        powers_to_value(&player_power_uids, &state.powers, "$.player.powers")?,
+        powers_to_value(
+            &player_power_uids,
+            &state.powers,
+            &state.coop.power_seat,
+            "$.player.powers",
+        )?,
     );
 
     // Potions — a flat list of ids (None for empty slot). The Rust
@@ -717,6 +876,15 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     if state.combat_log.chains_bound_card_played_this_turn {
         set(&mut player, "bound_card_played_this_turn", true);
     }
+    if state.combat_log.hp_lost_this_turn > 0 {
+        set(&mut player, "hp_lost_this_turn", true);
+    }
+    emit_seat_history(
+        state,
+        &mut player,
+        &state.combat_log,
+        &state.player.powered_hits_by_target_this_turn,
+    );
 
     // Necrobinder's Osty pet. It lives in `state.creatures` (referenced by
     // `player.pet_uid`), deliberately *not* in `enemy_uids`, so the encounter
@@ -725,16 +893,8 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // workbench Rust backend — can surface the companion the way the C#
     // backend already does. Name is not part of the wire shape; the consumer
     // knows the species is Osty.
-    if let Some(pet_uid) = state.player.pet_uid {
-        if let Some(c) = state.creatures.iter().find(|c| c.id == pet_uid.0) {
-            let emitted_max_hp = c.max_hp.max(1);
-            let mut osty = obj();
-            set(&mut osty, "alive", c.current_hp > 0);
-            set(&mut osty, "hp", c.current_hp.clamp(0, emitted_max_hp));
-            set(&mut osty, "max_hp", emitted_max_hp);
-            set(&mut osty, "block", c.block.max(0));
-            player.insert("osty".to_owned(), Value::Object(osty));
-        }
+    if let Some(osty) = osty_to_value(state, &state.player) {
+        player.insert("osty".to_owned(), osty);
     }
 
     // Defect orbs. Mirror the C# `CombatPlayState` shape (RunSimulator.cs:
@@ -748,61 +908,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // them; the C# backend already ships a plain name).
     if state.player.orbs.capacity > 0 {
         let focus = sts2_core::orbs::focus_bonus(state);
-        let mut orbs_list = Vec::new();
-        let mut idx: i32 = 0;
-        // Focus-scaled passive/evoke clamp at 0 (C# `FocusPower.ModifyOrbValue`
-        // → `Math.Max(value + focus, 0)`); `focus_scaled` applies the same clamp
-        // the engine effect sites use, so a negative-Focus orb serializes 0 (not
-        // a negative passive) to match the C# parity surface.
-        use sts2_core::orbs::focus_scaled;
-        for orb in &state.player.orbs.slots {
-            let (type_str, loc_key, passive, evoke) = match orb {
-                Orb::Empty => continue,
-                Orb::Lightning => (
-                    "Lightning",
-                    "LIGHTNING_ORB.title",
-                    focus_scaled(3, focus),
-                    focus_scaled(8, focus),
-                ),
-                Orb::Frost => (
-                    "Frost",
-                    "FROST_ORB.title",
-                    focus_scaled(2, focus),
-                    focus_scaled(5, focus),
-                ),
-                // Dark's passive shows the per-turn increment (clamped 6 + focus).
-                // Its evoke is the C# `_evokeVal`, which STARTS at 6 and is grown
-                // by the passive (`DarkOrb.cs:17,25,39`) — no second Focus add.
-                // `stored` holds only the accumulated growth, so the base has to
-                // go back on: emitting `stored` raw put every mirror-channelled
-                // Dark orb 6 low on the wire (257 orb elements across the live
-                // A1 Defect corpus), and the matching parse leg subtracted
-                // nothing, so the two errors cancelled in any round-trip test.
-                Orb::Dark { stored } => (
-                    "Dark",
-                    "DARK_ORB.title",
-                    focus_scaled(6, focus),
-                    stored.saturating_add(DARK_ORB_BASE_EVOKE),
-                ),
-                // Plasma is unaffected by Focus (C# literal 1m / 2m).
-                Orb::Plasma => ("Plasma", "PLASMA_ORB.title", 1, 2),
-                // Glass: passive = clamp(current_passive + focus); evoke =
-                // passive * 2 (C# `GlassOrb.EvokeVal => PassiveVal * 2m`).
-                Orb::Glass { current_passive } => {
-                    let passive = focus_scaled(*current_passive, focus);
-                    ("Glass", "GLASS_ORB.title", passive, passive * 2)
-                }
-            };
-            let mut orb_dict = obj();
-            set(&mut orb_dict, "index", idx);
-            set(&mut orb_dict, "name", loc_key);
-            set(&mut orb_dict, "type", type_str);
-            set(&mut orb_dict, "passive", passive);
-            set(&mut orb_dict, "evoke", evoke);
-            orbs_list.push(Value::Object(orb_dict));
-            idx += 1;
-        }
-        player.insert("orbs".to_owned(), Value::Array(orbs_list));
+        player.insert("orbs".to_owned(), orbs_to_value(&state.player.orbs, focus));
         set(
             &mut player,
             "orb_slots",
@@ -917,7 +1023,12 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         set(&mut m, "block", c.block.max(0));
         m.insert(
             "powers".to_owned(),
-            powers_to_value(&c.powers, &state.powers, "$.encounter.powers")?,
+            powers_to_value(
+                &c.powers,
+                &state.powers,
+                &state.coop.power_seat,
+                "$.encounter.powers",
+            )?,
         );
         // `intents` carries the creature's currently-telegraphed move so
         // display consumers (workbench combat panel) can render it. We emit a
@@ -938,24 +1049,19 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         // `monster_ai::MoveState.intents` is a `SmallVec<[Intent; 4]>` and 44
         // content moves declare two or three — but every consumer collapses it
         // to `intents.first()` (`combat_loop::perform_intent`, the intent
-        // priming in `hooks`, `parse_enemy`). Widening the wire alone
-        // would be half a fix: a 2026-08 census over the 12-seed live corpus
-        // (`logs/diag/mirror_d1.jsonl`) found 153 world records with a
-        // multi-intent telegraph, of which only 34 sit on a move this repo
-        // declares with a matching intent count. The other 119 span ~26 moves
-        // (Aeonglass EBB/INCREASING_INTENSITY, Stabbot STAB, every
-        // DecimillipedeSegment BULK/CONSTRICT, Queen BURN_BRIGHT_FOR_ME,
-        // MechaKnight WINDUP, Ovicopter TENDERIZER, Axebot BOOT_UP/
-        // HAMMER_UPPERCUT, CubexConstruct REPEATER_BLAST, Nibbit SLICE,
-        // GlobeHead SHOCKING_SLAP/GALVANIC_BURST, TheLost DEBILITATING_SMOG,
-        // KnowledgeDemon PONDER, InfestedPrism PULSATE, TestSubject RESPAWN,
-        // …) whose CONTENT declaration is itself short — so emitting the tail
-        // today would trade a silent truncation for a loud divergence class
-        // dominated by under-declared movesets, taint those sweep runs
-        // (`STS2_MIRROR_OBSERVE`), and still not carry the real telegraph.
+        // priming in `hooks`, `parse_enemy`). A 2026-08 census found most
+        // multi-intent telegraphs on moves whose CONTENT declaration was
+        // short, so the tail was held back. That gap is now closed and
+        // guarded: `sts2-wire/tests/move_intents_match_decomp.rs` checks every
+        // declared move against its C# `MoveState` ctor, and on 2026-10-30
+        // (#351) only moves needing an intent the engine lacks
+        // (`CardDebuffIntent`) still differ.
         //
-        // The faithful fix is: (1) audit those ~26 movesets against their C#
-        // `MoveState` ctors, (2) emit the whole `current_move().intents` list
+        // Note the tail is NOT inert for search: `peek_intents` walks every
+        // intent of a move, and the default `TexelWide` leaf reads that
+        // lookahead (`eval_wide.rs`), so a tail edit moves depth-cut leaves.
+        //
+        // What remains: (2) emit the whole `current_move().intents` list
         // when the primed `c.intent` is still its head, (3) teach
         // `parse_enemy` to keep the tail. Simulation is NOT affected by the
         // gap — the non-head halves are performed by each move's `effect_fn`,
@@ -1005,10 +1111,10 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
         // `alive = !is_dead`). Deriving this from HP — rather than the
         // old hardcoded `false` — fixes the FOGMOG IllusionPower parity
         // bug (sts2-rs-vvi6g): the player-killed EyeWithTeeth used to
-        // read as alive at 0 HP. NB: `state_from_dict` drops `is_dead`
-        // enemies (documented truncation), so this is emission-only
-        // fidelity, not a round-trip change — all round-trip fixtures
-        // keep enemies at hp > 0.
+        // read as alive at 0 HP. `state_from_dict` keeps an `is_dead`
+        // enemy as a corpse (`enemy_uids` is parallel to every non-escaped
+        // wire entry; a reviver's corpse — Decimillipede segments, Eye with
+        // Teeth — must exist to revive), so a dumped corpse round-trips.
         set(&mut m, "is_dead", c.current_hp <= 0);
         set(&mut m, "is_escaped", false);
         // C# `RemoveCreature` parity (bead sts2-rs-c8why): a dead enemy
@@ -1074,6 +1180,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                     powers_to_value(
                         &state.coop.stash[i].powers,
                         &state.powers,
+                        &state.coop.power_seat,
                         &format!("{path}.powers"),
                     )?,
                 );
@@ -1099,6 +1206,35 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                 if a.stars != 0 {
                     set(&mut m, "stars", i32::from(a.stars));
                 }
+                if a.orbs.capacity > 0 {
+                    // Their own Focus: a teammate seat's powers are stashed.
+                    let focus = state.coop.stash[i]
+                        .powers
+                        .iter()
+                        .filter_map(|u| state.powers.iter().find(|p| p.id == u.0))
+                        .filter(|p| p.kind == PowerKind::Focus)
+                        .map(|p| p.amount)
+                        .sum();
+                    m.insert("orbs".to_owned(), orbs_to_value(&a.orbs, focus));
+                    set(&mut m, "orb_slots", i32::from(a.orbs.capacity));
+                }
+                if state.coop.stash[i].combat_log.hp_lost_this_turn > 0 {
+                    set(&mut m, "hp_lost_this_turn", true);
+                }
+                emit_seat_history(
+                    state,
+                    &mut m,
+                    &state.coop.stash[i].combat_log,
+                    &a.powered_hits_by_target_this_turn,
+                );
+                // Mid-turn only, as ours.
+                if a.cards_played_this_turn.iter().any(|&n| n > 0) {
+                    set(
+                        &mut m,
+                        "cards_played_this_turn",
+                        a.cards_played_this_turn.to_vec(),
+                    );
+                }
                 if !a.potions.is_empty() {
                     let list = a.potions.iter().map(|k| val(k.python_name())).collect();
                     m.insert("potions".to_owned(), Value::Array(list));
@@ -1117,6 +1253,10 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                         })
                         .collect();
                     m.insert("relics".to_owned(), Value::Array(list));
+                }
+                // Their Osty, as ours (GH #1017).
+                if let Some(osty) = osty_to_value(state, a) {
+                    m.insert("osty".to_owned(), osty);
                 }
                 set(&mut m, "ended_turn", state.coop.to_play & (1 << i) == 0);
             }
@@ -1167,10 +1307,15 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
 ///
 /// Shape contract (mirrors the `sts2-rl-agent` rollout bridge):
 ///   * `{"action": "play", "card_index": i, "target_index": j | None}`
+///   * `{"action": "play", "card_index": i, "target_index": None, "ally_index": k}`
+///     — a co-op `AnyAlly` card at teammate `allies[k]` (`PlayCardAtAlly`)
 ///   * `{"action": "end_turn"}`
 ///   * `{"action": "choose", "index": i, "selection": [..]}` — emitted iff a
 ///     `pending_choice` is open; in that case no other actions are legal.
 ///   * `{"action": "potion", "slot": i, "target_index": j | None}`
+///   * `{"action": "drink_potion", "slot": i, "target_index": None, "ally_index": k}`
+///     — a co-op `AnyPlayer` potion thrown at teammate `allies[k]`
+///     (`DrinkPotionAtAlly`)
 #[must_use]
 pub fn combat_action_to_value(action: &Action) -> Value {
     let mut d = obj();
@@ -1179,6 +1324,14 @@ pub fn combat_action_to_value(action: &Action) -> Value {
             set(&mut d, "action", "play");
             set(&mut d, "card_index", *hand_index);
             set(&mut d, "target_index", *target);
+        }
+        // Co-op: an `AnyAlly` card at a chosen teammate. A `play` with no
+        // enemy target and the teammate's `allies[]` index (GH #1017).
+        Action::PlayCardAtAlly { hand_index, ally } => {
+            set(&mut d, "action", "play");
+            set(&mut d, "card_index", *hand_index);
+            set(&mut d, "target_index", None::<u8>);
+            set(&mut d, "ally_index", *ally);
         }
         Action::EndTurn => {
             set(&mut d, "action", "end_turn");
@@ -1195,6 +1348,14 @@ pub fn combat_action_to_value(action: &Action) -> Value {
             set(&mut d, "action", "drink_potion");
             set(&mut d, "slot", *potion_slot);
             set(&mut d, "target_index", *target);
+        }
+        // Co-op: thrown at a teammate. A `drink_potion` with no enemy target
+        // and the teammate's `allies[]` index, as `play`'s (GH #1017).
+        Action::DrinkPotionAtAlly { potion_slot, ally } => {
+            set(&mut d, "action", "drink_potion");
+            set(&mut d, "slot", *potion_slot);
+            set(&mut d, "target_index", None::<u8>);
+            set(&mut d, "ally_index", *ally);
         }
         Action::Channel { orb, target } => {
             set(&mut d, "action", "channel");
@@ -1500,6 +1661,32 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect()
+    }
+
+    /// C# `PlayerCombatState.MaxEnergy` is computed on every read
+    /// (`Hook.ModifyMaxEnergy` over the base, `PlayerCombatState.cs:107`): a
+    /// max-energy power gained during the turn shows at once, where the
+    /// engine's stored value is the turn start's. Ported from manoj fork
+    /// 81abe212e.
+    #[test]
+    fn max_energy_is_computed_on_each_read() {
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
+        state.player.max_energy = 3; // stored at the turn's start
+        let uid = sts2_core::PowerUid(NonZeroU32::new(1).expect("non-zero"));
+        state.powers.push(sts2_core::Power {
+            id: uid.0,
+            kind: sts2_core::PowerKind::Demesne,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(uid);
+        let v = combat_state_to_value(&state).expect("serializes");
+        assert_eq!(v["player"]["max_energy"], 4);
+        assert_eq!(v["player"]["energy_regen_per_turn"], 4);
     }
 
     #[test]

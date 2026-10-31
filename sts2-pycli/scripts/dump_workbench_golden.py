@@ -311,6 +311,11 @@ def apply_determinism_patches(*, ppo: bool = False) -> dict[str, Any]:
     import game_log
 
     game_log.datetime = _FixedDatetime  # ty: ignore[invalid-assignment]
+    # The pinned clock gives every log in a scenario the same stamp: a run
+    # replaced by a save load and the final quit both write `<stamp>_<char>_
+    # <seed>.jsonl`, and `GameLogger` suffixes the second `_2`. Both logs are
+    # kept, as a real clock (two stamps) would keep them; the browser worker's
+    # `storeRunLogs` and the golden harness suffix a taken name the same way.
     server._ASSETS_BASE_URL = ASSETS_BASE_URL
     _REAL_LOADERS.setdefault("_get_rust_agent", ppo_policy._get_rust_agent)
     _REAL_LOADERS.setdefault("_get_policy", ppo_policy._get_policy)

@@ -165,11 +165,13 @@ internal static class SimHelp
         Row(sb, "F6", "let the AI take just this one decision");
         Row(sb, "F7", "let the AI keep playing until you stop it (press again to stop)");
         Row(sb, "F4", "show / hide the HUD");
-        Row(sb, "F3", "action log — what was played, and what was advised at the time");
+        Row(sb, "Ctrl+L", "action log — what was played, and what was advised at the time");
+        Row(sb, "Ctrl+H", "hide everything but the toolbar pill for a quick look; again (or click the pill) to show it");
         Row(sb, "F9 / F10", $"game speed down / up 0.1x  (now {SimSpeed.Desired:0.0}x)");
         Row(sb, "Ctrl+Z", "undo to the start of this combat turn");
         Row(sb, "Ctrl+Shift+Z", "rewind to the start of this room");
         Row(sb, "Ctrl+Shift+C", "copy this position — paste it into the workbench to explore it");
+        Row(sb, "Ctrl+Shift+B", "report a bug — sends this position and the logs, with your note");
         Row(sb, "F1", "this panel");
 
         sb.Append("\n[b]Toolbar[/b]\n");
@@ -177,7 +179,7 @@ internal static class SimHelp
           .Append("with the mouse — click the pill to expand or collapse it. The live controls ")
           .Append("(coach, AI once / auto, speed) are flat; the rest sit in three menus: ")
           .Append("[b]Rewind ▾[/b] (turn / room / one room back), [b]Panels ▾[/b] (log, HUD, help, ")
-          .Append("Settings — that one works mid-run) and [b]Workbench ▾[/b], whose [b]Open workbench[/b] ")
+          .Append("Settings — that one works mid-run — and Report a bug) and [b]Workbench ▾[/b], whose [b]Open workbench[/b] ")
           .Append("opens the browser view (logs, search tree, run tree) and [b]Copy state[/b] puts this ")
           .Append("exact position on the clipboard — paste it into the workbench's [b]Import state[/b] ")
           .Append("to replay it, try other lines, or sweep it in SimLab.[/color]\n");

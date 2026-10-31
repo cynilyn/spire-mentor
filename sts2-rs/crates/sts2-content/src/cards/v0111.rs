@@ -1,4 +1,3 @@
-// port-pin-skip — version overlay; C#-first, cites the v0.111.0 decomp per row.
 //! Card metadata and values of game build v0.111.0 (GH #793, S8a part 1).
 //!
 //! Every card's `spec()` keeps returning its **v0.107.1** truth, so the

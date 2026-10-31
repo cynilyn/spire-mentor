@@ -27,7 +27,7 @@ public static class MainFile
 {
     public const string ModId = "SpireMentor";
     // Keep in sync with SpireMentor.json "version" (package.ps1 reads that one).
-    public const string ModVersion = "0.7.3";
+    public const string ModVersion = "0.8.2";
 
     private static Harmony? _patcher;
     private static SimAutoSlayer? _autoSlayer;
@@ -61,6 +61,7 @@ public static class MainFile
             // Coach capture (PROTOCOL.md v5 human_action): the human's end
             // turn and their event / campfire picks.
             ApplyPatch(typeof(HumanEndTurnPatch));
+            ApplyPatch(typeof(ChooseACardOfferPatch));
             ApplyPatch(typeof(EventOptionClickedPatch));
             ApplyPatch(typeof(RestOptionSelectedPatch));
             SimReduceEffects.Install(_patcher);

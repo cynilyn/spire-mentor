@@ -680,6 +680,20 @@ fn hang_card_multiplies_its_damage_on_a_hang_afflicted_target() {
         "Hang card damage on a Hang(3) target is ×3"
     );
 
+    // An Unpowered reaction while Hang resolves (SleightOfFlesh on the Hang
+    // apply, Panache's AoE) has no Hang `cardSource`: unscaled (seeds
+    // 2203/3154).
+    let reaction = DamageCtx {
+        dealer: CreatureRef::Player,
+        target: CreatureRef::Enemy(enemy),
+        props: ValueProps::UNPOWERED,
+    };
+    assert_eq!(
+        hooks::modify_damage_multiplicative(&state, ListenerRef::Power(hang_pid), &reaction),
+        DamageMul::ONE,
+        "an Unpowered reaction mid-Hang is not scaled"
+    );
+
     // With a non-Hang card on top of play (e.g. another attack), no multiplier.
     state.player.play.clear();
     let other = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
@@ -716,6 +730,38 @@ fn reaper_form_dooms_target_by_total_damage_times_amount() {
         doom_on_creature(&state, enemy),
         20,
         "ReaperForm(2) applies Doom = TotalDamage(10) * 2"
+    );
+}
+
+/// A ReaperForm hit that KILLS its target still records the player's Doom:
+/// C# `AfterDamageGiven` runs before `Kill` (CreatureCmd.cs:390-409) and
+/// `CanReceivePowers` is not an alive check, so the `PowerReceivedEntry`
+/// that arms Death's Door is written (Necrobinder full seed 2430).
+#[test]
+fn reaper_form_killing_blow_still_arms_deaths_door() {
+    let mut state = CombatState::default();
+    state.player.current_hp = 50;
+    state.player.max_hp = 50;
+    let _ = state.init_player_creature();
+    let enemy = state.spawn_enemy(MonsterKind::Nibbit);
+    let _keep_alive = state.spawn_enemy(MonsterKind::Nibbit);
+    push_player_power(&mut state, PowerKind::ReaperForm, 1);
+    state.combat_log.doom_applied_by_player_this_turn = false;
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.current_hp = 0;
+    }
+
+    let ctx = DamageCtx {
+        dealer: CreatureRef::Player,
+        target: CreatureRef::Enemy(enemy),
+        props: ValueProps::MOVE,
+    };
+    hooks::dispatch_after_damage_given(&mut state, &ctx, 11, 11, false);
+    assert!(state.combat_log.doom_applied_by_player_this_turn);
+    assert_eq!(
+        doom_on_creature(&state, enemy),
+        0,
+        "the death strip removes the Doom again (seed 959: Illusion corpse)"
     );
 }
 

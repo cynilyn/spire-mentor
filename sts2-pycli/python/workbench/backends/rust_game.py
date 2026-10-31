@@ -498,7 +498,8 @@ class RustGame(GameBackend):
                 row,
                 list(snapshot.visited),
                 row + 1,
-                snapshot.floor,
+                # the paste carries the game's floor (see ``_base_state``)
+                max(0, snapshot.floor - max(1, snapshot.act)),
             )
             self._import_notes.extend(_map_disagreements(self.rm, snapshot))
         else:
@@ -829,12 +830,18 @@ class RustGame(GameBackend):
         if action == "select_cards" and getattr(self.rm, "pending_deck_enchants", 0) > 0:
             raw = args.get("indices", "")
             idxs = sorted({int(s) for s in str(raw).split(",") if s.strip() != ""}, reverse=True)
-            if not idxs:
+            # An "up to N" screen (Kifuda / Gnarled Hammer, C#
+            # `CardSelectorPrefs(prompt, 0, N)`) may be confirmed with fewer
+            # cards, or none; the rest of its batch is then dropped.
+            optional = bool(getattr(self.rm, "pending_enchant_optional", False))
+            if not idxs and not optional:
                 return _err("select_cards requires an index")
             for i in idxs:
                 result = self.rm.take_action({"action": "enchant_deck_card", "idx": i})
                 if result not in ("advanced", "run_over"):
                     return _err(f"{action} rejected by engine: {result}")
+            if optional and getattr(self.rm, "pending_enchant_optional", False):
+                self.rm.decline_optional_deck_enchants()
             return self._serialize()
         # Interactive multi-pick card grant (RoomFullOfCheese Gorge): a single
         # pick-N card_select over the generated options. C# adds the picks to
@@ -1197,7 +1204,9 @@ class RustGame(GameBackend):
         return {
             "decision": decision,
             "player": self._player(),
-            "floor": rm.total_floor(),
+            # The game's floor (`RunState.TotalFloor`) counts each act's start
+            # room (Neow, the Ancients); the engine's counter does not.
+            "floor": rm.total_floor() + rm.act_index,
             "act": rm.act_index,
             "ascension": rm.ascension_level,
         }
@@ -1415,7 +1424,9 @@ class RustGame(GameBackend):
         count = int(getattr(self.rm, "pending_deck_enchants", 1) or 1)
         count = max(1, min(count, len(cards)))
         state["cards"] = cards
-        state["min_select"] = count
+        # "Up to N" (Kifuda / Gnarled Hammer) vs exactly N.
+        optional = bool(getattr(self.rm, "pending_enchant_optional", False))
+        state["min_select"] = 0 if optional else count
         state["max_select"] = count
         state["can_skip"] = False
         state["context"] = "enchant"

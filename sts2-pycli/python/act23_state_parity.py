@@ -63,6 +63,7 @@ from run_parity import (
     enumerate_choices,
     map_signature,
     run_signature,
+    rust_finalize_atomic_select,
 )
 from sts2_client import add_game_version_arg, apply_game_version_arg
 from workbench.backends.base import make_backend
@@ -114,6 +115,20 @@ def _floor_of(view: dict[str, Any] | None) -> int | None:
         if isinstance(src, dict) and src.get("floor") is not None:
             return int(src["floor"])
     return None
+
+
+def _is_architect_event(view: dict[str, Any] | None) -> bool:
+    """Whether a C# ``event_choice`` view is TheArchitect's post-act-3 victory
+    event (option text keys ``THE_ARCHITECT.…``, or its display name)."""
+    if not isinstance(view, dict):
+        return False
+    name = str(view.get("event_name") or view.get("event_id") or "")
+    if "architect" in name.lower():
+        return True
+    return any(
+        str((o or {}).get("text_key") or "").startswith("THE_ARCHITECT")
+        for o in (view.get("options") or [])
+    )
 
 
 def _current_coord(backend: Any) -> tuple[int, int] | None:
@@ -342,7 +357,7 @@ def run_one_invincible(
             # instead of wedging. Oracle-artifact "run-combat-cardselect".
             guard = 0
             while rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and guard < 8:
-                nxt_rs = r.act("skip_select")
+                nxt_rs = rust_finalize_atomic_select(r, rs_view)
                 if _is_err(nxt_rs):
                     break  # not skippable / min_select unmet — let the diff report it
                 if verbose:
@@ -360,11 +375,13 @@ def run_one_invincible(
             # "no options, auto-skipping" → ``EnterRoom(new MapRoom())``), so C# is
             # already on the ``map`` while Rust correctly surfaces the FakeMerchant
             # ``event``. Drive RUST ALONE through its no-op ``leave`` option so it
-            # re-aligns to the map, then re-snap. Sound because FakeMerchant
-            # consumes NO shared run RNG — its inventory shuffle uses a private
-            # ``Rng.with_name(seed, "FAKE_MERCHANT")`` stream — so leaving cannot
-            # desync the shared trajectory; a genuine "Rust a room behind" desync
-            # still surfaces in the subsequent map/nav diff. Bead sts2-rs-1hiht.
+            # re-aligns to the map, then re-snap. Sound because leaving draws
+            # nothing: FakeMerchant's only shared-RNG reads (6 ``Shops`` price
+            # rolls, ``MerchantRelicEntry.CalcCost``) happen in
+            # ``BeforeEventStarted``, which both engines run on entry; its
+            # inventory shuffle uses a private ``FAKE_MERCHANT`` stream. A
+            # genuine "Rust a room behind" desync still surfaces in the
+            # subsequent map/nav diff. Bead sts2-rs-1hiht.
             if rs_snap.phase == "event" and cs_snap.phase == "map":
                 leave = next(
                     (
@@ -386,6 +403,34 @@ def run_one_invincible(
                         rs_view = nxt_rs
                         rs_snap = Snap.of(rs_view, "rs")
 
+            # Final-victory event granularity: after the act-3 boss C# enters
+            # TheArchitect's VICTORY event room — a single-option dialogue chain
+            # (THREATEN → dialogue → PROCEED) whose last PROCEED calls
+            # ``RunManager.WinRun`` (see ``RunSimulator.cs``'s TheArchitect
+            # note) — while Rust ends the run at the boss kill. Drive C# ALONE
+            # through that chain, then re-snap; the ``game_over`` check below
+            # still compares the outcome on both sides. Gated on Rust being over
+            # and the C# event being TheArchitect, so any other event-vs-over
+            # split still surfaces.
+            if (
+                rs_snap.phase == "game_over"
+                and cs_snap.phase == "event"
+                and _is_architect_event(cs_view)
+            ):
+                cs_choices = enumerate_choices(g, cs_view)
+                if len(cs_choices) == 1:
+                    verb, kw = cs_choices[0]
+                    nxt_cs = g.act(verb, **kw)
+                    if not _is_err(nxt_cs):
+                        if verbose:
+                            res.trace.append(
+                                f"[{step:04d}] act{out.max_act} "
+                                f"victory-event-skip cs:{verb}({kw}) (rust ended at the boss)"
+                            )
+                        out.event_skips += 1
+                        cs_view = nxt_cs
+                        continue
+
             # Finer per-step nav instrumentation (issue #158 step 1): act +
             # current map-node coord for BOTH engines, surfaced every step in the
             # verbose trace so the Act-1→Act-2 "C# a room ahead" desync is
@@ -394,6 +439,17 @@ def run_one_invincible(
             cs_nav, rs_nav = Nav.of(cs_view, g), Nav.of(rs_view, r)
 
             fields = diff_snaps(cs_snap, rs_snap)
+            # A WON run ends in C# through ``RunManager.WinRun → OnEnded(isVictory:
+            # true) → GuaranteeKillAllPlayers`` (see ``RunSimulator.cs``'s
+            # game-over note), so its victory ``game_over`` view reports hp 0
+            # while Rust keeps the post-boss HP. Not a parity signal: drop the hp
+            # field when both sides are over and C# says it won.
+            if (
+                cs_snap.phase == "game_over"
+                and rs_snap.phase == "game_over"
+                and (cs_view.get("victory") or cs_view.get("won"))
+            ):
+                fields = [f for f in fields if not f.startswith("hp:")]
             if cs_snap.phase == "map" and rs_snap.phase == "map":
                 fields += diff_maps(map_signature(g), map_signature(r))
                 # Nav (act + current-node) is BLOCKING only while both engines
@@ -486,7 +542,19 @@ def run_one_invincible(
             # Pin HP out of combat (AFTER the genuine diff above): the next
             # combat then seeds from INVINCIBLE_HP on both engines so the random
             # policy survives, while in-combat HP stays an un-masked parity check.
-            if invincible and cs_snap.phase != "combat":
+            #
+            # Never pin BETWEEN the pages of an event either: an event can bake
+            # the player's max HP into a page's option at page-build time, and a
+            # pin between that page and the click changes max HP under it in a
+            # way the real game cannot. Tablet of Truth's last Decipher page
+            # sets ``DecipherMaxHpLoss = MaxHp - 1`` when the page is built
+            # (TabletOfTruth.cs:88) and the click pays that stored value
+            # (TabletOfTruth.cs:109); Rust computes ``MaxHp - 1`` at the click.
+            # Both agree in a real run, but with a pin in between C# ended at
+            # 25 max HP and Rust at 1 (Defect:1002, Regent:1007 at v0.107.1).
+            # The map step before the event already pinned, so the event and
+            # anything it leads to still start from INVINCIBLE_HP.
+            if invincible and cs_snap.phase not in ("combat", "event"):
                 _pin(g, r, INVINCIBLE_HP)
 
             # Pick a choice; on a both-reject (benign illegal move) drop it and

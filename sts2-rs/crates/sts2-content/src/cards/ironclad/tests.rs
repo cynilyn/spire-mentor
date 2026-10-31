@@ -1040,6 +1040,45 @@ fn havoc_plays_and_exhausts_top_attack() {
     );
 }
 
+/// C# `CardCmd.AutoPlay` runs the card through `OnPlayWrapper`, whose
+/// per-iteration `Hook.BeforeCardPlayed` (CardModel.cs:1923) reaches relics
+/// too, with `Resources.EnergyValue = EnergyCost.GetAmountToSpend()`
+/// (CardCmd.cs:126). So IntimidatingHelmet (`EnergyValue >= 2` → 4 Block)
+/// fires for a 2-cost Attack that Havoc auto-plays — the relic channel used to
+/// be dispatched for hand plays only.
+#[test]
+fn havoc_auto_played_two_cost_card_triggers_intimidating_helmet() {
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::IntimidatingHelmet,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let _ = push_play_card(&mut state, CardId::Havoc, 0, 0);
+    let top = push_draw_top_card(
+        &mut state,
+        CardId::StrikeIronclad,
+        CardType::Attack,
+        TargetType::Enemy,
+        6,
+        0,
+    );
+    state.cards[top.0.get() as usize - 1].cost = 2;
+    let block_before = state.player.block;
+    let r = dispatch(&mut state, CardId::Havoc, None);
+    assert_eq!(r, EffectResult::Resolved);
+    assert_eq!(
+        state.player.block - block_before,
+        4,
+        "IntimidatingHelmet grants 4 Block on the auto-played 2-cost card",
+    );
+}
+
 /// Havoc-on-Havoc: the inner Havoc is PLAYED (not guard-exhausted), so its
 /// own body auto-plays the card beneath it. Mirrors C# `Havoc.OnPlay` →
 /// `AutoPlayFromDrawPile` with no recursion guard
@@ -2575,6 +2614,37 @@ fn infernal_blade_spawns_attack_with_cost_zero_this_turn() {
         "a combat-generated card is never upgraded (got {:?} upgraded)",
         spawned.card_id,
     );
+}
+
+/// C# draws from `Owner.Character.CardPool` (InfernalBlade.cs:22-24): a
+/// Defect playing Infernal Blade gets a Defect Attack, never an Ironclad one
+/// (Defect QX85: C# Adaptive Strike, Rust Pommel Strike).
+#[test]
+fn infernal_blade_draws_from_the_owners_character_pool() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    for seed in 0..16i32 {
+        let (mut state, _enemy) = fresh_state_with_enemy(50);
+        state.player.character = Some(CharacterId::Defect);
+        state.run_rng = sts2_core::RunRngSet::new(seed);
+        let _ib_uid = push_play_card(&mut state, CardId::InfernalBlade, 0, 0);
+        assert_eq!(
+            dispatch(&mut state, CardId::InfernalBlade, None),
+            EffectResult::Resolved
+        );
+        let spawned = *state.player.hand.last().expect("hand non-empty");
+        let id = state.cards[spawned.0.get() as usize - 1].card_id;
+        let defect_attacks = crate::cards::colorless::helpers::combat_generatable_pool_in(
+            CharacterId::Defect,
+            state.game_version,
+        );
+        assert!(
+            defect_attacks
+                .iter()
+                .any(|s| s.id == id && s.card_type == CardType::Attack),
+            "seed {seed}: {id:?} is not a Defect Attack"
+        );
+    }
 }
 
 /// The cost-0 rider clears at end-of-turn cleanup so the spawned
@@ -4526,9 +4596,210 @@ fn ench_onplay_order_swift_burning_pact_selects_pre_draw_hand() {
 
     // Swift is a first-play-only enchantment: the consumed bit is set.
     assert_ne!(
-        state.cards[pact.0.get() as usize - 1].combat_var(sts2_core::cards::VarKey::Generic)
+        state.cards[pact.0.get() as usize - 1]
+            .combat_var(sts2_core::cards::VarKey::EnchantmentUsed)
             & 0b0100,
         0,
         "Swift-used bit set after the play finished"
     );
+}
+
+/// C# `CardCmd.Exhaust` (`CardCmd.cs:239`) does nothing once the combat is
+/// over or ending, so a card Cinder exhausts after its hit kills the last
+/// enemy fires no `AfterCardExhausted`: Joss Paper keeps its count (seed
+/// GVPEJ1K5D1 at A5: 4 on the game, the engine counted a fifth and wrapped
+/// to 0).
+#[test]
+fn cinder_killing_blow_exhausts_nothing_joss_paper_counts() {
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state_with_enemy(5);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::JossPaper,
+        counter: 4,
+        is_wax: false,
+        is_melted: false,
+    });
+    let _ = push_play_card(&mut state, CardId::Cinder, 18, 0);
+    let _ = push_hand_card(&mut state, CardId::StrikeIronclad);
+    let _ = cinder::play_cinder(&mut state, Some(enemy));
+    let counter = state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::JossPaper)
+        .map(|r| r.counter);
+    assert_eq!(
+        counter,
+        Some(4),
+        "no exhaust is counted once the fight is ending"
+    );
+}
+
+/// The other half of the exhaust rule (C# `CardCmd.Exhaust`, `CardCmd.cs:239`;
+/// `Hook.AfterCardExhausted`): an exhaust that began while the combat was live
+/// notifies every listener, even if one listener's reaction ends the combat.
+/// Dark Embrace (the powers bus, first) draws a Strike that Hellraiser
+/// auto-plays into the last enemy; Joss Paper (the relics bus, after) still
+/// counts the exhaust. The entry check is asked once, not per bus.
+#[test]
+fn an_exhaust_whose_reaction_kills_still_reaches_joss_paper() {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state_with_enemy(5);
+    state.init_player_creature();
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::JossPaper,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    for power in [CardId::HellraiserCard, CardId::DarkEmbraceCard] {
+        let _ = push_play_card(&mut state, power, 0, 0);
+        let _ = dispatch(&mut state, power, None);
+    }
+    assert_eq!(state.player_power_amount(PowerKind::DarkEmbrace), 1);
+    push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+    let defend = push_hand_card(&mut state, CardId::DefendIronclad);
+    assert!(sts2_core::card_effects::exhaust_card_uid(
+        &mut state, defend
+    ));
+    let enemy_hp = state
+        .creatures
+        .iter()
+        .find(|c| CreatureUid(c.id) == enemy)
+        .map(|c| c.current_hp);
+    assert_eq!(
+        enemy_hp,
+        Some(0),
+        "the drawn Strike was auto-played into the enemy"
+    );
+    let counter = state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::JossPaper)
+        .map(|r| r.counter);
+    assert_eq!(
+        counter,
+        Some(1),
+        "the exhaust began live: Joss Paper counts it"
+    );
+}
+
+/// A refused exhaust changes nothing (C# `CardCmd.Exhaust`, `CardCmd.cs:239`;
+/// the result-pile switch, `CardModel.cs:1985`). Fiend Fire exhausts the
+/// Defend while the combat is live (Joss Paper counts it), then its hit kills
+/// the last enemy: its own result-pile exhaust is refused, so Fiend Fire stays
+/// in the Play pile and Joss Paper isn't told.
+#[test]
+fn fiend_fire_after_its_killing_blow_is_not_exhausted() {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(5);
+    state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::JossPaper,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let fiend_fire = push_hand_card(&mut state, CardId::FiendFire);
+    let defend = push_hand_card_typed(&mut state, CardId::DefendIronclad, CardType::Skill);
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::PlayCard {
+            hand_index: 0,
+            target: Some(0),
+        },
+    );
+    assert!(
+        sts2_core::combat_loop::combat_is_ending(&state),
+        "the hit killed the enemy"
+    );
+    assert_eq!(
+        state.player.exhaust.as_slice(),
+        &[defend],
+        "only Defend's exhaust began"
+    );
+    assert!(
+        state.player.play.contains(&fiend_fire),
+        "Fiend Fire stays in Play"
+    );
+    let counter = state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::JossPaper)
+        .map(|r| r.counter);
+    assert_eq!(counter, Some(1), "Joss Paper counts Defend only");
+}
+
+/// The admission check sits at the exhaust's own boundary, after its
+/// prerequisite reshuffle and that reshuffle's reactions (C#
+/// `ToastyMittens.cs` awaits `ShuffleIfNecessary` before `CardCmd.Exhaust`,
+/// whose check runs then: `CardCmd.cs:239`). The Abacus' block on the reshuffle
+/// fires Juggernaut into the last enemy, so the exhaust that follows is
+/// refused: both cards stay in the draw pile, Exhaust stays empty and Joss
+/// Paper isn't told. Both draw-pile entry points.
+#[test]
+fn a_reshuffle_that_ends_the_combat_refuses_the_exhaust_after_it() {
+    for skip_innate_path in [false, true] {
+        install_pool();
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let (mut state, enemy) = fresh_state_with_enemy(5);
+        state.init_player_creature();
+        for (raw, kind) in [
+            (1, sts2_core::RelicKind::TheAbacus),
+            (2, sts2_core::RelicKind::JossPaper),
+        ] {
+            state.relics.push(sts2_core::Relic {
+                id: NonZeroU32::new(raw).expect("non-zero"),
+                kind,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+        }
+        let _ = push_play_card(&mut state, CardId::JuggernautCard, 0, 0);
+        let _ = dispatch(&mut state, CardId::JuggernautCard, None);
+        state.player.play.clear();
+        assert!(
+            state.player_power_amount(PowerKind::Juggernaut) >= 5,
+            "Juggernaut deals at least the enemy's 5 HP"
+        );
+        let a = push_draw_tail(&mut state, CardId::DefendIronclad, CardType::Skill, 0);
+        let b = push_draw_tail(&mut state, CardId::DefendIronclad, CardType::Skill, 0);
+        state.player.draw.clear();
+        state.player.discard.extend([a, b]);
+        if skip_innate_path {
+            state.exhaust_top_from_draw_skipping_innate(false);
+        } else {
+            state.exhaust_from_draw_pile(1);
+        }
+        let enemy_hp = state
+            .creatures
+            .iter()
+            .find(|c| CreatureUid(c.id) == enemy)
+            .map(|c| c.current_hp);
+        assert_eq!(
+            enemy_hp,
+            Some(0),
+            "the reshuffle's reactions killed the enemy"
+        );
+        let mut draw = state.player.draw.to_vec();
+        draw.sort_unstable();
+        assert_eq!(draw, [a, b], "both cards stay in the draw pile");
+        assert!(state.player.exhaust.is_empty(), "the exhaust was refused");
+        let counter = state
+            .relics
+            .iter()
+            .find(|r| r.kind == sts2_core::RelicKind::JossPaper)
+            .map(|r| r.counter);
+        assert_eq!(counter, Some(0), "Joss Paper isn't told");
+    }
 }

@@ -12,7 +12,6 @@ use super::prelude::*;
 /// `crates/sts2-core/src/powers/regent.rs::crush_under_*`; its
 /// `after_turn_end` listener restores the lost Strength on the
 /// owner's side.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L169
 pub(crate) fn play_crush_under(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     deal_damage_all_enemies(state, current_damage(state));
     // C# `CrushUnder.cs`:

@@ -1099,6 +1099,9 @@ fn photon_cut_damages_draws_and_opens_putback_choice() {
     let p2 = push_play_card(&mut state, CardId::Venerate, 0, 0);
     state.player.play.clear();
     state.player.draw.extend([p1, p2]);
+    // A second hand card, so the put-back is a real choice (a lone card goes
+    // back without one, CardSelectCmd.cs:713).
+    let _ = push_hand_card(&mut state, CardId::StrikeRegent);
     let _ = push_play_card(&mut state, CardId::PhotonCut, 5, 0);
     let hp0 = state.creatures[0].current_hp;
     let _ = dispatch(&mut state, CardId::PhotonCut, Some(enemy));
@@ -1134,6 +1137,26 @@ fn photon_cut_empty_hand_skips_putback_choice() {
         state.pending_choice.is_none(),
         "no pending choice when post-draw hand is empty",
     );
+}
+
+/// A lone post-draw hand card goes back on top without a prompt: C#
+/// `CardSelectCmd.FromHand` returns the whole list when it holds no more
+/// than `MinSelect` (1) cards (CardSelectCmd.cs:713). act23 Regent 1015.
+#[test]
+fn photon_cut_single_hand_card_goes_back_without_a_choice() {
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.player.draw.clear();
+    state.player.discard.clear();
+    let lone = push_hand_card(&mut state, CardId::StrikeRegent);
+    let _ = push_play_card(&mut state, CardId::PhotonCut, 5, 0);
+    let _ = dispatch(&mut state, CardId::PhotonCut, Some(enemy));
+    assert!(
+        state.pending_choice.is_none(),
+        "no prompt for a single card"
+    );
+    assert!(state.player.hand.is_empty());
+    assert_eq!(state.player.draw.first().copied(), Some(lone));
 }
 
 #[test]
@@ -1820,6 +1843,31 @@ fn stardust_fires_black_hole_aoe_on_spend() {
     );
 }
 
+/// C# spends a star-X card's stars in `SpendResources`
+/// (`CardModel.cs:1817-1854`), BEFORE `Hook.BeforeCardPlayed`, so the star
+/// TheSealedThrone grants there (`TheSealedThronePower.cs:14-21`) is NOT part
+/// of Stardust's X: 2 stars → 2 hits, and the Throne star is left over. Rust
+/// spent inside `OnPlay`, after the Throne star, and hit 3 times (Regent full
+/// seeds 2669/4138).
+#[test]
+fn stardust_x_is_captured_before_the_sealed_throne_star() {
+    install_pool();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let _ = state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 3;
+    state.player.stars = 2;
+    apply_power_to_player(&mut state, PowerKind::TheSealedThrone, 1);
+    let uid = push_hand_card(&mut state, CardId::Stardust);
+    state.cards[uid.0.get() as usize - 1].base_damage = 5;
+    state.cards[uid.0.get() as usize - 1].cost = 0;
+    let hp0 = state.creatures[0].current_hp;
+    let step = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    assert_eq!(step, sts2_core::StepResult::Advanced);
+    assert_eq!(hp0 - state.creatures[0].current_hp, 10, "2 hits of 5");
+    assert_eq!(state.player.stars, 1, "the Throne star survives the spend");
+}
+
 /// A 0-star Stardust resolves with no block and no hits (no spend → no
 /// `AfterStarsSpent`).
 #[test]
@@ -2396,6 +2444,45 @@ fn decisions_decisions_resolves_to_three_auto_plays() {
     assert!(
         state.player.hand.contains(&v),
         "unpicked Skill stays in hand"
+    );
+}
+
+/// A repeated Skill that opens its OWN select (Quasar's choose-a-card) must
+/// resolve it before the next repeat (C# awaits each `CardCmd.AutoPlay`,
+/// `DecisionsDecisions.cs:33-36`, inside one `AutoResolveInline` resume). The
+/// first repeat used to surface, parking Quasar on Play, and repeats 2/3 found
+/// it in no pile — 1 generated card instead of 3 (Regent quick seed 452).
+#[test]
+fn decisions_decisions_repeats_a_selecting_skill_three_times() {
+    crate::cards::dispatch::install_default_registry();
+    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+    install_pool();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    let q = push_hand_skill(&mut state, CardId::Quasar);
+    let _v = push_hand_skill(&mut state, CardId::Venerate);
+    let _ = push_play_card(&mut state, CardId::DecisionsDecisions, 0, 0);
+    let _ = dispatch(&mut state, CardId::DecisionsDecisions, None);
+    let pc = state.pending_choice.as_ref().expect("choice surfaced");
+    let pick = pc
+        .options
+        .iter()
+        .position(|o| o.card_uid == Some(q))
+        .expect("Quasar is an option");
+    let gen0 = state.player.generated_cards_this_combat;
+    let selection: SmallVec<[u8; 4]> = [u8::try_from(pick).expect("fits")].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    assert!(
+        state.pending_choice.is_none(),
+        "every Quasar pick drained inline"
+    );
+    assert_eq!(
+        state.player.generated_cards_this_combat - gen0,
+        3,
+        "Quasar auto-played 3 times, one generated card each"
+    );
+    assert!(
+        !state.player.play.contains(&q),
+        "Quasar not stranded on Play"
     );
 }
 

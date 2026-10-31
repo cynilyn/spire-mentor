@@ -518,6 +518,32 @@ pub fn potion_price(rarity: ShopPotionRarity, rng: &mut crate::dotnet_rng::Rng) 
     (base * factor).round_ties_even() as i32
 }
 
+/// Merchant potion price as the real game rolls it, bit-exact: C# `MerchantPotionEntry.CalcCost` (v0.111.0 `:66-70`) is
+/// `(int)Mathf.Round((float)cost * Shops.NextFloat(0.95f, 1.05f))`, and
+/// `Rng.NextFloat(float, float)` is `(float)(NextDouble() * (double)(max -
+/// min) + (double)min)` with `max - min` taken in `float`. That subtraction
+/// is exact (Sterbenz), so [`crate::dotnet_rng::Rng::next_float_range`] over
+/// the widened `f32` bounds gives the same `f64`. The cast back to `f32`, the
+/// `float` multiply and the banker's round then match C# step for step, so a
+/// product near `.5` rounds the same way. One read, the same one the C# makes
+/// from `PlayerRng.Shops`.
+///
+/// The game skips this read when `TestMode` is on. The headless oracle runs
+/// `CalcCost` with `TestMode` off (Harmony patch in
+/// `RunSimulator.PatchTestModeRelicRewards`) so it matches the real game.
+#[must_use]
+pub fn merchant_potion_price(rarity: ShopPotionRarity, rng: &mut crate::dotnet_rng::Rng) -> i32 {
+    const MIN: f32 = 0.95;
+    const MAX: f32 = 1.05;
+    #[allow(clippy::cast_possible_truncation)]
+    let factor = rng.next_float_range(f64::from(MIN), f64::from(MAX)) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let cost = potion_base_cost(rarity) as f32;
+    #[allow(clippy::cast_possible_truncation)]
+    let price = (cost * factor).round_ties_even() as i32;
+    price
+}
+
 /// Rolled relic price. Mirrors Python `relic_price(merchant_cost, rng)`
 /// (`shop.py:69-71`). Wider variance band than card / potion (0.85-1.15
 /// vs 0.95-1.05).
@@ -1349,6 +1375,26 @@ mod tests {
             let p = potion_price(ShopPotionRarity::Rare, &mut rng);
             // Base 100, variance 0.95-1.05 → 95..105.
             assert!((94..=106).contains(&p), "potion rare price {p}");
+        }
+    }
+
+    #[test]
+    fn merchant_potion_price_is_one_read_in_band() {
+        for rarity in [
+            ShopPotionRarity::Common,
+            ShopPotionRarity::Uncommon,
+            ShopPotionRarity::Rare,
+        ] {
+            let base = potion_base_cost(rarity);
+            let mut rng = Rng::new(7);
+            for _ in 0..500 {
+                let before = rng.counter();
+                let p = merchant_potion_price(rarity, &mut rng);
+                assert_eq!(rng.counter(), before + 1, "exactly one Shops read");
+                let lo = (base * 95).div_euclid(100);
+                let hi = (base * 105).div_euclid(100) + 1;
+                assert!((lo..=hi).contains(&p), "{rarity:?} price {p}");
+            }
         }
     }
 

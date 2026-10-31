@@ -55,12 +55,12 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "13941df1bbea7678",
+  "src_hash": "4e5518f56fa396f6",
   "version": "0.0.1"
  },
  "final_act": 2,
- "final_floor": 19,
- "full_responses": 135,
+ "final_floor": 21,
+ "full_responses": 131,
  "full_steps": 40,
  "patches": {
   "assets_base_url": "https://assets.test",
@@ -69,7 +69,7 @@
  },
  "python": "3.13",
  "reached_game_over": true,
- "requests": 517,
+ "requests": 470,
  "scenario": {
   "act1": "roll",
   "ascension": 0,
@@ -846,5 +846,5 @@
   ],
   "seed": "G0LDEN0001"
  },
- "steps_played": 427
+ "steps_played": 384
 }

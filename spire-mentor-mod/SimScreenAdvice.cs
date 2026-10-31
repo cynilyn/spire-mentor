@@ -153,6 +153,24 @@ internal static class SimScreenAdvice
     /// </summary>
     public static SimScreenDecision? Describe()
     {
+        // Mid-travel nothing on screen is a question. The room we are leaving
+        // stays in the tree, visible and with an enabled Proceed, until the
+        // next room's node replaces it -- and EventRoom.EnterInternal (like
+        // the other rooms) preloads its assets AFTER RunManager.
+        // EnterRoomInternal has pushed the new room onto the run state. In
+        // that window IsCurrentRoom passes for the OLD node whenever both
+        // rooms share a type: autoplay clicked a finished event's Proceed,
+        // which reopened a travellable map inside the next event; both seats
+        // voted on it, the run moved on with that event's card choice still
+        // open and the peers diverged (#987). DescribeEvent now also checks
+        // the event's identity; this guard covers every room type.
+        // NMapScreen.IsTraveling is set when TravelToMapCoord starts and
+        // cleared only after the new room is entered.
+        if (IsTraveling())
+        {
+            return null;
+        }
+
         // The map outranks the overlay stack -- exactly as the game's own
         // ActiveScreenContext.GetCurrentScreen orders them (NMapScreen.
         // IsOpen is tested BEFORE NOverlayStack.Peek).
@@ -262,18 +280,50 @@ internal static class SimScreenAdvice
         }
     }
 
-    /// <summary>True while the map screen is on top of everything else.</summary>
-    private static bool IsMapUp()
+    /// <summary>The run's map screen, or null when there is no live one.</summary>
+    private static NMapScreen? LiveMap()
     {
         try
         {
             NMapScreen? map = NMapScreen.Instance;
-            return map != null && GodotObject.IsInstanceValid(map) && map.IsOpen && map.IsVisibleInTree();
+            return map != null && GodotObject.IsInstanceValid(map) ? map : null;
         }
         catch (Exception)
         {
-            return false;
+            return null;
         }
+    }
+
+    /// <summary>True while the map screen is on top of everything else.</summary>
+    private static bool IsMapUp() => LiveMap() is { IsOpen: true } map && map.IsVisibleInTree();
+
+    private static readonly TravelGuard Travel = new();
+
+    /// <summary>
+    /// True from the start of a map move until the next room is entered,
+    /// bounded per move by <see cref="TravelGuard"/> so a flag that never
+    /// clears cannot stall autoplay.
+    /// </summary>
+    private static bool IsTraveling()
+    {
+        bool traveling = LiveMap()?.IsTraveling ?? false;
+        int move = 0;
+        if (traveling)
+        {
+            try
+            {
+                move = RunManager.Instance.DebugOnlyGetState()?.VisitedMapCoords.Count ?? 0;
+            }
+            catch (Exception)
+            {
+            }
+        }
+        bool suppress = Travel.Suppress(traveling, move, Time.GetTicksMsec());
+        if (Travel.JustGaveUp)
+        {
+            Logger.Log($"[SimScreenAdvice] NMapScreen.IsTraveling held for {TravelGuard.StuckAfterMs / 1000} s; describing screens anyway for this move.");
+        }
+        return suppress;
     }
 
     /// <summary>
@@ -800,6 +850,36 @@ internal static class SimScreenAdvice
 
     private const string EventRoomPath = "/root/Game/RootSceneContainer/Run/RoomContainer/EventRoom";
 
+    private static readonly FieldInfo? EventRoomEventField =
+        typeof(NEventRoom).GetField("_event", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    /// <summary>
+    /// Is this event node showing the event the run is in? IsCurrentRoom only
+    /// compares room types, and the previous event's node outlives its room:
+    /// the next event is pushed onto the run state before its assets preload
+    /// and its node replaces the old one (EventRoom.EnterInternal), so between
+    /// two events the old node passes that check (#987). Unknown (the field
+    /// renamed in a game update, a non-event room) counts as current, which
+    /// is the behaviour before this check.
+    /// </summary>
+    private static bool IsCurrentEvent(Node room)
+    {
+        try
+        {
+            if (room is not NEventRoom node ||
+                EventRoomEventField?.GetValue(node) is not EventModel shown ||
+                RunManager.Instance.DebugOnlyGetState()?.CurrentRoom is not EventRoom live)
+            {
+                return true;
+            }
+            return shown.Id.Equals(live.CanonicalEvent.Id);
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
     private static SimScreenDecision? DescribeEvent()
     {
         if (Engine.GetMainLoop() is not SceneTree tree)
@@ -812,7 +892,7 @@ internal static class SimScreenAdvice
         {
             return null;
         }
-        if (!IsCurrentRoom(RunManager.Instance.DebugOnlyGetState(), RoomType.Event))
+        if (!IsCurrentRoom(RunManager.Instance.DebugOnlyGetState(), RoomType.Event) || !IsCurrentEvent(room))
         {
             return null;
         }
@@ -1309,9 +1389,8 @@ internal static class SimScreenAdvice
     /// </summary>
     private static SimScreenDecision? DescribeMap()
     {
-        NMapScreen? map = NMapScreen.Instance;
-        if (map == null || !GodotObject.IsInstanceValid(map) || !map.IsOpen ||
-            !map.IsVisibleInTree() || !map.IsTravelEnabled)
+        NMapScreen? map = LiveMap();
+        if (map == null || !map.IsOpen || !map.IsVisibleInTree() || !map.IsTravelEnabled)
         {
             return null;
         }

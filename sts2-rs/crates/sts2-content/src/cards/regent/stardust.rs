@@ -10,7 +10,6 @@ use super::prelude::*;
 ///
 /// Bead `sts2-rs-c46l`: wires `card_effects::pick_random_alive_enemy`
 /// in place of the prior first-alive fallback.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L540
 pub(crate) fn play_stardust(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     // C# `Stardust.OnPlay` (Stardust.cs:24) hits `ResolveStarXValue()` times,
     // and that X value is `LastStarsSpent` (CardModel.cs:1139-1145), set by
@@ -26,8 +25,9 @@ pub(crate) fn play_stardust(state: &mut CombatState, _t: Option<CreatureUid>) ->
     // `AutoPlayStarX = stars + 1` on this card. C# `CardCmd.AutoPlay` captures
     // `LastStarsSpent` WITHOUT `SpendResources`, so an auto-played Stardust hits
     // `Stars` times but does NOT spend the stars (regent-legal-action Fix B, seed
-    // 2010). Manual play never sets the var, so it falls through to `spend_stars`
-    // (SpendResources-before-OnPlay parity, routing AfterStarsSpent reactives).
+    // 2010). A manual play now spends + stamps the var in
+    // `combat_loop::spend_card_stars` (C# SpendResources, before
+    // BeforeCardPlayed); the `spend_stars` fallback only serves direct callers.
     let auto_star_x = state
         .player
         .play

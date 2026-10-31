@@ -195,15 +195,10 @@ fn exhaust_fold_base_damage(state: &CombatState, uid: sts2_core::CardUid) -> i32
     let card = &state.cards[idx];
     let upgraded = card.upgraded;
     match card.card_id {
-        // CalculationBase 15→18; the `target?.debuffs ?? 0` multiplier is 0
-        // under the null target Thrash passes, so only the base remains.
-        CardId::Rend => {
-            if upgraded {
-                18
-            } else {
-                15
-            }
-        }
+        // CalculationBase 15→18 (v0.111.0: 10→12, Rend.cs:19,40); the
+        // `target?.debuffs ?? 0` multiplier is 0 under the null target Thrash
+        // passes, so only the base remains — `preview_rend` with no target.
+        CardId::Rend => crate::cards::colorless::rend::preview_rend(state, card, None),
         // 0 + 1 × owner block.
         CardId::BodySlam => state.player.block,
         // 0 + 1 × draw-pile size.

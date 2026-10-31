@@ -65,7 +65,7 @@ const MAX_GREEDY_STEPS: usize = 256;
 /// The card an action plays at `state` (`None` for a non-card action).
 fn played_card(state: &CombatState, action: &Action) -> Option<Card> {
     match action {
-        Action::PlayCard { hand_index, .. } => state
+        Action::PlayCard { hand_index, .. } | Action::PlayCardAtAlly { hand_index, .. } => state
             .player
             .hand
             .get(usize::from(*hand_index))
@@ -96,7 +96,10 @@ fn replay(pre: &CombatState, plan: &TurnPlan) -> Replay {
     let mut potions = 0;
     for (i, action) in plan.actions.iter().enumerate() {
         cards.push(played_card(&post, action));
-        potions += u32::from(matches!(action, Action::DrinkPotion { .. }));
+        potions += u32::from(matches!(
+            action,
+            Action::DrinkPotion { .. } | Action::DrinkPotionAtAlly { .. }
+        ));
         if i < n_apply {
             let _ = apply(&mut post, action.clone());
         }

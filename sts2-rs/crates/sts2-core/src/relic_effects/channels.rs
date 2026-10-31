@@ -2451,6 +2451,37 @@ pub fn dispatch_before_hand_draw(state: &mut CombatState) -> EffectResult {
     )
 }
 
+/// Walk `before_hand_draw` in player EQUIP order (`state.relics` order, C#
+/// `CombatState.IterateHookListeners` inside `Hook.BeforeHandDraw`),
+/// starting at equip index `from`, and SUSPEND right after a listener opens a
+/// card choice. Returns the equip index to resume from once that choice
+/// resolves, or `None` when the walk completed.
+///
+/// C# awaits each listener: Toolbox (`Toolbox.cs`) awaits its
+/// `FromChooseACardScreen` before the next relic's `BeforeHandDraw` runs, so
+/// a relic equipped after it (NinjaScroll's Shivs, FuneraryMask's Souls,
+/// ToastyMittens, …) must act only after the pick lands in hand.
+pub fn dispatch_before_hand_draw_from(state: &mut CombatState, from: u8) -> Option<u8> {
+    if is_empty_before_hand_draw() {
+        return None;
+    }
+    let owned = collect_equip_order_listeners(registry_before_hand_draw(), state);
+    for (idx, _, f) in owned {
+        if idx < usize::from(from) {
+            continue;
+        }
+        let had_choice = state.pending_choice.is_some();
+        let _ = f(state);
+        if !had_choice && state.pending_choice.is_some() {
+            return Some(u8::try_from(idx.saturating_add(1)).unwrap_or(u8::MAX));
+        }
+        if state.is_over {
+            break;
+        }
+    }
+    None
+}
+
 /// Dispatch `after_side_turn_start` to every OWNED relic's listener, in
 /// player EQUIP order (`state.relics` order).
 pub fn dispatch_after_side_turn_start(state: &mut CombatState, side: Side) -> EffectResult {
@@ -2581,10 +2612,8 @@ fn run_after_player_turn_start(
         if idx < usize::from(from) {
             continue;
         }
-        // A choice may already be open from an EARLIER, non-deferring surface
-        // (Toolbox's `before_hand_draw` select — the Rust port deliberately
-        // lets the rest of turn setup run past it, see `combat_loop`). Only a
-        // choice THIS listener opened suspends the walk.
+        // Only a choice THIS listener opened suspends the walk; one already
+        // open from an earlier surface does not.
         let had_choice = state.pending_choice.is_some();
         let _ = f(state);
         if !had_choice && state.pending_choice.is_some() {

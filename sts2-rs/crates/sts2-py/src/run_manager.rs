@@ -471,6 +471,24 @@ impl PyRunManager {
             .map(|p| p.enchantment.python_name())
     }
 
+    /// `True` when the front queued deck-enchant pick belongs to an "up to
+    /// N" screen (Kifuda / Gnarled Hammer): the select may be confirmed with
+    /// fewer cards, then `decline_optional_deck_enchants` drops the rest.
+    #[getter]
+    fn pending_enchant_optional(&self) -> bool {
+        self.inner
+            .run_state
+            .pending_deck_enchants
+            .first()
+            .is_some_and(|p| p.optional)
+    }
+
+    /// Drop the rest of the front optional deck-enchant batch (confirming an
+    /// "up to N" screen early). Returns how many queued picks were dropped.
+    fn decline_optional_deck_enchants(&mut self) -> usize {
+        self.inner.decline_optional_deck_enchants()
+    }
+
     /// Master-deck positions eligible for the front pending interactive
     /// transform — the option pool a UI host must render, in order; the
     /// `transform_deck_card` action's `idx` is the position in THIS list
@@ -540,6 +558,14 @@ impl PyRunManager {
     #[getter]
     fn card_offer_choose_screen(&self) -> bool {
         self.inner.card_offer_choose_screen()
+    }
+
+    /// Whether the open choose screen may be skipped:
+    /// `False` for a pick the game forces, Brain Leech's Share Knowledge grid
+    /// (C# `FromSimpleGridForRewards`, `Cancelable = false`), whose actions
+    /// then hold no `pick_card_reward` skip and no sacrifice.
+    fn card_offer_can_skip(&self) -> bool {
+        self.inner.card_offer_can_skip()
     }
 
     /// Card ids (PascalCase `Debug` form, e.g. `"Anger"`) of the
@@ -1239,7 +1265,7 @@ impl PyRunManager {
     /// class name, or `None` if `name` resolves to no known `EventId`.
     fn force_event(&mut self, name: &str) -> Option<String> {
         let id = sts2_core::EventId::from_python_name(name)?;
-        self.inner.run_state.enter_event_room(id);
+        sts2_content::events::dispatch::begin_event(&mut self.inner.run_state, id);
         Some(id.python_name().to_string())
     }
 

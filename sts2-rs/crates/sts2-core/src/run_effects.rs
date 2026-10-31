@@ -599,22 +599,12 @@ pub struct CombatVictoryRunCtx {
 // this bead lands the run-side channel + listener so the
 // transform path is reachable end-to-end.
 //
-// No production firing site lands with this bead — the
-// combat-side `dispatch_after_combat_victory` site in
-// `combat_loop.rs::step_phase_continue` has no `&mut RunState`
-// in scope, and plumbing it through the MCTS hot path would
-// require a CombatState→RunState back-edge that crosses multiple
-// crates. The channel is reachable from tests + the
-// swarm-installer that registers handlers eagerly; the
-// integration test in this bead exercises the full counter +
-// transform path by driving both the combat-side decrement
-// dispatch and the run-side transform dispatch in sequence.
-//
-// Future follow-up bead will wire the production firing site
-// (likely as a deferred-action queue stamped on CombatState
-// during combat-end, drained by the run-loop driver — see
-// CLAUDE.md "Don't add features beyond what the task requires"
-// for why that plumbing is not in scope here).
+// The combat-side `dispatch_after_combat_victory` site in
+// `combat_loop.rs::step_phase_continue` has no `&mut RunState` in
+// scope, so the production firing site is the run manager's combat
+// exit (`RunManager::exit_combat_and_transition`), after the exit
+// callback has written the combat back into the run (C#
+// `Hook.AfterCombatVictory`, `CombatManager.cs:1002`).
 run_hook_channel!(
     AfterCombatVictoryRunFn,
     HOOK_AFTER_COMBAT_VICTORY_RUN,
@@ -1741,6 +1731,12 @@ pub struct CombatRewardsSet {
     pub room_type: RoomType,
     /// The populated rewards (see the type docs for what is listed).
     pub rewards: Vec<crate::runstate::Reward>,
+    /// The relics whose hook runs: C# fires `BeforeCombatRewardOffered` while
+    /// the set is offered, before any of its rewards is taken, so a relic the
+    /// set itself grants (an Elite's Lasting Candy) does not hear it. Empty
+    /// means every registered listener runs (each still self-gates on
+    /// ownership).
+    pub hook_relics: Vec<crate::RelicId>,
 }
 
 impl CombatRewardsSet {
@@ -1763,7 +1759,10 @@ pub fn dispatch_before_combat_reward_offered(run_state: &mut RunState, rewards: 
     {
         return;
     }
-    for (_id, f) in listeners_before_combat_reward_offered() {
+    for (id, f) in listeners_before_combat_reward_offered() {
+        if !rewards.hook_relics.is_empty() && !rewards.hook_relics.contains(&id) {
+            continue;
+        }
         let _ = f(run_state, rewards);
     }
 }

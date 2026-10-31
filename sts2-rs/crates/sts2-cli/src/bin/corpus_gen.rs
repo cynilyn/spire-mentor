@@ -2794,9 +2794,11 @@ fn run_self_play(
             }
 
             last_action_kind = match &action {
-                Action::PlayCard { .. } => "PlayCard",
+                Action::PlayCard { .. } | Action::PlayCardAtAlly { .. } => "PlayCard",
                 Action::EndTurn => "EndTurn(mcts)",
-                Action::UsePotion { .. } | Action::DrinkPotion { .. } => "Potion",
+                Action::UsePotion { .. }
+                | Action::DrinkPotion { .. }
+                | Action::DrinkPotionAtAlly { .. } => "Potion",
                 Action::Channel { .. } => "Channel",
                 Action::Evoke { .. } => "Evoke",
                 Action::ResolveChoice { .. } => "ResolveChoice",
@@ -3416,6 +3418,7 @@ fn build_combat_state(
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,

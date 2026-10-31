@@ -2422,6 +2422,7 @@ fn count_pets_bound_phylactery_production_listener() {
         intent_history: crate::IntentHistory::default(),
         ai: None,
     });
+    state.player.pet_uid = Some(crate::CreatureUid(osty_id));
     assert_eq!(dispatch_count_pets(&state), baseline + 1);
 
     // Dead Osty (hp=0) is not counted — back to baseline.
@@ -2936,8 +2937,15 @@ fn bone_flute_fires_when_dealer_is_osty() {
     };
     let result = on_after_damage_given_bone_flute(&mut state, &ctx);
     assert_eq!(result, EffectResult::Resolved);
-    // Block gained on the player (BONE_FLUTE_BLOCK=2).
+    // A second hit of the same attack command (an AoE / multi-hit) only
+    // re-latches: C# `BoneFlute.AfterAttack` fires once per command.
+    let _ = on_after_damage_given_bone_flute(&mut state, &ctx);
+    assert_eq!(state.player.block, 0, "latched, not yet granted");
+    // The after-attack boundary grants it once (BONE_FLUTE_BLOCK=2).
+    crate::hooks::grant_latched_skittish(&mut state);
     assert_eq!(state.player.block, 2);
+    crate::hooks::grant_latched_skittish(&mut state);
+    assert_eq!(state.player.block, 2, "the latch is consumed");
 }
 
 #[test]
@@ -2957,6 +2965,7 @@ fn bone_flute_does_not_fire_when_dealer_is_not_osty() {
     };
     let result = on_after_damage_given_bone_flute(&mut state, &ctx);
     assert_eq!(result, EffectResult::NotImplemented);
+    crate::hooks::grant_latched_skittish(&mut state);
     assert_eq!(state.player.block, 0);
 }
 
@@ -4276,6 +4285,53 @@ fn mummified_hand_skips_already_free_card() {
         1,
         "the only non-free candidate is the one freed"
     );
+}
+
+/// C# `CostsEnergyOrStars(includeGlobalModifiers: true)` sees global cost
+/// modifiers: under Corruption a skill costs 0, so the first pool holds only
+/// the attack. The port used to check only the two free flags, so it could
+/// spend the relic on a skill Corruption had already made free.
+#[test]
+#[serial_test::serial(global_registry)]
+fn mummified_hand_skips_a_card_a_global_modifier_already_made_free() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    give_player_relic(&mut state, RelicKind::MummifiedHand);
+    let corruption = std::num::NonZeroU32::new(1).unwrap();
+    state.powers.push(crate::Power {
+        id: corruption,
+        kind: crate::PowerKind::Corruption,
+        amount: 1,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(crate::PowerUid(corruption));
+    // Three 1-cost skills (free under Corruption) and one 1-cost attack.
+    let mut hand = Vec::new();
+    for (uid, card_type) in [
+        (1, crate::cards::CardType::Skill),
+        (2, crate::cards::CardType::Skill),
+        (3, crate::cards::CardType::Skill),
+        (4, crate::cards::CardType::Attack),
+    ] {
+        let card = push_card(&mut state, uid, card_type);
+        state.cards[uid as usize - 1].cost = 1;
+        state.player.hand.push(card);
+        hand.push(card);
+    }
+    let pow = push_card(&mut state, 5, crate::cards::CardType::Power);
+    let _ = dispatch_after_card_played(&mut state, &make_card_ctx(pow));
+
+    let free = |uid: crate::CardUid| {
+        state.cards[uid.0.get() as usize - 1].combat_var(crate::cards::VarKey::FreeThisTurn)
+    };
+    assert_eq!(
+        free(hand[3]),
+        1,
+        "the attack is the only card that still costs"
+    );
+    assert_eq!(free(hand[0]) + free(hand[1]) + free(hand[2]), 0);
 }
 
 // -----------------------------------------------------------------
@@ -9116,6 +9172,58 @@ fn the_boot_skips_self_damage() {
     );
 }
 
+/// Two Necrobinders, both Ostys alive (GH #1017): each Osty relic answers
+/// to its holder's own pet only. C# `BoneFlute.cs:25` (`Attacker.PetOwner ==
+/// Owner`), `TheBoot.cs:28` (`dealer == Owner.Osty`); the count_pets bus has
+/// no C# twin, and counts the holder's pets.
+#[test]
+#[serial_test::serial(global_registry)]
+fn osty_relics_ignore_a_teammates_osty() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    let ours = state.summon_osty(3).expect("our Osty");
+    state.allies.push(crate::PlayerCombatState {
+        current_hp: 60,
+        max_hp: 60,
+        ..crate::PlayerCombatState::default()
+    });
+    let theirs = state.restore_ally_osty(0, 4, 4, 0);
+    assert_ne!(ours, theirs);
+    let enemy = push_enemy(&mut state, 7, 50);
+
+    give_player_relic(&mut state, RelicKind::BoundPhylactery);
+    assert_eq!(on_count_pets_bound_phylactery(&state), 1);
+    give_player_relic(&mut state, RelicKind::PhylacteryUnbound);
+    assert_eq!(on_count_pets_phylactery_unbound(&state), 1);
+
+    give_player_relic(&mut state, RelicKind::TheBoot);
+    let boot = |dealer| ModifyHpLostCtx {
+        target: enemy,
+        dealer: Some(dealer),
+        props: crate::hooks::ValueProps::MOVE,
+    };
+    assert_eq!(dispatch_modify_hp_lost(&state, &boot(theirs), 3), 3);
+    assert_eq!(dispatch_modify_hp_lost(&state, &boot(ours), 3), 5);
+
+    give_player_relic(&mut state, RelicKind::BoneFlute);
+    let flute = |dealer| DamageGivenCtx {
+        dealer,
+        target: enemy,
+        damage: 5,
+        props: crate::hooks::ValueProps::MOVE,
+        was_block_broken: false,
+    };
+    // BoneFlute latches per hit and grants at the AfterAttack boundary.
+    let result = on_after_damage_given_bone_flute(&mut state, &flute(theirs));
+    assert_eq!(result, EffectResult::NotImplemented);
+    super::bone_flute::grant_latched_bone_flute(&mut state);
+    assert_eq!(state.player.block, 0);
+    let result = on_after_damage_given_bone_flute(&mut state, &flute(ours));
+    assert_eq!(result, EffectResult::Resolved);
+    super::bone_flute::grant_latched_bone_flute(&mut state);
+    assert_eq!(state.player.block, 2);
+}
+
 /// `BoomingConch` (v0.107.1) grants +1 energy at the start of the
 /// owner's first turn in an Elite combat.
 #[test]
@@ -9268,8 +9376,15 @@ fn bookmark_reduces_one_retained_card_cost() {
         state.player.hand.push(uid);
     }
     let _ = dispatch_after_turn_end(&mut state, Side::Player);
-    let cost_a = state.cards.iter().find(|c| c.uid == a).unwrap().cost;
-    let cost_b = state.cards.iter().find(|c| c.uid == b).unwrap().cost;
+    // Local cost (`GetWithModifiers(Local)`): printed cost minus the
+    // until-played bank. (`effective_card_cost` indexes `cards` by uid, which
+    // these sparse test uids do not satisfy.)
+    let local = |state: &CombatState, uid| {
+        let c = state.cards.iter().find(|c| c.uid == uid).unwrap();
+        i32::from(c.cost) - c.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+    };
+    let cost_a = local(&state, a);
+    let cost_b = local(&state, b);
     assert_eq!(
         cost_a + cost_b,
         3,
@@ -9279,6 +9394,16 @@ fn bookmark_reduces_one_retained_card_cost() {
         (cost_a == 1 && cost_b == 2) || (cost_a == 2 && cost_b == 1),
         "one card at 1, the other still at 2 (got {cost_a},{cost_b})"
     );
+    // C# `AddUntilPlayed(-1)`: the discount is a `WhenPlayed` modifier, so the
+    // printed cost survives and playing the card retires it
+    // (`AfterCardPlayedCleanup`).
+    let reduced = if cost_a == 1 { a } else { b };
+    assert_eq!(
+        state.cards.iter().find(|c| c.uid == reduced).unwrap().cost,
+        2
+    );
+    state.restore_wire_cost_expiring_on_play(reduced);
+    assert_eq!(local(&state, reduced), 2);
 }
 
 /// `Bookmark` is a no-op when no retained hand card costs energy
@@ -9413,4 +9538,72 @@ fn melted_relic_is_unowned_and_unlisted() {
         "only the unmelted relic is a hook listener"
     );
     assert_eq!(state.relics.len(), 2, "both relics still equipped");
+}
+
+/// C# `Hook.AfterCardPlayed` walks `IterateHookListeners()`
+/// (`CombatState.cs:115-131`): the player's powers BEFORE the player's relics.
+/// So an armed Serpent Form's random hit draws `CombatTargets` FIRST and
+/// Kusarigama's 3rd-attack hit draws second. Silent full-tier seed:5469 (Rust
+/// fired the relic bus first, swapping the 4 and the 6 between two enemies).
+#[test]
+#[serial_test::serial(global_registry)]
+fn serpent_form_hit_draws_combat_targets_before_kusarigama() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    give_player_relic(&mut state, RelicKind::Kusarigama);
+    let e0 = push_enemy(&mut state, 820, 30);
+    let e1 = push_enemy(&mut state, 821, 30);
+    set_kusarigama_counter(&mut state, 2);
+    // Serpent Form(4), armed with its before-play amount snapshot.
+    let pid = NonZeroU32::new(u32::try_from(state.powers.len()).expect("fits") + 1).expect("nz");
+    state.powers.push(crate::Power {
+        id: pid,
+        kind: crate::PowerKind::SerpentForm,
+        amount: 4,
+        counter: 4,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(crate::PowerUid(pid));
+    // Advance the stream until its next two 2-way picks differ, so the
+    // listener order is observable.
+    let (first, second) = loop {
+        let mut probe = state.run_rng.combat_targets.clone();
+        let a = probe.next_int_exclusive(0, 2);
+        let b = probe.next_int_exclusive(0, 2);
+        if a != b {
+            break (a, b);
+        }
+        let _ = state.run_rng.combat_targets.next_int_exclusive(0, 2);
+    };
+    let uid = push_card(&mut state, 820, crate::cards::CardType::Attack);
+    let hook_ctx = crate::hooks::CardCtx {
+        card_uid: Some(uid),
+        card_type: Some(crate::cards::CardType::Attack),
+        ..crate::hooks::CardCtx::default()
+    };
+    crate::combat_loop::dispatch_after_card_played_buses(
+        &mut state,
+        &make_card_ctx(uid),
+        &hook_ctx,
+    );
+    let hp = |u: CreatureUid| {
+        state
+            .creatures
+            .iter()
+            .find(|c| c.id == u.0)
+            .map(|c| c.current_hp)
+            .unwrap()
+    };
+    let enemies = [e0, e1];
+    assert_eq!(
+        hp(enemies[first as usize]),
+        26,
+        "1st CombatTargets pick = Serpent Form's 4"
+    );
+    assert_eq!(
+        hp(enemies[second as usize]),
+        24,
+        "2nd CombatTargets pick = Kusarigama's 6"
+    );
 }

@@ -554,6 +554,15 @@ impl MonsterAi {
     /// Calling twice before a roll overwrites the earlier queued id.
     /// Panics in debug if `state_id` is not in `states`; release
     /// builds let the bad id surface at the next roll's `[…]` index.
+    /// Whether the CURRENT move state has started running this turn
+    /// ([`Self::begin_move`]); `false` for a telegraphed move still to come.
+    /// Lets a cross-creature reaction tell C#'s `NextMove` apart: before the
+    /// owner acts it is the current state, after it acts it is the next roll.
+    #[must_use]
+    pub fn current_move_performed(&self) -> bool {
+        self.performed_at_least_once
+    }
+
     pub fn force_next_state(&mut self, state_id: StateId) {
         debug_assert!(
             self.states.contains_key(state_id),
@@ -964,6 +973,35 @@ impl MonsterAi {
         {
             self.state_log.push(performed);
         }
+    }
+
+    /// Id of the generic stun state [`Self::ensure_generic_stun_state`] adds.
+    pub const GENERIC_STUN_STATE: StateId = "STUNNED";
+
+    /// Make sure this machine has a `"STUNNED"` must-perform-once stun move,
+    /// adding one when its content AI has none, and return its id. C#
+    /// `Creature.StunInternal` synthesizes that state on ANY monster
+    /// (Creature.cs:537-541); content AIs only prebuild it where a stun is
+    /// part of their own kit, but a stun power copied onto another monster
+    /// (ImbalancedPower via Misery) can stun anything. The follow-up is
+    /// irrelevant: [`Self::stun_immediate`] queues the resume explicitly.
+    pub fn ensure_generic_stun_state(&mut self) -> StateId {
+        fn noop(_: &mut CombatState, _: CreatureUid) {}
+        let id = Self::GENERIC_STUN_STATE;
+        if !self.states.contains_key(id) {
+            let follow_up = Some(self.initial);
+            std::sync::Arc::make_mut(&mut self.states).insert(
+                id,
+                MonsterState::Move(MoveState {
+                    id,
+                    effect: noop,
+                    intents: smallvec::smallvec![Intent::Stun],
+                    follow_up,
+                    must_perform_once: true,
+                }),
+            );
+        }
+        id
     }
 
     /// C# `CreatureCmd.Stun` → `Creature.StunInternal` →
@@ -1414,6 +1452,23 @@ mod tests {
             }),
         );
         MonsterAi::new(states, "A")
+    }
+
+    /// A machine with no prebuilt stun gets C#'s synthesized must-perform
+    /// STUNNED (Creature.cs:537-541): a stun landing mid-move holds through
+    /// the end-of-move roll, then resumes the stunned move (seed 2566).
+    #[test]
+    fn generic_stun_state_holds_then_resumes() {
+        let mut ai = make_linear_chain();
+        ai.on_move_performed(); // A
+        let _ = ai.roll_move_seeded(0); // → B
+        ai.on_move_performed(); // B begins…
+        let stun = ai.ensure_generic_stun_state();
+        assert!(ai.stun_immediate(stun, None), "…and is stunned mid-move");
+        assert_eq!(ai.roll_move_seeded(0).id, "STUNNED");
+        ai.on_move_performed();
+        assert_eq!(ai.roll_move_seeded(0).id, "B");
+        assert_eq!(ai.ensure_generic_stun_state(), "STUNNED", "idempotent");
     }
 
     /// Bead `sts2-rs-fgjdh`: `set_owner` round-trips through

@@ -15,7 +15,9 @@ pub(crate) fn on_after_turn_end_parrying_shield(
     // any late `AfterSideTurnEndLate` power (e.g. Disintegration) consumes it.
     // Rust runs the late powers first in a single after_turn_end pass, so test
     // the pre-late snapshot captured in `end_player_turn_phase_two` rather than
-    // the live (possibly already-decremented) value. (sweep seed 5003.)
+    // the live (possibly already-decremented) value. (sweep seed 5003.) The
+    // snapshot does include the player's own earlier `AfterSideTurnEnd`
+    // powers, e.g. Constrict's self-damage (act23 Necrobinder 1016).
     if state.combat_log.block_before_late_turn_end < PARRYING_SHIELD_BLOCK_THRESHOLD {
         return EffectResult::Resolved;
     }

@@ -10,10 +10,13 @@ use super::prelude::*;
 /// auto-pick is required — but the post-draw hand inspection is the same
 /// shape `search_hand` codifies.
 pub(crate) fn play_escape_plan(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
-    let pre = state.player.hand.len();
+    // C# `EscapePlan.OnPlay` (EscapePlan.cs:25-26) tests the card
+    // `CardPileCmd.Draw` RETURNS, not whatever reached the hand: a Stratagem
+    // reshuffle pick (auto-taken from a 1-card discard) lands in hand without
+    // being drawn, and an empty pile after it draws nothing (Silent v0.111.0
+    // full seed 2548: the picked Snakebite wrongly granted the block).
     let _ = sts2_core::cards::draw_via_state(state, 1);
-    if state.player.hand.len() > pre {
-        let drawn = state.player.hand[pre];
+    if let Some(drawn) = state.last_drawn_card {
         let idx = drawn.0.get() as usize - 1;
         let is_skill = state
             .cards

@@ -1354,6 +1354,66 @@ pub fn roll_uniform_rarity_reward_cards(
     allow_card_pool_modifications: bool,
     rng_override: Option<&mut sts2_core::dotnet_rng::Rng>,
 ) -> Vec<sts2_core::cards::Card> {
+    roll_uniform_rarity_reward_cards_with(
+        rs,
+        pool,
+        rarity,
+        count,
+        allow_card_pool_modifications,
+        true,
+        rng_override,
+    )
+}
+
+/// The five Glass Eye pickup card rewards — C# `GlassEye.AfterObtained`
+/// (`GlassEye.cs:15-33`): for rarities `[Common, Common, Uncommon,
+/// Uncommon, Rare]` a 3-card `CardReward` over the owner's pool with
+/// `ForNonCombatWithUniformOdds(pool, c => c.Rarity == rarity)
+/// .WithFlags(NoRarityModification)`, offered together through
+/// `RewardsCmd.OfferCustom` (each `Populate`s in order). Uniform odds roll no
+/// rarity, and `ForNonCombatWithUniformOdds` stamps `NoUpgradeRoll`
+/// (`CardCreationOptions.cs:161-164`), so each card is exactly ONE `Rewards`
+/// `NextItem` — 15 reads — and every card is base. Card-pool modifications
+/// stay on (no `NoCardPoolModifications`). Identical in v0.111.0.
+pub fn roll_glass_eye_card_rewards(rs: &mut RunState) -> Vec<Vec<sts2_core::cards::Card>> {
+    const RARITIES: [CardRarity; 5] = [
+        CardRarity::Common,
+        CardRarity::Common,
+        CardRarity::Uncommon,
+        CardRarity::Uncommon,
+        CardRarity::Rare,
+    ];
+    /// `new CardReward(options, 3, Owner)`.
+    const CARDS_PER_REWARD: usize = 3;
+    let pool = rs.character_id;
+    RARITIES
+        .iter()
+        .map(|&rarity| {
+            roll_uniform_rarity_reward_cards_with(
+                rs,
+                pool,
+                rarity,
+                CARDS_PER_REWARD,
+                true,
+                false,
+                None,
+            )
+        })
+        .collect()
+}
+
+/// [`roll_uniform_rarity_reward_cards`] with the upgrade roll explicit:
+/// `roll_upgrade = false` is C#'s `CardCreationFlags.NoUpgradeRoll`, which
+/// skips `RollForUpgrade` and its `NextFloat` entirely.
+fn roll_uniform_rarity_reward_cards_with(
+    rs: &mut RunState,
+    pool: CharacterId,
+    rarity: CardRarity,
+    count: usize,
+    allow_card_pool_modifications: bool,
+    roll_upgrade: bool,
+    rng_override: Option<&mut sts2_core::dotnet_rng::Rng>,
+) -> Vec<sts2_core::cards::Card> {
     use sts2_core::card_rewards::{
         combat_card_upgrade_base_chance, roll_for_upgrade_with_dotnet, RewardRarity,
     };
@@ -1363,6 +1423,7 @@ pub fn roll_uniform_rarity_reward_cards(
         num_cards: u8::try_from(count).unwrap_or(u8::MAX),
         character_ids: vec![pool],
         use_default_character_pool: false,
+        roll_upgrade,
         card_creation_source: "other",
         allow_card_pool_modifications,
         allow_rarity_modifications: allow_card_pool_modifications,
@@ -1491,6 +1552,30 @@ fn roll_reward_options_base_odds(
     chosen
 }
 
+/// `CurseCardPool.GenerateAllCards` order (CurseCardPool.cs:20-42, identical
+/// in v0.107.1 and v0.111.0) — the full pool, unlike the
+/// `CanBeGeneratedByModifiers` subset NeowsBones samples.
+const CURSE_CARD_POOL: &[CardId] = &[
+    CardId::AscendersBane,
+    CardId::BadLuck,
+    CardId::Clumsy,
+    CardId::CurseOfTheBell,
+    CardId::Debt,
+    CardId::Decay,
+    CardId::Doubt,
+    CardId::Enthralled,
+    CardId::Folly,
+    CardId::Greed,
+    CardId::Guilty,
+    CardId::Injury,
+    CardId::Normality,
+    CardId::PoorSleep,
+    CardId::Regret,
+    CardId::Shame,
+    CardId::SporeMind,
+    CardId::Writhe,
+];
+
 /// Shared candidate pool for an out-of-combat card transform: the
 /// candidate slice filtered to `{Common, Uncommon, Rare}`, minus
 /// multiplayer-only entries and the original card (see
@@ -1520,6 +1605,20 @@ fn transform_replacement_pool(
     // (CardModel.cs:273-281) + the Event/Ancient/Token/Quest → ColorlessCardPool
     // override (CardFactory.cs:126-131).
     let original_rarity = rarity_for_card_id_in(original_id, version);
+    // A Curse original's `Pool` is `CurseCardPool`, and
+    // `GetFilteredTransformationOptions` skips the Common/Uncommon/Rare band
+    // for Status/Curse originals (`(uint)(rarity - 8) > 1u`,
+    // CardFactory.cs:194), so a curse transforms into another curse
+    // (CardFactory.cs:171-196). None of the pool's curses is MultiplayerOnly.
+    // PARITY53 Defect: WhisperingHollow Hug on Injury gave C# Guilty, while
+    // Rust rolled the colorless pool (Prolong).
+    if original_rarity == Some(CardRarity::Curse) {
+        return CURSE_CARD_POOL
+            .iter()
+            .copied()
+            .filter(|&id| id != original_id)
+            .collect();
+    }
     let forces_colorless = matches!(
         original_rarity,
         Some(CardRarity::Event | CardRarity::Ancient | CardRarity::Token | CardRarity::Quest)
@@ -3083,16 +3182,17 @@ fn merchant_roll_relic_slot(
 /// (`MerchantRelicEntry.FillSlot` → `PullNextRelicFromBack`), then jitters
 /// its `MerchantCost` (175 Common / 225 Uncommon / 275 Rare / 200 Shop) by
 /// one `Shops.NextFloat(0.85, 1.15)` and `Mathf.RoundToInt`s the product.
-/// Potion-cost jitter is intentionally absent — the headless oracle runs
-/// with `TestMode` on, which skips `MerchantPotionEntry.CalcCost`'s
-/// `NextFloat`, so potion prices are the flat rarity base. M4.
+/// Each potion's price is jittered by one `Shops.NextFloat(0.95, 1.05)`
+/// (`MerchantPotionEntry.CalcCost`), as in the real game. The game skips that
+/// read under `TestMode`; the headless oracle patches `CalcCost` to run with
+/// `TestMode` off so it matches. M4.
 #[must_use]
 pub fn generate_merchant_inventory(
     rs: &mut RunState,
     character: CharacterId,
 ) -> sts2_core::shop::ShopInventory {
     use sts2_core::shop::{
-        card_removal_cost, potion_base_cost, ShopInventory, ShopPotionEntry, ShopPotionRarity,
+        card_removal_cost, ShopInventory, ShopPotionEntry, ShopPotionRarity,
         MERCHANT_CHARACTER_CARD_TYPES, MERCHANT_COLORLESS_CARD_RARITIES, MERCHANT_POTION_COUNT,
     };
     use sts2_core::PotionRarity;
@@ -3138,8 +3238,8 @@ pub fn generate_merchant_inventory(
         inv.relics.push(entry);
     }
 
-    // ── potion row: 3 potions off Shops (2 reads each). Flat rarity-base
-    //    price — the headless oracle's TestMode skips the cost jitter. ──
+    // ── potion row: 3 potions off Shops (2 reads each), then one jitter
+    //    read per potion for its price. ──
     let potions = crate::potions::all::create_random_potions_out_of_combat(
         &mut rs.rng.shops,
         character,
@@ -3154,11 +3254,17 @@ pub fn generate_merchant_inventory(
         inv.potions.push(ShopPotionEntry {
             potion_rarity: shop_rarity,
             potion_kind: Some(kind),
-            price: potion_base_cost(shop_rarity),
+            price: merchant_potion_price(rs, shop_rarity),
         });
     }
 
     inv
+}
+
+/// Merchant potion price, rolled off `Shops` like the real game. See
+/// [`sts2_core::shop::merchant_potion_price`].
+fn merchant_potion_price(rs: &mut RunState, rarity: sts2_core::shop::ShopPotionRarity) -> i32 {
+    sts2_core::shop::merchant_potion_price(rarity, &mut rs.rng.shops)
 }
 
 /// Re-populate a single merchant slot after a Courier purchase, mirroring
@@ -3180,8 +3286,8 @@ pub fn generate_merchant_inventory(
 ///   FillSlot blacklist.
 /// * **Potion** (`MerchantPotionEntry.RestockAfterPurchase` →
 ///   `FillSlot(Array.Empty)`): one `CreateRandomPotionOutOfCombat` off
-///   the FULL pool (empty blacklist → no dedup), flat rarity-base price
-///   (the headless oracle's `TestMode` skips the cost jitter).
+///   the FULL pool (empty blacklist → no dedup), then the price jitter
+///   (`CalcCost`, one `Shops` read).
 pub fn restock_shop_entry(
     rs: &mut RunState,
     inv: &mut sts2_core::shop::ShopInventory,
@@ -3238,7 +3344,7 @@ pub fn restock_shop_entry(
             if idx >= inv.potions.len() {
                 return;
             }
-            use sts2_core::shop::{potion_base_cost, ShopPotionEntry, ShopPotionRarity};
+            use sts2_core::shop::{ShopPotionEntry, ShopPotionRarity};
             use sts2_core::PotionRarity;
             let kinds = crate::potions::all::create_random_potions_out_of_combat(
                 &mut rs.rng.shops,
@@ -3256,7 +3362,7 @@ pub fn restock_shop_entry(
             inv.potions[idx] = ShopPotionEntry {
                 potion_rarity: shop_rarity,
                 potion_kind: Some(kind),
-                price: potion_base_cost(shop_rarity),
+                price: merchant_potion_price(rs, shop_rarity),
             };
         }
     }
@@ -4199,6 +4305,21 @@ mod tests {
     /// `MultiplayerOnly` cards, and excludes the original. Kills the
     /// `&&`→`||` / `delete !` mutants on the filter (lines 1117–1118): any of
     /// those would let off-rarity, MP-only, or the original card into the pool.
+    /// A curse transforms into another curse (`original.Pool` =
+    /// CurseCardPool, no rarity filter: CardFactory.cs:195). Defect PARITY53.
+    #[test]
+    fn transform_replacement_pool_of_a_curse_is_the_curse_pool() {
+        let pool = transform_replacement_pool(
+            CharacterId::Defect,
+            CardId::Injury,
+            sts2_core::GameVersion::V0_107_1,
+        );
+        assert_eq!(pool.len(), CURSE_CARD_POOL.len() - 1);
+        assert!(!pool.contains(&CardId::Injury));
+        assert!(pool.contains(&CardId::Guilty));
+        assert!(!pool.contains(&CardId::Prolong));
+    }
+
     #[test]
     fn transform_replacement_pool_filters_rarity_mp_and_original() {
         // Use a Necrobinder common as the original; LegionOfBone is the
@@ -4234,6 +4355,24 @@ mod tests {
             pool.iter().any(|&id| !is_multiplayer_only(id)),
             "pool must contain at least one non-MP card",
         );
+    }
+
+    /// PARITY53 Defect: a Curse transforms within `CurseCardPool`
+    /// (CardFactory.cs:171-196), never into a colorless card.
+    #[test]
+    fn transform_replacement_pool_curse_stays_in_curse_pool() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let pool = transform_replacement_pool(CharacterId::Defect, CardId::Injury, version);
+            assert_eq!(pool.len(), CURSE_CARD_POOL.len() - 1);
+            assert!(!pool.contains(&CardId::Injury));
+            assert_eq!(pool[10], CardId::Guilty, "C# order, original removed");
+            for id in pool {
+                assert_eq!(rarity_for_card_id_in(id, version), Some(CardRarity::Curse));
+            }
+        }
     }
 
     /// `roll_transform_replacement_basic_niche` returns `Some` for a real
@@ -4590,8 +4729,8 @@ mod tests {
     /// rarity + upgrade-noop (2 `Rewards`), pick + cost (2 `Shops`). Colorless:
     /// pick + cost (2 `Shops`), upgrade-noop (1 `Rewards`). Relic: RollRarity
     /// (1 `Rewards`), jitter (1 `Shops`) — the bag pull consumes no RNG, so an
-    /// empty bag still advances identically. Potion: rarity + pick (2 `Shops`),
-    /// no `Rewards` (`TestMode` flat price).
+    /// empty bag still advances identically. Potion: rarity + pick + price
+    /// jitter (3 `Shops`), no `Rewards`.
     #[test]
     fn restock_consumes_matching_per_slot_reads() {
         use sts2_core::shop::{is_shop_entry_available, ShopSlot};
@@ -4630,7 +4769,7 @@ mod tests {
             "colorless card",
         );
         check(&mut rs, &mut inv, ShopSlot::Relic(0), 1, 1, "relic");
-        check(&mut rs, &mut inv, ShopSlot::Potion(0), 2, 0, "potion");
+        check(&mut rs, &mut inv, ShopSlot::Potion(0), 3, 0, "potion");
 
         // Restocked card/potion slots are re-stocked and never on sale.
         assert!(inv.cards[0].card.is_some(), "char card restocked");

@@ -938,7 +938,6 @@ fn burst_deep_pin_action_duplication_semantics() {
 //     amount into the budget; one hand card survives the flush.
 //
 /// Tactician (STS2) gives +1 energy on play. No retain side effect.
-/// Pin: `sts2-rl-agent@01c094d:sts2_env/cards/silent.py:594-596`.
 #[test]
 fn tactician_grants_energy_no_self_retain() {
     install_pool();
@@ -1980,8 +1979,8 @@ fn speedster_damages_enemies_on_card_effect_draw_not_hand_draw() {
     state.enemy_uids.push(CreatureUid(e2));
     // Speedster(2) on the player.
     apply_power_to_player(&mut state, PowerKind::Speedster, 2);
-    // Two drawable cards in the draw pile.
-    for _ in 0..2_u32 {
+    // Three drawable cards in the draw pile.
+    for _ in 0..3_u32 {
         let raw = u32::try_from(state.cards.len() + 1).expect("fits");
         let uid = sts2_core::CardUid::new(raw).expect("non-zero");
         state.cards.push(Card {
@@ -2016,6 +2015,18 @@ fn speedster_damages_enemies_on_card_effect_draw_not_hand_draw() {
     assert_eq!(
         state.creatures[1].current_hp, 98,
         "hand-draw does not trigger Speedster"
+    );
+    // A card-effect draw during the ENEMY turn (Centennial Puzzle on an enemy
+    // hit) fails the `CurrentSide == Owner.Side` gate (`SpeedsterPower.cs:17`).
+    state.side = sts2_core::Side::Enemy;
+    let _ = sts2_core::cards::draw_via_state(&mut state, 1);
+    assert_eq!(
+        state.creatures[0].current_hp, 98,
+        "enemy-turn draw does not trigger Speedster"
+    );
+    assert_eq!(
+        state.creatures[1].current_hp, 98,
+        "enemy-turn draw does not trigger Speedster"
     );
 }
 
@@ -2104,6 +2115,34 @@ fn handtrick_state(n_skills: usize) -> CombatState {
         state.player.hand.push(uid);
     }
     state
+}
+
+/// Flechettes counts C# `Type == CardType.Skill` (`Flechettes.cs:23`). A Quest
+/// card (`SpoilsMap`, C# `CardType.Quest`) is modelled as a Skill in Rust but
+/// must not count: hand = SpoilsMap + one real Skill -> exactly 1 hit.
+/// Regression for act23 parity Silent seed 1019 (#1054 item 7).
+#[test]
+fn flechettes_does_not_count_quest_cards_as_skills() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::Flechettes, 5, 0);
+    for card_id in [CardId::SpoilsMap, CardId::DefendSilent] {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = sts2_core::CardUid::new(raw).expect("non-zero");
+        state.cards.push(Card {
+            uid,
+            card_id,
+            cost: 1,
+            card_type: CardType::Skill,
+            target_type: TargetType::Self_,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+    }
+    let _ = lookup(CardId::Flechettes).expect("registered")(&mut state, Some(euid));
+    assert_eq!(
+        state.creatures[0].current_hp, 95,
+        "1 real Skill -> 1 hit of 5; SpoilsMap (Quest) does not count"
+    );
 }
 
 /// HandTrick gains block and, with ≥2 eligible Skills, opens an
@@ -2617,6 +2656,10 @@ fn knife_trap_auto_plays_each_exhaust_shiv_as_real_card_play() {
         rng: sts2_core::dotnet_rng::Rng::new(0_i32),
         ..Default::default()
     };
+    // Alive player: a dead one ends the combat, and C# `CardCmd.AutoPlay`
+    // does nothing once combat `IsOverOrEnding` (CardCmd.cs:54).
+    state.player.current_hp = 80;
+    state.player.max_hp = 80;
     let enemy_id = NonZeroU32::new(1).expect("nz");
     state.creatures.push(Creature {
         id: enemy_id,
@@ -2688,6 +2731,10 @@ fn calculated_gamble_auto_plays_single_turn_sly_discard() {
         rng: sts2_core::dotnet_rng::Rng::new(0_i32),
         ..Default::default()
     };
+    // Alive player: a dead one ends the combat, and C# `CardCmd.AutoPlay`
+    // does nothing once combat `IsOverOrEnding` (CardCmd.cs:54).
+    state.player.current_hp = 80;
+    state.player.max_hp = 80;
     let enemy_id = NonZeroU32::new(1).expect("nz");
     state.creatures.push(Creature {
         id: enemy_id,

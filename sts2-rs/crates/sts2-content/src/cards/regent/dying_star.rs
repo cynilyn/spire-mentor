@@ -6,7 +6,6 @@ use super::prelude::*;
 /// `PowerId.DYING_STAR` to the enemy; the listener body in
 /// `crates/sts2-core/src/powers/regent.rs` then applies the Strength
 /// loss to the *enemy's* end-of-turn dispatcher.
-// Port-pin: sts2-rl-agent@01c094d:sts2_env/cards/regent.py:L682
 pub(crate) fn play_dying_star(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
     deal_damage_all_enemies(state, current_damage(state));
     // C# `DyingStar.cs` OnUpgrade bumps StrengthLoss 9→11 alongside the

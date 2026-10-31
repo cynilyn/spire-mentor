@@ -575,6 +575,25 @@ fn misery_temporary_debuff_without_strength_entry_v0107() {
     assert_eq!(enemy_power(&state, other, PowerKind::Strength), 0);
 }
 
+/// v0.107.1 Misery copies in C# `Powers` order, where a temporary debuff's
+/// Strength precedes it (`BeforeApplied` runs before the apply). With one
+/// Artifact on the other enemy, the Strength copy is the one negated and the
+/// ShacklingPotion copy lands (Necrobinder full seed 2643).
+#[test]
+fn misery_artifact_negates_the_strength_copy_first_v0107() {
+    let mut state = fresh(V107, CharacterId::Necrobinder);
+    let other = add_enemy(&mut state, 50, 100);
+    let target = first_enemy(&state);
+    add_enemy_power(&mut state, target, 801, PowerKind::ShacklingPotion, 7);
+    add_enemy_power(&mut state, target, 800, PowerKind::Strength, -7);
+    add_enemy_power(&mut state, other, 802, PowerKind::Artifact, 1);
+    let i = push_hand(&mut state, CardId::Misery, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    assert_eq!(enemy_power(&state, other, PowerKind::ShacklingPotion), 7);
+    assert_eq!(enemy_power(&state, other, PowerKind::Strength), 0);
+    assert_eq!(enemy_power(&state, other, PowerKind::Artifact), 0);
+}
+
 // ── Dowsing quest (run layer) ──────────────────────────────────────────────
 
 fn dowsing_run(version: GameVersion) -> sts2_core::runstate::RunState {
@@ -616,6 +635,128 @@ fn dowsing_transforms_into_abundance_after_five_unknown_rooms_v0111() {
         ],
         "Dowsing leaves its slot; Abundance is appended at the deck tail (CardCmd.cs:416-447)"
     );
+}
+
+// ── ThinkingAhead waits for a Stratagem-suspended draw ─────────────────────
+
+/// ThinkingAhead draws 2 into an empty draw pile: the reshuffle opens
+/// Stratagem's grid INSIDE the draw. C# finishes the whole draw before its
+/// hand put-back select (ThinkingAhead.cs OnPlay), so the grid surfaces first
+/// and the put-back offers the full post-draw hand (Necrobinder full seed
+/// 4009: Rust's put-back overwrote the grid and offered the pre-draw hand).
+#[test]
+fn thinking_ahead_put_back_waits_for_a_suspended_draw_v0107() {
+    let mut state = fresh(V107, CharacterId::Necrobinder);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    let _ = push_hand(&mut state, CardId::StrikeNecrobinder, false);
+    for id in [CardId::Footwork, CardId::Accelerant, CardId::Backflip] {
+        let uid = new_card(&mut state, id, false);
+        state.player.discard.push(uid);
+    }
+    let i = push_hand(&mut state, CardId::ThinkingAhead, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    let pc = state.pending_choice.as_ref().expect("a choice is open");
+    assert_eq!(
+        pc.kind,
+        sts2_core::ChoiceKind::AddFromDrawToHand,
+        "Stratagem first"
+    );
+
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    let pc = state.pending_choice.as_ref().expect("the put-back follows");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::PutBack);
+    assert_eq!(
+        pc.options.len(),
+        4,
+        "Strike + the Stratagem pick + 2 drawn cards are offered"
+    );
+}
+
+/// Prepared draws 1 into an empty draw pile: the reshuffle opens Stratagem's
+/// grid INSIDE the draw. C# awaits the whole draw before
+/// `FromHandForDiscard` (Prepared.cs:23-24), so the discard select must
+/// still open after the grid resolves (Silent/Defect v0.111.0 full seed 1475:
+/// Rust dropped the discard because a choice was already open).
+#[test]
+fn prepared_discard_waits_for_a_suspended_draw_v0107() {
+    let mut state = fresh(V107, CharacterId::Silent);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    let _ = push_hand(&mut state, CardId::StrikeSilent, false);
+    let _ = push_hand(&mut state, CardId::DefendSilent, false);
+    for id in [CardId::Footwork, CardId::Accelerant, CardId::Backflip] {
+        let uid = new_card(&mut state, id, false);
+        state.player.discard.push(uid);
+    }
+    let i = push_hand(&mut state, CardId::Prepared, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    let pc = state.pending_choice.as_ref().expect("a choice is open");
+    assert_eq!(
+        pc.kind,
+        sts2_core::ChoiceKind::AddFromDrawToHand,
+        "Stratagem first"
+    );
+
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    let pc = state.pending_choice.as_ref().expect("the discard follows");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::DiscardFromHand);
+    assert_eq!(
+        pc.options.len(),
+        4,
+        "Strike + Defend + the Stratagem pick + the drawn card are offered"
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.player.hand.len(), 3, "one card discarded");
+}
+
+/// Catastrophe auto-plays a lone Slimed whose own draw reshuffles a 2-card
+/// discard and opens Stratagem's grid. C# awaits Slimed's whole draw inside
+/// its `OnPlay` (Slimed.cs:33) before Catastrophe's next pick, so the draw
+/// takes the last card and the second pick finds an empty pile. Rust used to
+/// run the pick first and resume the draw afterwards (Defect v0.111.0 full
+/// seed 1475).
+#[test]
+fn catastrophe_autoplayed_draw_finishes_before_next_pick_v0107() {
+    let mut state = fresh(V107, CharacterId::Silent);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    let slimed = new_card(&mut state, CardId::Slimed, false);
+    state.player.draw.push(slimed);
+    let a = new_card(&mut state, CardId::DefendSilent, false);
+    let b = new_card(&mut state, CardId::Footwork, false);
+    state.player.discard.push(a);
+    state.player.discard.push(b);
+    let i = push_hand(&mut state, CardId::Catastrophe, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    let pc = state.pending_choice.as_ref().expect("Stratagem grid opens");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawToHand);
+
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert!(state.pending_choice.is_none());
+    assert!(
+        state.player.hand.contains(&a) && state.player.hand.contains(&b),
+        "the Stratagem pick and Slimed's draw both land in hand"
+    );
+    assert!(state.player.draw.is_empty());
 }
 
 // ── Draw-pile grids sort by the build's rarity (review finding a) ─────────
@@ -759,4 +900,69 @@ fn beat_down_vetoed_play_rolls_no_target_v0107() {
 #[test]
 fn beat_down_vetoed_play_rolls_target_v0111() {
     assert_eq!(beat_down_vetoed_targets_read(V111), (1, 0));
+}
+
+// ── Generated / folded card values follow the build ───────────────────────
+
+/// Stoke+ upgrades the cards it generates: each must carry THIS build's
+/// upgraded values (v0.111.0 Taunt+ blocks 7, not v0.107.1's 8 — Taunt.cs:20,
+/// 41). Ironclad v0.111.0 full seed 1728.
+#[test]
+fn stoke_plus_generated_cards_take_build_upgraded_values_v0111() {
+    let mut state = fresh(V111, CharacterId::Ironclad);
+    for _ in 0..6 {
+        let _ = push_hand(&mut state, CardId::StrikeIronclad, false);
+    }
+    let i = push_hand(&mut state, CardId::Stoke, true);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert_eq!(state.player.hand.len(), 6);
+    for uid in state.player.hand.clone() {
+        let c = &state.cards[uid.0.get() as usize - 1];
+        assert!(c.upgraded);
+        let want = card_pod_from_id_for(c.card_id, true, V111).expect("spec");
+        assert_eq!(
+            (c.base_damage, c.base_block),
+            (want.base_damage, want.base_block),
+            "{:?}",
+            c.card_id
+        );
+    }
+}
+
+/// Thrash folds an exhausted Rend's `CalculatedDamage.Calculate(null)` =
+/// its CalculationBase: 15 in v0.107.1, 10 in v0.111.0 (Rend.cs:19). Ironclad
+/// v0.111.0 full seed 4645.
+fn thrash_rend_fold(version: GameVersion) -> i32 {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    let _ = push_hand(&mut state, CardId::Rend, false);
+    let i = push_hand(&mut state, CardId::Thrash, false);
+    let thrash = state.player.hand[usize::from(i)];
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    state.cards[thrash.0.get() as usize - 1].base_damage - 4
+}
+
+#[test]
+fn thrash_folds_rend_calculation_base_v0111() {
+    assert_eq!(thrash_rend_fold(V111), 10);
+}
+
+#[test]
+fn thrash_folds_rend_calculation_base_v0107() {
+    assert_eq!(thrash_rend_fold(V107), 15);
+}
+
+/// Escape Plan into an empty draw pile with one Skill in the discard: the
+/// reshuffle's Stratagem auto-takes that Skill into hand, then the draw
+/// finds nothing. C# tests the card `Draw` RETURNED (EscapePlan.cs:25-26), so
+/// no block. Silent v0.111.0 full seed 2548.
+#[test]
+fn escape_plan_ignores_a_stratagem_pick_v0107() {
+    let mut state = fresh(V107, CharacterId::Silent);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    let skill = new_card(&mut state, CardId::DefendSilent, false);
+    state.player.discard.push(skill);
+    let i = push_hand(&mut state, CardId::EscapePlan, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert!(state.player.hand.contains(&skill), "Stratagem took it");
+    assert_eq!(state.player.block, 0);
 }

@@ -121,7 +121,16 @@ internal static class SimAdvisorProcess
                 // A second instance's advisor would otherwise also bind the
                 // control plane's default 8079, which Windows allows silently;
                 // shift it by the same offset as the bridge (9012 -> 8089).
-                advisorArgs += $" --control-port {DefaultControlPort + bridgePort - DefaultPort}";
+                advisorArgs += $" --control-port {ControlPort(bridgePort)}";
+            }
+            // Where the bundled workbench's Report button sends (the control
+            // plane forwards its /api/bugreport to that site's intake): the same site the
+            // mod's own bug reports go to (SimBugReport). None = the button
+            // saves reports to a file beside the advisor's logs.
+            string? bugSite = SimBugReport.Site;
+            if (bugSite != null && bugSite.IndexOfAny(new[] { ' ', '"' }) < 0)
+            {
+                advisorArgs += $" --bug-report-site {bugSite}";
             }
             if (SimConfig.Instance.AdvisorAutoplay)
             {
@@ -334,6 +343,14 @@ internal static class SimAdvisorProcess
 
     private const int DefaultPort = 9002;
     private const int DefaultControlPort = 8079;
+
+    /// <summary>The advisor's control-plane port for a bridge port: the
+    /// default 8079, shifted by the bridge's offset from 9002 (the
+    /// `--control-port` every launch above passes).</summary>
+    internal static int ControlPort(int bridgePort) =>
+        bridgePort == 0 || bridgePort == DefaultPort
+            ? DefaultControlPort
+            : DefaultControlPort + bridgePort - DefaultPort;
 
     /// <summary>
     /// %LOCALAPPDATA%\SpireMentor -- the one user-writable home for advisor

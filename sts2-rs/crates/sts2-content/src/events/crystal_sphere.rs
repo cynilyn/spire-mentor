@@ -1,4 +1,3 @@
-// port-pin-skip — ported from the C# decomp, no Python counterpart.
 //! The CrystalSphere divination minigame (GH #817).
 //!
 //! C# `CrystalSphereMinigame` (`Events.Custom.CrystalSphereEvent/

@@ -32,11 +32,18 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
             if v0111 {
                 // v0.111.0: `GetWithModifiers(CostModifiers.All) != 0 ||
                 // CostsX` — the GLOBAL cost modifiers count too (decomp
-                // Scrape.cs:32).
+                // Scrape.cs:32). A negative base (an unplayable Infection /
+                // curse, cost -1) returns -1 before any clamp
+                // (CardEnergyCost.cs:101-104), so it is discarded; the
+                // engine's cost read clamps it to 0 (Defect QX197).
                 card.is_x_cost()
+                    || card.cost < 0
                     || sts2_core::hooks::effective_card_cost_inst(state, card, uid) != 0
             } else {
-                card.cost != 0
+                // v0.107.1 reads `GetWithModifiers(CostModifiers.Local)`
+                // (Scrape.cs:30): a RocketPunch made free until played by a
+                // status draw is 0 and stays in hand (Defect full seed 3042).
+                card.is_x_cost() || sts2_core::hooks::local_card_cost(state, card) != 0
             }
         })
         .collect();

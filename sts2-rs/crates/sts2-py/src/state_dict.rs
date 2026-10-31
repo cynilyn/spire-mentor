@@ -1882,6 +1882,17 @@ mod tests {
     }
 
     #[test]
+    fn power_all_adds_every_builds_powers_and_power_stays_put() {
+        // `power` is an embedding vocabulary (v0.107.1 only); the adapters
+        // check carried ids against `power_all`, which has v0.111.0's too.
+        let base = list_registry_names_impl("power").unwrap();
+        let all = list_registry_names_impl("power_all").unwrap();
+        assert!(!base.iter().any(|s| s == "ONE_FOR_ALL"));
+        assert!(all.iter().any(|s| s == "ONE_FOR_ALL"));
+        assert!(base.iter().all(|s| all.contains(s)));
+    }
+
+    #[test]
     fn list_registry_names_known_entries() {
         // Spot-check one canonical name per registry.
         let relics = list_registry_names_impl("relic").unwrap();

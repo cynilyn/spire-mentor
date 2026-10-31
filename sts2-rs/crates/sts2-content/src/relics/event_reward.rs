@@ -1,4 +1,3 @@
-// Ported from sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py
 //! Event-reward relic dispatch — bead `sts2-rs-7ez` (P7-5b).
 //!
 //! Ports the 35 `RelicRarity.EVENT` entries from
@@ -81,9 +80,9 @@
 //! lose_hp, take_damage, transform_relic, upgrade_random_cards}`):
 //!
 //! - **`SwordOfStone`** — `after_combat_victory` → when `is_elite`,
-//!   decrement `Relic.counter` (init 5). **Partial:** the
-//!   `transform_relic` half is deferred until a combat→run back-edge
-//!   exists on the `after_combat_victory` channel.
+//!   decrement `Relic.counter` (init 5). The `transform_relic` half
+//!   lives on the run-side `after_combat_victory_run` channel, fired by
+//!   `RunManager::exit_combat_and_transition`.
 //! - **`FragrantMushroom`** — `after_obtained` (`RunState`) →
 //!   `rs.take_damage(15) + rs.upgrade_random_cards(3)`. Both
 //!   clauses are real (bead `sts2-rs-7krx0` wired
@@ -527,11 +526,9 @@ fn install_listeners() {
     // (bead `sts2-rs-y8zi4`) — both listeners read the same elite-
     // victory signal but only the run-side path can mutate
     // `RunState.relics` to actually perform the transform_relic
-    // swap. The combat-side firing site for the run channel is
-    // still deferred (the combat→run back-edge requires plumbing
-    // RunState through MCTS hot path); the integration test in
-    // bead `sts2-rs-y8zi4` exercises both dispatchers in sequence
-    // to validate the end-to-end transform path.
+    // swap. The run channel fires from
+    // `RunManager::exit_combat_and_transition`, after the exit
+    // callback has flushed the combat-side count.
     //
     // FragrantMushroom fires on `after_obtained` (RunState-arg);
     // `rs.take_damage(15)` lands fully, and the deck random-upgrade
@@ -549,8 +546,8 @@ fn install_listeners() {
     );
 
     // Bead `sts2-rs-mg5ur` — WarHammer: on elite victory, upgrade
-    // 4 random non-upgraded deck cards. Shares the deferred firing
-    // site with SwordOfStone (combat→run back-edge pending).
+    // 4 random upgradable deck cards. Shares the run-side firing site
+    // with SwordOfStone.
     register_after_combat_victory_run(
         RelicId::WarHammer,
         listener_war_hammer_run as AfterCombatVictoryRunFn,
@@ -978,19 +975,26 @@ fn listener_byrdpip_transform_eggs(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::Byrdpip) {
         return EffectResult::NotImplemented;
     }
-    let mut transformed = false;
-    for card in &mut rs.master_deck {
+    // `CardCmd.TransformTo` removes each egg and APPENDS its Byrd Swoop to
+    // the deck through the add-to-deck hooks (CardCmd.cs:402,427-436); an
+    // in-place rewrite kept the egg's slot, so the next combat's shuffle
+    // dealt a different opening hand (Regent act23 seed 1011, rest-site
+    // Hatch).
+    let mut indices: Vec<usize> = Vec::new();
+    let mut replacements: Vec<sts2_core::cards::Card> = Vec::new();
+    for (i, card) in rs.master_deck.iter().enumerate() {
         if card.card_id == sts2_core::cards::CardId::ByrdonisEgg {
-            if let Some(swoop) = crate::cards::spec_index::card_pod_from_id(
+            if let Some(mut swoop) = crate::cards::spec_index::card_pod_from_id(
                 sts2_core::cards::CardId::ByrdSwoop,
                 false,
             ) {
-                *card = swoop;
-                transformed = true;
+                swoop.uid = card.uid;
+                indices.push(i);
+                replacements.push(swoop);
             }
         }
     }
-    if transformed {
+    if rs.transform_specific_cards(&indices, replacements) > 0 {
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -1223,6 +1227,20 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     };
     let dupe_is_ethereal =
         sts2_core::combat_loop::card_is_ethereal_at_play(state, &state.cards[dupe_idx_for_cost]);
+    // The relic half of the same `Hook.BeforeCardPlayed` (IntimidatingHelmet,
+    // PenNib), with the auto-play's `EnergyValue` (CardCmd.cs:126).
+    let before_played_ctx = sts2_core::relic_effects::CardEventCtx {
+        card_id,
+        card_uid: Some(new_uid),
+        target,
+        card_tags: dupe_tags,
+        energy_spent: 0,
+    };
+    sts2_core::combat_loop::dispatch_relic_before_card_played_replay(
+        state,
+        &before_played_ctx,
+        dupe_resolved_cost,
+    );
     sts2_core::hooks::dispatch_before_card_played_powers(
         state,
         dupe_resolved_cost,
@@ -1235,6 +1253,14 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // pile WITHOUT playing — skip the on-play dispatch when nothing's alive.
     let skip_dispatch =
         matches!(dupe_target_type, sts2_core::cards::TargetType::Enemy) && target.is_none();
+    // The dupe's play is a first-in-series `CardPlayStarted` in C#, and its
+    // `GeneratePlayCount` asks EchoForm first (CardModel.cs:1896, :2019): the
+    // first card of a turn under EchoForm is this dupe, and it plays twice
+    // (Defect quick seed 530: HistoryCourse HOTFIX dupe → FOCUS 4 in C#).
+    let dupe_echoes = !skip_dispatch && sts2_core::combat_loop::echo_form_would_echo(state);
+    if !skip_dispatch {
+        sts2_core::combat_loop::count_first_in_series_play(state);
+    }
     // Held across the dupe's whole `OnPlayWrapper` body (first `OnPlay`, the
     // `after_card_played` buses, and the replay loop) — see the bead
     // `sts2-rs-2itwm` note at the dispatch below. Restored just before disposal.
@@ -1298,14 +1324,13 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
         card_tags: dupe_tags,
         energy_spent: 0,
     };
-    let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
     let hook_played_ctx = sts2_core::hooks::CardCtx {
         card_id: Some(card_id),
         card_uid: Some(new_uid),
         card_tags: dupe_tags,
         card_type: Some(dupe_card_type),
     };
-    sts2_core::hooks::dispatch_after_card_played(state, &hook_played_ctx);
+    sts2_core::combat_loop::dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
     // Bead `sts2-rs-50un1`: apply RupturePower's deferred Strength now that the
     // dupe has fully resolved (its self-HP-loss — e.g. a replayed OFFERING —
     // deferred +Strength onto the Rupture counter). Mirrors the hand-play /
@@ -1384,17 +1409,43 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
         // Fires once per card play (matches C# + the hand/auto-play paths):
         // routes the OneTwoPunch decrement/remove deferred effects.
         sts2_core::hooks::dispatch_after_modifying_card_play_count(state, &hook_played_ctx);
-        let total_extra = (base_replay + power_extra + relic_extra).max(0);
+        if dupe_echoes {
+            sts2_core::event_log::flash_player_power(state, sts2_core::PowerKind::EchoForm);
+        }
+        let total_extra = (base_replay + power_extra + relic_extra + i32::from(dupe_echoes)).max(0);
         for _ in 0..total_extra {
             if state.is_over {
                 break;
             }
+            // The previous play's select (Scavenge's exhaust pick) must resolve
+            // before the next replay opens its own, or the replay overwrites it
+            // and only one pick ever lands. C# awaits each `OnPlay` in turn
+            // (CardModel.cs:1896-1965); drain it the headless way, as the
+            // auto-play replay loop does (Defect full seed 2076: a HiddenGem
+            // Replay-3 Scavenge dupe exhausts 4 cards).
+            sts2_core::combat_loop::resolve_inline_auto_play_choices(state);
+            // C# `OnPlayWrapper` fires `Hook.BeforeCardPlayed` per play
+            // iteration (CardModel.cs:1923) — the dupe's replays too.
+            sts2_core::combat_loop::dispatch_relic_before_card_played_replay(
+                state,
+                &before_played_ctx,
+                dupe_resolved_cost,
+            );
+            sts2_core::hooks::dispatch_before_card_played_powers(
+                state,
+                dupe_resolved_cost,
+                dupe_is_ethereal,
+            );
+            sts2_core::hooks::juggling_before_card_played_v0111(state, new_uid, dupe_card_type);
             let _ = sts2_core::card_effects::dispatch_for_auto_played_card(
                 state, new_uid, card_id, target,
             );
             bump_card_plays_finished_this_turn_v0111(state);
-            let _ = sts2_core::relic_effects::dispatch_after_card_played(state, &played_ctx);
-            sts2_core::hooks::dispatch_after_card_played(state, &hook_played_ctx);
+            sts2_core::combat_loop::dispatch_after_card_played_buses(
+                state,
+                &played_ctx,
+                &hook_played_ctx,
+            );
             sts2_core::combat_loop::flush_rupture_deferred_strength(state);
             state.combat_log.player_card_plays_this_combat = state
                 .combat_log
@@ -1426,7 +1477,11 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // is unreferenced and harmless).
     let corruption_exhausts_dupe = dupe_card_type == sts2_core::cards::CardType::Skill
         && state.player_power_amount(sts2_core::PowerKind::Corruption) > 0;
-    if corruption_exhausts_dupe {
+    if corruption_exhausts_dupe && !sts2_core::combat_loop::exhaust_may_begin(state) {
+        // The result pile is Exhaust, but `CardCmd.Exhaust` is refused once
+        // the combat is ending (`CardCmd.cs:239`): the dupe stays in Play,
+        // untouched, as the game leaves it (`CardModel.cs:1985`).
+    } else if corruption_exhausts_dupe {
         let _ = sts2_core::cards::move_card(
             &mut state.player,
             new_uid,
@@ -2270,6 +2325,20 @@ fn listener_paels_tooth_after_obtained(rs: &mut RunState) -> EffectResult {
     }
     let max_count = u8::try_from(take).unwrap_or(u8::MAX);
 
+    // Interactive hosts: C# `PaelsTooth.AfterObtained` (`PaelsTooth.cs:68-78`,
+    // same in v0.111.0) is a mandatory `FromDeckForRemoval(prefs(5), filter:
+    // IsUpgradable)` card select, then stashes the picks in `Id.Entry` order.
+    // Route it through the interactive removal queue (a `card_select` the run
+    // loop surfaces) instead of the run-level `pending_choice`, which nothing
+    // but the rest-site Smith ever surfaces — the stash prompt was stranded
+    // and the act23 lockstep saw no select at all (v0.111.0 Defect:1018,
+    // Pael → Pael's Tooth).
+    if rs.interactive_card_removal {
+        rs.pending_removal_paels_tooth = true;
+        rs.pending_deck_removals += u32::from(max_count);
+        return EffectResult::Resolved;
+    }
+
     // Bead `sts2-rs-n7tha`: try interactive deck-choice first. When
     // `candidates.len() > max_count` the agent has real discretion
     // (pick N of M, where M > N); open a `PaelsToothStash` prompt and
@@ -2363,21 +2432,12 @@ fn listener_wongos_mystery_ticket_combat_end(rs: &mut RunState) -> EffectResult 
 /// `Relic.counter`). When the counter reaches `0`, Python invokes
 /// `owner.transform_relic(self, RelicId.SWORD_OF_JADE)`.
 ///
-/// **Partial retrofit (sts2-rs-jvk3).** The counter half lands here
-/// against the combat-side `after_combat_victory` channel. The
-/// `transform_relic` half is **deferred**: at this pin the
-/// `after_combat_victory` channel takes `&mut CombatState` only and
-/// has no `RunState` back-edge, so the listener cannot reach
-/// `RunState::transform_relic` (landed by this same bead) from inside
-/// combat. A follow-up sub-bead will either:
-///   (a) add a parallel `run_effects::after_combat_victory` channel
-///       that fires from the combat→run drain, or
-///   (b) lift the `SwordOfStone` listener to the `RunState` side once a
-///       combat→run lifecycle bridge exists.
-/// Until then the listener treats `counter == 1 → 0` as "ready to
-/// transform" and stops there — the visible run still keeps the
-/// stale `SwordOfStone` entry, matching the "wave 5 partial" plan
-/// noted in the audit footer.
+/// The counter half lands here against the combat-side
+/// `after_combat_victory` channel (it takes `&mut CombatState` only);
+/// the exit callback flushes the count into `RunState.relic_counters`,
+/// and [`listener_sword_of_stone_run`] — fired by
+/// `RunManager::exit_combat_and_transition` — replaces the relic once
+/// that count reaches 0.
 ///
 /// Counter seed convention (matches `EmberTea`): callers init
 /// `Relic { counter: 5, .. }` at obtain time. Ownership-gated.
@@ -2403,32 +2463,22 @@ fn listener_sword_of_stone(state: &mut CombatState) -> EffectResult {
     // transform-on-zero arm fires on the parallel run-side channel via
     // [`listener_sword_of_stone_run`] (bead `sts2-rs-y8zi4`), which
     // owns the `RunState.transform_relic(SwordOfStone -> SwordOfJade)`
-    // call. The combat→run firing site for the run channel is still
-    // deferred — see the `register_after_combat_victory_run` comment
-    // block in this file's `install` function.
+    // call; the run manager fires it at the combat's exit, after the
+    // exit callback flushed this count.
     EffectResult::Resolved
 }
 
-/// `SwordOfStone::after_combat_victory` — run-side transform arm
-/// (bead `sts2-rs-y8zi4`, jvk3 follow-up). Mirrors the Python
-/// pin's `if self.counter <= 0: owner.run_state.transform_relic(
-/// self, SwordOfJade)` clause at
-/// `sts2-rl-agent@01c094d:sts2_env/relics/event_reward.py`.
+/// `SwordOfStone::after_combat_victory` — run-side transform arm. C#
+/// `SwordOfStone.AfterCombatVictory` (`SwordOfStone.cs:40-51`) counts an
+/// elite and, at the fifth, `RelicCmd.Replace`s itself with Sword of Jade.
 ///
-/// Decrements the RunState-side `SwordOfStone` counter on elite
-/// victory, then transforms into [`RelicId::SwordOfJade`] when the
-/// counter hits zero (`counter == 0`, NOT `counter < 0` — the
-/// Python `<= 0` guard fires on the same decrement that brings the
-/// counter to zero). Idempotent on already-transformed RunStates:
-/// if `SwordOfStone` is no longer present the lookup fails fast
-/// with [`EffectResult::NotImplemented`].
-///
-/// Symmetric counterpart to the combat-side
-/// [`listener_sword_of_stone`] which mutates the CombatState relic
-/// mirror. Both listeners are wired today; the production firing
-/// site for the run-side channel is deferred (the dispatcher in
-/// `combat_loop.rs::step_phase_continue` has no `&mut RunState`
-/// in scope).
+/// The count is the combat side's: [`listener_sword_of_stone`] decrements the
+/// combat relic's down-counter (seeded 5) on each elite victory, and the exit
+/// callback flushes it into `RunState.relic_counters`. This run-side arm
+/// fires after that flush, from `RunManager::exit_combat_and_transition`,
+/// and only reads the count: at 0 it replaces the relic
+/// (decrementing here too would count every elite twice). Idempotent: once
+/// Sword of Stone is gone the ownership check fails fast.
 fn listener_sword_of_stone_run(rs: &mut RunState, ctx: &CombatVictoryRunCtx) -> EffectResult {
     if !ctx.is_elite {
         return EffectResult::NotImplemented;
@@ -2436,30 +2486,15 @@ fn listener_sword_of_stone_run(rs: &mut RunState, ctx: &CombatVictoryRunCtx) -> 
     if !run_owns(rs, RelicId::SwordOfStone) {
         return EffectResult::NotImplemented;
     }
-    // RunState carries relic counters out-of-band on
-    // `RunState.relic_counters` (a BTreeMap, since `RunState.relics`
-    // is just `Vec<RelicId>` — the run-side surface doesn't have the
-    // `Relic` POD's `counter` slot). The seed of 5 mirrors the
-    // combat-side `Relic { counter: 5 }` initialization at obtain
-    // time; the per-elite-victory decrement here keeps the two
-    // representations in lock-step.
-    let counter = rs.relic_counters.entry(RelicId::SwordOfStone).or_insert(5);
-    if *counter <= 0 {
-        // Counter already drained — defensive no-op.
+    let counter = rs
+        .relic_counters
+        .get(&RelicId::SwordOfStone)
+        .copied()
+        .unwrap_or(5);
+    if counter > 0 {
         return EffectResult::NotImplemented;
     }
-    *counter -= 1;
-    let transform_now = *counter == 0;
-    if transform_now {
-        // Mirrors Python `owner.run_state.transform_relic(self,
-        // SwordOfJade)`. `transform_relic` replaces the first matching
-        // id in-place; the resulting [`RelicId::SwordOfJade`] entry
-        // keeps the (now-zero) counter, matching the Python
-        // `transform_relic` post-condition where the new relic instance
-        // starts from default state but the surrounding deck/order is
-        // preserved.
-        let _ = rs.transform_relic(RelicId::SwordOfStone, RelicId::SwordOfJade);
-    }
+    let _ = rs.transform_relic(RelicId::SwordOfStone, RelicId::SwordOfJade);
     EffectResult::Resolved
 }
 
@@ -2476,11 +2511,9 @@ fn listener_sword_of_stone_run(rs: &mut RunState, ctx: &CombatVictoryRunCtx) -> 
 /// ```
 ///
 /// Runs on the run-side `after_combat_victory` channel because the
-/// upgrade target is `RunState.master_deck`. Production firing site
-/// for the run-side channel is deferred (matches `SwordOfStone` —
-/// the combat→run back-edge needs plumbing through MCTS hot path
-/// before the in-combat dispatch can reach `&mut RunState`); the
-/// integration test in this bead exercises the channel directly.
+/// upgrade target is `RunState.master_deck`. The channel fires from
+/// `RunManager::exit_combat_and_transition` after a won combat
+/// (C# `WarHammer.cs:19-31`).
 ///
 /// WarHammer has no combat-side listener — the real logic lives here
 /// on the run-side channel.
@@ -2524,10 +2557,13 @@ fn listener_fragrant_mushroom(rs: &mut RunState) -> EffectResult {
         return EffectResult::NotImplemented;
     }
     rs.take_damage(15);
-    // C# `FragrantMushroom.cs`:
-    // `Where(IsUpgradable).StableShuffle(Rng.Niche).Take(3)` → `CardCmd.Upgrade`
-    // — random, no player pick (use the always-immediate niche primitive).
-    let _ = rs.upgrade_random_cards_stable(3);
+    // C# `FragrantMushroom.cs:29-36`:
+    // `Where(IsUpgradable).StableShuffle(Rng.Niche).Take(Cards)` →
+    // `CardCmd.Upgrade` — random, no player pick (use the always-immediate
+    // niche primitive). `Cards` is `CardsVar(2)` (`FragrantMushroom.cs:26`,
+    // same in v0.107.1 and v0.111.0); the Python pin's `CARDS = 3` upgraded
+    // one card too many.
+    let _ = rs.upgrade_random_cards_stable(2);
     EffectResult::Resolved
 }
 
@@ -3654,6 +3690,8 @@ mod tests {
         assert_eq!(eggs, 0, "all ByrdonisEgg transformed away");
         assert_eq!(swoops, 2, "two ByrdSwoop created");
         assert_eq!(rs.master_deck.len(), 3, "deck size preserved");
+        // CardCmd.Transform appends deck replacements (CardCmd.cs:427-436).
+        assert_eq!(rs.master_deck[0].card_id, CardId::StrikeIronclad);
     }
 
     /// Bead `sts2-rs-RP24`: selecting the `Hatch` rest-site option drives
@@ -3759,6 +3797,41 @@ mod tests {
             before + 1,
             "HistoryCourse dupe counts as one finished card play"
         );
+    }
+
+    /// A HiddenGem Replay-3 Scavenge dupe plays 4 times, and each play's
+    /// exhaust pick resolves before the next replay opens its own (C# awaits
+    /// every `OnPlay`, CardModel.cs:1896-1965). Before, each replay overwrote
+    /// the open pick and only one card was exhausted (Defect full parity seed
+    /// 2076). The last pick stays open for the player.
+    #[test]
+    fn listener_history_course_replayed_select_dupe_resolves_each_pick() {
+        use sts2_core::cards::CardId;
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut state = CombatState::default();
+        let _enemy = history_course_setup(&mut state, 2);
+        let push = |state: &mut CombatState, id: CardId| {
+            let mut c = crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+            let uid =
+                sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).unwrap()).unwrap();
+            c.uid = uid;
+            state.cards.push(c);
+            uid
+        };
+        let scavenge = push(&mut state, CardId::Scavenge);
+        state.cards[scavenge.0.get() as usize - 1].base_replay_count = 3;
+        state.player.discard.push(scavenge);
+        for _ in 0..5 {
+            let s = push(&mut state, CardId::StrikeIronclad);
+            state.player.hand.push(s);
+        }
+        state.combat_log.prev_round_last_attack_skill_played =
+            Some((CardId::Scavenge, false, Some(scavenge)));
+        let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
+        assert_eq!(state.player.exhaust.len(), 3, "three picks resolved inline");
+        assert!(state.pending_choice.is_some(), "the fourth pick surfaces");
+        assert_eq!(state.player.hand.len(), 2);
     }
 
     /// The dupe's finished play on THIS turn, in the build's per-turn tally.
@@ -4770,12 +4843,10 @@ mod tests {
     /// FragrantMushroom's upgrade-leg integration test (bead
     /// `sts2-rs-ombcw`, the 7krx0.3 follow-up). With a populated
     /// `master_deck` of 5 non-upgraded Cards, the canonical
-    /// `after_obtained` firing path bumps three of them to
-    /// `upgraded = true` via the freshly-real
-    /// `RunState::upgrade_random_cards`. Mirrors Python
-    /// `shop_event.py::FragrantMushroom` (`CARDS = 3`).
+    /// `after_obtained` firing path bumps two of them to
+    /// `upgraded = true` (C# `CardsVar(2)`, `FragrantMushroom.cs:26`).
     #[test]
-    fn listener_fragrant_mushroom_upgrades_three_cards_on_obtain() {
+    fn listener_fragrant_mushroom_upgrades_two_cards_on_obtain() {
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new().with_rewards_seed(42);
         for i in 0..5_u32 {
@@ -4792,8 +4863,8 @@ mod tests {
 
         let upgraded = rs.master_deck.iter().filter(|c| c.upgraded).count();
         assert_eq!(
-            upgraded, 3,
-            "FragrantMushroom should upgrade exactly 3 of the 5 candidates",
+            upgraded, 2,
+            "FragrantMushroom should upgrade exactly 2 of the 5 candidates",
         );
         assert_eq!(
             rs.current_hp, 65,
@@ -4806,40 +4877,29 @@ mod tests {
     // end-to-end via the run-side after_combat_victory channel.
     // -----------------------------------------------------------------
 
-    /// End-to-end transform path: 5 elite-victory dispatch cycles
-    /// decrement the run-side counter 5→4→3→2→1→0; the fifth firing
-    /// also swaps `SwordOfStone` for `SwordOfJade` in
-    /// `RunState.relics`. Drives both the combat-side counter mirror
-    /// AND the run-side transform listener together to model the
-    /// production lifecycle (combat→run firing site is still
-    /// deferred; the test stands in for that wiring).
-    /// Bead `sts2-rs-y8zi4`.
+    /// The run-side arm reads the count the combat side flushed: an elite
+    /// victory with the count at 0 replaces Sword of Stone with Sword of
+    /// Jade; above 0 it leaves both the relic and its count alone.
     #[test]
     fn listener_sword_of_stone_run_transforms_at_zero_counter() {
         crate::relics::dispatch::ensure_installed();
+        let ctx = CombatVictoryRunCtx { is_elite: true };
         let mut rs = RunState::new();
         rs.relics.push(RelicId::SwordOfStone);
-        rs.relic_counters.insert(RelicId::SwordOfStone, 5);
-        let ctx = CombatVictoryRunCtx { is_elite: true };
-        for expected_after in [4, 3, 2, 1, 0] {
-            let _ = sts2_core::run_effects::dispatch_after_combat_victory_run(&mut rs, &ctx);
-            if expected_after > 0 {
-                assert_eq!(
-                    rs.relic_counters.get(&RelicId::SwordOfStone).copied(),
-                    Some(expected_after),
-                    "post-decrement counter should be {expected_after}",
-                );
-                assert!(rs.relics.contains(&RelicId::SwordOfStone));
-                assert!(!rs.relics.contains(&RelicId::SwordOfJade));
-            } else {
-                // counter hit 0 on this firing → transform fires.
-                assert!(!rs.relics.contains(&RelicId::SwordOfStone));
-                assert!(rs.relics.contains(&RelicId::SwordOfJade));
-            }
-        }
+        rs.relic_counters.insert(RelicId::SwordOfStone, 1);
+        let _ = sts2_core::run_effects::dispatch_after_combat_victory_run(&mut rs, &ctx);
+        assert_eq!(
+            rs.relic_counters.get(&RelicId::SwordOfStone).copied(),
+            Some(1)
+        );
+        assert!(rs.relics.contains(&RelicId::SwordOfStone));
+        rs.relic_counters.insert(RelicId::SwordOfStone, 0);
+        let _ = sts2_core::run_effects::dispatch_after_combat_victory_run(&mut rs, &ctx);
+        assert!(!rs.relics.contains(&RelicId::SwordOfStone));
+        assert!(rs.relics.contains(&RelicId::SwordOfJade));
     }
 
-    /// Non-elite victories must NOT decrement the run-side counter —
+    /// Non-elite victories leave the run-side counter and the relic alone —
     /// mirrors the combat-side `is_elite` guard.
     #[test]
     fn listener_sword_of_stone_run_noop_on_non_elite() {
@@ -4878,38 +4938,36 @@ mod tests {
         );
     }
 
-    /// End-to-end with BOTH dispatchers in sequence: the combat-side
-    /// counter mirror AND the run-side counter both decrement
-    /// independently, and the run-side transform fires at zero
-    /// without depending on the combat-side state. Pins the
-    /// "parallel buses" contract — neither listener reads the
-    /// other's mutation; both apply the same `is_elite` predicate
-    /// to their respective state surface.
+    /// End-to-end with both buses as the run manager drives them: five
+    /// elite victories, each the combat side's decrement, the exit flush of
+    /// its count into `relic_counters`, then the run-side arm. The fifth
+    /// replaces the relic; none before it does.
     #[test]
-    fn sword_of_stone_combat_and_run_dispatchers_co_decrement_end_to_end() {
+    fn sword_of_stone_combat_count_then_run_transform_end_to_end() {
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         push_relic_with_counter(&mut state, RelicKind::SwordOfStone, 5);
         state.is_elite = true;
         let mut rs = RunState::new();
         rs.relics.push(RelicId::SwordOfStone);
-        rs.relic_counters.insert(RelicId::SwordOfStone, 5);
         let ctx = CombatVictoryRunCtx { is_elite: true };
-        for _ in 0..5 {
+        for elite in 1..=5 {
             let _ = sts2_core::relic_effects::dispatch_after_combat_victory(&mut state);
+            let count = state
+                .relics
+                .iter()
+                .find(|r| r.kind == RelicKind::SwordOfStone)
+                .expect("combat-side SwordOfStone")
+                .counter;
+            rs.relic_counters.insert(RelicId::SwordOfStone, count);
             let _ = sts2_core::run_effects::dispatch_after_combat_victory_run(&mut rs, &ctx);
+            assert_eq!(
+                rs.relics.contains(&RelicId::SwordOfJade),
+                elite == 5,
+                "elite {elite}"
+            );
         }
-        // Combat mirror: counter drained to 0; relic still present
-        // (the combat-side listener doesn't transform).
-        let combat_relic = state
-            .relics
-            .iter()
-            .find(|r| r.kind == RelicKind::SwordOfStone)
-            .expect("combat-side SwordOfStone still present");
-        assert_eq!(combat_relic.counter, 0);
-        // Run-side: counter drained AND transformed to SwordOfJade.
         assert!(!rs.relics.contains(&RelicId::SwordOfStone));
-        assert!(rs.relics.contains(&RelicId::SwordOfJade));
     }
 
     /// The listener is a no-op when the player doesn't own the relic

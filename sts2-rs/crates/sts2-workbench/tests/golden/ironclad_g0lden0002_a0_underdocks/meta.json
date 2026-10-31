@@ -44,11 +44,11 @@
   "status:409"
  ],
  "engine": {
-  "src_hash": "13941df1bbea7678",
+  "src_hash": "4e5518f56fa396f6",
   "version": "0.0.1"
  },
  "final_act": 1,
- "final_floor": 5,
+ "final_floor": 6,
  "full_responses": 47,
  "full_steps": 0,
  "patches": {

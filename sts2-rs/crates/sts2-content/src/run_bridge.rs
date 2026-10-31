@@ -151,9 +151,19 @@ pub fn build_event_combat(
             .collect(),
     };
     let kinds: Vec<MonsterKind> = members.iter().map(|&(kind, _)| kind).collect();
+    // A Combat-layout event (TheLanternKey's MysteriousKnight) already rolled
+    // these creatures' HP when its room was entered
+    // (`EventId::combat_layout_monsters`) and the fight reuses them, so roll
+    // on a copy and leave the run's niche cursor where entry left it.
+    let mut prerolled = rs.rng.niche.clone();
+    let niche = if matches!(req.encounter, EventEncounter::MysteriousKnight) {
+        &mut prerolled
+    } else {
+        &mut rs.rng.niche
+    };
     let hps = sts2_core::monsters::roll_unique_max_hps_for(
         &kinds,
-        &mut rs.rng.niche,
+        niche,
         rs.ascension_level,
         rs.game_version,
     );
@@ -351,9 +361,18 @@ pub fn enter_combat_from_roster(
     // Feed the deck in REVERSE so the front-inserts land the pre-shuffle
     // pile in forward master-deck order, matching C#'s append. Bead
     // `sts2-rs-jenwp` (M3b — first-combat draw parity).
+    // Each combat copy's master card (C# `cardModel.DeckVersion = item`,
+    // `Player.cs:811`) is recorded as a `DeckLink` over the contiguous uids
+    // this loop allocates, so a stolen or scaled card finds its permanent card
+    // by identity, not by its (possibly combat-upgraded) state.
+    let first_uid = u32::try_from(state.cards.len() + 1).expect("cards arena fits in u32");
     for card in rs.master_deck.iter().rev() {
         let _ = state.add_card_to_draw_pile(*card);
     }
+    state.deck_link = Some(sts2_core::DeckLink {
+        first_uid,
+        len: u32::try_from(rs.master_deck.len()).expect("deck fits in u32"),
+    });
 
     // Bead `sts2-rs-01o`: seed the combat-side potion belt from the
     // run-level belt so potions procured out of combat (Lost Coffer,
@@ -581,17 +600,20 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // resolves them through `remove_cards_from_deck`. This generalizes to the
     // other `AddExtraReward` powers (Heist / Swipe / Royalties / TheHunt) as
     // they are ported — each adds its own arm here.
+    //
+    // A fight whose encounter gives no rewards (Battleworn Dummy,
+    // `ShouldGiveRewards => false`) offers an empty set
+    // (`RewardsCmd.OfferForRoomEnd` → `EmptyForRoom`, `RewardsCmd.cs:26-29`),
+    // so none of the room's extras below (Grimoire, Royalties, Heist) are
+    // offered. Ported from manojnuthakki/spire-mentor 9262b2d6e.
+    let room_gives_rewards = match &rs.event_combat {
+        Some(req) => req.encounter.grants_base_room_rewards(),
+        None => true,
+    };
     let grimoire_stacks = combat.player_power_amount(sts2_core::PowerKind::ForbiddenGrimoire);
-    if grimoire_stacks > 0 {
+    if room_gives_rewards && grimoire_stacks > 0 {
         rs.add_card_removal_reward(grimoire_stacks as u32);
     }
-
-    // Bead `sts2-rs-RP13`: ThievingHopper / SwipePower run-deck steal. C#
-    // `SwipePower.Steal` permanently removes the stolen card from the run deck
-    // (`CardPileCmd.RemoveFromDeck(card.DeckVersion)`); a thief that DIES
-    // restores it (`SwipePower.BeforeDeath`), which the combat already recorded
-    // as `reclaimed`. Drop each un-reclaimed stolen card from `master_deck`.
-    remove_swiped_cards_from_master_deck(rs, combat);
 
     // Bead `sts2-rs-RP15`: combat gold-reward proportion. C#
     // `CombatRoom.cs:216` `GoldProportion = 1 - EscapedCreatures.Count /
@@ -644,7 +666,7 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // collected — mirrors C# and the `royalties_gold_on_victory` helper's
     // `_on_victory` contract). The base reward gold is added separately by
     // `apply_combat_gold_and_potion`; final = base + royalties, matching C#.
-    if combat.player_won {
+    if combat.player_won && room_gives_rewards {
         let royalties_stacks = combat.player_power_amount(sts2_core::PowerKind::Royalties);
         if royalties_stacks > 0 {
             rs.gain_gold(sts2_core::powers::regent::royalties_gold_on_victory(
@@ -668,7 +690,7 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // (no RNG), so — like Royalties — it cannot desync the `rewards` stream.
     // Runs AFTER the RP17 `rs.gold = combat.gold` writeback so it is not
     // clobbered by it.
-    if combat.player_won && combat.heist_recovered_gold > 0 {
+    if combat.player_won && room_gives_rewards && combat.heist_recovered_gold > 0 {
         rs.gain_gold(combat.heist_recovered_gold);
     }
 
@@ -684,6 +706,16 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // Goopy bumps the deck copy's enchantment amount on every play
     // (`Goopy.AfterCardPlayed`: `DeckVersion.Enchantment.Amount++`), GH #952.
     propagate_goopy_to_master_deck(rs, combat);
+
+    // Bead `sts2-rs-RP13`: ThievingHopper / SwipePower run-deck steal. C#
+    // `SwipePower.Steal` permanently removes the stolen card from the run deck
+    // (`CardPileCmd.RemoveFromDeck(card.DeckVersion)`); a thief that DIES
+    // restores it (`SwipePower.BeforeDeath`), which the combat already recorded
+    // as `reclaimed`. Drop each un-reclaimed stolen card from `master_deck`
+    // and move each reclaimed one to its end.
+    // Runs AFTER the folds above, which pair combat cards with master-deck
+    // cards by index: removing first would shift those indices.
+    remove_swiped_cards_from_master_deck(rs, combat);
 
     // Flush the combat's RNG streams back to the run. C# uses ONE
     // `RunState.Rng` for the whole run, so a combat's advances to
@@ -753,6 +785,34 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
         }
     }
 
+    // `ImprovementPower.AfterCombatEnd` (Mad Science's Improvement rider,
+    // `ImprovementPower.cs`): upgrade `Amount` random upgradable DECK cards,
+    // each drawn by `Rng.CombatCardSelection.NextItem` off a list built once
+    // and shrunk per pick. The combat side applied the power but nothing read
+    // it, so the deck card stayed unupgraded (act23 Necrobinder:1003, GH #1054
+    // item 6). After the flushback for the same reason as FishingRod; another
+    // stream, so its order against FishingRod does not matter.
+    let improvement = combat.player_power_amount(sts2_core::PowerKind::Improvement);
+    if combat.player_won && improvement > 0 {
+        let mut upgradable: Vec<usize> = rs
+            .master_deck
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_upgradable())
+            .map(|(i, _)| i)
+            .collect();
+        for _ in 0..improvement {
+            if upgradable.is_empty() {
+                break;
+            }
+            let last = i32::try_from(upgradable.len() - 1).unwrap_or(i32::MAX);
+            let idx = rs.rng.combat_card_selection.next_int(0, last) as usize;
+            let deck_idx = upgradable.remove(idx);
+            let version = rs.game_version;
+            rs.master_deck[deck_idx].upgrade_for(version);
+        }
+    }
+
     // `ToyBox.AfterCombatEnd` (`MegaCrit.Sts2.Core.Models.Relics/ToyBox.cs:99-112`):
     //
     // ```
@@ -807,25 +867,38 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
 /// the combat flagged `reclaimed` (the thief died → `SwipePower.BeforeDeath`
 /// restored the card) are skipped, so a killed thief leaves the deck unchanged.
 ///
-/// Each entry is paired to one `master_deck` card by `(card_id, upgraded)` —
-/// identical to the multiset deck_size/composition the parity harness compares,
-/// so matching any one same-identity card is exact. A stolen card with no
-/// surviving master-deck match is silently skipped (defensive; the steal's
-/// `DeckVersion != null` filter guarantees a match in practice). Bead
+/// Each entry is paired to its `master_deck` card by its deck link
+/// ([`sts2_core::SwipeStolen::deck_index`], C# `DeckVersion`), so a card
+/// upgraded only in this fight (Armaments) still removes its unupgraded
+/// permanent card; a combat built without a run deck falls back to the first
+/// `(card_id, upgraded)` match ([`sts2_core::resolve_stolen_deck_index`]). A
+/// stolen card with no master-deck match is silently skipped (defensive; the
+/// steal's `DeckVersion != null` filter guarantees a match in practice). Bead
 /// `sts2-rs-RP13`.
+///
+/// A reclaimed card does not keep its old slot: C# removed it from the deck at
+/// the steal, and the thief's death hands it back as a `SpecialCardReward`
+/// (SwipePower.cs:51-53) whose `OnSelect` is `CardPileCmd.Add(_card,
+/// PileType.Deck)` (SpecialCardReward.cs:79) — an append. So it moves to the
+/// END of `master_deck`; the deck order seeds every later combat's shuffle
+/// (Defect act23 seed 1005: the next fight's opening hand differed).
 fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState) {
-    for stolen in &combat.swipe_stolen {
-        if stolen.reclaimed {
-            continue;
-        }
-        if let Some(idx) = rs
-            .master_deck
-            .iter()
-            .position(|c| c.card_id == stolen.card_id && c.upgraded == stolen.upgraded)
-        {
-            rs.master_deck.remove(idx);
+    let mut taken = combat.unreclaimed_stolen_deck_indices(&rs.master_deck);
+    let mut reclaimed: Vec<usize> = Vec::new();
+    for stolen in combat.swipe_stolen.iter().filter(|s| s.reclaimed) {
+        let mut excluded = taken.clone();
+        excluded.extend_from_slice(&reclaimed);
+        if let Some(i) = sts2_core::resolve_stolen_deck_index(&rs.master_deck, stolen, &excluded) {
+            reclaimed.push(i);
         }
     }
+    let returned: Vec<_> = reclaimed.iter().map(|&i| rs.master_deck[i]).collect();
+    taken.extend_from_slice(&reclaimed);
+    taken.sort_unstable();
+    for idx in taken.into_iter().rev() {
+        rs.master_deck.remove(idx);
+    }
+    rs.master_deck.extend(returned);
 }
 
 /// Fold each combat-side scaling card's accumulated run-persistent stat (`base_damage` or
@@ -833,8 +906,11 @@ fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState)
 /// [`sts2_core::cards::run_persistent_scaled_stat`])
 /// back onto its master-deck source (C# `DeckVersion.BuffFromPlay`).
 ///
-/// The combat copy and its master-deck source carry no explicit back-link, so
-/// instances are paired by `(card_id, upgraded)` in master-deck order. The
+/// A run combat pairs each master card with its own combat copy through
+/// [`CombatState::deck_link`] (C# `DeckVersion`), so a copy upgraded only in
+/// the fight still feeds its unupgraded master. Without a link (a combat
+/// built without the run deck) instances are paired by `(card_id, upgraded)`
+/// in master-deck order. The
 /// combat arena (`combat.cards`) holds the original deck cards reversed (the
 /// deck is fed to the draw pile via `.rev()` front-inserts — see
 /// [`enter_combat_from_roster`]), and mid-combat-generated cards are appended
@@ -854,6 +930,31 @@ fn propagate_scaling_cards_to_master_deck(rs: &mut RunState, combat: &CombatStat
                 scaler_ids.push((c.card_id, stat));
             }
         }
+    }
+
+    // With the combat's deck link, each master card takes its OWN combat
+    // copy's value (C# `DeckVersion.BuffFromPlay`), whatever combat-only change
+    // (an Armaments upgrade) that copy went through.
+    if let Some(link) = combat
+        .deck_link
+        .filter(|l| l.len as usize == rs.master_deck.len())
+    {
+        for (i, m) in rs.master_deck.iter_mut().enumerate() {
+            let Some(stat) = sts2_core::cards::run_persistent_scaled_stat(m.card_id) else {
+                continue;
+            };
+            let Some(c) = link
+                .uid_of(i)
+                .and_then(|uid| combat.cards.get(uid.get() as usize - 1))
+            else {
+                continue;
+            };
+            if c.card_id == m.card_id {
+                let master = stat.get_mut(m);
+                *master = (*master).max(stat.get(c));
+            }
+        }
+        return;
     }
 
     for (id, stat) in scaler_ids {
@@ -2002,6 +2103,52 @@ mod tests {
         assert!(cards[0].upgraded, "clean combat → card reward upgraded");
     }
 
+    /// A Scythe upgraded only in this fight (Armaments) still grows its
+    /// permanent card: C# `TheScythe.OnPlay` calls
+    /// `(base.DeckVersion as TheScythe)?.BuffFromPlay(intValue)` with the
+    /// combat copy's upgraded `Increase` (`TheScythe.cs:71-73`, 4 → 5 on
+    /// upgrade), and `DeckVersion` is the master card the copy was cloned from
+    /// (`Player.cs:811`). Pairing combat copies to master cards by upgrade flag
+    /// dropped the growth: the upgraded copy found no upgraded master.
+    #[test]
+    fn the_scythe_upgraded_in_combat_still_grows_its_master_card() {
+        use crate::cards::necrobinder::the_scythe::play_the_scythe;
+        use sts2_core::cards::CardId;
+
+        crate::cards::dispatch::ensure_installed();
+
+        let mut rs = fresh_run();
+        rs.master_deck.push(
+            crate::cards::spec_index::card_pod_from_id(CardId::TheScythe, false)
+                .expect("scythe spec"),
+        );
+        let mut state = enter_combat(&rs, select_first(act1_normal_pool()));
+        let scythe_idx = state
+            .cards
+            .iter()
+            .position(|c| c.card_id == CardId::TheScythe)
+            .expect("scythe cloned into combat");
+        let uid = state.cards[scythe_idx].uid;
+        assert!(sts2_core::card_effects::upgrade_card_uid(&mut state, uid));
+        let enemy = state.enemy_uids[0];
+        for _ in 0..2 {
+            state.player.play.push(uid);
+            play_the_scythe(&mut state, Some(enemy));
+            state.player.play.pop();
+        }
+        assert_eq!(
+            state.cards[scythe_idx].base_damage, 23,
+            "two upgraded plays: 13 → 18 → 23 (Increase 5)"
+        );
+
+        exit_combat(&mut rs, &state);
+        assert_eq!(
+            rs.master_deck[0].base_damage, 23,
+            "the growth reaches the unupgraded master Scythe"
+        );
+        assert!(!rs.master_deck[0].upgraded, "the upgrade stays combat-only");
+    }
+
     /// Bead `sts2-rs-RP114`: The Scythe's `IncreasedDamage` is run-persistent
     /// (C# `[SavedProperty]` + `DeckVersion.BuffFromPlay`). Playing it in
     /// combat grows its `base_damage`; `exit_combat` must fold that growth back
@@ -2317,9 +2464,39 @@ mod tests {
         );
     }
 
-    /// Bead `sts2-rs-RP13`: a SwipePower thief that DIES restores the stolen
-    /// card (C# `SwipePower.BeforeDeath` → `AddCard`); the reclaimed entry is
-    /// NOT removed from the run `master_deck` at `exit_combat`.
+    /// A SwipePower thief that DIES hands the stolen card back as a
+    /// `SpecialCardReward` (SwipePower.cs:51-53), whose `CardPileCmd.Add`
+    /// appends it (SpecialCardReward.cs:79): the deck keeps its size but the
+    /// card moves to the end (Defect act23 seed 1005).
+    #[test]
+    fn exit_combat_appends_reclaimed_swiped_card_to_master_deck() {
+        use sts2_core::cards::CardId;
+        let mut rs = fresh_run();
+        for id in [CardId::StrikeIronclad, CardId::Zap] {
+            rs.master_deck
+                .push(crate::cards::spec_index::card_pod_from_id(id, false).expect("card spec"));
+        }
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        let before: Vec<_> = rs.master_deck.iter().map(|c| c.card_id).collect();
+        let victim = rs.master_deck[0].card_id;
+        let victim_up = rs.master_deck[0].upgraded;
+        assert_ne!(
+            before.last(),
+            Some(&victim),
+            "fixture: victim not already last"
+        );
+        let thief = *combat.enemy_uids.first().expect("combat has an enemy");
+
+        combat.record_swipe_steal(thief, victim, victim_up);
+        combat.reclaim_swipe_on_death(thief);
+        exit_combat(&mut rs, &combat);
+
+        let mut expected = before[1..].to_vec();
+        expected.push(victim);
+        let after: Vec<_> = rs.master_deck.iter().map(|c| c.card_id).collect();
+        assert_eq!(after, expected);
+    }
+
     #[test]
     fn exit_combat_sets_gold_proportion_from_escaped_creatures() {
         // C# `CombatRoom.GoldProportion = 1 - escaped / total` (`CombatRoom.cs:216`).
@@ -2347,6 +2524,40 @@ mod tests {
             rs.roll_encounter_gold(sts2_core::runstate::RoomType::Monster, 0.0),
             None
         );
+    }
+
+    /// A fight whose encounter gives no rewards (Battleworn Dummy,
+    /// `ShouldGiveRewards => false`, `BattlewornDummyEventEncounter.cs:28`)
+    /// offers an EMPTY set (`RewardsCmd.OfferForRoomEnd` →
+    /// `EmptyForRoom`, `RewardsCmd.cs:26-29`; `CombatRoom.cs:255` skips
+    /// `OfferRoomEndRewards` outright), so the room's `ExtraRewards` —
+    /// Royalties' gold, Forbidden Grimoire's removals — are never offered.
+    #[test]
+    fn a_no_rewards_event_fight_grants_none_of_its_extras() {
+        use sts2_core::events::{BattlewornDummySetting, EventCombatRequest, EventEncounter};
+        let mut rs = fresh_run();
+        rs.event_combat = Some(EventCombatRequest::resuming(
+            EventEncounter::BattlewornDummy(BattlewornDummySetting::Setting1),
+            sts2_core::events::EventId::BattlewornDummy,
+        ));
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        let player = combat.player.creature_uid.expect("player creature");
+        for kind in [
+            sts2_core::PowerKind::Royalties,
+            sts2_core::PowerKind::ForbiddenGrimoire,
+        ] {
+            sts2_core::card_effects::apply_power_to_creature(&mut combat, player, kind, 30);
+        }
+        combat.gold = rs.gold;
+        combat.heist_recovered_gold = 42;
+        combat.player_won = true;
+        let gold = rs.gold;
+        let pending = rs.pending_rewards.len();
+
+        exit_combat(&mut rs, &combat);
+
+        assert_eq!(rs.gold, gold, "no Royalties or Heist gold");
+        assert_eq!(rs.pending_rewards.len(), pending, "no Grimoire removals");
     }
 
     /// GH #604: C# `HeistPower.BeforeDeath` hands the merc's stolen gold back
@@ -2380,6 +2591,94 @@ mod tests {
             before + 42,
             "killing the carrier returns exactly the gold it was holding"
         );
+    }
+
+    /// A card upgraded only in this fight (Armaments) and then stolen by a
+    /// thief that escapes leaves the deck as its PERMANENT card: C#
+    /// `SwipePower.Steal` removes `card.DeckVersion` (`SwipePower.cs:73-75`),
+    /// the master card the combat copy was cloned from
+    /// (`Player.PopulateCombatState`, `Player.cs:811`), whatever the copy's
+    /// combat-only upgrade. Pairing by the copy's `(card_id, upgraded)` took
+    /// the deck's permanently upgraded Uppercut+ instead.
+    #[test]
+    fn exit_combat_removes_the_stolen_cards_deck_version_after_a_combat_upgrade() {
+        use sts2_core::cards::CardId;
+        crate::cards::dispatch::ensure_installed();
+        let mut rs = fresh_run();
+        rs.master_deck = vec![
+            crate::cards::spec_index::card_pod_from_id(CardId::Uppercut, false).expect("spec"),
+            crate::cards::spec_index::card_pod_from_id(CardId::Uppercut, true).expect("spec"),
+        ];
+        let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        let piles: Vec<sts2_core::CardUid> = combat
+            .player
+            .draw
+            .iter()
+            .chain(combat.player.discard.iter())
+            .chain(combat.player.hand.iter())
+            .copied()
+            .collect();
+        let target = piles
+            .iter()
+            .copied()
+            .find(|u| !combat.cards[u.get() as usize - 1].upgraded)
+            .expect("the unupgraded Uppercut is in the fight");
+        // Armaments-style in-combat upgrade, then leave it the only stealable card.
+        assert!(sts2_core::card_effects::upgrade_card_uid(
+            &mut combat,
+            target
+        ));
+        combat.player.draw = smallvec::smallvec![target];
+        combat.player.discard.clear();
+        combat.player.hand = piles.into_iter().filter(|u| *u != target).collect();
+        let thief = *combat.enemy_uids.first().expect("combat has an enemy");
+        crate::monsters::act2_hive::thieving_hopper_thievery_effect(&mut combat, thief);
+        assert_eq!(combat.swipe_stolen.len(), 1, "one card stolen");
+
+        exit_combat(&mut rs, &combat);
+
+        assert_eq!(rs.master_deck.len(), 1, "the escaped thief keeps one card");
+        assert!(
+            rs.master_deck[0].upgraded,
+            "the deck keeps its permanent Uppercut+; the stolen card was the unupgraded one"
+        );
+    }
+
+    /// BurningSticks' once-per-combat latch rides `Relic.counter`, which the
+    /// run carries between combats; C# re-arms it on every combat room
+    /// (`BurningSticks.cs:33-42`), so a new combat starts un-used.
+    #[test]
+    fn burning_sticks_rearms_each_combat() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = fresh_run();
+        rs.relics.push(sts2_core::RelicId::BurningSticks);
+        rs.relic_counters
+            .insert(sts2_core::RelicId::BurningSticks, 1);
+        let combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        let sticks = combat
+            .relics
+            .iter()
+            .find(|r| r.kind == sts2_core::RelicKind::BurningSticks)
+            .expect("BurningSticks carried into combat");
+        assert_eq!(sticks.counter, 0, "a fresh combat re-arms BurningSticks");
+    }
+
+    /// PaelsEye's `UsedThisCombat` (bit 0 of `Relic.counter`) is cleared at
+    /// combat end in C# (`PaelsEye.cs:142-147`); the run must not carry it
+    /// into the next combat.
+    #[test]
+    fn paels_eye_rearms_each_combat() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = fresh_run();
+        rs.relics.push(sts2_core::RelicId::PaelsEye);
+        rs.relic_counters.insert(sts2_core::RelicId::PaelsEye, 0b01);
+        let combat = enter_combat(&rs, select_first(act1_normal_pool()));
+        let eye = combat
+            .relics
+            .iter()
+            .find(|r| r.kind == sts2_core::RelicKind::PaelsEye)
+            .expect("PaelsEye carried into combat");
+        assert_eq!(eye.counter & 0b01, 0, "a fresh combat re-arms PaelsEye");
     }
 
     #[test]
@@ -2928,6 +3227,58 @@ mod tests {
             rs.relic_counters.get(&sts2_core::RelicId::FishingRod),
             Some(&3),
             "CombatsSeen does not tick on a lost combat"
+        );
+    }
+
+    /// GH #1054 item 6: Mad Science's Improvement(N) upgrades N distinct
+    /// random deck cards at a won combat's end, drawn off the run's
+    /// `combat_card_selection` stream exactly as `ImprovementPower.cs` does.
+    #[test]
+    fn improvement_power_upgrades_distinct_deck_cards_on_victory() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RoomType;
+
+        let roster = [(MonsterKind::FuzzyWurmCrawler, MonsterSpawnArgs::None, 57)];
+        let strike = || {
+            crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false)
+                .expect("Strike POD")
+        };
+        let mut rs = fresh_run();
+        rs.master_deck = vec![strike(), strike(), strike(), strike()];
+
+        let mut state = enter_combat_from_roster(&rs, &roster, RoomType::Monster);
+        let player_uid = state.player.creature_uid.expect("player creature");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player_uid,
+            sts2_core::PowerKind::Improvement,
+            2,
+        );
+        // Expected picks: replay the stream from the combat's own cursor.
+        let mut rng = state.run_rng.combat_card_selection.clone();
+        let mut pool: Vec<usize> = (0..4).collect();
+        let first = pool.remove(rng.next_int(0, 3) as usize);
+        let second = pool.remove(rng.next_int(0, 2) as usize);
+
+        let mut lost = state.clone();
+        lost.player_won = false;
+        let mut rs_lost = rs.clone();
+        exit_combat(&mut rs_lost, &lost);
+        assert!(
+            rs_lost.master_deck.iter().all(|c| !c.upgraded),
+            "a loss upgrades nothing"
+        );
+
+        state.player_won = true;
+        exit_combat(&mut rs, &state);
+        let upgraded: Vec<usize> = (0..4).filter(|&i| rs.master_deck[i].upgraded).collect();
+        let mut expected = vec![first, second];
+        expected.sort_unstable();
+        assert_eq!(upgraded, expected);
+        assert_eq!(
+            rs.rng.combat_card_selection.counter(),
+            rng.counter(),
+            "the two draws persist into the run stream"
         );
     }
 

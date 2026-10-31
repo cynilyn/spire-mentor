@@ -5,8 +5,6 @@
 
 //! Act-3 monster ports (bead sts2-rs-m7f).
 //!
-//! Ported from sts2-rl-agent@01c094d:sts2_env/monsters/act3.py
-//!
 //! Ports the 28 monsters from
 //! `sts2-rl-agent@01c094d:sts2_env/monsters/act3.py` (826 LOC) to
 //! data-driven `MonsterAi` instances using the DSL skeleton from P5-1.
@@ -2517,12 +2515,23 @@ fn queen_after_death(
     let Some(owner_idx) = state.creatures.iter().position(|c| c.id == owner.0) else {
         return;
     };
-    let Some(ai) = state.creatures[owner_idx].ai.as_mut() else {
+    let queen = &mut state.creatures[owner_idx];
+    let Some(ai) = queen.ai.as_mut() else {
         return;
     };
     ai.set_counter(1);
     if ai.current_state_id() == "BURN_BRIGHT_FOR_ME_MOVE" {
-        ai.force_next_state("ENRAGE_MOVE");
+        if ai.current_move_performed() {
+            // She already ran BURN_BRIGHT this turn: C#'s NextMove is the
+            // coming roll.
+            ai.force_next_state("ENRAGE_MOVE");
+        } else {
+            // BURN_BRIGHT is the telegraphed move she has yet to perform —
+            // `SetMoveImmediate` swaps it out now (the Amalgam died to the
+            // player's end-of-turn Hailstorm in Defect act23 seed 1001).
+            ai.force_current_state("ENRAGE_MOVE");
+            queen.intent = ai.current_move().intents.first().copied();
+        }
     }
 }
 
@@ -2586,20 +2595,14 @@ pub fn create_queen_ai() -> MonsterAi {
         MonsterState::Move(MoveState {
             id: "YOURE_MINE_MOVE",
             effect: queen_youre_mine_effect,
-            intents: smallvec![
-                Intent::Debuff {
-                    kind: PowerKind::Frail,
-                    amount: 99,
-                },
-                Intent::Debuff {
-                    kind: PowerKind::Weak,
-                    amount: 99,
-                },
-                Intent::Debuff {
-                    kind: PowerKind::Vulnerable,
-                    amount: 99,
-                },
-            ],
+            // One `DebuffIntent` (`Queen.cs:136`, both builds): the telegraph
+            // is a single icon though the effect applies Frail, Weak and
+            // Vulnerable 99. The wire emits every declared intent, so three
+            // rows showed three icons.
+            intents: smallvec![Intent::Debuff {
+                kind: PowerKind::Frail,
+                amount: 99,
+            }],
             follow_up: Some("YOURE_MINE_NOW_BRANCH"),
             must_perform_once: false,
         }),
@@ -4344,6 +4347,18 @@ mod tests {
         );
     }
 
+    /// YOU_ARE_MINE telegraphs ONE `DebuffIntent` (`Queen.cs:136`, both
+    /// builds) though `YoureMineMove` applies three powers; the wire emits
+    /// every declared intent, so three rows showed three icons.
+    #[test]
+    fn queen_youre_mine_declares_one_debuff_intent() {
+        let mut ai = create_queen_ai();
+        assert!(ai.force_current_state_by_name("YOURE_MINE_MOVE"));
+        let intents = &ai.current_move().intents;
+        assert_eq!(intents.len(), 1, "{intents:?}");
+        assert!(matches!(intents[0], Intent::Debuff { .. }), "{intents:?}");
+    }
+
     /// Bead `sts2-rs-igdhp` (f933s sub-3): the PUPPET_STRINGS_MOVE
     /// effect_fn applies 3 stacks of `ChainsOfBinding` to the player
     /// per C# `Queen.cs:156-161 PuppetStringsMove`. Verifies the
@@ -4402,6 +4417,9 @@ mod tests {
         );
         assert_eq!(queen_ai.current_state_id(), "BURN_BRIGHT_FOR_ME_MOVE");
         assert_eq!(queen_ai.counter(), 0);
+        // She has already run BURN_BRIGHT this turn (the death lands during
+        // the enemy turn, after her move).
+        queen_ai.begin_move();
 
         combat.creatures.push(Creature {
             id: queen_uid.0,
@@ -4444,6 +4462,66 @@ mod tests {
             Some("ENRAGE_MOVE"),
             "BURN_BRIGHT → ENRAGE short-circuit",
         );
+    }
+
+    /// The Amalgam dies BEFORE the Queen acts (the player's end-of-turn
+    /// Hailstorm): BURN_BRIGHT is still her telegraphed move, and C#
+    /// `SetMoveImmediate(EnragedState)` replaces it now (Queen.cs:212-215), so
+    /// she enrages this very turn. Defect act23 seed 1001.
+    #[test]
+    fn queen_after_death_swaps_a_telegraphed_burn_bright_for_enrage_now() {
+        use std::num::NonZeroU32;
+
+        use smallvec::SmallVec;
+        use sts2_core::{Creature, CreatureUid, IntentHistory, MonsterId, PowerUid};
+
+        let mut combat = CombatState::default();
+        let queen_uid = CreatureUid(NonZeroU32::new(1).expect("nz"));
+        let amalgam_uid = CreatureUid(NonZeroU32::new(2).expect("nz"));
+        let mut queen_ai = create_queen_ai();
+        let _ = run_three_moves(&mut queen_ai);
+        assert_eq!(queen_ai.current_state_id(), "BURN_BRIGHT_FOR_ME_MOVE");
+        assert!(
+            !queen_ai.current_move_performed(),
+            "telegraphed, not yet run"
+        );
+        for (uid, hp, kind, name, ai) in [
+            (
+                queen_uid,
+                200,
+                sts2_core::MonsterKind::Queen,
+                "Queen",
+                Some(queen_ai),
+            ),
+            (
+                amalgam_uid,
+                0,
+                sts2_core::MonsterKind::TorchHeadAmalgam,
+                "TorchHeadAmalgam",
+                None,
+            ),
+        ] {
+            combat.creatures.push(Creature {
+                id: uid.0,
+                current_hp: hp,
+                max_hp: 200,
+                block: 0,
+                powers: SmallVec::<[PowerUid; 8]>::new(),
+                species: Some(kind),
+                monster_id: MonsterId(name),
+                intent: None,
+                intent_history: IntentHistory::default(),
+                ai,
+            });
+            combat.enemy_uids.push(uid);
+        }
+
+        super::queen_after_death(&mut combat, amalgam_uid, queen_uid);
+
+        let queen = &combat.creatures[0];
+        let ai = queen.ai.as_ref().expect("queen has ai");
+        assert_eq!(ai.current_state_id(), "ENRAGE_MOVE");
+        assert_eq!(queen.intent, ai.current_move().intents.first().copied());
     }
 
     /// Negative path for `sts2-rs-6g4v4`: the listener ignores deaths of

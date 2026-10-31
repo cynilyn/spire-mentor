@@ -342,7 +342,11 @@ impl Game {
                 .map(|(c, r)| MapCoord::new(c, r))
                 .collect();
             let act = u8::try_from(snapshot.act.max(1)).unwrap_or(1);
-            let total_floor = i32::try_from(snapshot.floor).unwrap_or(0);
+            // The paste carries the game's floor, which counts each act's
+            // start room; the engine's counter does not (`rmx::game_floor`).
+            let total_floor = i32::try_from(snapshot.floor - i64::from(act))
+                .unwrap_or(0)
+                .max(0);
             rm.debug_place_on_map(act, MapCoord::new(col, row), visited, row + 1, total_floor)
                 .map_err(|e| GameError(format!("could not place the run on the map: {e}")))?;
             notes.extend(map_disagreements(&rm, snapshot));
@@ -648,14 +652,25 @@ impl Game {
             // the eligible subset).
             if rmx::pending_deck_enchants(rm) > 0 {
                 let idxs = sorted_unique(parse_indices(args.get("indices"))?, true);
-                if idxs.is_empty() {
+                // "Up to N" (Kifuda / Gnarled Hammer) may confirm fewer, or none.
+                let optional = rmx::pending_enchant_optional(rm);
+                if idxs.is_empty() && !optional {
                     return err("select_cards requires an index");
                 }
                 let acts = idxs
                     .into_iter()
                     .map(|i| RunAction::EnchantDeckCard { idx: usize_of(i) })
                     .collect();
-                return self.take_all(action, acts);
+                let out = self.take_all(action, acts)?;
+                if optional {
+                    if let Some(rm) = self.rm.as_mut() {
+                        if rmx::pending_enchant_optional(rm) {
+                            rm.decline_optional_deck_enchants();
+                            return Ok(self.serialize());
+                        }
+                    }
+                }
+                return Ok(out);
             }
             // Multi-pick card grant: ascending with shift, like transforms.
             if rmx::pending_card_grants(rm) > 0 {
@@ -976,7 +991,7 @@ impl Game {
         json!({
             "decision": decision,
             "player": self.player(),
-            "floor": rmx::total_floor(rm),
+            "floor": rmx::game_floor(rm),
             "act": rm.run_state.act_index,
             "ascension": rm.run_state.ascension_level,
         })
@@ -1184,7 +1199,12 @@ impl Game {
         let rm = self.rm.as_ref().expect("run");
         let cards = self.deck_subset_cards(&rmx::enchant_select_deck_indices(rm));
         let count = Self::clamp_count(rmx::pending_deck_enchants(rm), cards.len());
-        Self::set_select(state, cards, count, count, false, "enchant");
+        let min = if rmx::pending_enchant_optional(rm) {
+            0
+        } else {
+            count
+        };
+        Self::set_select(state, cards, min, count, false, "enchant");
     }
 
     /// `_fill_card_grant`.

@@ -1692,3 +1692,16 @@ def test_the_echo_form_budget_survives_a_reconcile(tmp_path):
     assert mirror.state.cards_first_in_series_this_turn() == 1, (
         "the reconstruction re-zeroed the EchoForm gate; the transplant must carry it"
     )
+
+
+def test_a_disclosed_turn_history_is_reality_not_carried():
+    """GH #989: the turn's exhausts and card block gains ride the wire from
+    newer mods (zero included); then the reconcile lets reality win on them,
+    and only an older producer's wire leaves them to the carried mirror."""
+    from combat_mirror import _turn_history_disclosed
+
+    assert not _turn_history_disclosed({"player": {}})
+    assert not _turn_history_disclosed({"player": {"cards_exhausted_this_turn": 0}})
+    assert _turn_history_disclosed(
+        {"player": {"cards_exhausted_this_turn": 0, "card_block_gains_this_turn": 0}}
+    )

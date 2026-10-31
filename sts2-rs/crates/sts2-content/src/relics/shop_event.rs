@@ -1,10 +1,8 @@
 //! Shop + Ancient (Boss) relic dispatch — bead `sts2-rs-yyw` (P7-5).
 //!
-//! Ported from `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py`,
-//! restricted to the `RelicRarity.SHOP` (30 entries) and
+//! Covers the `RelicRarity.SHOP` (30 entries) and
 //! `RelicRarity.ANCIENT` (92 entries) classes — 122 relics total. The
-//! sibling bead `sts2-rs-7ez` ports the `RelicRarity.EVENT` subset of
-//! the same Python file into `event_reward.rs`.
+//! `RelicRarity.EVENT` subset lives in `event_reward.rs`.
 //!
 //! ## Terminology note
 //!
@@ -297,6 +295,10 @@ pub fn install_pool() {
     register_modify_card_reward_creation_options(
         RelicId::DingyRug,
         listener_dingy_rug as ModifyCardRewardCreationOptionsRunFn,
+    );
+    register_modify_card_reward_creation_options(
+        RelicId::PrismaticGem,
+        listener_prismatic_gem as ModifyCardRewardCreationOptionsRunFn,
     );
     // Bead `sts2-rs-psf9`: real `after_obtained` listener for Orrery.
     // Python `shop_event.py::Orrery.after_obtained` loops `CARDS = 5`
@@ -649,6 +651,10 @@ pub fn install_pool() {
         RelicKind::BurningSticks,
         listener_burning_sticks as AfterCardExhaustedFn,
     );
+    register_before_combat_start(
+        RelicId::BurningSticks,
+        listener_burning_sticks_reset as BeforeCombatStartFn,
+    );
     // Bead `sts2-rs-70anj.1`: real `modify_damage_additive` listener
     // for `MysticLighter::EXTRA_DAMAGE = 9` (Python
     // `shop_event.py::MysticLighter`). Enchanted Attack cards dealt by
@@ -739,19 +745,13 @@ pub fn install_pool() {
         RelicId::ChoicesParadox,
         listener_choices_paradox_reset as BeforeCombatStartFn,
     );
-    // Bead `sts2-rs-70anj.1`: real `after_card_played` +
-    // `before_side_turn_start` legs for `BrilliantScarf` (Python
-    // `shop_event.py::BrilliantScarf`). The Python class is a
-    // tracker-only mirror at pin `01c094d` (the "5th card costs 0"
-    // effect is documented but never implemented in Python — see
-    // `feedback_plan_doc_lag_check_code_first`). We mirror the actual
-    // Python behavior: increment `Relic.counter` per player card
-    // played, reset on player side-turn-start. Cost-0 hook deferred
-    // until Python adds it.
-    register_after_card_played(
-        RelicId::BrilliantScarf,
-        listener_brilliant_scarf_card_played as AfterCardPlayedFn,
-    );
+    // `BrilliantScarf`: the relic's `counter` is C#'s `CardsPlayedThisTurn`,
+    // reset here at the player's side-turn start
+    // (`BrilliantScarf.BeforeSideTurnStart`). It is incremented in sts2-core
+    // `combat_loop::finish_card_play`, once per hand-play iteration, because
+    // C# `AfterCardPlayed` skips auto-plays (`cardPlay.IsAutoPlay`) and this
+    // bus cannot tell them apart. The "fifth card costs 0" hooks read it in
+    // sts2-core `hooks::brilliant_scarf_makes_free`.
     register_before_side_turn_start(
         RelicId::BrilliantScarf,
         listener_brilliant_scarf_turn_reset as BeforeSideTurnStartFn,
@@ -799,6 +799,10 @@ pub fn install_pool() {
     register_before_turn_end(
         RelicId::PaelsEye,
         listener_paels_eye_before_turn_end as BeforeTurnEndFn,
+    );
+    register_before_combat_start(
+        RelicId::PaelsEye,
+        listener_paels_eye_reset as BeforeCombatStartFn,
     );
     // Bead `sts2-rs-ad53n`: `MusicBox` listeners. Python
     // `shop_event.py::MusicBox` — first Attack played per player turn,
@@ -1711,7 +1715,11 @@ fn listener_iron_club(state: &mut CombatState, _ctx: &CardEventCtx) -> EffectRes
         }
     }
     if should_draw {
-        let _ = state.draw_into_hand(1);
+        // `CardPileCmd.Draw(choiceContext, 1, Owner)` (IronClub.cs:92) is a
+        // card-effect draw, so `Hook.ShouldDraw` vetoes it under NoDraw
+        // (CardPileCmd.cs:826-830): the 4th card of a Battle Trance turn
+        // draws nothing (act23 Ironclad:1012).
+        let _ = state.draw_into_hand_card_effect(1);
         EffectResult::Resolved
     } else {
         EffectResult::NotImplemented
@@ -1940,9 +1948,30 @@ fn listener_burning_sticks(state: &mut CombatState, ctx: &CardEventCtx) -> Effec
     EffectResult::Resolved
 }
 
+/// Re-arm BurningSticks for each combat: C# clears `WasUsedThisCombat` on
+/// entering a combat room and at combat end (`BurningSticks.cs:33-42`,
+/// `:56-61`). The latch lives on `Relic.counter`, which the run carries
+/// between combats (`run_bridge::enter_combat_from_roster` seeds it from
+/// `rs.relic_counters`), so without this reset the relic fired in its first
+/// combat only (act23 Ironclad:1007).
+fn listener_burning_sticks_reset(state: &mut CombatState) -> EffectResult {
+    let mut any = false;
+    for relic in &mut state.relics {
+        if relic.kind == RelicKind::BurningSticks {
+            relic.counter = 0;
+            any = true;
+        }
+    }
+    if any {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
+}
+
 /// `MysticLighter::modify_damage_additive` — `if dealer is owner and
-/// card.card_type == ATTACK and card.is_enchanted and props & MOVE:
-/// return EXTRA_DAMAGE = 9` (Python
+/// the played card instance is enchanted and props is powered (MOVE and
+/// not UNPOWERED): return EXTRA_DAMAGE = 9` (Python
 /// `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::MysticLighter`).
 /// "Enchanted" means `!card.enchantments.is_empty()` on the Rust
 /// `Card` POD (mirrors Python `CardInstance.enchantments: dict[str,
@@ -1958,18 +1987,29 @@ fn listener_mystic_lighter(state: &CombatState, ctx: &ModifyDamageCtx) -> i32 {
     if ctx.dealer != Some(player_uid) {
         return 0;
     }
-    if !ctx.props.contains(ValueProps::MOVE) {
+    // C# `MysticLighter.ModifyDamageAdditive` (v0.111.0
+    // `MysticLighter.cs:16-31`) gates on
+    // `props.IsPoweredAttack()` (MOVE && !UNPOWERED,
+    // ValuePropExtensions.cs:5) and `cardSource?.Enchantment != null`,
+    // with no card-type check.
+    if !ctx.props.is_powered() {
         return 0;
     }
-    let Some(card_id) = ctx.card else {
+    // `cardSource` is the SPECIFIC played instance, so key on the instance
+    // uid, not `ctx.card`'s id. The old `find(card_id == …)` read the FIRST
+    // arena copy with that id: with a Pael's Growth Clone on master_deck[0]
+    // (the LAST arena copy, since enter_combat feeds
+    // `master_deck.iter().rev()`) the enchanted Strike lost its +9 (act23
+    // parity Ironclad 1019: C# 22 vs Rust 9); in the reverse order every
+    // copy got it. Same shape as MiniatureCannon bead `sts2-rs-nwz1n`.
+    let Some(card_uid) = ctx.card_uid else {
         return 0;
     };
-    let is_enchanted_attack = state
+    let is_enchanted = state
         .cards
-        .iter()
-        .find(|c| c.card_id == card_id)
-        .is_some_and(|c| c.card_type == CardType::Attack && !c.enchantments.is_empty());
-    if is_enchanted_attack {
+        .get(card_uid.0.get() as usize - 1)
+        .is_some_and(|c| !c.enchantments.is_empty());
+    if is_enchanted {
         MYSTIC_LIGHTER_EXTRA_DAMAGE
     } else {
         0
@@ -2143,30 +2183,6 @@ fn listener_chemical_x_modify_x_value(state: &CombatState, current_x: i32) -> i3
     current_x + CHEMICAL_X_INCREASE
 }
 
-/// `BrilliantScarf::after_card_played` — `self._cards_this_turn += 1`
-/// (Python `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::
-/// BrilliantScarf`). Tracker-only mirror — Python's documented "5th
-/// card costs 0" effect is not implemented at this pin (see
-/// `feedback_plan_doc_lag_check_code_first`). We track the per-turn
-/// play count on `Relic.counter` so downstream beads can wire the
-/// cost-0 hook once Python adds it. Bead `sts2-rs-70anj.1`.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn listener_brilliant_scarf_card_played(
-    state: &mut CombatState,
-    _ctx: &CardEventCtx,
-) -> EffectResult {
-    for relic in &mut state.relics {
-        if relic.is_melted {
-            continue;
-        }
-        if relic.kind == RelicKind::BrilliantScarf {
-            relic.counter = relic.counter.saturating_add(1);
-            return EffectResult::Resolved;
-        }
-    }
-    EffectResult::NotImplemented
-}
-
 /// `BrilliantScarf::before_side_turn_start` — `if side == PLAYER:
 /// self._cards_this_turn = 0` (Python
 /// `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::
@@ -2224,6 +2240,25 @@ fn listener_blessed_antler(state: &mut CombatState) -> EffectResult {
         let _ = sts2_core::card_effects::spawn_card_into_draw_pile_random_position(state, dazed);
     }
     EffectResult::Resolved
+}
+
+/// Re-arm PaelsEye for each combat: C# `AfterCombatEnd` clears
+/// `UsedThisCombat` (`PaelsEye.cs:142-147`). Both flags live on
+/// `Relic.counter`, which the run carries between combats, so without this
+/// reset the extra turn fired in one combat per run only.
+fn listener_paels_eye_reset(state: &mut CombatState) -> EffectResult {
+    let mut any = false;
+    for relic in &mut state.relics {
+        if relic.kind == RelicKind::PaelsEye {
+            relic.counter = 0;
+            any = true;
+        }
+    }
+    if any {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
 }
 
 /// `PaelsEye::after_card_played` — `self._any_cards_played = True`
@@ -2547,80 +2582,77 @@ fn listener_pumpkin_candle_rest_site_options(
     EffectResult::Resolved
 }
 
-/// `DingyRug::modify_card_reward_creation_options` — replace the
-/// implicit character pool with an explicit `custom_card_ids` slate
-/// that unions the character pool with the colorless pool, then
-/// flip `has_custom_card_pool = true` so the rarity-roll generator
-/// downstream consumes the explicit slate. Mirrors Python
-/// `shop_event.py::DingyRug.modify_card_reward_creation_options`
-/// (`sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py:262-319`).
-///
-/// Python flow:
-/// 1. Bail when `options.allow_card_pool_modifications` is false
-///    (the per-relic skip handshake — Snecko-style `modify_card_pool`
-///    suppression flips this off for its own roll).
-/// 2. Collect character-pool ids via `card_reward_candidate_ids`
-///    (already obeys `card_type` / `generation_context` filters).
-/// 3. Collect colorless ids via `eligible_registered_cards(card_pool
-///    = COLORLESS)`. When `allow_rarity_modifications` is false,
-///    constrain the colorless ids to the rarities already present
-///    in the character-pool slate.
-/// 4. Return options with `has_custom_card_pool=True`,
-///    `character_ids=()`, `use_default_character_pool=False`, and
-///    `custom_card_ids = dedupe(character + colorless)`.
-///
-/// Rust port: same shape, but the filter args (`card_type`,
-/// `generation_context`, multiplayer) collapse at this pin —
-/// `card_type` defaults to `None` in `CardRewardGenerationOptions`
-/// at every documented call site, the spec-side per-card
-/// `generation_context` filter isn't ported yet, and multiplayer
-/// is out of scope per `CLAUDE.md`. So the walk is "every spec in
-/// the per-character + colorless slices". The
-/// `allow_rarity_modifications=false` branch IS honored: when the
-/// flag is clear, the colorless slate is filtered to the rarities
-/// seen in the character pool (matches Python's `allowed_rarities`
-/// guard for SilverCrucible-style chains).
-///
-/// Bead `sts2-rs-u5emw` (P9.3 / 70anj.4 body-fill).
+/// `PrismaticGem::ModifyCardRewardCreationOptions` — a card reward rolls from
+/// every character's pool: `player.UnlockState.CharacterCardPools
+/// .Union(options.CardPools)` (`PrismaticGem.cs:32-52`; v0.111.0 the same
+/// minus the `CustomCardPool` clause, which that build no longer has). The
+/// union keeps `ModelDb.AllCharacters` order (Ironclad, Silent, Regent,
+/// Necrobinder, Defect — `ModelDb.cs:123-130`) ahead of the reward's own
+/// pools, and that order is the `NextItem` index space. Skipped for
+/// `NoCardPoolModifications`, a custom pool, or an all-colorless pool. Every
+/// caller of this channel rolls a `CardReward`, so the `IsCardReward` gate
+/// always passes. The relic was registered nowhere, so its rewards rolled from
+/// the owner's pool only (act23 probe: Defect / Necrobinder seed 1002 offered
+/// different cards for the same Rewards reads).
+fn listener_prismatic_gem(
+    rs: &mut RunState,
+    opts: &mut CardRewardGenerationOptions,
+) -> EffectResult {
+    use sts2_core::potions::CharacterId;
+    /// `ModelDb.AllCharacters` (all unlocked in the headless game).
+    const ALL_CHARACTERS: [CharacterId; 5] = [
+        CharacterId::Ironclad,
+        CharacterId::Silent,
+        CharacterId::Regent,
+        CharacterId::Necrobinder,
+        CharacterId::Defect,
+    ];
+    if !rs.owns_active_relic(RelicId::PrismaticGem) {
+        return EffectResult::NotImplemented;
+    }
+    if !opts.allow_card_pool_modifications || opts.has_custom_card_pool {
+        return EffectResult::NotImplemented;
+    }
+    let mut own: Vec<CharacterId> = if !opts.character_ids.is_empty() {
+        opts.character_ids.clone()
+    } else if opts.use_default_character_pool {
+        vec![rs.character_id]
+    } else {
+        Vec::new()
+    };
+    if own.is_empty() {
+        // Only the colorless pool (or nothing) — C# leaves it alone.
+        return EffectResult::NotImplemented;
+    }
+    let mut pools: Vec<CharacterId> = ALL_CHARACTERS.to_vec();
+    own.retain(|c| !pools.contains(c));
+    pools.extend(own);
+    opts.character_ids = pools;
+    opts.use_default_character_pool = false;
+    EffectResult::Resolved
+}
+
+/// `DingyRug::modify_card_reward_creation_options` — a card reward also
+/// rolls from the colorless pool (C# `DingyRug.ModifyCardRewardCreationOptions`).
+/// Skipped for `NoCardPoolModifications`, a custom pool, or a reward that
+/// already includes colorless. Bead `sts2-rs-u5emw`.
 fn listener_dingy_rug(rs: &mut RunState, opts: &mut CardRewardGenerationOptions) -> EffectResult {
     if !rs.owns_active_relic(RelicId::DingyRug) {
         return EffectResult::NotImplemented;
     }
-    if !opts.allow_card_pool_modifications {
+    if !opts.allow_card_pool_modifications || opts.has_custom_card_pool || opts.include_colorless {
         return EffectResult::NotImplemented;
     }
-
-    use std::collections::HashSet;
-
-    use crate::cards::spec_index::{specs_for_character, COLORLESS_SPECS};
-
-    let mut seen: HashSet<sts2_core::cards::CardId> = HashSet::new();
-    let mut combined: Vec<sts2_core::cards::CardId> = Vec::new();
-    let mut character_rarities: HashSet<crate::cards::CardRarity> = HashSet::new();
-
-    // The run's game build decides each card's rarity (GH #793).
-    let version = rs.game_version;
-    for spec in crate::cards::spec_index::specs_in(specs_for_character(rs.character_id), version) {
-        if seen.insert(spec.id) {
-            combined.push(spec.id);
-            character_rarities.insert(spec.rarity);
-        }
-    }
-
-    let rarity_gated = !opts.allow_rarity_modifications;
-    for spec in crate::cards::spec_index::specs_in(COLORLESS_SPECS, version) {
-        if rarity_gated && !character_rarities.contains(&spec.rarity) {
-            continue;
-        }
-        if seen.insert(spec.id) {
-            combined.push(spec.id);
-        }
-    }
-
-    opts.has_custom_card_pool = true;
-    opts.custom_card_ids = combined;
-    opts.character_ids.clear();
-    opts.use_default_character_pool = false;
+    // C# `DingyRug.ModifyCardRewardCreationOptions` (`DingyRug.cs:13-36`;
+    // v0.111.0 the same as a `Union`) appends the colorless pool to the
+    // reward's own pools, keeping its filter — `include_colorless`, which
+    // every roller already orders character-then-colorless. The old port
+    // built an explicit custom pool: it kept MultiplayerOnly cards (the
+    // custom path skips `FilterForPlayerCount`, shifting the `NextItem`
+    // index), and it cleared `character_ids`, so Lasting Candy found no
+    // Powers to add (act23 probe: Silent 1018, a 3-card reward where C#
+    // offered 4 with a different third card).
+    opts.include_colorless = true;
     EffectResult::Resolved
 }
 
@@ -2827,23 +2859,24 @@ fn listener_sand_castle(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `GlassEye::after_obtained` — push `GLASS_EYE_CARDS = 5`
-/// `Reward::Card(CardReward::empty())` sentinels (Python
-/// `shop_event.py::GlassEye.after_obtained`: 5-iteration loop over
-/// `(COMMON, COMMON, UNCOMMON, UNCOMMON, RARE)` rarities, each
-/// pushing a `CardReward` with `option_count=3` + forced rarity).
-/// The rarity-forcing + `option_count=3` clauses are deferred —
-/// the current Rust `CardReward::empty()` placeholder has no rarity
-/// or option-count fields; umbrella `sts2-rs-01o` (random reward
-/// rolling) materializes both at flush time. Same convention as
-/// Orrery (`sts2-rs-psf9`) / MassiveScroll (`sts2-rs-64vb`). Bead
-/// `sts2-rs-66l9f`.
+/// `GlassEye::after_obtained` — queue its 5 pickup card rewards (Common,
+/// Common, Uncommon, Uncommon, Rare; pick 1 of 3 each), rolled NOW as C#
+/// `GlassEye.AfterObtained` does (`GlassEye.cs:15-33` → `RewardsCmd.
+/// OfferCustom`): uniform odds within the forced rarity and NO upgrade roll
+/// ([`crate::cards::spec_index::roll_glass_eye_card_rewards`]). The old
+/// `CardReward::empty()` sentinels rolled at drain time with standard reward
+/// odds — wrong rarities, upgrade floats and Rewards-stream reads (act23
+/// probe: Ironclad 1000 / Regent 1007 Orobas → Glass Eye). Each slate runs
+/// the card-reward slate hooks (`CardReward.cs:89`), like Colorful
+/// Philosophers. Bead `sts2-rs-66l9f`.
 fn listener_glass_eye(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::GlassEye) {
         return EffectResult::NotImplemented;
     }
-    for _ in 0..GLASS_EYE_CARDS {
-        rs.pending_rewards.push(Reward::Card(CardReward::empty()));
+    for cards in crate::cards::spec_index::roll_glass_eye_card_rewards(rs) {
+        let cards = rs.offer_card_slate(cards, true);
+        rs.pending_rewards
+            .push(Reward::Card(CardReward::from_cards(&cards)));
     }
     EffectResult::Resolved
 }
@@ -3066,6 +3099,7 @@ fn try_queue_interactive_enchant(
     ench: sts2_core::cards::EnchantmentId,
     amount: i32,
     count: usize,
+    optional: bool,
 ) -> bool {
     if !rs.interactive_card_transform {
         return false;
@@ -3082,6 +3116,7 @@ fn try_queue_interactive_enchant(
                 amount,
                 type_restriction,
                 secondary_type,
+                optional,
             });
     }
     true
@@ -3107,6 +3142,9 @@ fn listener_gnarled_hammer(rs: &mut RunState) -> EffectResult {
         sts2_core::cards::EnchantmentId::Sharp,
         GNARLED_HAMMER_SHARP,
         GNARLED_HAMMER_CARDS,
+        // `CardSelectorPrefs(EnchantSelectionPrompt, 0, Cards)`: up to 3
+        // (`GnarledHammer.cs:30`).
+        true,
     ) {
         return EffectResult::Resolved;
     }
@@ -3155,6 +3193,9 @@ fn listener_kifuda(rs: &mut RunState) -> EffectResult {
         sts2_core::cards::EnchantmentId::Adroit,
         KIFUDA_ADROIT,
         KIFUDA_CARDS,
+        // `CardSelectorPrefs(EnchantSelectionPrompt, 0, Cards)`: up to 3
+        // (`Kifuda.cs:26`).
+        true,
     ) {
         return EffectResult::Resolved;
     }
@@ -3202,6 +3243,7 @@ fn listener_punch_dagger(rs: &mut RunState) -> EffectResult {
         sts2_core::cards::EnchantmentId::Momentum,
         PUNCH_DAGGER_MOMENTUM,
         1,
+        false,
     ) {
         return EffectResult::Resolved;
     }
@@ -3254,6 +3296,7 @@ fn listener_beautiful_bracelet(rs: &mut RunState) -> EffectResult {
         sts2_core::cards::EnchantmentId::Swift,
         BEAUTIFUL_BRACELET_SWIFT,
         BEAUTIFUL_BRACELET_CARDS,
+        false,
     ) {
         return EffectResult::Resolved;
     }
@@ -3324,10 +3367,25 @@ fn listener_royal_stamp(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::RoyalStamp) {
         return EffectResult::NotImplemented;
     }
+    // C# hands the grid `list.UnstableShuffle(Rng.Niche)` of the enchantable
+    // cards (RoyalStamp.cs AfterObtained); `FromDeckForEnchantment` re-sorts
+    // them by deck index (CardSelectCmd.cs:576-577), so only the n - 1 Niche
+    // reads survive — and they skew every later Niche roll (monster HP) when
+    // skipped (act23 Necrobinder 1003/1018: Niche 18-19 reads behind).
+    let n =
+        enchantable_candidate_card_ids(rs, sts2_core::cards::EnchantmentId::RoyallyApproved).len();
+    let mut shuffled: Vec<usize> = (0..n).collect();
+    rs.rng.niche.shuffle(&mut shuffled);
     // C# `RoyalStamp.AfterObtained` awaits an interactive
     // `CardSelectCmd.FromDeckForEnchantment` (pick 1 of the enchantable
     // cards) — surface that deck card-select when the run is interactive.
-    if try_queue_interactive_enchant(rs, sts2_core::cards::EnchantmentId::RoyallyApproved, 1, 1) {
+    if try_queue_interactive_enchant(
+        rs,
+        sts2_core::cards::EnchantmentId::RoyallyApproved,
+        1,
+        1,
+        false,
+    ) {
         return EffectResult::Resolved;
     }
     // Bead `sts2-rs-g5ksv`: Python `relics/shop_event.py:619`
@@ -3366,7 +3424,7 @@ fn listener_electric_shrymp(rs: &mut RunState) -> EffectResult {
     // C# `ElectricShrymp.AfterObtained` awaits an interactive
     // `CardSelectCmd.FromDeckForEnchantment` — surface the deck
     // card-select when the run is interactive.
-    if try_queue_interactive_enchant(rs, sts2_core::cards::EnchantmentId::Imbued, 1, 1) {
+    if try_queue_interactive_enchant(rs, sts2_core::cards::EnchantmentId::Imbued, 1, 1, false) {
         return EffectResult::Resolved;
     }
     let _ = enchant_eligible_deck_cards(rs, sts2_core::cards::EnchantmentId::Imbued, 1, 1);
@@ -3422,22 +3480,42 @@ fn listener_toy_box(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `PaelsClaw::after_obtained` — enchant every deck card with
-/// `Goopy(1)` (Python `shop_event.py::PaelsClaw.after_obtained`:
-/// `owner.enchant_all_cards("Goopy")`). Python's `enchant_all_cards`
-/// blindly calls `card.add_enchantment` on every deck card with no
-/// eligibility check, so the Rust port mirrors that — direct
-/// `add_enchantment` per card, no `can_enchant_card` gate. Bead
-/// `sts2-rs-70anj.4`.
+/// `PaelsClaw::after_obtained` — enchant every deck card that passes
+/// `Goopy.CanEnchant` with `Goopy(1)` (C# `Models.Relics/PaelsClaw.cs:33-44`:
+/// `if (ModelDb.Enchantment<Goopy>().CanEnchant(item)) CardCmd.Enchant<Goopy>`).
+/// GH #1054: the earlier port mirrored Python's blind `enchant_all_cards`.
 fn listener_paels_claw(rs: &mut RunState) -> EffectResult {
     use sts2_core::cards::EnchantmentId;
     if rs.last_obtained_relic != Some(RelicId::PaelsClaw) {
         return EffectResult::NotImplemented;
     }
     for card in &mut rs.master_deck {
-        card.add_enchantment(EnchantmentId::Goopy, 1);
+        if goopy_can_enchant(card) {
+            card.add_enchantment(EnchantmentId::Goopy, 1);
+        }
     }
     EffectResult::Resolved
+}
+
+/// C# `Goopy.CanEnchant` (`Goopy.cs:16-23`) for a master-deck card:
+/// `base.CanEnchant && Tags.Contains(CardTag.Defend)`. The base gate
+/// (`EnchantmentModel.cs:273-294`) rejects Status/Curse/Quest, Unplayable
+/// deck cards, and any card already enchanted (e.g. a Sapphire Seed `Sown`
+/// Defend): Goopy is not `IsStackable` (`EnchantmentModel.cs:173`), so even
+/// an existing Goopy blocks a second one.
+fn goopy_can_enchant(card: &sts2_core::cards::Card) -> bool {
+    use sts2_core::cards::{CardTag, CardType};
+    if matches!(card.card_type, CardType::Status | CardType::Curse) {
+        return false;
+    }
+    if sts2_core::card_effects::card_unplayable_inst(card) {
+        return false;
+    }
+    if !card.enchantments.is_empty() {
+        return false;
+    }
+    card.has_tag(CardTag::Defend)
+        || crate::cards::status::tags_for_card_id(card.card_id).contains(CardTag::Defend)
 }
 
 /// `VelvetChoker::after_card_played` — bump `relic.counter` once per
@@ -3728,11 +3806,30 @@ fn listener_miniature_tent_disable_remaining(
 /// side yet — Python preserves the original rarity bucket. Same
 /// shortcut used by `listener_arcane_scroll` / `listener_dusty_tome`.
 /// Bead `sts2-rs-70anj.3.9`.
+///
+/// Interactive hosts ([`RunState::interactive_card_transform`]) get the C#
+/// shape instead (`Astrolabe.cs:31-39`, same in v0.111.0): the player picks
+/// 3 deck cards (`CardSelectCmd.FromDeckForTransformation`), and each is
+/// replaced by `CardFactory.CreateRandomCardForTransform(item, false,
+/// Rng.Niche)`, upgraded, then transformed in. That queues 3 upgrading
+/// [`sts2_core::PendingDeckTransform`] picks and draws nothing now — the
+/// legacy path below read the Rewards stream, which C# never touches here
+/// (act23 probe: Defect seed 1004, Darv → Astrolabe).
 fn listener_astrolabe(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::Astrolabe) {
         return EffectResult::NotImplemented;
     }
     if rs.master_deck.is_empty() {
+        return EffectResult::Resolved;
+    }
+    if rs.interactive_card_transform {
+        for _ in 0..ASTROLABE_CARDS.min(rs.master_deck.len()) {
+            rs.pending_deck_transforms
+                .push(sts2_core::PendingDeckTransform {
+                    upgrade: true,
+                    ..Default::default()
+                });
+        }
         return EffectResult::Resolved;
     }
     // Candidate set: deck indices whose cards are transformable.
@@ -3771,17 +3868,19 @@ fn listener_astrolabe(rs: &mut RunState) -> EffectResult {
 }
 
 /// `Toolbox::before_hand_draw` — once per combat on round 1, open a
-/// 3-option colorless `AddGeneratedToHand` choice. Mirrors Python
-/// `shop_event.py::Toolbox.before_hand_draw` at
-/// `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py:702`.
+/// 3-option colorless `AddGeneratedToHand` choice.
+///
+/// C# `Toolbox.BeforeHandDraw` (v0.111.0 `Toolbox.cs:22-33`) offers
+/// `CardFactory.GetDistinctForCombat(Owner, ColorlessCardPool unlocked
+/// cards, 3, Rng.CombatCardGeneration)`: the player-count + combat filters
+/// (no MultiplayerOnly cards solo, no `CanBeGeneratedInCombat=false`), then
+/// `UnstableShuffle(CombatCardGeneration).Take(3)` — exactly
+/// [`crate::cards::colorless::distinct_colorless_modifier_ids`].
 ///
 /// Per-combat latch lives on the Toolbox `Relic.counter` (0 = unused,
 /// 1 = fired). Reset to 0 by [`listener_toolbox_reset`] on
-/// `before_combat_start`. Sampling uses `state.rng` (combat RNG)
-/// since `rs.rewards_rng` is run-side and the listener has only
-/// `&mut CombatState`. Bead `sts2-rs-70anj.3.13.tb`.
+/// `before_combat_start`. Bead `sts2-rs-70anj.3.13.tb`.
 fn listener_toolbox_before_hand_draw(state: &mut CombatState) -> EffectResult {
-    use sts2_core::cards::CardId;
     use sts2_core::{ChoiceKind, ChoiceOption};
 
     if state.turn_number() != 1 {
@@ -3798,26 +3897,12 @@ fn listener_toolbox_before_hand_draw(state: &mut CombatState) -> EffectResult {
     if state.relics[relic_idx].counter != 0 {
         return EffectResult::NotImplemented;
     }
-    // Sample TOOLBOX_CARDS distinct colorless cards using the combat
-    // RNG. We don't have a `RunState` ref here, so we inline the
-    // partial Fisher-Yates over a fresh pool snapshot.
-    let pool: Vec<CardId> = crate::cards::spec_index::COLORLESS_SPECS
-        .iter()
-        .map(|f| f().id)
-        .collect();
-    if pool.is_empty() {
+    let ids = crate::cards::colorless::distinct_colorless_modifier_ids(state, TOOLBOX_CARDS);
+    if ids.is_empty() {
         return EffectResult::NotImplemented;
     }
-    let mut candidates = pool;
-    let take = TOOLBOX_CARDS.min(candidates.len());
-    for i in 0..take {
-        let len_remaining = candidates.len() - i;
-        let j = i + (state.rng.next_int(0, i32::MAX) as usize) % len_remaining;
-        candidates.swap(i, j);
-    }
-    let options: Vec<ChoiceOption> = candidates
+    let options: Vec<ChoiceOption> = ids
         .into_iter()
-        .take(take)
         .map(|card_id| ChoiceOption {
             card_id,
             upgraded: false,
@@ -3855,11 +3940,9 @@ fn listener_toolbox_reset(state: &mut CombatState) -> EffectResult {
 /// — Python's `after_player_turn_start` is the player-side specialization
 /// of the general after-turn-start fire. Per-combat latch on Relic.counter.
 ///
-/// Divergence: Python applies the `retain` keyword (persistent across
-/// turns); the Rust port pushes the resolved uid into
-/// `player.retain_this_turn` (one-turn flag) at resolver time. If the
-/// player doesn't play the card on round 1, it discards at end-of-turn.
-/// Bead `sts2-rs-70anj.3.13.cp`.
+/// The `AddGeneratedRetainedToHand` resolver applies the persistent Retain
+/// keyword to the pick, matching C# `CardCmd.ApplyKeyword(item,
+/// CardKeyword.Retain)` (`ChoicesParadox.cs`). Bead `sts2-rs-70anj.3.13.cp`.
 fn listener_choices_paradox(state: &mut CombatState, side: Side) -> EffectResult {
     use sts2_core::cards::CardId;
     use sts2_core::{ChoiceKind, ChoiceOption};
@@ -3880,18 +3963,25 @@ fn listener_choices_paradox(state: &mut CombatState, side: Side) -> EffectResult
     let Some(character) = state.player.character else {
         return EffectResult::NotImplemented;
     };
-    let specs = crate::cards::spec_index::specs_for_character(character);
-    let pool: Vec<CardId> = specs.iter().map(|f| f().id).collect();
-    if pool.is_empty() {
+    // C# `CardFactory.GetDistinctForCombat(Owner, CardPool.GetUnlockedCards(..),
+    // Cards(5), Rng.CombatCardGeneration)` (ChoicesParadox.cs AfterPlayerTurnStart):
+    // an UnstableShuffle of the whole fight pool on CombatCardGeneration, take 5.
+    // The Python-pin partial Fisher-Yates over the search RNG drew different
+    // cards and left CombatCardGeneration ~80 reads behind (act23 Necrobinder
+    // 1014).
+    let mut candidates: Vec<CardId> =
+        crate::cards::colorless::helpers::fight_pool(state, character)
+            .iter()
+            .map(|s| s.id)
+            .collect();
+    if candidates.is_empty() {
         return EffectResult::NotImplemented;
     }
-    let mut candidates = pool;
+    state
+        .run_rng
+        .combat_card_generation
+        .shuffle(candidates.as_mut_slice());
     let take = CHOICES_PARADOX_CARDS.min(candidates.len());
-    for i in 0..take {
-        let len_remaining = candidates.len() - i;
-        let j = i + (state.rng.next_int(0, i32::MAX) as usize) % len_remaining;
-        candidates.swap(i, j);
-    }
     let options: Vec<ChoiceOption> = candidates
         .into_iter()
         .take(take)
@@ -4036,13 +4126,15 @@ fn listener_paels_growth(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `WingCharm::modify_card_reward_options_late` — pick one random
-/// option from the generated card-reward list and add `Swift(1)`
-/// (Python `shop_event.py::WingCharm.modify_card_reward_options_late`,
-/// `SWIFT = 1`). Index draw uses the dotnet `rs.rng.rewards` stream
-/// (bead `sts2-rs-hm2eb`; was the legacy Xoshiro `rewards_rng()` shim).
-/// Same channel as
-/// Glitter / FresnelLens. Bead `sts2-rs-70anj.4`.
+/// `WingCharm::modify_card_reward_options_late` — stamp `Swift(1)` on one
+/// random Swift-eligible option. C# `WingCharm.TryModifyCardRewardOptionsLate`
+/// (`WingCharm.cs:24-43`, identical in v0.111.0) filters the slate to
+/// `ModelDb.Enchantment<Swift>().CanEnchant(card)` (the base
+/// `EnchantmentModel.CanEnchant` rules, `EnchantmentModel.cs:273-294`) and
+/// draws the pick with `RunState.Rng.Niche.NextItem`. The port drew it off
+/// `Rewards` over the whole slate, adding a Rewards read to every card
+/// reward (act23 probe: Regent 1009 Room Full of Cheese, Rewards 238 vs
+/// C# 237). Same channel as Glitter / FresnelLens. Bead `sts2-rs-70anj.4`.
 fn listener_wing_charm_card_reward(
     rs: &mut RunState,
     cards: &mut Vec<sts2_core::cards::Card>,
@@ -4051,14 +4143,31 @@ fn listener_wing_charm_card_reward(
     if !rs.owns_active_relic(RelicId::WingCharm) {
         return EffectResult::NotImplemented;
     }
-    if cards.is_empty() {
+    let eligible: Vec<usize> = cards
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| swift_can_enchant(c))
+        .map(|(i, _)| i)
+        .collect();
+    if eligible.is_empty() {
         return EffectResult::NotImplemented;
     }
-    // Bead `sts2-rs-hm2eb` (943w7 Stage 3): dotnet `RunRngSet` reward
-    // stream, not the legacy Xoshiro `rewards_rng()` shim.
-    let idx = rs.rng.rewards.next_int_exclusive(0, cards.len() as i32) as usize;
-    cards[idx].add_enchantment(EnchantmentId::Swift, WING_CHARM_SWIFT);
+    let pick = rs.rng.niche.next_int_exclusive(0, eligible.len() as i32) as usize;
+    cards[eligible[pick]].add_enchantment(EnchantmentId::Swift, WING_CHARM_SWIFT);
     EffectResult::Resolved
+}
+
+/// C# `ModelDb.Enchantment<Swift>().CanEnchant(card)` on a reward slate
+/// card: Swift adds no rule of its own (`Swift.cs`), so this is the base
+/// `EnchantmentModel.CanEnchant` (`EnchantmentModel.cs:273-294`) — no
+/// Status / Curse / Quest type, and, no enchantment being stackable, no card
+/// that already carries one. Its Unplayable clause only bites for a card
+/// already in the Deck pile, which a reward option is not.
+fn swift_can_enchant(card: &sts2_core::cards::Card) -> bool {
+    use sts2_core::cards::CardType;
+    card.enchantments.is_empty()
+        && !matches!(card.card_type, CardType::Status | CardType::Curse)
+        && !card.is_quest()
 }
 
 /// `BiiigHug::after_obtained` — remove `BIIIG_HUG_CARDS = 4` cards
@@ -4370,6 +4479,22 @@ fn listener_preserved_fog(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::PreservedFog) {
         return EffectResult::NotImplemented;
     }
+    // C# `PreservedFog.AfterObtained` (`PreservedFog.cs:20-27`, same in
+    // v0.111.0) removes the picked cards, THEN `AddCurseToDeck<Folly>`. For an
+    // interactive host the removal is a deferred pick, so Folly must wait for
+    // the batch to drain or it sits in the removal `card_select` pool and the
+    // deck is one card larger at that decision (act23 probe: Regent 1011 /
+    // Silent 1011, Vakuu → Preserved Fog). Same shape as Field of Man-Sized
+    // Holes' Resist.
+    if rs.interactive_card_removal {
+        rs.remove_cards_from_deck(PRESERVED_FOG_CARDS);
+        if let Some(folly) =
+            crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Folly, false)
+        {
+            rs.pending_post_removal_cards.push(folly);
+        }
+        return EffectResult::Resolved;
+    }
     rs.remove_cards_from_deck(PRESERVED_FOG_CARDS);
     push_deck_card(rs, sts2_core::cards::CardId::Folly);
     EffectResult::Resolved
@@ -4418,12 +4543,30 @@ fn listener_archaic_tooth(rs: &mut RunState) -> EffectResult {
             _ => None,
         }
     };
-    for card in &mut rs.master_deck {
-        if let Some(target) = mapping(card.card_id) {
-            card.card_id = target;
-            break;
-        }
-    }
+    // `GetTranscendenceStarterCard` = first matching deck card; the
+    // replacement is a fresh card, upgraded and re-enchanted to match
+    // (ArchaicTooth.cs:144-166). `CardCmd.Transform` removes the original and
+    // APPENDS the replacement to the deck through the add-to-deck hooks
+    // (CardCmd.cs:402,427-436) — the old in-place `card_id` rewrite kept the
+    // slot, so the next combat's shuffle differed (act23 Defect 1013,
+    // Necrobinder 1010/1013, Regent 1011), and left the starter's stats.
+    let Some((idx, target)) = rs
+        .master_deck
+        .iter()
+        .enumerate()
+        .find_map(|(i, c)| mapping(c.card_id).map(|t| (i, t)))
+    else {
+        return EffectResult::Resolved;
+    };
+    let original = rs.master_deck[idx];
+    let Some(mut replacement) =
+        crate::cards::spec_index::card_pod_from_id(target, original.upgraded)
+    else {
+        return EffectResult::Resolved;
+    };
+    replacement.uid = original.uid;
+    replacement.enchantments = original.enchantments;
+    let _ = rs.transform_specific_cards(&[idx], vec![replacement]);
     EffectResult::Resolved
 }
 
@@ -4493,8 +4636,18 @@ fn listener_nutritious_soup(rs: &mut RunState) -> EffectResult {
         )
     };
     for card in &mut rs.master_deck {
-        if is_basic_strike(card.card_id) {
-            card.set_enchantment(EnchantmentId::TezcatarasEmber, 1);
+        // `CanEnchant` refuses a card that already carries an enchantment
+        // (EnchantmentModel.cs:289, Ember is not stackable).
+        if is_basic_strike(card.card_id) && card.enchantments.is_empty() {
+            // `CardCmd.Enchant` runs `TezcatarasEmber.OnEnchant`, which zeroes
+            // the energy cost (TezcatarasEmber.cs:17) as well as adding
+            // Eternal. A bare `set_enchantment` left the Strikes at cost 1
+            // (Regent act23 seeds 1012/1016).
+            let _ = crate::enchantments::apply_static_enchantment(
+                card,
+                EnchantmentId::TezcatarasEmber,
+                1,
+            );
         }
     }
     EffectResult::Resolved
@@ -6809,13 +6962,40 @@ mod tests {
     /// character's pool + the colorless pool. Mirrors Python
     /// `DingyRug.modify_card_reward_creation_options`'s return
     /// shape.
+    /// Prismatic Gem widens a card reward to every character pool in
+    /// `ModelDb.AllCharacters` order (`PrismaticGem.cs:32-52`), and stays out
+    /// of `NoCardPoolModifications` rolls.
     #[test]
-    fn listener_dingy_rug_populates_custom_pool_with_colorless_union() {
+    fn listener_prismatic_gem_widens_to_all_character_pools() {
+        use sts2_core::potions::CharacterId;
         use sts2_core::runstate::{CardRewardGenerationOptions, RunState};
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
-        // Ironclad pool is the canonical non-empty per-character
-        // slice at the current pin.
+        rs.character_id = CharacterId::Defect;
+        rs.relics.push(RelicId::PrismaticGem);
+        let opts = rs.modify_card_reward_creation_options(CardRewardGenerationOptions::default());
+        assert_eq!(
+            opts.character_ids,
+            vec![
+                CharacterId::Ironclad,
+                CharacterId::Silent,
+                CharacterId::Regent,
+                CharacterId::Necrobinder,
+                CharacterId::Defect,
+            ]
+        );
+        let locked = rs.modify_card_reward_creation_options(CardRewardGenerationOptions {
+            allow_card_pool_modifications: false,
+            ..CardRewardGenerationOptions::default()
+        });
+        assert!(locked.character_ids.is_empty());
+    }
+
+    #[test]
+    fn listener_dingy_rug_unions_the_colorless_pool() {
+        use sts2_core::runstate::{CardRewardGenerationOptions, RunState};
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
         rs.character_id = sts2_core::potions::CharacterId::Ironclad;
         rs.relics.push(RelicId::DingyRug);
         let mut opts = CardRewardGenerationOptions::default();
@@ -6824,33 +7004,11 @@ mod tests {
             &mut rs, &mut opts,
         );
         assert_eq!(res, sts2_core::card_effects::EffectResult::Resolved);
-
-        assert!(opts.has_custom_card_pool, "must flip has_custom_card_pool");
-        assert!(
-            !opts.use_default_character_pool,
-            "must clear use_default_character_pool",
-        );
-        assert!(opts.character_ids.is_empty(), "must clear character_ids");
-        assert!(
-            !opts.custom_card_ids.is_empty(),
-            "must populate custom_card_ids",
-        );
-        // No duplicates in the final slate.
-        let unique: std::collections::HashSet<_> = opts.custom_card_ids.iter().copied().collect();
-        assert_eq!(
-            unique.len(),
-            opts.custom_card_ids.len(),
-            "custom_card_ids must be deduped",
-        );
-        // At least one colorless card is present (the colorless slice
-        // is non-empty at the pin — 25+ entries). Pick a stable
-        // canonical colorless card to assert on so the test doesn't
-        // brittle-pin on the full slice length.
-        assert!(
-            opts.custom_card_ids
-                .contains(&sts2_core::cards::CardId::Discovery),
-            "Discovery (colorless) must be unioned into the slate",
-        );
+        // `options.CardPools ++ [Colorless]` (`DingyRug.cs:13-36`): the
+        // character pool stays, colorless joins it, no custom pool.
+        assert!(opts.include_colorless);
+        assert!(opts.use_default_character_pool);
+        assert!(!opts.has_custom_card_pool);
     }
 
     /// DingyRug's listener is a no-op when the relic isn't owned —
@@ -7704,25 +7862,43 @@ mod tests {
         assert_eq!(n_upgraded, 0);
     }
 
-    /// Bead `sts2-rs-66l9f`: GlassEye's `after_obtained` listener
-    /// must push `GLASS_EYE_CARDS = 5` `Reward::Card` sentinels when
-    /// owned. Rarity-forcing is deferred to umbrella 01o.
+    /// GlassEye's `after_obtained` queues 5 pre-rolled 3-card rewards of
+    /// rarities Common, Common, Uncommon, Uncommon, Rare, all base, for one
+    /// `Rewards` read per card (`GlassEye.cs:15-33`: uniform odds,
+    /// `NoUpgradeRoll`).
     #[test]
-    fn listener_glass_eye_pushes_five_card_reward_sentinels_on_obtain() {
+    fn listener_glass_eye_queues_five_forced_rarity_rewards_on_obtain() {
+        use crate::cards::CardRarity;
         use sts2_core::runstate::{Reward, RunState};
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
         let before_len = rs.pending_rewards.len();
+        let rewards_before = rs.rng.rewards.counter();
         rs.relics.push(RelicId::GlassEye);
         rs.last_obtained_relic = Some(RelicId::GlassEye);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
         assert_eq!(rs.pending_rewards.len(), before_len + GLASS_EYE_CARDS);
-        assert!(rs
-            .pending_rewards
-            .iter()
-            .rev()
-            .take(GLASS_EYE_CARDS)
-            .all(|r| matches!(r, Reward::Card(_))));
+        assert_eq!(rs.rng.rewards.counter() - rewards_before, 15);
+        let want = [
+            CardRarity::Common,
+            CardRarity::Common,
+            CardRarity::Uncommon,
+            CardRarity::Uncommon,
+            CardRarity::Rare,
+        ];
+        for (reward, rarity) in rs.pending_rewards[before_len..].iter().zip(want) {
+            let Reward::Card(c) = reward else {
+                panic!("GlassEye queues card rewards only");
+            };
+            assert_eq!(c.options.len(), 3);
+            for &id in &c.options {
+                assert_eq!(
+                    crate::cards::spec_index::rarity_for_card_id_in(id, rs.game_version),
+                    Some(rarity)
+                );
+            }
+            assert!(c.upgraded.iter().all(|u| !u), "NoUpgradeRoll: base cards");
+        }
     }
 
     /// Bead `sts2-rs-66l9f`: GlassEye listener is noop without ownership.
@@ -8333,6 +8509,27 @@ mod tests {
     /// `after_obtained` listener must remove `PRESERVED_FOG_CARDS = 3`
     /// cards (per C# `PreservedFog.cs:18` `CardsVar(3)`) then push 1
     /// Folly curse, net deck delta = -2 when owned.
+    /// Interactive removal: Folly lands only after the removal batch
+    /// (`PreservedFog.cs:20-27`), so it is not in the removal pool.
+    #[test]
+    fn listener_preserved_fog_interactive_defers_folly_past_the_removals() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.interactive_card_removal = true;
+        for _ in 0..5 {
+            push_deck_card(&mut rs, CardId::StrikeIronclad);
+        }
+        rs.relics.push(RelicId::PreservedFog);
+        rs.last_obtained_relic = Some(RelicId::PreservedFog);
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.master_deck.len(), 5, "nothing added before the picks");
+        assert_eq!(rs.pending_deck_removals, 3);
+        assert_eq!(rs.pending_post_removal_cards.len(), 1);
+        assert_eq!(rs.pending_post_removal_cards[0].card_id, CardId::Folly);
+    }
+
     #[test]
     fn listener_preserved_fog_removes_three_cards_and_adds_one_folly_on_obtain() {
         use sts2_core::cards::CardId;
@@ -8406,6 +8603,13 @@ mod tests {
             .expect("Bash transformed to Break");
         assert!(rs.master_deck[break_idx].upgraded);
         assert!(!rs.master_deck.iter().any(|c| c.card_id == CardId::Bash));
+        // CardCmd.Transform appends a deck replacement (CardCmd.cs:427-436).
+        assert_eq!(break_idx, before_len - 1, "Break is appended last");
+        assert_eq!(
+            rs.master_deck[break_idx].card_type,
+            sts2_core::cards::CardType::Attack,
+            "a fresh Break, not Bash's stats under a new id"
+        );
     }
 
     /// Bead `sts2-rs-rvwas`: ArchaicTooth transforms only the first
@@ -8590,9 +8794,12 @@ mod tests {
             match card.card_id {
                 CardId::StrikeIronclad | CardId::StrikeSilent => {
                     assert_eq!(val, 1, "{:?} should be enchanted", card.card_id);
+                    // TezcatarasEmber.OnEnchant zeroes the energy cost.
+                    assert_eq!(card.cost, 0, "{:?} should cost 0", card.card_id);
                 }
                 CardId::DefendIronclad => {
                     assert_eq!(val, 0, "Defend should NOT be enchanted");
+                    assert_eq!(card.cost, 1, "Defend keeps its cost");
                 }
                 _ => {}
             }
@@ -8984,6 +9191,24 @@ mod tests {
     /// Bead `sts2-rs-g5ksv`: RoyalStamp deferred path queues an
     /// EnchantCards reward (RoyallyApproved, no min_count). Python
     /// pin `relics/shop_event.py:619`.
+    /// RoyalStamp's `UnstableShuffle(Rng.Niche)` of the enchantable cards
+    /// costs n - 1 Niche reads whatever is picked.
+    #[test]
+    fn listener_royal_stamp_shuffles_the_candidates_on_niche() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        for id in [CardId::StrikeIronclad, CardId::DefendIronclad, CardId::Bash] {
+            push_deck_card(&mut rs, id);
+        }
+        rs.relics.push(RelicId::RoyalStamp);
+        rs.last_obtained_relic = Some(RelicId::RoyalStamp);
+        let before = rs.rng.niche.counter();
+        let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.rng.niche.counter() - before, 2);
+    }
+
     #[test]
     fn listener_royal_stamp_deferred_path_queues_enchant_reward() {
         use sts2_core::cards::{CardId, EnchantmentId};
@@ -9307,6 +9532,38 @@ mod tests {
         assert_eq!(card.cost, -1);
     }
 
+    /// A card-effect draw that reshuffles fires Biiig Hug mid-draw (C#
+    /// `ShuffleIfNecessary` → `Hook.AfterShuffle` inside `CardPileCmd.Draw`),
+    /// so the Soot joins the reshuffled pile before the rest of the draw.
+    /// act23 Necrobinder 1019: Soul's draw-2 reshuffle added no Soot.
+    #[test]
+    fn biiig_hug_fires_on_a_card_effect_draw_reshuffle() {
+        use sts2_core::cards::{Card, CardId};
+        use sts2_core::CardUid;
+        crate::relics::dispatch::ensure_installed();
+        let mut state = sts2_core::CombatState::default();
+        equip_relic(&mut state, RelicKind::BiiigHug);
+        for i in 1..=4u32 {
+            let uid = CardUid::new(i).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: CardId::StrikeIronclad,
+                ..Card::pod_defaults()
+            });
+            state.player.discard.push(uid);
+        }
+        let _ = sts2_core::cards::draw_via_state(&mut state, 2);
+        let soot_count = state
+            .player
+            .draw
+            .iter()
+            .chain(state.player.hand.iter())
+            .filter(|u| state.cards[u.0.get() as usize - 1].card_id == CardId::Soot)
+            .count();
+        assert_eq!(soot_count, 1, "the reshuffle added one Soot");
+        assert_eq!(state.player.hand.len(), 2);
+    }
+
     /// The Soot POD comes from the pinned status spec, so it carries the
     /// `GeneratedInCombat` marker (C# `CardModel.DeckVersion == null`) that
     /// the old hand-rolled `Card::pod_defaults()` build dropped. Bead
@@ -9527,28 +9784,42 @@ mod tests {
         assert_eq!(rs.relic_rewards.len(), before);
     }
 
-    /// Bead `sts2-rs-70anj.4`: PaelsClaw enchants every deck card
-    /// with `Goopy(1)` unconditionally (Python `enchant_all_cards`
-    /// has no eligibility check).
+    /// GH #1054: PaelsClaw enchants only `Goopy.CanEnchant` cards (C#
+    /// `PaelsClaw.cs:33-44`) — un-enchanted Defend-tagged cards. A Strike,
+    /// a non-Defend card and a Defend already carrying `Sown` are skipped;
+    /// a Goopy Defend exhausts on play (`Goopy.OnEnchant` adds Exhaust).
     #[test]
-    fn listener_paels_claw_enchants_all_deck_cards_with_goopy() {
+    fn listener_paels_claw_enchants_only_unenchanted_defends() {
+        use sts2_core::card_effects::card_exhausts_inst;
         use sts2_core::cards::{CardId, EnchantmentId};
         use sts2_core::runstate::RunState;
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
-        push_deck_card(&mut rs, CardId::StrikeIronclad);
-        push_deck_card(&mut rs, CardId::DefendIronclad);
-        push_deck_card(&mut rs, CardId::Bash);
-        let n = rs.master_deck.len();
+        push_deck_card(&mut rs, CardId::StrikeDefect);
+        push_deck_card(&mut rs, CardId::DefendDefect);
+        push_deck_card(&mut rs, CardId::DefendDefect);
+        push_deck_card(&mut rs, CardId::DefendDefect);
+        push_deck_card(&mut rs, CardId::DefendDefect);
+        push_deck_card(&mut rs, CardId::Zap);
+        rs.master_deck[1].set_enchantment(EnchantmentId::Sown, 1);
         rs.relics.push(RelicId::PaelsClaw);
         rs.last_obtained_relic = Some(RelicId::PaelsClaw);
         let _ = sts2_core::run_effects::dispatch_after_obtained(&mut rs);
-        let goopy_count = rs
+        let goopy: Vec<bool> = rs
             .master_deck
             .iter()
-            .filter(|c| c.enchantment(EnchantmentId::Goopy) >= 1)
-            .count();
-        assert_eq!(goopy_count, n, "every deck card receives Goopy(1)");
+            .map(|c| c.has_enchantment(EnchantmentId::Goopy))
+            .collect();
+        assert_eq!(goopy, vec![false, false, true, true, true, false]);
+        assert!(
+            card_exhausts_inst(&rs.master_deck[2]),
+            "Goopy Defend exhausts"
+        );
+        assert!(
+            !card_exhausts_inst(&rs.master_deck[1]),
+            "Sown Defend does not"
+        );
+        assert!(!card_exhausts_inst(&rs.master_deck[0]));
     }
 
     /// Bead `sts2-rs-70anj.4`: PaelsClaw listener is a no-op without
@@ -9710,6 +9981,37 @@ mod tests {
             .filter(|c| c.enchantment(EnchantmentId::Swift) == WING_CHARM_SWIFT)
             .count();
         assert_eq!(swift_count, 1, "exactly one option enchanted");
+    }
+
+    /// C# draws WingCharm's pick off `Rng.Niche` over the Swift-eligible
+    /// options only (`WingCharm.cs:24-43`): an already-enchanted option is
+    /// skipped and the Rewards stream is untouched.
+    #[test]
+    fn listener_wing_charm_draws_niche_over_eligible_options() {
+        use sts2_core::cards::{Card, CardId, EnchantmentId};
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::WingCharm);
+        let mut options: Vec<Card> = (0..2)
+            .map(|_| {
+                let mut c = Card::pod_defaults();
+                c.card_id = CardId::StrikeIronclad;
+                c
+            })
+            .collect();
+        options[0].add_enchantment(EnchantmentId::Nimble, 2);
+        let rewards = rs.rng.rewards.counter();
+        let niche = rs.rng.niche.counter();
+        let res = listener_wing_charm_card_reward(&mut rs, &mut options);
+        assert!(matches!(res, EffectResult::Resolved));
+        assert_eq!(
+            options[1].enchantment(EnchantmentId::Swift),
+            WING_CHARM_SWIFT
+        );
+        assert_eq!(options[0].enchantment(EnchantmentId::Swift), 0);
+        assert_eq!(rs.rng.rewards.counter(), rewards);
+        assert_eq!(rs.rng.niche.counter(), niche + 1);
     }
 
     /// Bead `sts2-rs-70anj.4`: WingCharm is a no-op when the option
@@ -10212,6 +10514,51 @@ mod tests {
         );
     }
 
+    /// IronClub's draw is a card-effect `CardPileCmd.Draw`, so NoDraw (Battle
+    /// Trance) vetoes it (`Hook.ShouldDraw`, CardPileCmd.cs:826).
+    #[test]
+    fn listener_iron_club_draw_respects_no_draw() {
+        use sts2_core::cards::{Card, CardId, CardType};
+        use sts2_core::relic_effects::{dispatch_after_card_played, CardEventCtx};
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        equip_relic(&mut state, RelicKind::IronClub);
+        if state.player.creature_uid.is_none() {
+            let _ = state.init_player_creature();
+        }
+        for _ in 0..6 {
+            let card = Card {
+                card_id: CardId::StrikeIronclad,
+                card_type: CardType::Attack,
+                ..Card::pod_defaults()
+            };
+            let _ = state.add_card_to_draw_pile(card);
+        }
+        let player = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player,
+            sts2_core::powers::PowerKind::NoDraw,
+            1,
+        );
+        let ctx = CardEventCtx {
+            card_id: CardId::StrikeIronclad,
+            card_uid: None,
+            target: None,
+            card_tags: sts2_core::cards::CardTags::NONE,
+            energy_spent: 0,
+        };
+        let hand_before = state.player.hand.len();
+        for _ in 0..4 {
+            let _ = dispatch_after_card_played(&mut state, &ctx);
+        }
+        assert_eq!(
+            state.player.hand.len(),
+            hand_before,
+            "NoDraw blocks the 4th-play draw"
+        );
+    }
+
     #[test]
     fn listener_toasty_mittens_exhausts_and_grants_strength() {
         use sts2_core::cards::{Card, CardId, CardType};
@@ -10607,7 +10954,7 @@ mod tests {
             ..Card::pod_defaults()
         };
         card.set_enchantment(EnchantmentId::Sharp, 3);
-        let _ = state.add_card_to_draw_pile(card);
+        let card_uid = state.add_card_to_draw_pile(card);
         let player_uid = state.player.creature_uid.expect("player uid");
         let target_uid = player_uid; // any uid — listener only inspects dealer + card
         let ctx = ModifyDamageCtx {
@@ -10616,10 +10963,67 @@ mod tests {
             base_damage: 5,
             props: ValueProps::MOVE,
             card: Some(CardId::StrikeIronclad),
-            card_uid: None,
+            card_uid: Some(card_uid),
         };
         let delta = dispatch_modify_damage_additive(&state, &ctx);
         assert_eq!(delta, MYSTIC_LIGHTER_EXTRA_DAMAGE);
+        // C# `IsPoweredAttack` excludes Unpowered damage.
+        let unpowered = ModifyDamageCtx {
+            props: ValueProps(ValueProps::MOVE.0 | ValueProps::UNPOWERED.0),
+            ..ctx
+        };
+        assert_eq!(dispatch_modify_damage_additive(&state, &unpowered), 0);
+    }
+
+    /// Act23 parity Ironclad 1019 (#1054): Pael's Growth put Clone on
+    /// master_deck[0], which `enter_combat` places LAST among the Strike
+    /// copies in the arena. Mystic Lighter must read the PLAYED instance
+    /// (C# `cardSource.Enchantment`, MysticLighter.cs:22), not the first
+    /// arena copy sharing its `CardId`: the enchanted copy gets +9 and the
+    /// plain copy +0, regardless of arena order.
+    #[test]
+    fn listener_mystic_lighter_reads_played_instance_with_duplicate_ids() {
+        use sts2_core::cards::{Card, CardId, CardType, EnchantmentId};
+        use sts2_core::hooks::ValueProps;
+        use sts2_core::relic_effects::{dispatch_modify_damage_additive, ModifyDamageCtx};
+        crate::relics::dispatch::ensure_installed();
+        let strike = || Card {
+            card_id: CardId::StrikeIronclad,
+            card_type: CardType::Attack,
+            ..Card::pod_defaults()
+        };
+        for enchanted_first in [false, true] {
+            let mut state = CombatState::default();
+            equip_relic(&mut state, RelicKind::MysticLighter);
+            let mut enchanted = strike();
+            enchanted.set_enchantment(EnchantmentId::Clone, 4);
+            let (plain_uid, enchanted_uid) = if enchanted_first {
+                let e = state.add_card_to_draw_pile(enchanted);
+                (state.add_card_to_draw_pile(strike()), e)
+            } else {
+                let p = state.add_card_to_draw_pile(strike());
+                (p, state.add_card_to_draw_pile(enchanted))
+            };
+            let player_uid = state.player.creature_uid.expect("player uid");
+            let ctx_for = |uid| ModifyDamageCtx {
+                dealer: Some(player_uid),
+                target: player_uid,
+                base_damage: 6,
+                props: ValueProps::MOVE,
+                card: Some(CardId::StrikeIronclad),
+                card_uid: Some(uid),
+            };
+            assert_eq!(
+                dispatch_modify_damage_additive(&state, &ctx_for(enchanted_uid)),
+                MYSTIC_LIGHTER_EXTRA_DAMAGE,
+                "enchanted copy must get +9 (enchanted_first={enchanted_first})"
+            );
+            assert_eq!(
+                dispatch_modify_damage_additive(&state, &ctx_for(plain_uid)),
+                0,
+                "plain copy must get +0 (enchanted_first={enchanted_first})"
+            );
+        }
     }
 
     #[test]
@@ -10635,7 +11039,7 @@ mod tests {
             card_type: CardType::Attack,
             ..Card::pod_defaults()
         };
-        let _ = state.add_card_to_draw_pile(card);
+        let card_uid = state.add_card_to_draw_pile(card);
         let player_uid = state.player.creature_uid.expect("player uid");
         let ctx = ModifyDamageCtx {
             dealer: Some(player_uid),
@@ -10643,7 +11047,7 @@ mod tests {
             base_damage: 5,
             props: ValueProps::MOVE,
             card: Some(CardId::StrikeIronclad),
-            card_uid: None,
+            card_uid: Some(card_uid),
         };
         let delta = dispatch_modify_damage_additive(&state, &ctx);
         assert_eq!(delta, 0);
@@ -10701,8 +11105,11 @@ mod tests {
         assert_eq!(dispatch_modify_hand_draw(&state, 5), 5);
     }
 
+    /// The relic bus never counts a play (C# `AfterCardPlayed` skips
+    /// auto-plays, which this bus also carries; the count lives in sts2-core
+    /// `finish_card_play`). Only the player's side-turn start resets it.
     #[test]
-    fn listener_brilliant_scarf_tracks_card_plays_and_resets_on_player_turn() {
+    fn listener_brilliant_scarf_resets_on_player_turn_only() {
         use sts2_core::cards::CardId;
         use sts2_core::relic_effects::{
             dispatch_after_card_played, dispatch_before_side_turn_start, CardEventCtx,
@@ -10710,41 +11117,13 @@ mod tests {
         crate::relics::dispatch::ensure_installed();
         let mut state = CombatState::default();
         equip_relic(&mut state, RelicKind::BrilliantScarf);
-        let ctx = CardEventCtx {
-            card_id: CardId::StrikeIronclad,
-            card_uid: None,
-            target: None,
-            card_tags: sts2_core::cards::CardTags::NONE,
-            energy_spent: 0,
+        let counter = |state: &CombatState| {
+            state
+                .relics
+                .iter()
+                .find(|r| !r.is_melted && r.kind == RelicKind::BrilliantScarf)
+                .map_or(99, |r| r.counter)
         };
-        for _ in 0..4 {
-            let _ = dispatch_after_card_played(&mut state, &ctx);
-        }
-        let counter = state
-            .relics
-            .iter()
-            .find(|r| !r.is_melted && r.kind == RelicKind::BrilliantScarf)
-            .map(|r| r.counter)
-            .unwrap_or_default();
-        assert_eq!(counter, 4);
-        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
-        let counter_after_reset = state
-            .relics
-            .iter()
-            .find(|r| !r.is_melted && r.kind == RelicKind::BrilliantScarf)
-            .map_or(99, |r| r.counter);
-        assert_eq!(counter_after_reset, 0);
-    }
-
-    #[test]
-    fn listener_brilliant_scarf_does_not_reset_on_enemy_turn() {
-        use sts2_core::cards::CardId;
-        use sts2_core::relic_effects::{
-            dispatch_after_card_played, dispatch_before_side_turn_start, CardEventCtx,
-        };
-        crate::relics::dispatch::ensure_installed();
-        let mut state = CombatState::default();
-        equip_relic(&mut state, RelicKind::BrilliantScarf);
         let ctx = CardEventCtx {
             card_id: CardId::StrikeIronclad,
             card_uid: None,
@@ -10753,14 +11132,14 @@ mod tests {
             energy_spent: 0,
         };
         let _ = dispatch_after_card_played(&mut state, &ctx);
+        assert_eq!(counter(&state), 0, "the relic bus does not count plays");
+        for r in &mut state.relics {
+            r.counter = 4;
+        }
         let _ = dispatch_before_side_turn_start(&mut state, Side::Enemy);
-        let counter = state
-            .relics
-            .iter()
-            .find(|r| !r.is_melted && r.kind == RelicKind::BrilliantScarf)
-            .map(|r| r.counter)
-            .unwrap_or_default();
-        assert_eq!(counter, 1, "Enemy-turn start must not reset the counter");
+        assert_eq!(counter(&state), 4, "enemy-turn start must not reset");
+        let _ = dispatch_before_side_turn_start(&mut state, Side::Player);
+        assert_eq!(counter(&state), 0);
     }
 
     #[test]
@@ -11360,6 +11739,37 @@ mod tests {
     }
 
     #[test]
+    fn claim_potion_reward_vetoed_by_sozu() {
+        // C# `PotionReward.OnSelect` -> `PotionCmd.TryToProcure` returns
+        // `NotAllowed` under Sozu: the reward is consumed, nothing lands
+        // on the belt, and (unlike TooFull) no swap prompt / overflow.
+        // Necrobinder seed 1002 floor-22 drop (GH #1054).
+        use sts2_core::potions::PotionKind;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::Sozu);
+        rs.interactive_potion_swap = true;
+        let belt_before = rs.potions.clone();
+        assert!(!rs.claim_potion_reward(PotionKind::VulnerablePotion));
+        assert_eq!(rs.potions, belt_before);
+        assert!(rs.pending_potion_swaps.is_empty());
+        rs.interactive_potion_swap = false;
+        assert!(!rs.claim_potion_reward(PotionKind::VulnerablePotion));
+        assert_eq!(rs.potions, belt_before);
+        assert_eq!(rs.potions_overflow_dropped, 0);
+    }
+
+    #[test]
+    fn claim_potion_reward_lands_without_sozu() {
+        use sts2_core::potions::PotionKind;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::PaelsFlesh);
+        assert!(rs.claim_potion_reward(PotionKind::VulnerablePotion));
+        assert!(rs.potions.contains(&PotionKind::VulnerablePotion));
+    }
+
+    #[test]
     fn sozu_trips_the_surface_veto_probe() {
         // GH #270: the shop action surface consults
         // `would_veto_procure_potion` before surfacing the potion row —
@@ -11781,6 +12191,31 @@ mod tests {
     /// random non-curse deck cards and upgrades them. Asserts the deck
     /// length is preserved (in-place replacement) and that at least the
     /// chosen replacements come out upgraded.
+    /// Interactive hosts get C#'s Astrolabe: 3 upgrading transform picks
+    /// queued, no RNG drawn at obtain (`Astrolabe.cs:31-39`).
+    #[test]
+    fn listener_astrolabe_interactive_queues_three_upgrading_transforms() {
+        use sts2_core::run_effects::dispatch_after_obtained;
+        use sts2_core::runstate::RunState;
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        for _ in 0..5 {
+            let mut c = sts2_core::Card::pod_defaults();
+            c.card_id = sts2_core::cards::CardId::StrikeIronclad;
+            rs.master_deck.push(c);
+        }
+        let rewards = rs.rng.rewards.counter();
+        let deck_before = rs.master_deck.clone();
+        rs.relics.push(RelicId::Astrolabe);
+        rs.last_obtained_relic = Some(RelicId::Astrolabe);
+        let _ = dispatch_after_obtained(&mut rs);
+        assert_eq!(rs.pending_deck_transforms.len(), ASTROLABE_CARDS);
+        assert!(rs.pending_deck_transforms.iter().all(|t| t.upgrade));
+        assert_eq!(rs.rng.rewards.counter(), rewards);
+        assert_eq!(rs.master_deck, deck_before);
+    }
+
     #[test]
     fn listener_astrolabe_transforms_and_upgrades_three_cards() {
         use sts2_core::cards::CardId;
@@ -11949,6 +12384,67 @@ mod tests {
         assert_eq!(s.relics[0].counter, 1, "latch trips");
     }
 
+    /// Toolbox samples C# `GetDistinctForCombat` (v0.111.0 `Toolbox.cs:27`):
+    /// the filtered solo colorless pool (never MultiplayerOnly HuddleUp, never
+    /// `CanBeGeneratedInCombat=false` Alchemize), shuffled with
+    /// `run_rng.combat_card_generation`, leaving `state.rng` untouched.
+    #[test]
+    fn listener_toolbox_samples_combat_card_generation_filtered_pool() {
+        use std::num::NonZeroU32;
+        use sts2_core::cards::CardId;
+        use sts2_core::relic_effects::dispatch_before_hand_draw;
+        use sts2_core::{CombatState, Relic, RelicKind};
+
+        crate::relics::dispatch::ensure_installed();
+        for seed in 0..200_i32 {
+            let mut s = CombatState::default();
+            s.player.current_hp = 80;
+            s.round = 1;
+            s.run_rng.combat_card_generation = sts2_core::dotnet_rng::Rng::new(seed);
+            s.relics.push(Relic {
+                id: NonZeroU32::new(1).expect("non-zero"),
+                kind: RelicKind::Toolbox,
+                counter: 0,
+                is_wax: false,
+                is_melted: false,
+            });
+            let rng_before = s.rng.clone();
+            let mut expected = s.clone();
+            let want = crate::cards::colorless::distinct_colorless_modifier_ids(
+                &mut expected,
+                TOOLBOX_CARDS,
+            );
+            let _ = dispatch_before_hand_draw(&mut s);
+            let got: Vec<CardId> = s
+                .pending_choice
+                .as_ref()
+                .expect("Toolbox must open a choice")
+                .options
+                .iter()
+                .map(|o| o.card_id)
+                .collect();
+            assert_eq!(
+                got,
+                want.to_vec(),
+                "seed {seed}: GetDistinctForCombat order"
+            );
+            assert!(
+                !got.contains(&CardId::HuddleUp) && !got.contains(&CardId::Alchemize),
+                "seed {seed}: filtered card offered: {got:?}",
+            );
+            assert_eq!(s.rng, rng_before, "seed {seed}: combat rng untouched");
+            assert_eq!(
+                s.run_rng.combat_card_generation, expected.run_rng.combat_card_generation,
+                "seed {seed}: CombatCardGeneration advanced by the shuffle",
+            );
+            assert_ne!(
+                s.run_rng.combat_card_generation,
+                sts2_core::dotnet_rng::Rng::new(seed),
+                "seed {seed}: CombatCardGeneration must be consumed",
+            );
+        }
+    }
+
     /// Toolbox is a no-op on round != 1.
     #[test]
     fn listener_toolbox_noop_post_round_1() {
@@ -12070,6 +12566,14 @@ mod tests {
         assert_eq!(pc.kind, ChoiceKind::AddGeneratedRetainedToHand);
         assert_eq!(pc.options.len(), CHOICES_PARADOX_CARDS);
         assert_eq!(s.relics[0].counter, 1, "latch trips");
+        // `GetDistinctForCombat` shuffles the whole fight pool on
+        // CombatCardGeneration: n - 1 reads, and the options are its first 5.
+        let pool = crate::cards::colorless::helpers::fight_pool(&s, CharacterId::Ironclad);
+        assert_eq!(
+            s.run_rng.combat_card_generation.counter() as usize,
+            pool.len() - 1,
+            "one UnstableShuffle of the pool"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -12235,9 +12739,13 @@ mod tests {
         );
         assert_eq!(s.player.hand.len(), hand_before + 1);
         let added_uid = *s.player.hand.last().expect("card was added");
+        // C# `ChoicesParadox.AfterPlayerTurnStart` applies the persistent
+        // Retain KEYWORD (`CardCmd.ApplyKeyword(item, CardKeyword.Retain)`),
+        // not a one-turn retain: an unplayed pick must stay retained on turn 2+.
+        let added = sts2_core::card_by_uid(&s.cards, added_uid).expect("card exists");
         assert!(
-            s.player.retain_this_turn.contains(&added_uid),
-            "added card must be tagged for retain this turn",
+            sts2_core::card_effects::card_retain_inst(added),
+            "added card must carry the persistent Retain keyword",
         );
     }
 
@@ -13321,24 +13829,12 @@ mod tests {
         );
     }
 
-    /// `DingyRug` rarity-gating branch (`allow_rarity_modifications =
-    /// false`): a colorless card whose rarity is NOT among the active
-    /// character's rarities must be EXCLUDED. Pins the exact gated
-    /// slate, killing `&& → ||` and both `delete !` on the
-    /// `rarity_gated && !character_rarities.contains(..)` guard.
+    /// `DingyRug` adds colorless whatever the rarity flags
+    /// (`DingyRug.cs:13-36` has no rarity gate).
     #[test]
-    fn dingy_rug_rarity_gating_keeps_in_rarity_colorless() {
+    fn dingy_rug_adds_colorless_with_rarity_modifications_off() {
         use sts2_core::runstate::{CardRewardGenerationOptions, RunState};
         crate::relics::dispatch::ensure_installed();
-
-        // With rarity modifications DISABLED the gate
-        // `rarity_gated && !character_rarities.contains(spec.rarity)`
-        // skips ONLY colorless cards whose rarity is off the character's
-        // rarity set. Every colorless rarity is covered by the Ironclad
-        // pool, so NO colorless card is dropped. This pins that the
-        // logical structure stays `&&` over the negated membership:
-        //  - `&& → ||` would skip ALL colorless (rarity_gated == true).
-        //  - dropping the `!` on `contains` would skip ALL colorless too.
         let mut rs = RunState::new();
         rs.character_id = sts2_core::potions::CharacterId::Ironclad;
         rs.relics.push(RelicId::DingyRug);
@@ -13349,27 +13845,7 @@ mod tests {
         let _ = sts2_core::run_effects::dispatch_modify_card_reward_creation_options(
             &mut rs, &mut opts,
         );
-        assert!(
-            opts.custom_card_ids
-                .contains(&sts2_core::cards::CardId::Discovery),
-            "rarity-gating must keep in-rarity colorless cards (Discovery)"
-        );
-        // The slate is strictly larger than the character-only pool:
-        // colorless cards survived the rarity gate (proves it did NOT
-        // skip the whole colorless tail).
-        let char_only = crate::cards::spec_index::specs_for_character(
-            sts2_core::potions::CharacterId::Ironclad,
-        )
-        .iter()
-        .map(|f| f().id)
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-        assert!(
-            opts.custom_card_ids.len() > char_only,
-            "in-rarity colorless cards survive rarity-gating ({} > {})",
-            opts.custom_card_ids.len(),
-            char_only,
-        );
+        assert!(opts.include_colorless);
     }
 
     /// `LeafyPoultice` ownership/last-obtained guard: the listener must

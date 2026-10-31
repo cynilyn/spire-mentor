@@ -1228,6 +1228,10 @@ fn droplet_of_precognition_moves_chosen_draw_card_to_hand() {
     let pc = state.pending_choice.as_ref().expect("draw choice opened");
     assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDrawByType);
     assert_eq!(pc.options.len(), 3, "every draw card is a candidate");
+    // C# `DropletOfPrecognition.cs:22`: `new CardSelectorPrefs(prompt, 1)`,
+    // `Cancelable` false — pick one, no skip.
+    assert_eq!((pc.min_select, pc.max_select), (1, 1));
+    assert!(!pc.can_skip, "Droplet of Precognition can't be skipped");
     resolve_choice_pick(&mut state, 0);
     assert_eq!(state.player.hand.len(), hand_before + 1, "one card to hand");
     assert_eq!(
@@ -1508,6 +1512,32 @@ fn snecko_oil_draws_seven_and_randomizes_hand_costs() {
             card.cost
         );
     }
+}
+
+/// `SetToFreeThisTurn` frees BOTH costs (`CardModel.cs:1267-1271`); Snecko
+/// Oil's roll replaces only the energy cost, so a Discovery'd star card
+/// (ParticleWall, 2 stars) stays star-free this turn (Regent quick seed 576:
+/// C# still offered it with 0 stars).
+#[test]
+fn snecko_oil_keeps_a_free_this_turn_star_cost_free() {
+    use sts2_core::cards::{Card, CardId, VarKey};
+    ensure_installed();
+    let mut state = fresh_state_with_player(50, 50);
+    let uid = sts2_core::CardUid::new(1).expect("nz");
+    let mut card = Card::pod_defaults();
+    card.uid = uid;
+    card.card_id = CardId::ParticleWall;
+    card.set_combat_var(VarKey::FreeThisTurn, 1);
+    state.cards.push(card);
+    state.player.hand.push(uid);
+    assert_eq!(sts2_core::effective_star_cost(&state.cards[0]), 0);
+    state.snecko_randomize_hand_costs();
+    assert_eq!(state.cards[0].combat_var(VarKey::FreeThisTurn), 0);
+    assert_eq!(
+        sts2_core::effective_star_cost(&state.cards[0]),
+        0,
+        "the star half of SetToFreeThisTurn survives the energy roll"
+    );
 }
 
 #[test]
@@ -1970,6 +2000,36 @@ fn touch_of_insanity_freed_calamity_upgrade_does_not_underflow_to_x_cost() {
         !state.cards[idx].is_x_cost(),
         "freed-then-upgraded card must NOT read as an X-cost",
     );
+}
+
+/// Defect full seed 3863 (v0.111.0): Snecko Oil rolls a 0-cost card up to 1
+/// (a live this-turn Absolute modifier, banked +1), then TouchOfInsanity frees
+/// it for the combat. C# applies local modifiers in order
+/// (CardEnergyCost.cs:110-115), so the later `SetThisCombat(0)` owns the cost
+/// and the roll expiring at turn end reveals 0. Rust subtracted the stale +1
+/// bank from the new 0, leaving a -1 "X-cost" that drained all energy.
+#[test]
+fn touch_of_insanity_over_snecko_roll_stays_free_after_roll_expires() {
+    use sts2_core::cards::VarKey;
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    let uid = push_test_card(&mut state, 1, 0, false);
+    state.player.hand.push(uid);
+    let idx = uid.0.get() as usize - 1;
+    // A Snecko roll 0 -> 1 as `snecko_randomize_hand_costs` banks it.
+    state.cards[idx].cost = 1;
+    state.cards[idx].set_combat_var(VarKey::SneckoCostDeltaThisTurn, 1);
+    state.cards[idx].set_combat_var(VarKey::SneckoRollLive, 1);
+    state.cards[idx].set_combat_var(VarKey::CostAbsolutelySet, 1);
+    assert_eq!(
+        dispatch(&mut state, PotionKind::TouchOfInsanity, None),
+        EffectResult::Resolved
+    );
+    assert_eq!(state.cards[idx].cost, 0);
+    state.cards[idx].expire_snecko_roll();
+    assert_eq!(state.cards[idx].cost, 0, "the freed card stays at 0");
+    assert!(!state.cards[idx].is_x_cost());
+    assert_eq!(state.cards[idx].combat_var(VarKey::CostAbsolutelySet), 1);
 }
 
 #[test]
@@ -2771,5 +2831,43 @@ fn entropic_brew_fills_belt_off_combat_potion_generation() {
         state.run_rng.combat_potion_generation.counter() - cpg_before,
         2 * open as u32,
         "2 draws per filled slot"
+    );
+}
+
+/// EntropicBrew drunk from slot 0 of [Brew, Energy, _] refills the HOLE
+/// first: C# `RemovePotionInternal` nulls the slot without compacting and
+/// `AddPotionInternal` takes `_potionSlots.IndexOf(null)` (`Player.cs:640`,
+/// `:703-708`), so the result is [roll1, Energy, roll2], not
+/// [Energy, roll1, roll2] (GH #1054, Ironclad seed 1004).
+#[test]
+fn entropic_brew_refills_lowest_open_slot_first() {
+    use sts2_core::potions::CharacterId;
+    let mut state = fresh_state_with_player(50, 50);
+    state.player.character = Some(CharacterId::Ironclad);
+    state.player.potion_slots = 3;
+    state.player.potions.push(PotionKind::EntropicBrew);
+    state.player.potions.push(PotionKind::EnergyPotion);
+
+    // Predict the two rolls off a clone of the stream.
+    let mut rng = state.run_rng.combat_potion_generation.clone();
+    let r1 = crate::potions::all::create_random_potions_out_of_combat(
+        &mut rng,
+        CharacterId::Ironclad,
+        1,
+    )[0];
+    let r2 = crate::potions::all::create_random_potions_out_of_combat(
+        &mut rng,
+        CharacterId::Ironclad,
+        1,
+    )[0];
+
+    // Drink the Brew from visible slot 0, then fill.
+    state.player.remove_potion_at(0);
+    crate::potions::all::entropic_brew_fill_belt(&mut state);
+
+    assert_eq!(
+        state.player.potions.as_slice(),
+        [r1, PotionKind::EnergyPotion, r2].as_slice(),
+        "first roll fills the drunk Brew's slot 0, second fills slot 2"
     );
 }

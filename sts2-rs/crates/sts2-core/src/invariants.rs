@@ -95,7 +95,8 @@ pub struct PreStep {
 
 #[must_use]
 pub fn snapshot_pre(state: &CombatState, action: &Action) -> PreStep {
-    let played = if let Action::PlayCard { hand_index, .. } = action {
+    let played = if let Some((hand_index, _)) = action.card_play() {
+        let hand_index = &hand_index;
         state
             .player
             .hand
@@ -383,8 +384,8 @@ pub fn check_combat_invariants(state: &CombatState, ctx: &str) -> Result<(), Str
     //     PlayCard targets.
     let legal = legal_actions(state);
     for a in &legal {
-        if let Action::PlayCard { hand_index, .. } = a {
-            if let Some(uid) = state.player.hand.get(*hand_index as usize) {
+        if let Some((hand_index, _)) = a.card_play() {
+            if let Some(uid) = state.player.hand.get(usize::from(hand_index)) {
                 if let Some(card) = state.cards.iter().find(|c| c.uid == *uid) {
                     ensure!(
                         !card_unplayable(card.card_id),

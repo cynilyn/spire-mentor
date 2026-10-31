@@ -322,6 +322,18 @@ pub fn focus_scaled(base: i32, focus: i32) -> i32 {
     base.saturating_add(focus).max(0)
 }
 
+/// A Frost orb's block, passive or evoke: the owner's, and with
+/// `HibernatePower` on the owner every other player's too (v0.111.0
+/// `FrostOrb.Passive` / `Evoke`, `FrostOrb.cs:39-49,57-65`).
+fn frost_block(state: &mut CombatState, amount: i32) {
+    gain_block_player_unpowered(state, amount);
+    if state.player_power_amount(PowerKind::Hibernate) > 0 {
+        crate::coop::each_other_player(state, |state| {
+            gain_block_player_unpowered(state, amount);
+        });
+    }
+}
+
 /// Additive bonus applied to a **Lightning** orb's passive/evoke value
 /// when the player owns `InfusedCore` (v0.107.1).
 ///
@@ -567,6 +579,10 @@ fn evoke_one(state: &mut CombatState, orb: Orb) {
 /// Lightning-gated ThunderPower reactor, so Glass's AoE need not be
 /// enumerated here.
 fn resolve_evoke(state: &mut CombatState, orb: Orb) -> SmallVec<[CreatureUid; 4]> {
+    // An evoke is its own command after the card's attack: a latched
+    // `SkittishPower.AfterAttack` block (SkittishPower.cs:56-69) is already up,
+    // so Shatter's Dark evokes hit it (Defect full seed 4956).
+    crate::hooks::grant_latched_skittish(state);
     let _trace = crate::damage_trace::push_source(orb_trace_label(orb, "evoke"));
     // Event log. C# has no evoke entry — the log shows only the damage — but a
     // Frost or Plasma evoke deals none, so without this row the belt emptying
@@ -608,7 +624,7 @@ fn resolve_evoke(state: &mut CombatState, orb: Orb) -> SmallVec<[CreatureUid; 4]
             }
         }
         Orb::Frost => {
-            gain_block_player_unpowered(state, focus_scaled(5, focus));
+            frost_block(state, focus_scaled(5, focus));
         }
         Orb::Dark { stored } => {
             // C# `DarkOrb._evokeVal` starts at 6 and the passive ADDS
@@ -723,7 +739,7 @@ pub fn trigger_orb_passive_at(state: &mut CombatState, idx: usize) {
             }
         }
         Orb::Frost => {
-            gain_block_player_unpowered(state, focus_scaled(2, focus));
+            frost_block(state, focus_scaled(2, focus));
         }
         Orb::Dark { stored } => {
             let new = stored.saturating_add(focus_scaled(6, focus));
@@ -793,7 +809,7 @@ pub fn trigger_first_orb_passive_n(state: &mut CombatState, times: u32) {
                 }
             }
             Orb::Frost => {
-                gain_block_player_unpowered(state, focus_scaled(2, focus));
+                frost_block(state, focus_scaled(2, focus));
             }
             Orb::Dark { .. } => {
                 // Re-read the live stored value each iteration: with `times > 1`
@@ -885,7 +901,7 @@ pub fn passive_tick(state: &mut CombatState) {
                 }
             }
             Orb::Frost => {
-                gain_block_player_unpowered(state, focus_scaled(2, focus));
+                frost_block(state, focus_scaled(2, focus));
             }
             Orb::Dark { stored } => {
                 let new = stored.saturating_add(focus_scaled(6, focus));

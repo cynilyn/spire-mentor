@@ -181,15 +181,27 @@ struct SaveStore {
 }
 
 impl SaveStore {
+    /// Store every run log the last request wrote (a quit's, or the one a
+    /// start / import / resume / save-load wrote for the run it replaced). A
+    /// taken name gets `_2`, `_3`, … (the worker's `storeRunLogs`, Python's
+    /// `GameLogger`).
+    fn collect_logs(&mut self, wb: &mut Workbench) {
+        while let Some(log) = wb.take_run_log() {
+            let stem = log.filename.trim_end_matches(".jsonl").to_string();
+            let mut name = log.filename;
+            for n in 2.. {
+                if !self.runs.iter().any(|(r, _)| *r == name) {
+                    break;
+                }
+                name = format!("{stem}_{n}.jsonl");
+            }
+            self.runs.push((name, log.text));
+        }
+    }
+
     fn route(&mut self, wb: &mut Workbench, req: &Req) -> Option<Result<Value, ApiError>> {
         match (req.method.as_str(), route_path(&req.route)) {
-            ("POST", "/api/live/quit") => {
-                let out = wb.call("POST", "/api/live/quit", &req.body);
-                if let Some(log) = wb.take_run_log() {
-                    self.runs.push((log.filename, log.text));
-                }
-                Some(out)
-            }
+            ("POST", "/api/live/quit") => Some(wb.call("POST", "/api/live/quit", &req.body)),
             ("GET", "/api/runs") => {
                 let mut names: Vec<&String> = self.runs.iter().map(|(n, _)| n).collect();
                 names.reverse();
@@ -228,7 +240,9 @@ impl SaveStore {
                 let name = req.body.get("name").and_then(Value::as_str).unwrap_or("");
                 Some(match self.saves.get(&slugify(name)) {
                     None => Err(ApiError::new(404, format!("unknown save: {name}"))),
-                    Some(payload) => wb.restore_save(&payload.clone()),
+                    Some(payload) => {
+                        wb.restore_save(&payload.clone(), sts2_workbench::runlog::DEFAULT_NOW_ISO)
+                    }
                 })
             }
             _ => None,
@@ -324,6 +338,7 @@ fn replay_scenario(dir: &Path) -> Vec<String> {
         let result = store
             .route(&mut wb, &req)
             .unwrap_or_else(|| wb.call(&req.method, &req.route, &req.body));
+        store.collect_logs(&mut wb);
         let (status, body) = match result {
             Ok(b) => (200_u16, b),
             Err(e) => (e.status, e.body()),

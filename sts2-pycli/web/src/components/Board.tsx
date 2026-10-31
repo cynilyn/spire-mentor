@@ -7,7 +7,7 @@ import MctsControls from "./MctsControls";
 import Hand from "./Hand";
 import PileViewer from "./PileViewer";
 import PotionTray from "./PotionTray";
-import { isTextInput } from "../keys";
+import { isBrowserChord, isTextInput } from "../keys";
 import { enemyLabeller } from "../enemyLabels";
 import { stageFraming, stageZoom } from "../stageZoom";
 import { rigBox } from "../rigBounds";
@@ -1168,7 +1168,7 @@ export default function Board({
   useEffect(() => {
     if (!onPlayCard) return; // interactive (live) combat only
     function onKey(e: KeyboardEvent) {
-      if (isTextInput(e.target)) return;
+      if (isTextInput(e.target) || isBrowserChord(e)) return;
       if (e.key === "Escape") { setPendingCard(null); return; }
       if (e.key === "e" || e.key === "E") { e.preventDefault(); onEndTurn?.(); return; }
       // H / G / S mirror the buttons below, which are press-first and so are

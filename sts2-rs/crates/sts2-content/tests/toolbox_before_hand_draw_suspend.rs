@@ -205,3 +205,53 @@ fn a_later_round_does_not_suspend() {
     assert_eq!(state.player.hand.len(), 5, "the natural draw ran");
     assert_eq!(state.relics[0].counter, 0, "the latch never tripped");
 }
+
+/// C# `Hook.BeforeHandDraw` awaits each relic listener in EQUIP order, so a
+/// `BeforeHandDraw` relic equipped AFTER Toolbox acts only once the Toolbox
+/// pick has landed in hand. Here JeweledMask (round 1: move a Power from the
+/// draw pile to hand) must not have moved anything while the Toolbox screen is
+/// open, and its card lands after the Toolbox grant. The port used to run the
+/// whole relic channel before parking, so the Power was already in hand.
+#[test]
+fn a_relic_equipped_after_toolbox_waits_for_the_pick() {
+    let mut state = state_with_toolbox(10);
+    state.relics.push(Relic {
+        id: NonZeroU32::new(2).expect("nz"),
+        kind: RelicKind::JeweledMask,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let raw = u32::try_from(state.cards.len() + 1).expect("u32");
+    let power = sts2_core::CardUid::new(raw).expect("nz");
+    state.cards.push(Card {
+        uid: power,
+        card_id: CardId::Inflame,
+        cost: 1,
+        card_type: CardType::Power,
+        target_type: TargetType::Self_,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(power);
+
+    assert_eq!(
+        combat_loop::start_player_turn(&mut state),
+        StepResult::PendingChoice
+    );
+    assert!(
+        state.player.hand.is_empty(),
+        "JeweledMask (equipped after Toolbox) must wait for the Toolbox pick"
+    );
+    let _ = sts2_core::apply(
+        &mut state,
+        Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    assert_eq!(
+        state.player.hand.get(1).copied(),
+        Some(power),
+        "Toolbox grant first, then JeweledMask's Power, then the draw"
+    );
+    assert_eq!(state.relics[0].counter, 1, "Toolbox fired exactly once");
+}

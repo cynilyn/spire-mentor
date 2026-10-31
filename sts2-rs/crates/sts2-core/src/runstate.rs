@@ -120,6 +120,53 @@ pub enum RelicRarity {
     Shop,
 }
 
+/// C# `RelicModel.IsAllowed(runState)` in single player, given C#'s
+/// `TotalFloor` (see [`RunState::csharp_total_floor`]).
+///
+/// Every run-dependent single-player override is
+/// `IsBeforeAct3TreasureChest` (`RelicModel.cs:453`: `TotalFloor < 41`),
+/// on exactly these 17 relics in both v0.107.1 and v0.111.0
+/// (`MealTicket.cs:17` etc.). The remaining overrides are multiplayer-only
+/// (`SilverCrucible`, `WingedBoots`, `MassiveScroll` test the player count)
+/// or `LastingCandy`'s first-ever-Ironclad-run unlock check, none of which
+/// a single-player run with unlocks can trip. Floor is monotonic, so
+/// filtering at pull time matches C# permanently dropping the relic from
+/// its deque.
+#[must_use]
+pub const fn relic_is_allowed_at(id: RelicId, csharp_total_floor: i32) -> bool {
+    use RelicId::{
+        AmethystAubergine, BookOfFiveRings, BowlerHat, DragonFruit, FrozenEgg, Girya, JuzuBracelet,
+        LastingCandy, LuckyFysh, MealTicket, MoltenEgg, OldCoin, Planisphere, Shovel, ToxicEgg,
+        WhiteBeastStatue, WhiteStar,
+    };
+    /// `IsBeforeAct3TreasureChest`'s single-player threshold.
+    const ACT3_TREASURE_TOTAL_FLOOR_SP: i32 = 41;
+    if matches!(
+        id,
+        AmethystAubergine
+            | BookOfFiveRings
+            | BowlerHat
+            | DragonFruit
+            | FrozenEgg
+            | Girya
+            | JuzuBracelet
+            | LastingCandy
+            | LuckyFysh
+            | MealTicket
+            | MoltenEgg
+            | OldCoin
+            | Planisphere
+            | Shovel
+            | ToxicEgg
+            | WhiteBeastStatue
+            | WhiteStar
+    ) {
+        csharp_total_floor < ACT3_TREASURE_TOTAL_FLOOR_SP
+    } else {
+        true
+    }
+}
+
 /// Roll a relic-reward rarity bucket off `rng` — 50% Common, 33% Uncommon,
 /// 17% Rare. Mirrors Python `Player._roll_relic_rarity` / C#
 /// `RelicFactory.RollRarity`.
@@ -354,6 +401,11 @@ pub struct PendingCardSelect {
     /// deck-tail order (load-bearing for the combat-start shuffle input) is
     /// chosen-then-Injury, and the Injury still lands on a skip.
     pub post_add: Vec<Card>,
+    /// Whether the player may take none (C# `canSkip` /
+    /// `CardSelectorPrefs.Cancelable`). `true` for the choose-a-card screens;
+    /// `false` for a pick the game forces, Brain Leech's Share Knowledge grid
+    /// (`BrainLeech.cs:67-70`, `Cancelable = false`).
+    pub can_skip: bool,
 }
 
 impl PendingCardSelect {
@@ -367,6 +419,7 @@ impl PendingCardSelect {
             upgraded,
             enchantments: Vec::new(),
             post_add: Vec::new(),
+            can_skip: true,
         }
     }
 
@@ -381,6 +434,7 @@ impl PendingCardSelect {
             upgraded,
             enchantments: Vec::new(),
             post_add,
+            can_skip: true,
         }
     }
 
@@ -400,6 +454,7 @@ impl PendingCardSelect {
             upgraded,
             enchantments,
             post_add: Vec::new(),
+            can_skip: true,
         }
     }
 }
@@ -726,6 +781,10 @@ pub struct PendingDeckTransform {
     /// `WhisperingHollow.Hug` fires `CreatureCmd.Damage(9, Unblockable)`
     /// only AFTER the picked card transforms. `0` = none.
     pub post_hp_loss: i32,
+    /// Upgrade the replacement before it lands in the deck — C# Astrolabe
+    /// runs `CardCmd.Upgrade(cardModel)` on the freshly created card ahead
+    /// of `CardCmd.Transform` (`Astrolabe.cs:33-38`).
+    pub upgrade: bool,
 }
 
 /// One queued interactive deck-enchant pick (see
@@ -753,6 +812,12 @@ pub struct PendingDeckEnchant {
     /// which a single `type_restriction` can't express. `None` for the
     /// single-type / unrestricted cases.
     pub secondary_type: Option<crate::cards::CardType>,
+    /// The pick is part of an "up to N" screen (C# `CardSelectorPrefs(prompt,
+    /// 0, N)`, e.g. Kifuda / Gnarled Hammer): the player may confirm with
+    /// fewer cards, which drops the rest of the batch
+    /// ([`crate::run_manager::RunManager::decline_optional_deck_enchants`]).
+    /// `false` for an exact-N screen.
+    pub optional: bool,
 }
 
 /// `Reward` enum — the open variant set Python has as a class
@@ -873,6 +938,8 @@ pub const COOK_CARDS_TO_REMOVE: u32 = 2;
 /// `CookRestSiteOption._maxHpGain` in v0.111.0 (decomp
 /// `CookRestSiteOption.cs:17`; v0.107.1 had 9).
 pub const COOK_MAX_HP_GAIN_V0111: i32 = 5;
+/// `CookRestSiteOption._maxHpGain` in v0.107.1 (`CookRestSiteOption.cs:17`).
+pub const COOK_MAX_HP_GAIN_V0107: i32 = 9;
 
 /// Outcome of [`RunState::do_rest_site_action`]. Mirrors the
 /// observable side-effects of Python's `RestSiteOption.execute`
@@ -894,6 +961,14 @@ pub enum RestSiteActionOutcome {
     /// `Byrdpip`'s `after_obtained` listener transforms every
     /// `ByrdonisEgg` in the deck into `ByrdSwoop`.
     Hatched,
+    /// `Dig` selected (Shovel): the player obtained `relic`, pulled from
+    /// the FRONT of the grab bag at a rarity rolled off the Rewards stream
+    /// (C# `DigRestSiteOption.OnSelect` → `RelicCmd.Obtain(RelicFactory.
+    /// PullNextRelicFromFront(Owner))`).
+    Dug {
+        /// The relic dug up.
+        relic: RelicId,
+    },
     /// `Smith` with exactly one upgradable card: auto-upgraded.
     /// `card_id` is the card whose `upgraded` flag flipped.
     SmithUpgraded {
@@ -915,18 +990,16 @@ pub enum RestSiteActionOutcome {
     /// grant reads the counter mirror at `before_combat_start`
     /// (`relic_effects::girya`).
     Lifted,
-    /// `Cook` selected (v0.111.0 only, GH #792): 2 cards are being removed
-    /// (interactively, or already removed in auto mode) and the max-HP gain
-    /// lands once the removal resolves. In v0.107.1 Cook stays
-    /// [`Self::Unsupported`] (a pre-existing gap; porting it there would
-    /// move the v0.107.1 baseline).
+    /// `Cook` selected (GH #792): 2 cards are being removed (interactively,
+    /// or already removed in auto mode) and the max-HP gain (9 in v0.107.1,
+    /// 5 in v0.111.0) lands once the removal resolves.
     Cooked,
     /// The chosen option's [`RestSiteOption::enabled`] is `false`,
     /// or a pre-existing pending-choice blocked the request. No
     /// state mutation occurred.
     Disabled,
-    /// The chosen variant (Dig / Lift / Cook / Clone / Hatch /
-    /// Mend) is deferred — its handler hasn't landed yet. No state
+    /// The chosen variant (Cook before v0.111.0 / Clone / Mend) is
+    /// deferred — its handler hasn't landed yet. No state
     /// mutation occurred.
     Unsupported,
 }
@@ -1470,11 +1543,39 @@ pub struct RunState {
     /// opt in at construction.
     pub interactive_card_removal: bool,
 
+    /// Rest-site options already taken in the current rest-site room.
+    /// Non-empty only with `MiniatureTent`: C# `RestSiteSynchronizer
+    /// .ChooseOption` (v0.111.0 `:202-210`) removes just the chosen option
+    /// when `Hook.ShouldDisableRemainingRestSiteOptions` is `false`, so the
+    /// player may take another. [`Self::rest_site_options`] filters these
+    /// out. Cleared on every room entry.
+    pub rest_site_taken: Vec<RestSiteOption>,
+
     /// Number of master-deck cards the player still owes an interactive
     /// removal pick for (only ever non-zero when
     /// [`Self::interactive_card_removal`] is set). The run loop offers a
     /// `RemoveDeckCard` action per deck card while this is `> 0`.
     pub pending_deck_removals: u32,
+
+    /// `Some(tag)` restricts the current interactive removal batch to
+    /// Basic-rarity, removable deck cards carrying `tag` — C#
+    /// `Amalgamator.IsValid` passed as the `FromDeckForRemoval` filter
+    /// (`Amalgamator.cs:69-80`). `None` offers every removable card. Cleared
+    /// when [`Self::pending_deck_removals`] drains.
+    pub pending_removal_basic_tag: Option<crate::cards::CardTag>,
+
+    /// The current interactive removal batch is Pael's Tooth's stash pick:
+    /// C# `PaelsTooth.AfterObtained` runs `FromDeckForRemoval(prefs(5),
+    /// filter: c => c.IsUpgradable)` and keeps the removed cards for its
+    /// combat-end returns. While set, the removal offer is limited to
+    /// upgradable cards and each picked card lands in
+    /// [`Self::pending_paels_tooth_picks`]; when the batch drains they move to
+    /// [`Self::paels_tooth_stored`] in `Id.Entry` ordinal order.
+    pub pending_removal_paels_tooth: bool,
+
+    /// Cards picked so far in a Pael's Tooth stash batch (see
+    /// [`Self::pending_removal_paels_tooth`]).
+    pub pending_paels_tooth_picks: Vec<crate::cards::Card>,
 
     /// Cards to append to [`Self::master_deck`] AFTER the current batch of
     /// interactive [`Self::pending_deck_removals`] fully drains (i.e. when
@@ -1690,6 +1791,12 @@ pub struct RunState {
     /// (`run_state.py:1575`). `None` before the first generation;
     /// `Some(ActMap)` thereafter. Bead `sts2-rs-4aunm`.
     pub current_act_map: Option<crate::map::ActMap>,
+
+    /// Map node carrying the Spoils Map quest, set when the Spoils Map card
+    /// swapped in its hourglass act map (C# `SpoilsMap.SpoilsCoord`, set in
+    /// `ModifyGeneratedMapLate`, `SpoilsMap.cs:62-77`). Entering a treasure
+    /// room on this node pays the quest's gold and removes the card.
+    pub spoils_quest_coord: Option<crate::map::MapCoord>,
 
     /// Boss encounter pre-rolled at act start, matching the C# game
     /// where the act's boss identity is fixed when the act map is laid
@@ -2007,7 +2114,11 @@ impl Default for RunState {
             monster_combats_this_act: 0,
             elite_combats_this_act: 0,
             interactive_card_removal: false,
+            rest_site_taken: Vec::new(),
             pending_deck_removals: 0,
+            pending_removal_basic_tag: None,
+            pending_removal_paels_tooth: false,
+            pending_paels_tooth_picks: Vec::new(),
             pending_post_removal_cards: Vec::new(),
             pending_post_removal_hp_loss: 0,
             pending_post_removal_max_hp_gain: 0,
@@ -2033,6 +2144,7 @@ impl Default for RunState {
             ascension_level: 0,
             game_version: crate::GameVersion::V0_107_1,
             current_act_map: None,
+            spoils_quest_coord: None,
             pinned_act_boss: None,
             generated_rooms: Vec::new(),
             // Bead `sts2-rs-7kptz`: snapshot the 3-act registry into a
@@ -2479,7 +2591,18 @@ impl RunState {
     /// Reward claims only — direct procure loops with no reward screen
     /// (AlchemicalCoffer's `PotionCmd.TryToProcure` fill) drop on TooFull
     /// in C# too and must not queue a swap. GH #252.
+    ///
+    /// A `should_procure_potion` veto (Sozu) consumes the reward with
+    /// nothing gained and no swap / overflow: C# `PotionCmd.TryToProcure`
+    /// checks `Hook.ShouldProcurePotion` first and returns `NotAllowed`
+    /// (`PotionCmd.cs:31-39`), which `PotionReward.OnSelect` treats as
+    /// taken (`PotionReward.cs:78-94`). The caller still generates the
+    /// potion beforehand (`PotionReward.Populate` rolls under Sozu too),
+    /// so the Rewards stream stays aligned.
     pub fn claim_potion_reward(&mut self, kind: crate::potions::PotionKind) -> bool {
+        if !crate::run_effects::dispatch_should_procure_potion(self) {
+            return false;
+        }
         if self.add_potion_to_belt(kind) {
             return true;
         }
@@ -2521,6 +2644,7 @@ impl RunState {
         if let (Some(coord), Some(mpt)) = (room.map_coord, room.map_point_type) {
             let _ = self.add_visited_coord(coord, Some(mpt), Some(room_type));
         }
+        self.rest_site_taken.clear();
         self.current_room = Some(room);
         let _ = crate::run_effects::dispatch_after_room_entered(self, room_type);
     }
@@ -2547,6 +2671,22 @@ impl RunState {
         // Fresh event → fresh multi-page scratch (page 0, no RNG, no
         // slots). Single-page events never read it. Bead `sts2-rs-2guyj`.
         self.event_state = crate::events::MultiPageEventState::default();
+        // A Combat-layout event builds its fight's creatures on entry, rolling
+        // each one's HP off `Rng.Niche` before `AfterRoomEntered`
+        // (EventRoom.cs:70-72 → EventModel.cs:383-402), even if the player
+        // never fights; a later Fight reuses them (`ShouldCreateCombat =
+        // false`, EventModel.cs:624-627) and rolls nothing. Defect act23 seeds
+        // 1007/1008: returning the Lantern Key left the niche cursor one
+        // behind, so the next fight's unique-HP rolls differed.
+        let layout = event_id.combat_layout_monsters();
+        if !layout.is_empty() {
+            let _ = crate::monsters::roll_unique_max_hps_for(
+                layout,
+                &mut self.rng.niche,
+                self.ascension_level,
+                self.game_version,
+            );
+        }
         // Preserve the map coord/point-type of the room we're standing in.
         // Entering a coord-less `Room::new` here wiped `current_room.map_coord`
         // to `None`, so the next `MapChoice` tick read coord=None, fell back to
@@ -3068,8 +3208,19 @@ impl RunState {
     #[must_use]
     pub fn removal_offer_order(&self) -> Vec<usize> {
         let removable = crate::lookup_card_removable();
+        let rank = crate::lookup_card_rarity_rank();
+        let in_filter = |c: &crate::Card| match self.pending_removal_basic_tag {
+            // Amalgamator: Basic rarity (rank 1) carrying the tag.
+            Some(tag) => {
+                c.has_tag(tag) && rank.is_none_or(|f| f(c.card_id, self.game_version) == 1)
+            }
+            None => true,
+        } && (!self.pending_removal_paels_tooth || c.is_upgradable());
         let mut order: Vec<usize> = (0..self.master_deck.len())
-            .filter(|&i| removable.is_none_or(|f| f(&self.master_deck[i])))
+            .filter(|&i| {
+                let c = &self.master_deck[i];
+                removable.is_none_or(|f| f(c)) && in_filter(c)
+            })
             .collect();
         // Stable sort: Curse → key 0 (front, deck order preserved), else key 1
         // (deck order). `sort_by_key` is stable, matching C#'s OrderBy.
@@ -3255,6 +3406,13 @@ impl RunState {
         {
             options.push(RestSiteOption::Hatch);
         }
+        // MiniatureTent's second pick: drop the options already taken here.
+        options.retain(|o| {
+            !self
+                .rest_site_taken
+                .iter()
+                .any(|t| std::mem::discriminant(t) == std::mem::discriminant(o))
+        });
         options
     }
 
@@ -3406,14 +3564,26 @@ impl RunState {
                 *self.relic_counters.entry(RelicId::Girya).or_insert(0) += 1;
                 RestSiteActionOutcome::Lifted
             }
-            RestSiteOption::Cook { .. } if self.game_version >= crate::GameVersion::V0_111_0 => {
-                self.cook_v0111();
+            RestSiteOption::Cook { .. } => {
+                self.cook();
                 RestSiteActionOutcome::Cooked
             }
-            RestSiteOption::Dig
-            | RestSiteOption::Cook { .. }
-            | RestSiteOption::Clone
-            | RestSiteOption::Mend => RestSiteActionOutcome::Unsupported,
+            RestSiteOption::Dig => {
+                // C# `DigRestSiteOption.OnSelect` (`DigRestSiteOption.cs:31-35`,
+                // same in v0.111.0): `RelicCmd.Obtain(RelicFactory.
+                // PullNextRelicFromFront(Owner))` — `RollRarity(PlayerRng.
+                // Rewards)` then a front pull (`RelicFactory.cs:18-21,37-42`),
+                // Circlet when the bag is dry. Was `Unsupported`: Shovel's dig
+                // granted nothing and skipped the Rewards read (act23 probe:
+                // Ironclad / Regent seed 1005, the dug SHURIKEN / TINYMAILBOX).
+                let rarity = self.roll_reward_relic_rarity();
+                let relic = self
+                    .pop_relic_from_grab_bag(rarity)
+                    .unwrap_or(RelicId::Circlet);
+                self.obtain_relic(relic);
+                RestSiteActionOutcome::Dug { relic }
+            }
+            RestSiteOption::Clone | RestSiteOption::Mend => RestSiteActionOutcome::Unsupported,
         }
     }
 
@@ -3422,16 +3592,23 @@ impl RunState {
     /// [decompiled C# omitted — see the cited path]
     ///
     /// v0.111.0 lowered the gain 9 -> 5 (`_maxHpGain`, decomp
-    /// `CookRestSiteOption.cs:17`). The interactive path queues the two
-    /// removals and parks the gain until they drain (the PrecariousShears
-    /// pattern); the auto path removes from the deck front and gains now.
-    fn cook_v0111(&mut self) {
+    /// `CookRestSiteOption.cs:17`); v0.107.1 runs the same body with 9. The
+    /// interactive path queues the two removals and parks the gain until they
+    /// drain (the PrecariousShears pattern); the auto path removes from the
+    /// deck front and gains now. v0.107.1 Cook used to be `Unsupported` — no
+    /// removal and no max HP (act23 probe: Silent 1012, Meat Cleaver Cook).
+    fn cook(&mut self) {
+        let gain = if self.game_version >= crate::GameVersion::V0_111_0 {
+            COOK_MAX_HP_GAIN_V0111
+        } else {
+            COOK_MAX_HP_GAIN_V0107
+        };
         if self.interactive_card_removal {
             self.pending_deck_removals += COOK_CARDS_TO_REMOVE;
-            self.pending_post_removal_max_hp_gain += COOK_MAX_HP_GAIN_V0111;
+            self.pending_post_removal_max_hp_gain += gain;
         } else {
             let _ = self.remove_cards_from_deck(COOK_CARDS_TO_REMOVE as usize);
-            self.gain_max_hp(COOK_MAX_HP_GAIN_V0111);
+            self.gain_max_hp(gain);
         }
     }
 
@@ -3815,6 +3992,25 @@ impl RunState {
         self.boss_relic_pool = boss_pool;
     }
 
+    /// C#'s `RunState.TotalFloor` (`RunState.cs:423`: the summed
+    /// `MapPointHistory`). Rust's [`Self::total_floor`] only advances on
+    /// map-node entry, while C# also records each act's opening Ancient
+    /// event (Neow, then the act-2 and act-3 Ancients) as a room — so C#
+    /// leads by exactly `act_index`, the same offset the live encounter
+    /// roster seed adds (`run_callbacks.rs` `build_combat_for_room`).
+    #[must_use]
+    pub fn csharp_total_floor(&self) -> i32 {
+        self.total_floor + i32::from(self.act_index)
+    }
+
+    /// C# `RelicModel.IsAllowed(runState)` for a grab-bag relic, which
+    /// `RelicGrabBag.RemoveDisallowedRelicsFromDeques` (`RelicGrabBag.cs:251`)
+    /// applies before every front/back pull. See [`relic_is_allowed_at`].
+    #[must_use]
+    pub fn is_relic_allowed(&self, id: RelicId) -> bool {
+        relic_is_allowed_at(id, self.csharp_total_floor())
+    }
+
     /// Pop the first non-owned relic from the per-rarity grab-bag,
     /// walking Python's fallback chain (`_relic_grab_bag_order`). On
     /// match: drains the entry from its bucket AND from the flat
@@ -3835,10 +4031,8 @@ impl RunState {
     /// `excluded_relic_ids` pattern at the call site.
     ///
     /// Bead `sts2-rs-l9vkh` (P9.2.r). Mirrors Python
-    /// `pull_next_relic_reward_id` (`run_state.py:304-339`) minus
-    /// the `is_allowed` content-gate (no `RelicInstance::is_allowed`
-    /// in Rust at this pin; reintroduce when relic-prerequisite
-    /// modeling lands).
+    /// `pull_next_relic_reward_id` (`run_state.py:304-339`), with C#'s
+    /// `IsAllowed(runState)` gate applied via [`Self::is_relic_allowed`].
     pub fn pop_relic_from_grab_bag(&mut self, rarity: RelicRarity) -> Option<RelicId> {
         self.pop_relic_from_grab_bag_where(rarity, |_| true)
     }
@@ -3908,7 +4102,12 @@ impl RunState {
         excluded: &[RelicId],
     ) -> Option<(Option<RelicRarity>, usize, RelicId)> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
-        let eligible = |id: &RelicId| !owned.contains(id) && !excluded.contains(id) && filter(*id);
+        let eligible = |id: &RelicId| {
+            !owned.contains(id)
+                && !excluded.contains(id)
+                && self.is_relic_allowed(*id)
+                && filter(*id)
+        };
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get(&candidate_rarity) else {
                 continue;
@@ -3953,6 +4152,7 @@ impl RunState {
     /// modeled, consistent with the player-bag pop).
     pub fn pop_relic_from_shared_grab_bag(&mut self, rarity: RelicRarity) -> Option<RelicId> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
+        let floor = self.csharp_total_floor();
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self
                 .shared_relic_grab_bag_by_rarity
@@ -3960,7 +4160,10 @@ impl RunState {
             else {
                 continue;
             };
-            if let Some(idx) = bucket.iter().position(|id| !owned.contains(id)) {
+            if let Some(idx) = bucket
+                .iter()
+                .position(|id| !owned.contains(id) && relic_is_allowed_at(*id, floor))
+            {
                 return Some(bucket.remove(idx));
             }
         }
@@ -3984,24 +4187,23 @@ impl RunState {
     /// `None` when the chain + fallback are exhausted of eligible
     /// relics.
     ///
-    /// Like [`Self::pop_relic_from_grab_bag`], this omits C#'s
-    /// `IsAllowed(runState)` prerequisite gate (no relic-prerequisite
-    /// model at this pin). Bead `sts2-rs-jenwp` (M4 shop relic
-    /// identity).
+    /// Like [`Self::pop_relic_from_grab_bag`], this applies C#'s
+    /// `IsAllowed(runState)` gate ([`Self::is_relic_allowed`]). Bead
+    /// `sts2-rs-jenwp` (M4 shop relic identity).
     pub fn pop_relic_from_grab_bag_back(
         &mut self,
         rarity: RelicRarity,
         filter: impl Fn(RelicId) -> bool,
     ) -> Option<(RelicId, RelicRarity)> {
         let owned: std::collections::BTreeSet<RelicId> = self.relics.iter().copied().collect();
+        let floor = self.csharp_total_floor();
         for &candidate_rarity in rarity.fallback_order() {
             let Some(bucket) = self.relic_grab_bag_by_rarity.get_mut(&candidate_rarity) else {
                 continue;
             };
-            if let Some(idx) = bucket
-                .iter()
-                .rposition(|id| !owned.contains(id) && filter(*id))
-            {
+            if let Some(idx) = bucket.iter().rposition(|id| {
+                !owned.contains(id) && relic_is_allowed_at(*id, floor) && filter(*id)
+            }) {
                 let picked = bucket.remove(idx);
                 self.relic_grab_bag.retain(|&r| r != picked);
                 self.remove_relic_from_shared_grab_bag(picked);
@@ -4011,7 +4213,7 @@ impl RunState {
         if let Some(idx) = self
             .relic_grab_bag_fallback
             .iter()
-            .rposition(|id| !owned.contains(id) && filter(*id))
+            .rposition(|id| !owned.contains(id) && relic_is_allowed_at(*id, floor) && filter(*id))
         {
             let picked = self.relic_grab_bag_fallback.remove(idx);
             self.relic_grab_bag.retain(|&r| r != picked);
@@ -4254,8 +4456,72 @@ impl RunState {
     /// channel picks coords off the post-swap layout (FurCoat). Beads
     /// `sts2-rs-fchti` (early channel) + `sts2-rs-eboqq` (late channel).
     pub fn modify_generated_map(&mut self, act_map: &mut crate::map::ActMap, act_index: u8) {
+        self.apply_spoils_map(act_map, act_index);
         let _ = crate::run_effects::dispatch_modify_generated_map(self, act_map, act_index);
         let _ = crate::run_effects::dispatch_modify_generated_map_late(self, act_map, act_index);
+    }
+
+    /// The Spoils Map quest card's map hooks. While the card sits in the deck,
+    /// its act's map (`SpoilsActIndex = 1` from `AfterCreated`, i.e. act 2,
+    /// `SpoilsMap.cs:47-50`) is replaced by the hourglass
+    /// `SpoilsActMap(runState)` (`SpoilsMap.cs:52-61`), whose RNG is
+    /// `new Rng(Seed, "spoils_map")` (`SpoilsActMap.cs:89`). `ModifyGeneratedMapLate`
+    /// then records the first Treasure point in grid order (column-major,
+    /// `ActMap.GetAllMapPoints`) as the quest node (`SpoilsMap.cs:63-79`).
+    /// `act_index` is 1-based here.
+    fn apply_spoils_map(&mut self, act_map: &mut crate::map::ActMap, act_index: u8) {
+        const SPOILS_ACT: u8 = 2;
+        if act_index != SPOILS_ACT
+            || !self
+                .master_deck
+                .iter()
+                .any(|c| c.card_id == crate::cards::CardId::SpoilsMap)
+        {
+            return;
+        }
+        let mut rng = self.rng.named("spoils_map");
+        *act_map = crate::map_generator::generate_spoils_act_map(
+            act_map.map_length - 1,
+            &mut rng,
+            i32::from(self.ascension_level),
+            i32::from(act_index),
+        );
+        self.spoils_quest_coord = act_map
+            .points
+            .iter()
+            .filter(|p| p.point_type == crate::map::MapPointType::Treasure)
+            .map(|p| p.coord)
+            .min_by_key(|c| (c.col, c.row));
+    }
+
+    /// C# `OneOffSynchronizer.TryHandleSpoilsMap` (`OneOffSynchronizer.cs:148-166`),
+    /// run by the treasure room right after its own gold: on the Spoils Map
+    /// quest node, every Spoils Map in the deck pays its 600 gold and removes
+    /// itself (`SpoilsMap.OnQuestComplete`, `SpoilsMap.cs:111-117`). Returns
+    /// the gold paid.
+    pub fn try_complete_spoils_quest(&mut self) -> i32 {
+        let here = self.current_room.as_ref().and_then(|r| r.map_coord);
+        if here.is_none() || here != self.spoils_quest_coord {
+            return 0;
+        }
+        let maps = self
+            .master_deck
+            .iter()
+            .filter(|c| c.card_id == crate::cards::CardId::SpoilsMap)
+            .count();
+        let mut paid = 0;
+        for _ in 0..maps {
+            self.gain_gold(SPOILS_MAP_GOLD);
+            paid += SPOILS_MAP_GOLD;
+            if let Some(i) = self
+                .master_deck
+                .iter()
+                .position(|c| c.card_id == crate::cards::CardId::SpoilsMap)
+            {
+                self.master_deck.remove(i);
+            }
+        }
+        paid
     }
 
     /// Immediate-regen primitive for the current act's map. Mirrors
@@ -5450,6 +5716,9 @@ impl RunState {
     }
 }
 
+/// `SpoilsMap`'s `GoldVar(600)` (`SpoilsMap.cs:19`, both builds): the quest's payout.
+pub const SPOILS_MAP_GOLD: i32 = 600;
+
 /// `Guilty.maxCombats` (`Models.Cards/Guilty.cs:13`, both builds): the combats a
 /// Guilty stays in the deck before it removes itself.
 pub const GUILTY_MAX_COMBATS: i32 = 5;
@@ -5607,6 +5876,48 @@ mod tests {
         // Treasure-room pull now lands on the next entry, as in C#.
         let treasure = rs.pop_relic_from_shared_grab_bag(RelicRarity::Rare);
         assert_eq!(treasure, Some(RelicId::IntimidatingHelmet));
+    }
+
+    /// C# drops `IsBeforeAct3TreasureChest` relics from every grab-bag
+    /// deque once `TotalFloor` (which counts each act's opening Ancient)
+    /// reaches 41 (`RelicModel.cs:453`, `RelicGrabBag.cs:251`). The act-3
+    /// treasure on the 8th act-3 floor sits at Rust `total_floor` 38 =
+    /// C# 41, so Meal Ticket is skipped there (Ironclad/Defect seed 1019
+    /// act23 probe: Rust took MEALTICKET where C# took WARPAINT).
+    #[test]
+    fn act3_treasure_skips_before_act3_relics() {
+        let mut rs = RunState {
+            act_index: 3,
+            total_floor: 37,
+            ..Default::default()
+        };
+        let bag = vec![RelicId::MealTicket, RelicId::WarPaint];
+        rs.shared_relic_grab_bag_by_rarity
+            .insert(RelicRarity::Common, bag.clone());
+        rs.relic_grab_bag_by_rarity
+            .insert(RelicRarity::Common, bag.clone());
+        // C# TotalFloor 40: still allowed.
+        assert_eq!(rs.csharp_total_floor(), 40);
+        assert_eq!(
+            rs.peek_relic_from_grab_bag_where(RelicRarity::Common, |_| true, &[]),
+            Some(RelicId::MealTicket),
+        );
+        rs.total_floor = 38;
+        assert!(!rs.is_relic_allowed(RelicId::MealTicket));
+        assert!(rs.is_relic_allowed(RelicId::WarPaint));
+        assert_eq!(
+            rs.pop_relic_from_shared_grab_bag(RelicRarity::Common),
+            Some(RelicId::WarPaint),
+        );
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Common),
+            Some(RelicId::WarPaint),
+        );
+        rs.relic_grab_bag_by_rarity.insert(RelicRarity::Common, bag);
+        assert_eq!(
+            rs.pop_relic_from_grab_bag_back(RelicRarity::Common, |_| true),
+            Some((RelicId::WarPaint, RelicRarity::Common)),
+        );
     }
 
     /// Obtaining a relic strips it from the shared bag too
@@ -5923,6 +6234,65 @@ mod tests {
         assert_eq!(rs.relic_grab_bag, vec![RelicId::Anchor, RelicId::Pendulum]);
         assert_eq!(rs.relic_grab_bag_fallback, vec![RelicId::Lantern]);
         assert_eq!(rs.boss_relic_pool, vec![RelicId::BlackBlood]);
+    }
+
+    fn spoils_map_card() -> crate::Card {
+        crate::Card {
+            uid: crate::CardUid::new(900).expect("nz"),
+            card_id: crate::cards::CardId::SpoilsMap,
+            ..crate::Card::pod_defaults()
+        }
+    }
+
+    /// With Spoils Map in the deck, act 2's map is the hourglass spoils map
+    /// (one Treasure on the centre column, `SpoilsActMap.cs:138-139`) and its
+    /// treasure node becomes the quest node; act 3 is untouched (act23 probe
+    /// Ironclad:1007 map/map/map.nodes).
+    #[test]
+    fn spoils_map_swaps_act_two_map_and_marks_quest_node() {
+        let mut rs = RunState::default();
+        rs.master_deck.push(spoils_map_card());
+        let mut map = crate::map::ActMap::new(14);
+        rs.modify_generated_map(&mut map, 2);
+        let coord = rs.spoils_quest_coord.expect("quest node set");
+        assert_eq!((coord.col, coord.row), (3, map.map_length - 7));
+        let treasures = map
+            .points
+            .iter()
+            .filter(|p| p.point_type == crate::map::MapPointType::Treasure)
+            .count();
+        assert_eq!(treasures, 1);
+
+        let mut other = RunState::default();
+        other.master_deck.push(spoils_map_card());
+        let mut act3 = crate::map::ActMap::new(13);
+        other.modify_generated_map(&mut act3, 3);
+        assert!(act3.points.is_empty() && other.spoils_quest_coord.is_none());
+    }
+
+    /// Entering the quest node pays 600 and removes the card
+    /// (`SpoilsMap.OnQuestComplete`); elsewhere nothing happens.
+    #[test]
+    fn spoils_quest_pays_on_its_node_only() {
+        let mut rs = RunState::default();
+        rs.master_deck.push(spoils_map_card());
+        let quest = crate::map::MapCoord { col: 3, row: 8 };
+        rs.spoils_quest_coord = Some(quest);
+        rs.current_room = Some(Room {
+            room_type: RoomType::Treasure,
+            map_coord: Some(crate::map::MapCoord { col: 2, row: 8 }),
+            map_point_type: None,
+        });
+        assert_eq!(rs.try_complete_spoils_quest(), 0);
+        let gold = rs.gold;
+        rs.current_room = Some(Room {
+            room_type: RoomType::Treasure,
+            map_coord: Some(quest),
+            map_point_type: None,
+        });
+        assert_eq!(rs.try_complete_spoils_quest(), SPOILS_MAP_GOLD);
+        assert_eq!(rs.gold, gold + SPOILS_MAP_GOLD);
+        assert!(rs.master_deck.is_empty());
     }
 
     /// Bead `sts2-rs-597ws` (P9.1.f): `remove_relic_from_grab_bag`
@@ -6263,6 +6633,32 @@ mod tests {
         assert_eq!(rs.current_hp, hp_before);
     }
 
+    /// Shovel's Dig rolls a relic rarity off Rewards and obtains the
+    /// front relic of that bucket (`DigRestSiteOption.cs:31-35`).
+    #[test]
+    fn do_rest_site_action_dig_obtains_front_relic() {
+        let mut rs = RunState::default();
+        for rarity in [
+            RelicRarity::Common,
+            RelicRarity::Uncommon,
+            RelicRarity::Rare,
+        ] {
+            rs.relic_grab_bag_by_rarity
+                .insert(rarity, vec![RelicId::Shuriken, RelicId::Anchor]);
+        }
+        let mut expected = rs.rng.rewards.clone();
+        let _ = roll_relic_rarity(&mut expected);
+        let outcome = rs.do_rest_site_action(RestSiteOption::Dig);
+        assert_eq!(
+            outcome,
+            RestSiteActionOutcome::Dug {
+                relic: RelicId::Shuriken
+            }
+        );
+        assert!(rs.relics.contains(&RelicId::Shuriken));
+        assert_eq!(rs.rng.rewards.counter(), expected.counter());
+    }
+
     /// Bead `sts2-rs-qwp1g`: deferred variants return `Unsupported`
     /// without state mutation.
     #[test]
@@ -6272,7 +6668,6 @@ mod tests {
         // Hatch is no longer deferred (bead `sts2-rs-RP24`) — it obtains
         // Byrdpip; see `do_rest_site_action_hatch_obtains_byrdpip`.
         let outcomes = [
-            rs.do_rest_site_action(RestSiteOption::Dig),
             rs.do_rest_site_action(RestSiteOption::Clone),
             rs.do_rest_site_action(RestSiteOption::Mend),
         ];

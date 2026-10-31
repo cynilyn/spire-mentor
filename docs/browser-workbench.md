@@ -409,8 +409,57 @@ downloads one (a replay report's log unpacks to `logs/bugreports/<id>.jsonl`,
 which the desktop workbench opens).
 
 Abuse budget: Pages' free plan has no rate-limit binding, so the caps are a
-20 MiB body, a same-origin check on POST, and KV's own 1,000 writes/day — a
-flood costs a day of lost reports, never money.
+20 MiB body, an origin check on POST (a foreign `Origin` is refused; the
+intake below also takes a post with none — a non-browser client, which could
+forge the header anyway), and KV's own 1,000 writes/day — a flood costs a day
+of lost reports, never money.
+
+### The sign-in, and the intake outside it
+
+The hosted site is behind a sign-in (Cloudflare Access, Google accounts):
+the app, its assets and `/api/bugreport/<id>` all need it. The clients below
+cannot sign in, so they post to the store's **intake**, `POST
+/intake/bugreport` (`web/functions/intake/bugreport.ts`) — the one path
+exempt from it, with its own Access application (`sts2-pycli/deploy/DEPLOY.md`,
+"Bug-report intake"). It only writes; every other path under `/intake/` is a
+404, so the exemption exposes no page, asset or report. Exempting
+`/api/bugreport` instead would have opened every stored report: an Access
+path covers everything under it. The page itself keeps posting to
+`/api/bugreport`, signed in and same-origin.
+
+### Reports from the real game
+
+Two more clients post to the same store, so one `just bug-reports` lists
+everything players send:
+
+- **The Spire Mentor mod**'s in-game **Report a bug** (`Ctrl+Shift+B`;
+  `spire-mentor-mod/SimBugReport.cs`, the README's "Bug reports"). Its dump
+  says `meta.source = "mod"`, `meta.mode = "game"`, and carries the game's
+  position as `state.game_state` (the Copy-state message), the start-of-room
+  save as `repro.run_save`, the advisor's run log as `repro.run_log` when
+  the advisor is up, and log tails as `logs` (mod / game / advisor). The mod
+  posts it itself to the intake, with no `Origin` and following no redirect
+  (a redirect is the sign-in page, reported as such); the site is baked into
+  release builds (`package.ps1 -BugReportSite`), never named in source.
+- **The mod-bundled workbench** (served by the advisor's control plane on
+  :8079). Its 🐞 Report posts to `/api/bugreport` on that origin as usual,
+  and the control plane (`realgame_control.BugReportForward`) forwards it to
+  the intake of the site named by `--bug-report-site` (the mod passes its own
+  site), adding
+  the game's latest position as `state.live_game` and the run envelope as
+  `meta.advisor`. With no site, or no store to reach, it saves the report
+  under `<log dir>/../bugreports/<id>.json` and the toast shows that path
+  instead of a link. It refuses a foreign `Origin` and any body that is not
+  `application/json` (a cross-site page could send that only after a
+  preflight it refuses). Opening a sent report (`?report=<id>`) works on the
+  hosted site, signed in; the bundled page can open only the ones it saved.
+
+The report view shows the game side of either (mod and game build, run, coach
+mode, the logs) and offers **▶ Import the game position**, which runs the
+position through the state import (`POST /api/live/import-state`, lane
+`auto`, in the build it was taken in) and makes it this workbench's live run.
+`just bug-report <id>` unpacks it as `<id>.state.json` (paste it into Import
+state), `<id>.run_save.json` and `<id>.<mod|game|advisor>.log`.
 
 ## State import
 

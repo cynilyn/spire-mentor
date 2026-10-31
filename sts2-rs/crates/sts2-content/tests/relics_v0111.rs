@@ -232,6 +232,7 @@ fn lasting_candy_reward_sizes(version: GameVersion, from_combat: bool) -> Vec<(u
     let set = CombatRewardsSet {
         room_type: RoomType::Monster,
         rewards: vec![Reward::Card(CardReward::empty())],
+        hook_relics: Vec::new(),
     };
     (0..4)
         .map(|_| {
@@ -290,6 +291,7 @@ fn lasting_candy_fourth_card(seed: i32, extra: &[sts2_core::RelicId]) -> Option<
     let set = CombatRewardsSet {
         room_type: RoomType::Monster,
         rewards: vec![Reward::Card(CardReward::empty())],
+        hook_relics: Vec::new(),
     };
     let mut fourth = None;
     for _ in 0..2 {

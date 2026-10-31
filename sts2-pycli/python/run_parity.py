@@ -283,6 +283,27 @@ def diff_maps(cs: dict | None, rs: dict | None) -> list[str]:
     return out
 
 
+def rust_finalize_atomic_select(r: Any, rs_view: dict[str, Any]) -> Any:
+    """Finalize a Rust ``card_select`` that the C# headless resolved atomically.
+
+    In combat the headless sets ``AutoResolveInline`` and takes the option-0
+    prefix ``[0, max(min_select, 1))`` (``HeadlessCardSelector.GetSelectedCards``).
+    ``skip_select`` finalizes Rust with no pick, which matches only while the
+    select is optional. A mandatory one (Tools of the Trade's discard,
+    ``min_select`` 1) needs the same prefix, or the hands split (GH #1054,
+    Silent:1007). The min-0 path keeps ``skip_select``, and a rejected prefix
+    falls back to it.
+    """
+    cards = rs_view.get("cards") or []
+    min_sel = int(rs_view.get("min_select") or 0)
+    if min_sel >= 1 and cards:
+        idxs = [str(c["index"]) for c in cards[: min(min_sel, len(cards))]]
+        nxt = r.act("select_cards", indices=",".join(idxs))
+        if not (isinstance(nxt, dict) and (nxt.get("error") or nxt.get("type") == "error")):
+            return nxt
+    return r.act("skip_select")
+
+
 # --------------------------------------------------------------------------- #
 # Choice enumeration from the C# decision view (the oracle). Each entry is a
 # ``(verb, kwargs)`` pair applicable to both backends via ``act``.
@@ -425,7 +446,7 @@ def run_one(
             while (
                 rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and sel_guard < 8
             ):
-                nxt_rs = r.act("skip_select")
+                nxt_rs = rust_finalize_atomic_select(r, rs_view)
                 if isinstance(nxt_rs, dict) and (
                     nxt_rs.get("error") or nxt_rs.get("type") == "error"
                 ):
@@ -1433,7 +1454,7 @@ def _replay_against_rust(rec: dict[str, Any], stop_on_diverge: bool = True) -> R
             while (
                 rs_snap.phase == "card_select" and cs_snap.phase != "card_select" and sel_guard < 8
             ):
-                nxt = r.act("skip_select")
+                nxt = rust_finalize_atomic_select(r, rs_view)
                 if isinstance(nxt, dict) and (nxt.get("error") or nxt.get("type") == "error"):
                     break
                 rs_view = nxt

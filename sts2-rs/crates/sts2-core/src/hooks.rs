@@ -1219,6 +1219,17 @@ pub enum Effect {
         /// Pre-pipeline block amount.
         amount: i32,
     },
+    /// [`Self::GainBlockCreature`] with C# `ValueProp.Unpowered`: a power's
+    /// block grant (Plating, Curl Up, Skittish, Rampart, Crab Rage). The co-op
+    /// enemy block scaling (`MultiplayerScalingModel`) scales only powered
+    /// and move block, so a Curl Up granted as move block doubled in a
+    /// two-player fight.
+    GainBlockCreatureUnpowered {
+        /// Creature gaining block.
+        target: CreatureRef,
+        /// Pre-pipeline block amount.
+        amount: i32,
+    },
     /// Draw `count` cards from the draw pile into hand. Routes through
     /// [`crate::cards::draw_via_state`] which respects NoDraw.
     /// Bead `sts2-rs-6ynt.6.2` (Vicious).
@@ -1321,6 +1332,65 @@ pub enum Effect {
 pub fn apply_effects(state: &mut CombatState, effects: &[Effect]) {
     for effect in effects {
         apply_effect(state, *effect);
+    }
+}
+
+/// [`Effect::GainBlockCreature`] and [`Effect::GainBlockCreatureUnpowered`]:
+/// `target` gains `amount` block through the block pipeline with `props`.
+fn gain_block_creature(
+    state: &mut CombatState,
+    target: CreatureRef,
+    amount: i32,
+    props: ValueProps,
+) {
+    let ctx = BlockCtx {
+        target,
+        props,
+        card_source: None,
+    };
+    let final_block = modify_block(state, amount, &ctx);
+    if final_block <= 0 {
+        return;
+    }
+    match target {
+        CreatureRef::Player => {
+            state.player.block = state.player.block.saturating_add(final_block);
+            // Player-block mutations must back-sync the mirror
+            // Creature row.
+            state.sync_creature_block_from_player();
+        }
+        CreatureRef::Enemy(uid) => {
+            if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+                c.block = c.block.saturating_add(final_block);
+            }
+        }
+        // Nobody has no block pool to add to.
+        CreatureRef::Ally(_) | CreatureRef::Nobody => {}
+    }
+    // Event log (C# `BlockGainedEntry`). This arm is the funnel for
+    // MONSTER block — `Intent::Defend` routes here — as well as
+    // effect-granted player block.
+    if crate::event_log::armed(state) {
+        let receiver = crate::event_log::LogCreature::of_dealer(state, target);
+        crate::event_log::record(
+            state,
+            crate::event_log::EventLogEntry::BlockGained {
+                receiver,
+                amount: final_block,
+            },
+        );
+    }
+    let gained_ctx = BlockGainedCtx {
+        target,
+        amount: final_block,
+        card_source: None,
+    };
+    dispatch_after_block_gained(state, &gained_ctx);
+    // Bead `sts2-rs-fopk` (6z05.3) — relic-side mirror of
+    // `after_block_gained`. Empty-bus early-out preserves
+    // the no-listener fast path.
+    if relic_channel_live(state, PlannedChannel::AfterBlockGained) {
+        let _ = crate::relic_effects::dispatch_after_block_gained(state, &gained_ctx);
     }
 }
 
@@ -1576,10 +1646,18 @@ pub fn apply_effect(state: &mut CombatState, effect: Effect) {
             // a small list either way.
             if let ListenerRef::Power(uid) = listener {
                 let pid = uid.0;
+                let was_tangled = state
+                    .powers
+                    .get_by_id(pid)
+                    .is_some_and(|p| p.kind == PowerKind::Tangled);
                 state.powers.retain(|p| p.id != pid);
                 state.player.powers.retain(|u| u.0 != pid);
                 for c in &mut state.creatures {
                     c.powers.retain(|u| u.0 != pid);
+                }
+                // C# `TangledPower.AfterRemoved` clears the Entangled cards.
+                if was_tangled && state.player_power_amount(PowerKind::Tangled) <= 0 {
+                    crate::monster_power_effects::tangled_after_removed(state);
                 }
             }
         }
@@ -1723,55 +1801,10 @@ pub fn apply_effect(state: &mut CombatState, effect: Effect) {
             state.gain_stars(amount);
         }
         Effect::GainBlockCreature { target, amount } => {
-            let ctx = BlockCtx {
-                target,
-                props: ValueProps::MOVE,
-                card_source: None,
-            };
-            let final_block = modify_block(state, amount, &ctx);
-            if final_block <= 0 {
-                return;
-            }
-            match target {
-                CreatureRef::Player => {
-                    state.player.block = state.player.block.saturating_add(final_block);
-                    // Player-block mutations must back-sync the mirror
-                    // Creature row.
-                    state.sync_creature_block_from_player();
-                }
-                CreatureRef::Enemy(uid) => {
-                    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
-                        c.block = c.block.saturating_add(final_block);
-                    }
-                }
-                // Nobody has no block pool to add to.
-                CreatureRef::Ally(_) | CreatureRef::Nobody => {}
-            }
-            // Event log (C# `BlockGainedEntry`). This arm is the funnel for
-            // MONSTER block — `Intent::Defend` routes here — as well as
-            // effect-granted player block.
-            if crate::event_log::armed(state) {
-                let receiver = crate::event_log::LogCreature::of_dealer(state, target);
-                crate::event_log::record(
-                    state,
-                    crate::event_log::EventLogEntry::BlockGained {
-                        receiver,
-                        amount: final_block,
-                    },
-                );
-            }
-            let gained_ctx = BlockGainedCtx {
-                target,
-                amount: final_block,
-                card_source: None,
-            };
-            dispatch_after_block_gained(state, &gained_ctx);
-            // Bead `sts2-rs-fopk` (6z05.3) — relic-side mirror of
-            // `after_block_gained`. Empty-bus early-out preserves
-            // the no-listener fast path.
-            if relic_channel_live(state, PlannedChannel::AfterBlockGained) {
-                let _ = crate::relic_effects::dispatch_after_block_gained(state, &gained_ctx);
-            }
+            gain_block_creature(state, target, amount, ValueProps::MOVE);
+        }
+        Effect::GainBlockCreatureUnpowered { target, amount } => {
+            gain_block_creature(state, target, amount, ValueProps::UNPOWERED);
         }
         Effect::DrawCards { count } => {
             if count > 0 {
@@ -2000,6 +2033,18 @@ fn auto_play_random_attack_from_hand(state: &mut CombatState) {
         let uid = state.player.hand.remove(pos);
         state.player.play.push(uid);
         crate::combat_loop::resolve_auto_played_card(state, uid, /*force_exhaust=*/ false);
+        // `CardCmd.AutoPlay` -> `OnPlayWrapper` ends with `CheckForEmptyHand`
+        // (v0.111.0 CardModel.cs:2006). A Stampede hook play is not nested in
+        // a card/potion effect, and UnceasingTop's `IsValidPhase` admits
+        // AutoPostPlay (CombatManager.cs:1547-1549), so emptying the hand here
+        // draws. A play that parked a select runs this from the end-turn
+        // resume instead (`resume_end_turn_after_auto_post_play`).
+        if !state.is_over
+            && state.pending_choice.is_none()
+            && state.pending_autoplay_resume.is_none()
+        {
+            crate::combat_loop::check_for_empty_hand(state);
+        }
     }
 }
 
@@ -3772,7 +3817,13 @@ fn power_modify_damage_multiplicative(
             // same source `originating_card_id` reads when the card deals
             // its damage. Gate on target == owner and that top-of-play
             // card being Hang. Bead `sts2-rs-4wppb`.
-            if owner != Some(ctx.target) || power.amount <= 0 {
+            // The card's own `DamageCmd.Attack` is powered (`Move`); damage a
+            // reaction deals while Hang is still resolving — SleightOfFlesh on
+            // the Hang apply, Panache on the 5th play — is `Unpowered` with
+            // `cardSource == null`, so it is never scaled (HangPower.cs,
+            // SleightOfFleshPower.cs:26, PanachePower; Necrobinder full seeds
+            // 2203/3154).
+            if owner != Some(ctx.target) || power.amount <= 0 || !ctx.props.is_powered() {
                 return DamageMul::ONE;
             }
             let from_hang_card = state
@@ -3934,6 +3985,24 @@ fn power_modify_damage_multiplicative(
                 DamageMul::ONE
             }
         }
+        PowerKind::Flanking | PowerKind::Knockdown => {
+            // C# `FlankingPower` / `KnockdownPower.ModifyDamageMultiplicative`
+            // (FlankingPower.cs:35-50, KnockdownPower.cs:35-50): a powered hit
+            // on the owner is multiplied by `Amount` unless its dealer is the
+            // player who applied it (`dealer == base.Applier`). The seated
+            // player is the dealer `Player`; their Osty is not the applier,
+            // so it counts. Inert solo, where the player applied every one.
+            let applier_hits = matches!(ctx.dealer, CreatureRef::Player)
+                && crate::coop::applied_by_seated(state, power.id);
+            if owner == Some(ctx.target) && ctx.props.is_powered() && !applier_hits {
+                DamageMul {
+                    num: i64::from(power.amount.max(0)),
+                    den: 1,
+                }
+            } else {
+                DamageMul::ONE
+            }
+        }
         PowerKind::Tank => {
             // Python `TankPower.modify_damage_multiplicative`:
             // 2x damage for powered attacks targeting owner.
@@ -3954,11 +4023,25 @@ fn power_modify_damage_multiplicative(
             // (InterceptPower.cs, v0.107.1 = v0.111.0): a powered attack on
             // the owner is multiplied by `coveredCreatures.Count + 1` — the
             // owner also takes the hits meant for the teammates it covers
-            // (their `CoveredPower` zeroes them). Intercept always covers one
-            // teammate here (`CombatState::any_ally_card_target`), and the
-            // C# list dedups the same teammate, so the multiplier is 2.
+            // (their `CoveredPower` zeroes them). With three or four players
+            // one player can cover two or three teammates (GH #1017): the
+            // Covered powers bound to the owner's seat count them.
             if owner == Some(ctx.target) && ctx.props.is_powered() {
-                DamageMul::DOUBLE
+                let seat = match owner {
+                    Some(CreatureRef::Ally(i)) => crate::coop::seat_of_ally(state, usize::from(i)),
+                    _ => state.coop.seated,
+                };
+                DamageMul::new(1 + crate::coop::intercept_covered_count(state, seat), 1)
+            } else {
+                DamageMul::ONE
+            }
+        }
+        PowerKind::Covered => {
+            // v0.111.0 `CoveredPower.ModifyDamageMultiplicative`: a powered
+            // attack on the Covered teammate does nothing; the player who
+            // played Intercept on them takes it instead (`Intercept` above).
+            if owner == Some(ctx.target) && ctx.props.is_powered() {
+                DamageMul::ZERO
             } else {
                 DamageMul::ONE
             }
@@ -4093,7 +4176,17 @@ fn power_modify_damage_multiplicative(
             // from a card, so an Osty dealer implies a player card source.
             let osty_card_hit = owner == Some(CreatureRef::Player)
                 && matches!(ctx.dealer, CreatureRef::Enemy(uid) if state.player.pet_uid == Some(uid));
-            if (owner == Some(ctx.dealer) || osty_card_hit) && ctx.props.is_powered() {
+            // `commandToModify` scopes the ×3 to the latched card's hits
+            // (GigantificationPower.cs:52-70): once Uproar's attack latched
+            // it, the Tesla Coil Uproar auto-plays is not tripled (Defect
+            // quick seed 591). `counter` holds the latched card uid, 0 = none.
+            let latched_elsewhere = power.counter != 0
+                && crate::card_effects::resolving_card_uid(state)
+                    .is_none_or(|c| i64::from(c.0.get()) != i64::from(power.counter));
+            if (owner == Some(ctx.dealer) || osty_card_hit)
+                && ctx.props.is_powered()
+                && !latched_elsewhere
+            {
                 DamageMul::new(3, 1)
             } else {
                 DamageMul::ONE
@@ -4294,7 +4387,20 @@ pub fn before_damage_received(
             // case Python guards out via `dealer is not None`). For Phase-2
             // canonical fixtures the dealer is always a non-self attacker.
             let owner = owner_of_listener(state, listener)?;
-            if owner == ctx.target && ctx.props.is_powered() {
+            // C# also reflects `cardSource is Omnislice` (ThornsPower.cs:19):
+            // Omnislice's splash is `Unpowered | Move` (Omnislice.cs OnPlay).
+            // `DamageCtx` carries no card, so read the resolving card off the
+            // top of Play, gated on a player `Move` hit (Necrobinder full seed
+            // 3645).
+            let omnislice_hit = ctx.dealer == CreatureRef::Player
+                && ctx.props.contains(ValueProps::MOVE)
+                && state
+                    .player
+                    .play
+                    .last()
+                    .and_then(|uid| state.cards.get(uid.0.get() as usize - 1))
+                    .is_some_and(|c| c.card_id == CardId::Omnislice);
+            if owner == ctx.target && (ctx.props.is_powered() || omnislice_hit) {
                 let mut effects = SmallVec::new();
                 // C# `ThornsPower.cs:21` calls `Flash()` inside this same guard,
                 // so the flash fires exactly when the reflect does. Guarded on
@@ -5674,21 +5780,23 @@ pub fn modify_card_cost(
             }
         }
         PowerKind::Tangled => {
-            // Bead `sts2-rs-g0gs9`: C# `TangledPower.TryModifyEnergyCostInCombat`
-            // (../sts2-wiki/decompiled/v0.103.2/MegaCrit.Sts2.Core.Models.Powers/TangledPower.cs)
-            // returns `originalCost + Amount` for Entangled Attack cards
-            // owned by the player. `TangledPower.AfterApplied` afflicts
-            // EVERY player Attack card with `Entangled` (and
-            // `AfterCardEnteredCombat` afflicts new ones), so the net
-            // observable is "+Amount on every player Attack card while
-            // Tangled is active". We model that directly on `card_type ==
-            // Attack` rather than tracking the per-card Entangled affliction
-            // (which is not parity-tracked). This is an ADDITIVE
-            // contribution — a min-fold of `Override`s cannot express it,
-            // hence the [`CardCostMod`] split. Tangled is removed at the
-            // player's turn end (see the `PowerKind::Tangled` arm in
-            // [`after_turn_end`]).
-            if power.amount > 0 && card_type == CardType::Attack {
+            // C# `TangledPower.TryModifyEnergyCostInCombat`
+            // (`TangledPower.cs:59-68`): `originalCost + Amount` for a card
+            // whose affliction is Entangled. `AfterApplied` Entangles every
+            // unafflicted player Attack and `AfterCardEnteredCombat` each new
+            // one (`monster_power_effects::tangled_after_applied`), so an
+            // Attack carrying another affliction pays its base cost. A cost
+            // asked by type alone (no card) keeps the Attack rule. Additive,
+            // hence [`CardCostMod::Add`]. Tangled is removed at the player's
+            // turn end (the `PowerKind::Tangled` arm in [`after_turn_end`]).
+            let entangled = ctx.card_uid.map_or(card_type == CardType::Attack, |uid| {
+                crate::card_by_uid(&state.cards, uid).is_some_and(|c| {
+                    c.affliction.is_some_and(|a| {
+                        a.kind == crate::card_afflictions::CardAfflictionKind::Entangled
+                    })
+                })
+            });
+            if power.amount > 0 && entangled {
                 Some(CardCostMod::Add(power.amount))
             } else {
                 None
@@ -6139,9 +6247,17 @@ pub fn before_turn_end(
             // `monsters[*].block`, FrogKnight cs=14 vs rs=15). Round 1 (no tick)
             // and player-owned Plating (NeutronAegis; never ticked at enemy
             // turn end) grant the full amount.
+            //
+            // An enemy's tick is C#'s `Decrement`, set to `Players.Count` when
+            // the power lands (`PlatingPower.cs:29-36`): 2 a round in a
+            // two-player fight (GH #989).
             let pending_enemy_tick =
-                creature_ref_side(owner) == Side::Enemy && state.round_no() != 1;
-            let block_amount = power.amount - i32::from(pending_enemy_tick);
+                if creature_ref_side(owner) == Side::Enemy && state.round_no() != 1 {
+                    crate::coop::player_count(state)
+                } else {
+                    0
+                };
+            let block_amount = power.amount - pending_enemy_tick;
             let mut effects = SmallVec::new();
             // C# `PlatingPower.cs:65` (`BeforeSideTurnEndEarly`) flashes
             // unconditionally inside `participants.Contains(base.Owner)` —
@@ -6168,7 +6284,7 @@ pub fn before_turn_end(
                     CreatureRef::Player => Effect::GainBlockPlayerUnpowered {
                         amount: block_amount,
                     },
-                    _ => Effect::GainBlockCreature {
+                    _ => Effect::GainBlockCreatureUnpowered {
                         target: owner,
                         amount: block_amount,
                     },
@@ -6478,8 +6594,9 @@ pub fn after_turn_end(
             }
             Some(effects)
         }
-        PowerKind::Intercept => {
-            // C# `InterceptPower.AfterSideTurnEnd`: `if side == Enemy`
+        PowerKind::Covered | PowerKind::Intercept => {
+            // C# `CoveredPower.AfterSideTurnEnd` /
+            // `InterceptPower.AfterSideTurnEnd`: `if side == Enemy`
             // remove — it lasts through the enemy turn it was bought for.
             if ctx.side != Side::Enemy {
                 return None;
@@ -7606,9 +7723,7 @@ pub fn after_turn_end(
             // (VineShambler GRASPING_VINES), surcharges the player's Attack
             // cards for their next turn (via the `modify_card_cost` arm),
             // then removes itself at the player's turn end. `AfterRemoved`
-            // also clears the per-card Entangled affliction in C#; that
-            // affliction is not modeled here (not parity-tracked), so a
-            // plain RemovePower suffices.
+            // (clearing the Entangled cards) runs inside `Effect::RemovePower`.
             let owner = owner_of_listener(state, listener)?;
             if creature_ref_side(owner) != ctx.side {
                 return None;
@@ -8111,17 +8226,20 @@ pub fn on_turn_end_enemy_side(
             // trials, FrogKnight cs=15 vs rs=14). `round_no()` is still 1 here
             // (the round increment runs later in the enemy-turn-end phase).
             // Player-owned Plating (NeutronAegis) and Colossus tick normally.
-            if power.kind == PowerKind::Plating
-                && state.round_no() == 1
-                && owner_of_listener(state, listener).map(creature_ref_side) == Some(Side::Enemy)
-            {
+            let enemy_plating = power.kind == PowerKind::Plating
+                && owner_of_listener(state, listener).map(creature_ref_side) == Some(Side::Enemy);
+            if enemy_plating && state.round_no() == 1 {
                 return None;
             }
+            // An enemy's Plating sheds `Decrement` = `Players.Count`
+            // (`PlatingPower.cs:29-36`, `:72-77`; GH #989).
+            let delta = if enemy_plating {
+                -crate::coop::player_count(state)
+            } else {
+                -1
+            };
             let mut effects = SmallVec::new();
-            effects.push(Effect::DecrementPowerAmount {
-                listener,
-                delta: -1,
-            });
+            effects.push(Effect::DecrementPowerAmount { listener, delta });
             Some(effects)
         }
         _ => None,
@@ -8187,7 +8305,7 @@ pub fn before_side_turn_start(
                 return None;
             }
             let mut effects = SmallVec::new();
-            effects.push(Effect::GainBlockCreature {
+            effects.push(Effect::GainBlockCreatureUnpowered {
                 target: owner,
                 amount: power.amount,
             });
@@ -9065,7 +9183,7 @@ pub fn after_side_turn_start(
                         && c.species == Some(crate::MonsterKind::TurretOperator)
                 });
                 if is_living_turret {
-                    effects.push(Effect::GainBlockCreature {
+                    effects.push(Effect::GainBlockCreatureUnpowered {
                         target: CreatureRef::Enemy(enemy_uid),
                         amount: power.amount,
                     });
@@ -9223,7 +9341,7 @@ pub fn after_death(
                 amount: 6,
                 applier: None,
             });
-            effects.push(Effect::GainBlockCreature {
+            effects.push(Effect::GainBlockCreatureUnpowered {
                 target: owner,
                 amount: 99,
             });
@@ -9486,9 +9604,15 @@ pub fn after_block_broken(
                 return None;
             }
             let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
-            effects.push(Effect::ForceMonsterMove {
+            // `CreatureCmd.Stun` → `SetMoveImmediate` (honours
+            // `CanTransitionAway`), resume `BITE_MOVE`. The stun state is
+            // must-perform-once (C# `StunInternal`, Creature.cs:537-541), so a
+            // break during the Tunneler's OWN move (Thorns) is served on its
+            // next turn rather than rolled away at this turn's end.
+            effects.push(Effect::StunMonster {
                 target: owner_uid,
                 state_id: "DIZZY_MOVE",
+                next_move: Some("BITE_MOVE"),
             });
             effects.push(Effect::RemovePower { listener });
             Some(effects)
@@ -10011,8 +10135,11 @@ const MODIFY_DAMAGE_MULTIPLICATIVE_KINDS: crate::PowerKindSet = crate::PowerKind
     PowerKind::Colossus,
     PowerKind::Flutter,
     PowerKind::Tank,
+    PowerKind::Flanking,
+    PowerKind::Knockdown,
     PowerKind::Guarded,
     PowerKind::Intercept,
+    PowerKind::Covered,
     PowerKind::DiamondDiadem,
     PowerKind::Tracking,
     PowerKind::Soar,
@@ -10775,8 +10902,7 @@ fn dispatch_after_damage_given_body(
     // caller now passes the faithful `was_fully_blocked`. Flipping the owner's
     // per-instance AI counter to 1 makes its `POST_HEADBUTT` branch telegraph
     // DIZZY (a self-stun, no damage) next turn instead of a second headbutt
-    // (see `create_bowlbug_rock_ai`). Only BowlbugRock carries Imbalanced at
-    // this pin, so the generic non-Bowlbug "Stun owner" branch is unused.
+    // (see `create_bowlbug_rock_ai`). Any other owner is stunned.
     // present_kinds lane gate (perf): no live Imbalanced ⇒ the ownership
     // scan below provably fails. Bit-identical skip.
     if was_fully_blocked && power_kind_live(state, PowerKind::Imbalanced) {
@@ -10799,8 +10925,21 @@ fn dispatch_after_damage_given_body(
                 // stun/off-balance branch.
                 crate::event_log::flash_power(state, dealer_uid, PowerKind::Imbalanced);
                 if let Some(creature) = state.creatures.iter_mut().find(|c| c.id == dealer_uid.0) {
+                    let is_rock = creature.species == Some(crate::MonsterKind::BowlbugRock);
                     if let Some(ai) = creature.ai.as_mut() {
-                        ai.set_counter(1);
+                        if is_rock {
+                            ai.set_counter(1);
+                        } else {
+                            // Any other owner (Imbalanced copied by Misery) is
+                            // stunned: `CreatureCmd.Stun(Owner)` with a null
+                            // `nextMoveId` (ImbalancedPower.cs:22-25) resumes
+                            // the move it was performing (Necrobinder full
+                            // seed 2566: a BowlbugSilk's fully blocked Thrash).
+                            let stun = ai.ensure_generic_stun_state();
+                            if ai.stun_immediate(stun, None) {
+                                creature.intent = ai.current_move().intents.first().copied();
+                            }
+                        }
                     }
                 }
             }
@@ -10851,14 +10990,30 @@ fn dispatch_after_damage_given_body(
                 if reaper_total > 0 {
                     let doom = total_damage.saturating_mul(reaper_total);
                     // C# `ReaperFormPower.cs:24` passes `base.Owner` (the player)
-                    // as the applier — thread it so Death's Door arms.
-                    crate::card_effects::apply_power_to_creature_with_applier(
+                    // as the applier — thread it so Death's Door arms. A target
+                    // this hit just killed still receives it: `AfterDamageGiven`
+                    // runs before `Kill` (CreatureCmd.cs:390-409), so C# records
+                    // the Doom `PowerReceivedEntry` that arms Death's Door
+                    // (Necrobinder full seed 2430).
+                    let corpse = state
+                        .creatures
+                        .iter()
+                        .any(|c| c.id == target_uid.0 && c.current_hp <= 0);
+                    crate::card_effects::apply_power_to_creature_with_applier_allow_dead(
                         state,
                         target_uid,
                         PowerKind::Doom,
                         doom,
                         state.player.creature_uid,
                     );
+                    // The following `Kill` strips the Debuff again
+                    // (`RemoveAllPowersAfterDeath`, CreatureCmd.cs:533) — even
+                    // on an Illusion corpse, which keeps only non-Debuffs
+                    // (IllusionPower.cs:59-66). Rust already ran its death
+                    // strip, so drop the Doom here (Necrobinder full seed 959).
+                    if corpse {
+                        strip_power_kind_from_creature(state, target_uid, PowerKind::Doom);
+                    }
                 }
             }
         }
@@ -10929,7 +11084,21 @@ fn dispatch_after_damage_given_body(
                         .iter()
                         .any(|c| c.id == uid.0 && c.current_hp <= 0)
                 });
-                if target_is_corpse {
+                // A Decimillipede segment the hit just killed stays in combat
+                // (it revives), but the following `Kill`'s
+                // `RemoveAllPowersAfterDeath` (CreatureCmd.cs:566) keeps only
+                // its Reattach (`ShouldPowerBeRemovedAfterOwnerDeath`,
+                // ReattachPower.cs:98), so neither the StrengthDown nor the
+                // -Strength fold survives (Regent full seeds 2031/2703,
+                // v0.111.0). An Illusion corpse is NOT covered: it keeps them
+                // (IllusionPower.cs:59-66 spares Temporary debuffs; Fogmog's
+                // EyeWithTeeth, Regent full seeds 2550/2578/4927).
+                let corpse_strips_debuffs = target_is_corpse
+                    && creature_power_amount(state, target_ref, PowerKind::Reattach)
+                        .is_some_and(|a| a > 0);
+                if corpse_strips_debuffs {
+                    // Applied, then stripped by the Kill: nothing observable.
+                } else if target_is_corpse {
                     let corpse_uid = target_ref
                         .to_creature_uid(state)
                         .expect("corpse check already resolved the uid");
@@ -11062,13 +11231,50 @@ fn dispatch_after_damage_given_body(
                     }
                 }
             }
+            // The killing hit still poisons its target: C# runs
+            // `Hook.AfterDamageGiven` before `Kill` (`CreatureCmd.cs:390, :409`)
+            // and `CanReceivePowers` is not an alive check (`Creature.cs:300-316`),
+            // so the corpse takes the Poison and Outbreak counts it (Silent
+            // full-tier seed:1859). Same synchronous killing-blow corpse case as
+            // MonarchsGaze, hence `allow_dead`. `Kill` then strips it again
+            // (`RemoveAllPowersAfterDeath`, `CreatureCmd.cs:533`; Poison keeps
+            // the base `ShouldPowerBeRemovedAfterOwnerDeath() => true`), and
+            // Rust's own corpse strips already ran at the HP write, so drop
+            // the Poison off a dead target once its apply hooks have fired.
+            let target_dead = !pending_envenom.is_empty()
+                && state
+                    .creatures
+                    .iter()
+                    .any(|c| c.id == target_uid.0 && c.current_hp <= 0);
             for amount in pending_envenom {
-                crate::card_effects::apply_power_to_creature(
+                crate::card_effects::apply_power_to_creature_allow_dead(
                     state,
                     target_uid,
                     PowerKind::Poison,
                     amount,
                 );
+            }
+            if target_dead {
+                let corpse_poison: SmallVec<[std::num::NonZeroU32; 2]> = state
+                    .creatures
+                    .iter()
+                    .find(|c| c.id == target_uid.0)
+                    .map(|c| {
+                        c.powers
+                            .iter()
+                            .filter(|u| {
+                                state
+                                    .powers
+                                    .get_by_id(u.0)
+                                    .is_some_and(|p| p.kind == PowerKind::Poison)
+                            })
+                            .map(|u| u.0)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for pid in corpse_poison {
+                    state.drop_power(pid);
+                }
             }
         }
         // Enemy-dealer PaperCuts: C# `PaperCutsPower.AfterDamageGiven`
@@ -11113,7 +11319,15 @@ fn dispatch_after_damage_given_body(
                 for puid in dealer.powers.iter().copied() {
                     if let Some(power) = state.powers.get_by_id(puid.0) {
                         match power.kind {
-                            PowerKind::PaperCuts => pending_papercuts.push(power.amount),
+                            // A dealer killed mid-attack (Thorns in its own
+                            // hit's `BeforeDamageReceived`) is already out of
+                            // C#'s `IterateHookListeners` when this hit's
+                            // `AfterDamageGiven` fires (CreatureCmd.cs:285,412),
+                            // so its PaperCuts no longer triggers (Ironclad
+                            // v0.111.0 full seed 2674: one max-HP loss too many).
+                            PowerKind::PaperCuts if dealer.current_hp > 0 => {
+                                pending_papercuts.push(power.amount);
+                            }
                             PowerKind::PainfulStabs => pending_painful_stabs.push(power.amount),
                             _ => {}
                         }
@@ -11559,17 +11773,57 @@ pub struct DamageParts {
     pub mul: DamageMul,
     /// The minimum cap any listener asked for, or `i32::MAX` for "uncapped".
     pub cap: i32,
+    /// The played card's enchantment stage, already folded into
+    /// [`Self::additive`] / [`Self::mul`] above but kept apart because C#
+    /// applies it to the base BEFORE any power: `Hook.ModifyDamage` adds
+    /// `EnchantDamageAdditive` and multiplies `EnchantDamageMultiplicative`
+    /// first, then runs the listeners (Hook.cs:1630-1644). So an Instinct
+    /// Strike under -2 Strength is `6 * 2 - 2 = 10`, not `(6 - 2) * 2 = 8`
+    /// (Necrobinder act23 seed 1001). [`Self::value_frac`] applies that order.
+    pub enchant_additive: i32,
+    /// See [`Self::enchant_additive`].
+    pub enchant_mul: DamageMul,
+}
+
+impl DamageParts {
+    /// The un-floored hit as a rational `(num, den)` for `base_damage`, in the
+    /// C# order: `((base + enchant_add) * enchant_mul + other_add) * other_mul`.
+    /// With no enchantment multiplier this is `(base + additive) * mul`.
+    #[must_use]
+    pub fn value_frac(&self, base_damage: i32) -> (i128, i128) {
+        let e = self.enchant_mul;
+        if e.num == 0 || e == DamageMul::ONE {
+            let after_add = i128::from(base_damage.saturating_add(self.additive));
+            return (
+                after_add * i128::from(self.mul.num),
+                i128::from(self.mul.den),
+            );
+        }
+        let other_add = i128::from(self.additive.saturating_sub(self.enchant_additive));
+        let pre = i128::from(base_damage.saturating_add(self.enchant_additive));
+        // ((pre * e.num / e.den) + other_add) * mul, where `mul` already
+        // contains `e`: rescale by e.den / e.num to keep one floor.
+        let inner = pre * i128::from(e.num) + other_add * i128::from(e.den);
+        (
+            inner * i128::from(self.mul.num),
+            i128::from(e.num) * i128::from(self.mul.den),
+        )
+    }
 }
 
 #[must_use]
 pub fn modify_damage(state: &CombatState, base_damage: i32, ctx: &DamageCtx) -> i32 {
-    let DamageParts { additive, mul, cap } = modify_damage_parts(state, ctx);
+    let parts = modify_damage_parts(state, ctx);
+    let cap = parts.cap;
 
-    // Step 1: additive (Strength, Vigor, ...).
-    let after_add = base_damage.saturating_add(additive);
-
-    // Step 3: single floor at end via div_euclid (matches math.floor).
-    let after_mul = mul.apply(after_add);
+    // Steps 1-3: additive (Strength, Vigor, ...) and multiplicative, with the
+    // card enchantment's stage first, then a single floor at the end via
+    // div_euclid (matches math.floor).
+    let (num, den) = parts.value_frac(base_damage);
+    let after_mul = {
+        let r = num.div_euclid(den);
+        i32::try_from(r).unwrap_or(if r > 0 { i32::MAX } else { i32::MIN })
+    };
 
     // Step 4: cap (Intangible's `min(damage, 1)`-ish).
     let after_cap = after_mul.min(cap);
@@ -11673,16 +11927,17 @@ pub fn modify_damage_parts(state: &CombatState, ctx: &DamageCtx) -> DamageParts 
     let dealt_by_player_or_osty = matches!(ctx.dealer, CreatureRef::Player)
         || matches!(ctx.dealer, CreatureRef::Enemy(uid) if state.player.pet_uid == Some(uid));
     let mut enchant_mul = DamageMul::ONE;
+    let mut enchant_additive = 0_i32;
     if dealt_by_player_or_osty {
         if let Some(card) = crate::card_effects::resolving_card_inst(state) {
             {
                 let powered = ctx.props.is_powered();
-                additive =
-                    additive.saturating_add(crate::enchantment_hooks::enchant_damage_additive_for(
-                        card,
-                        powered,
-                        state.game_version,
-                    ));
+                enchant_additive = crate::enchantment_hooks::enchant_damage_additive_for(
+                    card,
+                    powered,
+                    state.game_version,
+                );
+                additive = additive.saturating_add(enchant_additive);
                 // Favored/Instinct/Corrupted multiplicative (×100 fixed-point).
                 let x100 =
                     crate::enchantment_hooks::enchant_damage_multiplicative_x100(card, powered);
@@ -11709,7 +11964,13 @@ pub fn modify_damage_parts(state: &CombatState, ctx: &DamageCtx) -> DamageParts 
     // player/Osty card source carries a multiplicative enchantment.
     let mul = power_mul.compose(relic_mul).compose(enchant_mul);
 
-    DamageParts { additive, mul, cap }
+    DamageParts {
+        additive,
+        mul,
+        cap,
+        enchant_additive,
+        enchant_mul,
+    }
 }
 
 /// Which powers `Hook.AfterModifyingDamageAmount` would fire on for this hit —
@@ -11784,13 +12045,9 @@ pub fn damage_amount_flashes(
     }
 
     // Cap stage: `num` starts at the post-multiplicative amount, as a rational.
-    let DamageParts {
-        additive,
-        mul,
-        cap: folded_cap,
-    } = modify_damage_parts(state, ctx);
-    let after_add = i128::from(base_damage.saturating_add(additive));
-    let (mut num_n, mut num_d) = (after_add * i128::from(mul.num), i128::from(mul.den));
+    let parts = modify_damage_parts(state, ctx);
+    let folded_cap = parts.cap;
+    let (mut num_n, mut num_d) = parts.value_frac(base_damage);
     debug_assert!(num_d > 0, "DamageMul::den is constructed positive");
     let mut running_min = i32::MAX;
     for &(uid, owner) in &rows {
@@ -12154,11 +12411,12 @@ pub fn modify_block(state: &CombatState, base_block: i32, ctx: &BlockCtx) -> i32
         ));
     }
 
-    // Enchantment block additive (`Nimble` flat, `Goopy` per-replay growth). C#
-    // threads this off the block grant's `cardSource`; the Rust block path's
-    // `BlockCtx.card_source` is not yet populated at card-play sites, so we read
-    // the player's currently-resolving card from `state.player.play.last()` —
-    // the same convention `modify_damage` uses for the damage enchant additive.
+    // Enchantment block additive (`Nimble` flat, `Goopy` per-replay growth).
+    // C# `Hook.ModifyBlock` (Hook.cs:1457-1463) reads it off the grant's own
+    // `cardSource`, which is `null` for block a power or relic grants while a
+    // card resolves (Feel No Pain inside a Nimble True Grit, ...). So read
+    // `ctx.card_source` — set only for a card's powered (`Move`) block by
+    // `gain_block_player_with_props` — not the top of the Play pile (GH #1021).
     // Gated to player-targeted block (card-granted block lands on the player).
     // Bead `sts2-rs-h9u-8` (GH #64 §5). No-op for non-enchanted cards.
     //
@@ -12168,7 +12426,10 @@ pub fn modify_block(state: &CombatState, base_block: i32, ctx: &BlockCtx) -> i32
     // extra Block from enchantments like Nimble). The `is_powered` argument is
     // no longer threaded.
     if matches!(ctx.target, CreatureRef::Player) {
-        if let Some(card) = crate::card_effects::resolving_card_inst(state) {
+        if let Some(card) = ctx
+            .card_source
+            .and_then(|uid| state.cards.get(uid.0.get() as usize - 1))
+        {
             additive =
                 additive.saturating_add(crate::enchantment_hooks::enchant_block_additive(card));
         }
@@ -12268,25 +12529,22 @@ const AFTER_BLOCK_GAINED_KINDS: crate::PowerKindSet =
 /// **Empty-bus early-out (mirrors `sts2-rs-4lk9` pattern)**: when both
 /// `state.powers` and `state.relics` are empty, no listener can react,
 /// so the dispatcher skips the walks. Hot path for fresh
-/// combats / random rollouts where no block-react powers are active. That
-/// return also skips the Unmovable history tail, which C# records whatever
-/// the listeners; the divergence is kept as it is (exactness). The walks no
-/// longer visit relics, but the `relics.is_empty()` half stays: it still
-/// decides whether that tail runs.
+/// combats / random rollouts where no block-react powers are active.
 ///
-/// Between the two, the walks and the Juggernaut lane are skipped when no
+/// Beyond that, the walks and the Juggernaut lane are skipped when no
 /// Grapple or Juggernaut is live (`PowerHook::AfterBlockGained`). The
-/// Unmovable tail stays outside that guard: it records every card block
-/// gain, with or without a listener.
+/// Unmovable history tail stays outside BOTH guards: C# records every
+/// `BlockGainedEntry` whatever the listeners (UnmovablePower.cs counts the
+/// history at modify time), so an Unmovable applied later this turn must see
+/// a card block gain that landed while the bus was empty.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub fn dispatch_after_block_gained(state: &mut CombatState, ctx: &BlockGainedCtx) {
-    if state.powers.is_empty() && state.relics.is_empty() {
-        return;
+    if !(state.powers.is_empty() && state.relics.is_empty()) {
+        power_hook_dispatch(state, PowerHook::AfterBlockGained, |state| {
+            after_block_gained_listeners(state, ctx);
+        });
     }
-    power_hook_dispatch(state, PowerHook::AfterBlockGained, |state| {
-        after_block_gained_listeners(state, ctx);
-    });
 
     // ── Unmovable block-gain history (bead `sts2-rs-xk9yo`) ──────────────
     // Record the `card_source` of each card-sourced player block-gain this
@@ -12304,6 +12562,19 @@ pub fn dispatch_after_block_gained(state: &mut CombatState, ctx: &BlockGainedCtx
     if ctx.amount > 0 && matches!(ctx.target, CreatureRef::Player) && ctx.card_source.is_some() {
         let tag = state.combat_log.player_card_plays_this_combat;
         state.combat_log.unmovable_card_block_plays.push(tag);
+    }
+
+    // ── Beacon of Hope (co-op) ───────────────────────────────────────────
+    // C# `BeaconOfHopePower.AfterBlockGained` (BeaconOfHopePower.cs:47-55):
+    // on the players' turn, block the owner gains gives every other living
+    // player half of it (C#'s `(int)` block store truncates the half).
+    // Outside the liveness guard: no other lane of this hook needs it.
+    if ctx.amount >= 2
+        && matches!(ctx.target, CreatureRef::Player)
+        && state.side == Side::Player
+        && power_kind_live(state, PowerKind::BeaconOfHope)
+    {
+        crate::coop::beacon_of_hope(state, ctx.amount / 2);
     }
 }
 
@@ -12972,6 +13243,33 @@ const MODIFY_MAX_ENERGY_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_k
     PowerKind::WasteAway,
 ]);
 
+/// Brilliant Scarf's `Cards` var (`CardsVar(5)`): the fifth card each turn is
+/// free, i.e. while `CardsPlayedThisTurn == Cards - 1`.
+pub const BRILLIANT_SCARF_FREE_AFTER: i32 = 4;
+
+/// C# `BrilliantScarf.ShouldModifyCost`
+/// (`BrilliantScarf.cs`):
+/// true while the owner has played exactly `Cards - 1` = 4 cards this turn
+/// (`CardsPlayedThisTurn`, kept on the relic's `counter` — bumped per non-auto
+/// play iteration in `combat_loop::finish_card_play`, reset at the player's
+/// turn start by sts2-content's listener) and the card sits in the hand or
+/// the play pile.
+///
+/// It gates both `TryModifyEnergyCostInCombatLate` (cost 0; a `...Late`
+/// absolute zero, so it wins over every additive hook such as Tangled or
+/// Spiked Gauntlets) and `TryModifyStarCost` (0 stars, see
+/// [`crate::effective_star_cost_in_combat`]). Energy callers must also skip a
+/// negative (X-cost / unplayable) base: `CardEnergyCost.GetWithModifiers`
+/// returns before the global hooks for `_base < 0` and `CostsX`.
+#[must_use]
+pub fn brilliant_scarf_makes_free(state: &CombatState, card_uid: CardUid) -> bool {
+    state.relics.iter().any(|r| {
+        !r.is_melted
+            && r.kind == crate::RelicKind::BrilliantScarf
+            && r.counter == BRILLIANT_SCARF_FREE_AFTER
+    }) && (state.player.hand.contains(&card_uid) || state.player.play.contains(&card_uid))
+}
+
 /// Run the `modify_card_cost` chain (bead `sts2-rs-zlx.5`). Folds
 /// each listener's `Option<i32>` override against `ctx.base_cost` by
 /// taking the minimum; returns the resolved cost saturating-clamped
@@ -13011,6 +13309,17 @@ const MODIFY_MAX_ENERGY_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_k
 /// a zero-override, this fold would need a real two-pass split.)
 #[must_use]
 pub fn dispatch_modify_card_cost(state: &CombatState, ctx: &CardCostCtx) -> i32 {
+    // C# `BrilliantScarf.TryModifyEnergyCostInCombatLate`: the fifth card of
+    // the turn costs 0, after every additive hook (see
+    // [`brilliant_scarf_makes_free`]). A negative base (X / unplayable) skips
+    // the global hooks in `CardEnergyCost.GetWithModifiers`.
+    if ctx.base_cost >= 0
+        && ctx
+            .card_uid
+            .is_some_and(|uid| brilliant_scarf_makes_free(state, uid))
+    {
+        return 0;
+    }
     // Perf 2026-07-04: single presence-mask early-out. This dispatcher is
     // on the `legal_actions` per-hand-card path (via `effective_card_cost`),
     // so it runs several times per rollout step.
@@ -13115,6 +13424,23 @@ pub fn card_cost_locally_zeroed(state: &CombatState, card: &crate::cards::Card) 
         || card.combat_var(crate::cards::VarKey::FreeUntilPlayed) != 0
 }
 
+/// A card's cost with only its LOCAL modifiers applied — C#
+/// `EnergyCost.GetWithModifiers(CostModifiers.Local)` (CardEnergyCost.cs:94-115):
+/// the per-card free-this-turn / until-played riders and until-played
+/// reductions, but no global `ModifyEnergyCostInCombat` hook and no clamp. A
+/// negative (unplayable) base is returned as is.
+#[must_use]
+pub fn local_card_cost(state: &CombatState, card: &crate::cards::Card) -> i32 {
+    let base = i32::from(card.cost);
+    if base < 0 {
+        base
+    } else if card_cost_locally_zeroed(state, card) {
+        0
+    } else {
+        base - card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
+    }
+}
+
 /// Resolve the play-time cost of a card in [`CombatState::cards`] by
 /// running the `modify_card_cost` channel. Mirrors Python's call
 /// chain at `sts2-rl-agent@01c094d:sts2_env/core/combat.py::play_card`
@@ -13208,14 +13534,19 @@ pub fn effective_card_cost_inst_with_mask(
     // Tangled-style surcharge still stacks on top. Parity: Necro PARITY10
     // (FLATTEN played after an Osty attack cost 2 here vs 0 in C#, cascading
     // into an energy/hand/enemy-hp divergence).
+    // C# `BrilliantScarf.TryModifyEnergyCostInCombatLate` zeroes the fifth
+    // card's cost after every other hook; `CardEnergyCost.GetWithModifiers`
+    // never reaches the global hooks for an X-cost or negative base.
+    if card.cost >= 0 && brilliant_scarf_makes_free(state, card_uid) {
+        return 0;
+    }
     let base_cost = if card_cost_locally_zeroed(state, card) {
         0
     } else {
-        // v0.111.0 (GH #793): a `Relative` until-played reduction
-        // (RocketPunch's `AddUntilPlayed(-1)`, decomp RocketPunch.cs:49) is a
-        // local modifier, so it lands before the global walk; the final
-        // `max(0)` below is C#'s `Math.Max(0, num)` (CardEnergyCost.cs:83).
-        // The var is never set at v0.107.1, so this subtracts 0 there.
+        // A `Relative` until-played reduction (`AddUntilPlayed(-1)`: Bookmark,
+        // SlumberingEssence, v0.111.0 RocketPunch) is a local modifier, so it
+        // lands before the global walk; the final `max(0)` below is C#'s
+        // `Math.Max(0, num)` (CardEnergyCost.cs:83).
         i32::from(card.cost) - card.combat_var(crate::cards::VarKey::CostReductionUntilPlayed)
     };
     // Perf 2026-07-04: the same presence-mask early-out
@@ -13476,6 +13807,47 @@ const BEFORE_CARD_PLAYED_POWERS_KINDS: crate::PowerKindSet = crate::PowerKindSet
 /// is live (`PowerHook::BeforeCardPlayedPowers`).
 #[allow(clippy::inline_always)]
 #[inline(always)]
+/// Latch Gigantification on the resolving card, as C#
+/// `GigantificationPower.BeforeAttack` does for the owner's first powered
+/// attack command (`GigantificationPower.cs:27-50`). The latched card uid is
+/// kept in the power's `counter` (0 = not latched). Called on each powered hit
+/// by the player or the Osty; a no-op once latched.
+pub fn latch_gigantification(state: &mut CombatState) {
+    if !power_kind_live(state, PowerKind::Gigantification) {
+        return;
+    }
+    let Some(card) = crate::card_effects::resolving_card_uid(state) else {
+        return;
+    };
+    let is_attack = state
+        .cards
+        .get(card.0.get() as usize - 1)
+        .is_some_and(|c| c.card_type == crate::cards::CardType::Attack);
+    if !is_attack {
+        return;
+    }
+    let card_uid = i32::try_from(card.0.get()).unwrap_or(i32::MAX);
+    for uid in state.player_power_uids() {
+        if let Some(p) = state.powers.get_mut_by_id(uid.0) {
+            if p.kind == PowerKind::Gigantification && p.counter == 0 {
+                p.counter = card_uid;
+            }
+        }
+    }
+}
+
+/// Whether the player's Gigantification is latched on `card` (or not latched
+/// at all, the pre-latch behaviour for a 0-hit attack).
+fn gigantification_latched_on(state: &CombatState, card: Option<CardUid>) -> bool {
+    state.player_power_uids().into_iter().any(|uid| {
+        state.powers.get_by_id(uid.0).is_some_and(|p| {
+            p.kind == PowerKind::Gigantification
+                && (p.counter == 0
+                    || card.is_some_and(|c| i64::from(c.0.get()) == i64::from(p.counter)))
+        })
+    })
+}
+
 pub fn dispatch_before_card_played_powers(
     state: &mut CombatState,
     resolved_cost: i32,
@@ -13786,6 +14158,133 @@ pub fn arm_storm_snapshot(state: &mut CombatState) {
     }
 }
 
+/// The body of C# `ForegoneConclusionPower.BeforeHandDraw`
+/// (`ForegoneConclusionPower.cs:18-25`): `ShuffleIfNecessary`, then
+/// `CardSelectCmd.FromCombatPile(Draw, Amount)` → `CardPileCmd.Add(.., Hand)`,
+/// then `PowerCmd.Remove(this)`. Split out of
+/// [`dispatch_before_hand_draw_powers`] so the turn-start resume can re-run it
+/// when the `ShuffleIfNecessary` reshuffle opened a Stratagem `AfterShuffle`
+/// select first (see [`resume_foregone_conclusion_after_blocking_choice`]).
+fn run_foregone_conclusion_select(
+    state: &mut CombatState,
+    foregone_total: i32,
+    foregone_uids: &[PowerUid],
+) {
+    // C# `ForegoneConclusionPower.BeforeHandDraw` runs `ShuffleIfNecessary`
+    // FIRST (ForegoneConclusionPower.cs:22): when the draw pile is empty and
+    // the discard pile is not, it reshuffles discard→draw, consuming the
+    // Shuffle RNG stream and firing the after-shuffle hooks BEFORE the
+    // `FromCombatPile(Draw)` select. Skipping it desynced the whole
+    // downstream RNG on an empty-draw turn (reshuffle-pilecount-endturn
+    // cluster) and left the select with nothing to move to hand.
+    // `reshuffle_into_draw_with_after_shuffle` is a no-op unless draw is
+    // empty and discard is not, exactly matching `ShuffleIfNecessary`.
+    // (A Stratagem `AfterShuffle` grid-select opened by this reshuffle is
+    // left approximated, as elsewhere in this merged-instance handler.)
+    if state.player.draw.is_empty() {
+        let _ = state.reshuffle_into_draw_with_after_shuffle();
+    }
+    let rarity_rank = crate::lookup_card_rarity_rank();
+    let mut keyed: Vec<(u8, &'static str, crate::CardUid)> = state
+        .player
+        .draw
+        .iter()
+        .filter_map(|&uid| {
+            state.cards.get(uid.0.get() as usize - 1).map(|c| {
+                (
+                    rarity_rank.map_or(0, |f| f(c.card_id, state.game_version)),
+                    c.card_id.to_python_name(),
+                    uid,
+                )
+            })
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    let sorted: Vec<crate::CardUid> = keyed.into_iter().map(|(_, _, uid)| uid).collect();
+    let take = foregone_total as usize;
+    if sorted.len() <= take {
+        // C# `FromSimpleGrid` auto-resolve (`cards.Count <= prefs.MinSelect`):
+        // take the whole pile (in grid order) without surfacing a screen,
+        // then remove the foregone power(s) inline (mirrors `PowerCmd.Remove`
+        // running immediately when the await completes synchronously).
+        for uid in sorted {
+            if let Some(pos) = state.player.draw.iter().position(|&u| u == uid) {
+                let moved = state.player.draw.remove(pos);
+                // Bead `sts2-rs-09x5n`/`sts2-rs-ztl78`: raw index removal
+                // that bypasses `cards::pop_next_card` — clear any stale
+                // pin on the removed card so a later `pop_next_card`
+                // doesn't short-circuit to a deterministic pop and skip a
+                // chance node (matches `resolve_add_from_draw_by_type`).
+                crate::cards::unpin(&mut state.player, moved);
+                let _ = crate::cards::try_add_to_hand(&mut state.player, moved);
+            }
+        }
+        for &puid in foregone_uids {
+            let pid = puid.0;
+            state.powers.retain(|p| p.id != pid);
+            state.player.powers.retain(|u| u.0 != pid);
+            for c in &mut state.creatures {
+                c.powers.retain(|u| u.0 != pid);
+            }
+        }
+    } else if state.pending_choice.is_none() {
+        // Pile larger than the take: C# surfaces a player `card_select`
+        // (FromSimpleGrid opens `NSimpleCardSelectScreen` when
+        // `cards.Count > MinSelect`). Defer the picks AND the
+        // `PowerCmd.Remove(this)` into the resolver — removing the power
+        // now would let it re-fire next turn before the select resolves.
+        // Guard like the Stratagem path against a pre-existing open choice.
+        let options: Vec<crate::ChoiceOption> = sorted
+            .into_iter()
+            .map(|uid| {
+                let card = state.cards.get(uid.0.get() as usize - 1);
+                crate::ChoiceOption {
+                    card_id: card.map_or(crate::cards::CardId::StrikeIronclad, |c| c.card_id),
+                    upgraded: card.is_some_and(|c| c.upgraded),
+                    card_uid: Some(uid),
+                    source_pile: Some(crate::cards::PileKind::Draw),
+                }
+            })
+            .collect();
+        let sel = u8::try_from(take).unwrap_or(u8::MAX);
+        state.request_card_choice(
+            crate::ChoiceKind::ForegoneConclusionFromDraw,
+            options,
+            sel,
+            sel,
+            false,
+        );
+    }
+}
+
+/// C# awaits the `ShuffleIfNecessary` inside
+/// `ForegoneConclusionPower.BeforeHandDraw` (`ForegoneConclusionPower.cs:22`),
+/// and a Stratagem `AfterShuffle` grid-select it opens resolves BEFORE the
+/// power's own `FromCombatPile(Draw)` select (`:23`). Rust surfaces only one
+/// choice at a time, so [`run_foregone_conclusion_select`] skipped the FC
+/// select (pending choice already open) and the power sat on the player
+/// un-fired. Called from the turn-start resume once that blocking choice has
+/// resolved: re-run the FC select if the power is still live. Returns `true`
+/// when the FC select itself surfaced a choice (the caller stays parked).
+/// Regent full seeds 1643/5156/5499/5503/5687 (FC + Stratagem, empty draw).
+pub(crate) fn resume_foregone_conclusion_after_blocking_choice(state: &mut CombatState) -> bool {
+    let mut total: i32 = 0;
+    let mut uids: SmallVec<[PowerUid; 2]> = SmallVec::new();
+    for uid in state.player_power_uids() {
+        if let Some(p) = state.powers.get_by_id(uid.0) {
+            if p.kind == PowerKind::ForegoneConclusion {
+                total = total.saturating_add(p.amount);
+                uids.push(uid);
+            }
+        }
+    }
+    if total <= 0 {
+        return false;
+    }
+    run_foregone_conclusion_select(state, total, &uids);
+    state.pending_choice.is_some()
+}
+
 /// Fire the power-side `before_hand_draw` channel (Necrobinder
 /// `CallOfTheVoidPower` + `SentryModePower`).
 ///
@@ -13840,6 +14339,27 @@ pub fn dispatch_before_hand_draw_powers(state: &mut CombatState) {
     // C# `NightmarePower.cs:51` removes unconditionally, so the job is always
     // pushed and only the cloning is conditional.
     let mut nightmare_jobs: SmallVec<[(PowerUid, Option<CardUid>, i32); 2]> = SmallVec::new();
+    // Arm firing ORDER. C# `Hook.BeforeHandDraw` (v0.111.0 `Hook.cs:744-760`)
+    // awaits `model.BeforeHandDraw` once per listener of
+    // `IterateCombatHookListeners`, whose snapshot starts with
+    // `list.AddRange(creature.Powers)` (`Hook.cs:200`). `Creature._powers` is a
+    // `List` appended by `ApplyPower` (`Creature.cs:621`), so it is in
+    // INSERTION order. Each arm therefore fires at the position its power holds
+    // in the owner's power list, not in a fixed per-kind sequence. Record the
+    // first-seen position of each summed kind (and every Nightmare instance at
+    // its own position) during the union walk, then run the arms in that order.
+    // Necrobinder seed 1008 (v0.111.0): CallOfTheVoid applied before SentryMode
+    // puts the CotV card in hand AHEAD of Sweeping Gaze. The old fixed order
+    // (SentryMode first) swapped them, so the same `card_index` played a
+    // different card. The same order decides the `combat_card_generation` read
+    // order when several pool generators (CotV / HelloWorld / CreativeAi /
+    // SpectrumShift) are live together.
+    let mut order: SmallVec<[BeforeHandDrawArm; 8]> = SmallVec::new();
+    let mut note = |arm: BeforeHandDrawArm| {
+        if !order.contains(&arm) {
+            order.push(arm);
+        }
+    };
     // Sum the five relevant power kinds over the player's mirror+legacy
     // power union WITHOUT materializing it. The prior code cloned the
     // mirror power list and dedup-pushed the legacy list into a second
@@ -13866,25 +14386,32 @@ pub fn dispatch_before_hand_draw_powers(state: &mut CombatState) {
             if let Some(power) = state.powers.get_by_id(uid.0) {
                 match power.kind {
                     PowerKind::CallOfTheVoid => {
+                        note(BeforeHandDrawArm::CallOfTheVoid);
                         cotv_total = cotv_total.saturating_add(power.amount);
                     }
                     PowerKind::SentryMode => {
+                        note(BeforeHandDrawArm::SentryMode);
                         sentry_total = sentry_total.saturating_add(power.amount);
                     }
                     PowerKind::InfiniteBlades => {
+                        note(BeforeHandDrawArm::InfiniteBlades);
                         infinite_blades_total = infinite_blades_total.saturating_add(power.amount);
                     }
                     PowerKind::ForegoneConclusion => {
+                        note(BeforeHandDrawArm::ForegoneConclusion);
                         foregone_total = foregone_total.saturating_add(power.amount);
                         foregone_uids.push(uid);
                     }
                     PowerKind::SpectrumShift => {
+                        note(BeforeHandDrawArm::SpectrumShift);
                         spectrum_total = spectrum_total.saturating_add(power.amount);
                     }
                     PowerKind::CreativeAi => {
+                        note(BeforeHandDrawArm::CreativeAi);
                         creative_ai_total = creative_ai_total.saturating_add(power.amount);
                     }
                     PowerKind::HelloWorld => {
+                        note(BeforeHandDrawArm::HelloWorld);
                         hello_world_total = hello_world_total.saturating_add(power.amount);
                     }
                     PowerKind::Nightmare => {
@@ -13895,6 +14422,7 @@ pub fn dispatch_before_hand_draw_powers(state: &mut CombatState) {
                         let card_uid = (power.amount > 0 && power.counter > 0)
                             .then(|| CardUid::new(power.counter as u32))
                             .flatten();
+                        note(BeforeHandDrawArm::Nightmare(nightmare_jobs.len()));
                         nightmare_jobs.push((uid, card_uid, power.amount));
                     }
                     _ => {}
@@ -13903,239 +14431,232 @@ pub fn dispatch_before_hand_draw_powers(state: &mut CombatState) {
         }
     }
 
-    // SpectrumShift (C# `SpectrumShiftPower.BeforeHandDraw`,
-    // SpectrumShiftPower.cs): for the owning player, generate `Amount`
-    // DISTINCT colorless cards (`GetDistinctForCombat(ColorlessPool, Amount,
-    // Rng.CombatCardGeneration)`) straight into hand. ONE distinct draw of
-    // `Amount` cards (a single whole-pool shuffle), unlike CallOfTheVoid's
-    // `Amount` separate count=1 picks. Routed through the registered distinct
-    // colorless sampler so the `combat_card_generation` read count matches C#.
-    if spectrum_total > 0 {
-        let uids = crate::card_effects::sample_distinct_colorless_cards(
-            state,
-            spectrum_total.max(0) as usize,
-        );
-        crate::card_effects::route_generated_into_hand(state, &uids);
-        // C# `SpectrumShiftPower.cs:27` calls `Flash()` inside the
-        // `player == Owner.Player` guard — and, unusually, AFTER
-        // `AddGeneratedCardsToCombat`, not before it. Emitted here to keep that
-        // order. One flash per hand draw: SpectrumShift is a Counter (a single
-        // instance), and `spectrum_total > 0` stands in for "a live instance
-        // exists", the same shape as the InfiniteBlades flash below.
-        crate::event_log::flash_player_power(state, PowerKind::SpectrumShift);
-    }
-
-    // InfiniteBlades (C# `InfiniteBladesPower.BeforeHandDraw`,
-    // InfiniteBladesPower.cs:20-27): for the owning player, `Amount` times
-    // `Shiv.CreateInHand` → generate a Shiv straight into hand each turn.
-    // Same shape as SentryMode below; Shiv's spec already carries Exhaust, so
-    // no keyword fixup. RNG-order-neutral (Shiv reads no RNG). Silent's
-    // InfiniteBlades applies 1 stack (2 upgraded).
-    // C# `InfiniteBladesPower.cs:24` calls `Flash()` inside `player ==
-    // Owner.Player`, ONCE per power instance and before the `Amount` Shiv
-    // creations — not once per Shiv. InfiniteBlades is a Counter (one
-    // instance), so one flash per hand draw; `> 0` stands in for "a live
-    // instance exists".
-    if infinite_blades_total > 0 {
-        crate::event_log::flash_player_power(state, PowerKind::InfiniteBlades);
-    }
-    for _ in 0..infinite_blades_total {
-        if let Some(card) = crate::lookup_card_factory().and_then(|f| f(CardId::Shiv, false)) {
-            // C# `Shiv.CreateInHand` → `AddGeneratedCardToCombat(.., addedByPlayer:
-            // true)` — a turn-start power generation credits the player as creator,
-            // so player-only listeners (Regalite +2 Block) fire. The Play-pile
-            // heuristic in `spawn_card_into_pile` is empty at turn start and would
-            // resolve to `false`; force the explicit origin. Bead `sts2-rs-4wppb`.
-            let _ = crate::card_effects::spawn_card_into_pile_with_origin(
-                state,
-                card,
-                crate::card_effects::PileKind::Hand,
-                true,
-            );
-        }
-    }
-
-    // SentryMode (C# `SentryModePower.BeforeHandDraw`, SentryModePower.cs): for
-    // the owning player, `Amount` times `CreateCard<SweepingGaze>(player)` +
-    // `AddGeneratedCardToCombat(card, Hand, addedByPlayer: true)`. Build the
-    // token via the content card factory — SweepingGaze's spec already carries
-    // Ethereal + Exhaust, so no keyword fixup is needed — and spawn it straight
-    // into hand. SweepingGaze reads no RNG, so this is RNG-order-neutral w.r.t.
-    // CallOfTheVoid's `combat_card_generation` reads below. Bead `sts2-rs-4wppb`.
-    for _ in 0..sentry_total {
-        if let Some(card) =
-            crate::lookup_card_factory().and_then(|f| f(CardId::SweepingGaze, false))
-        {
-            // C# `AddGeneratedCardToCombat(card, Hand, addedByPlayer: true)` — the
-            // player is the creator for turn-start power generations, so Regalite
-            // (+2 Block on `creator == Owner`) fires. Force the explicit origin
-            // rather than the empty-Play-pile heuristic (which yields `false`).
-            let _ = crate::card_effects::spawn_card_into_pile_with_origin(
-                state,
-                card,
-                crate::card_effects::PileKind::Hand,
-                true,
-            );
-        }
-    }
-
-    // CallOfTheVoid: `Amount` independent single-card generations from the
-    // character pool (matches the C# `for i in 0..Amount { GetDistinctForCombat(1)
-    // }` loop — separate shuffles, no cross-iteration dedup), each forced
-    // Ethereal and routed into hand.
-    if cotv_total > 0 {
-        let Some(character) = state.player.character else {
-            return;
-        };
-        // C# `CallOfTheVoidPower.cs:44` flashes ONCE per `BeforeHandDraw` call
-        // where the unlocked non-Basic/non-Ancient pool is non-empty — after
-        // the whole `Amount`-card batch is generated, before routing it into
-        // hand. It does not flash once per generated card.
-        crate::event_log::flash_player_power(state, PowerKind::CallOfTheVoid);
-        for _ in 0..cotv_total {
-            let uids = crate::card_effects::sample_character_cards(state, character, 1, None);
-            for &uid in &uids {
-                if let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) {
-                    crate::card_effects::apply_ethereal_keyword(card);
+    for arm in order {
+        match arm {
+            // SpectrumShift (C# `SpectrumShiftPower.BeforeHandDraw`,
+            // SpectrumShiftPower.cs): for the owning player, generate `Amount`
+            // DISTINCT colorless cards (`GetDistinctForCombat(ColorlessPool, Amount,
+            // Rng.CombatCardGeneration)`) straight into hand. ONE distinct draw of
+            // `Amount` cards (a single whole-pool shuffle), unlike CallOfTheVoid's
+            // `Amount` separate count=1 picks. Routed through the registered distinct
+            // colorless sampler so the `combat_card_generation` read count matches C#.
+            BeforeHandDrawArm::SpectrumShift => {
+                if spectrum_total > 0 {
+                    let uids = crate::card_effects::sample_distinct_colorless_cards(
+                        state,
+                        spectrum_total.max(0) as usize,
+                    );
+                    crate::card_effects::route_generated_into_hand(state, &uids);
+                    // C# `SpectrumShiftPower.cs:27` calls `Flash()` inside the
+                    // `player == Owner.Player` guard — and, unusually, AFTER
+                    // `AddGeneratedCardsToCombat`, not before it. Emitted here to keep that
+                    // order. One flash per hand draw: SpectrumShift is a Counter (a single
+                    // instance), and `spectrum_total > 0` stands in for "a live instance
+                    // exists", the same shape as the InfiniteBlades flash below.
+                    crate::event_log::flash_player_power(state, PowerKind::SpectrumShift);
                 }
             }
-            crate::card_effects::route_generated_into_hand(state, &uids);
-        }
-    }
 
-    // HelloWorld (C# `HelloWorldPower.BeforeHandDraw`, HelloWorldPower.cs:21-29,
-    // GH #636): for the owning player, generate `AmountOnTurnStart` DISTINCT
-    // **Common** cards from the owner's character pool —
-    // `GetDistinctForCombat(Character.CardPool where Rarity == Common,
-    // AmountOnTurnStart, Rng.CombatCardGeneration)` — and
-    // `AddGeneratedCardsToCombat(.., Hand, player)`.
-    //
-    // ONE distinct draw of `Amount` cards (a single shuffle of the Common
-    // slice), like SpectrumShift above — NOT CallOfTheVoid's `Amount` separate
-    // count=1 whole-pool shuffles. The rarity narrowing happens BEFORE the
-    // shuffle, so it sets both which cards can be drawn and how many ints come
-    // off `combat_card_generation`; see
-    // `sample_character_common_cards_for_hook` in sts2-content.
-    //
-    // `AmountOnTurnStart` (C# `PowerModel.cs:205`) is the stack count captured
-    // by `Creature.BeforeTurnStart` (`Creature.cs:678-684`) before any hook
-    // runs, so at `BeforeHandDraw` it still equals `Amount` — nothing between
-    // the two mutates the stack. Read `power.amount`, the same substitution the
-    // `SummonNextTurn` arm makes for the same field.
-    //
-    // Arm ORDER caveat (pre-existing, shared by every arm in this function):
-    // C# dispatches `BeforeHandDraw` over the owner's power list in insertion
-    // order, while this dispatcher runs a fixed sequence. A player carrying
-    // HelloWorld AND another pool generator would therefore read
-    // `combat_card_generation` in this order rather than theirs. Placed beside
-    // CallOfTheVoid, the other character-pool generator.
-    if hello_world_total >= 1 {
-        // C# `HelloWorldPower.cs:24` flashes inside the
-        // `AmountOnTurnStart >= 1` guard and BEFORE the generation — not after
-        // it like SpectrumShift, and not conditioned on the pool being
-        // non-empty. Emit it before the character lookup so an empty pool still
-        // announces the trigger, as the C# does.
-        crate::event_log::flash_player_power(state, PowerKind::HelloWorld);
-        if let Some(character) = state.player.character {
-            let uids = crate::card_effects::sample_character_common_cards(
-                state,
-                character,
-                hello_world_total.max(0) as usize,
-            );
-            crate::card_effects::route_generated_into_hand(state, &uids);
-        }
-    }
-
-    // CreativeAi (C# `CreativeAiPower.BeforeHandDraw`, CreativeAiPower.cs):
-    // for the owning player, `Amount` times generate ONE distinct random
-    // POWER card from the character pool —
-    // `GetDistinctForCombat(Character.CardPool where Type==Power, 1,
-    // Rng.CombatCardGeneration)` — and `AddGeneratedCardToCombat(card, Hand,
-    // addedByPlayer: true)`. Same shape as CallOfTheVoid (separate count=1
-    // shuffles, NO cross-iteration dedup), but filtered to Power cards and NOT
-    // forced Ethereal. Two corrections vs the prior `after_side_turn_start` +
-    // `Effect::SpawnCharacterCardIntoHand { count: Amount }` wiring (Defect
-    // parity seed 82): (1) that emitted ONE whole-pool shuffle taking `Amount`
-    // distinct cards (Discovery-style), so the `combat_card_generation` read
-    // count was `pool-1` instead of C#'s `Amount × (pool-1)` and the 2nd+ card
-    // differed (one shuffle's 2nd element vs a fresh shuffle's 1st); (2) it ran
-    // AFTER the hand draw, so the generated cards trailed the drawn cards in
-    // hand instead of preceding them as C#'s BeforeHandDraw does.
-    if creative_ai_total > 0 {
-        if let Some(character) = state.player.character {
-            for _ in 0..creative_ai_total {
-                let uids = crate::card_effects::sample_character_cards(
-                    state,
-                    character,
-                    1,
-                    Some(crate::cards::CardType::Power),
-                );
-                crate::card_effects::route_generated_into_hand(state, &uids);
-            }
-        }
-    }
-
-    // ForegoneConclusion (C# `ForegoneConclusionPower.BeforeHandDraw`,
-    // ForegoneConclusionPower.cs): for the owning player, `ShuffleIfNecessary`
-    // then `CardSelectCmd.FromSimpleGrid(draw sorted by Rarity,Id, Amount)` →
-    // `CardPileCmd.Add(selected, Hand)`, then `PowerCmd.Remove(this)`. The
-    // grid select is auto-resolved by the parity harness with the first-Amount
-    // (option-0 prefix) candidates; the move reads no RNG (a reshuffle would,
-    // but at BeforeHandDraw the draw pile holds the deck minus hand/discard and
-    // is effectively never empty for the small Amount taken here, so the
-    // ShuffleIfNecessary is a no-op in practice — reshuffle only when the draw
-    // pile genuinely cannot supply the take). Bead `sts2-rs-jxz`.
-    if foregone_total > 0 {
-        // C# `ForegoneConclusionPower.BeforeHandDraw` runs `ShuffleIfNecessary`
-        // FIRST (ForegoneConclusionPower.cs:22): when the draw pile is empty and
-        // the discard pile is not, it reshuffles discard→draw, consuming the
-        // Shuffle RNG stream and firing the after-shuffle hooks BEFORE the
-        // `FromCombatPile(Draw)` select. Skipping it desynced the whole
-        // downstream RNG on an empty-draw turn (reshuffle-pilecount-endturn
-        // cluster) and left the select with nothing to move to hand.
-        // `reshuffle_into_draw_with_after_shuffle` is a no-op unless draw is
-        // empty and discard is not, exactly matching `ShuffleIfNecessary`.
-        // (A Stratagem `AfterShuffle` grid-select opened by this reshuffle is
-        // left approximated, as elsewhere in this merged-instance handler.)
-        if state.player.draw.is_empty() {
-            let _ = state.reshuffle_into_draw_with_after_shuffle();
-        }
-        let rarity_rank = crate::lookup_card_rarity_rank();
-        let mut keyed: Vec<(u8, &'static str, crate::CardUid)> = state
-            .player
-            .draw
-            .iter()
-            .filter_map(|&uid| {
-                state.cards.get(uid.0.get() as usize - 1).map(|c| {
-                    (
-                        rarity_rank.map_or(0, |f| f(c.card_id, state.game_version)),
-                        c.card_id.to_python_name(),
-                        uid,
-                    )
-                })
-            })
-            .collect();
-        keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
-        let sorted: Vec<crate::CardUid> = keyed.into_iter().map(|(_, _, uid)| uid).collect();
-        let take = foregone_total as usize;
-        if sorted.len() <= take {
-            // C# `FromSimpleGrid` auto-resolve (`cards.Count <= prefs.MinSelect`):
-            // take the whole pile (in grid order) without surfacing a screen,
-            // then remove the foregone power(s) inline (mirrors `PowerCmd.Remove`
-            // running immediately when the await completes synchronously).
-            for uid in sorted {
-                if let Some(pos) = state.player.draw.iter().position(|&u| u == uid) {
-                    let moved = state.player.draw.remove(pos);
-                    // Bead `sts2-rs-09x5n`/`sts2-rs-ztl78`: raw index removal
-                    // that bypasses `cards::pop_next_card` — clear any stale
-                    // pin on the removed card so a later `pop_next_card`
-                    // doesn't short-circuit to a deterministic pop and skip a
-                    // chance node (matches `resolve_add_from_draw_by_type`).
-                    crate::cards::unpin(&mut state.player, moved);
-                    let _ = crate::cards::try_add_to_hand(&mut state.player, moved);
+            BeforeHandDrawArm::InfiniteBlades => {
+                // InfiniteBlades (C# `InfiniteBladesPower.BeforeHandDraw`,
+                // InfiniteBladesPower.cs:20-27): for the owning player, `Amount` times
+                // `Shiv.CreateInHand` → generate a Shiv straight into hand each turn.
+                // Same shape as SentryMode below; Shiv's spec already carries Exhaust, so
+                // no keyword fixup. RNG-order-neutral (Shiv reads no RNG). Silent's
+                // InfiniteBlades applies 1 stack (2 upgraded).
+                // C# `InfiniteBladesPower.cs:24` calls `Flash()` inside `player ==
+                // Owner.Player`, ONCE per power instance and before the `Amount` Shiv
+                // creations — not once per Shiv. InfiniteBlades is a Counter (one
+                // instance), so one flash per hand draw; `> 0` stands in for "a live
+                // instance exists".
+                if infinite_blades_total > 0 {
+                    crate::event_log::flash_player_power(state, PowerKind::InfiniteBlades);
+                }
+                for _ in 0..infinite_blades_total {
+                    if let Some(card) =
+                        crate::lookup_card_factory().and_then(|f| f(CardId::Shiv, false))
+                    {
+                        // C# `Shiv.CreateInHand` → `AddGeneratedCardToCombat(.., addedByPlayer:
+                        // true)` — a turn-start power generation credits the player as creator,
+                        // so player-only listeners (Regalite +2 Block) fire. The Play-pile
+                        // heuristic in `spawn_card_into_pile` is empty at turn start and would
+                        // resolve to `false`; force the explicit origin. Bead `sts2-rs-4wppb`.
+                        let _ = crate::card_effects::spawn_card_into_pile_with_origin(
+                            state,
+                            card,
+                            crate::card_effects::PileKind::Hand,
+                            true,
+                        );
+                    }
                 }
             }
-            for puid in foregone_uids {
+
+            BeforeHandDrawArm::SentryMode => {
+                // SentryMode (C# `SentryModePower.BeforeHandDraw`, SentryModePower.cs): for
+                // the owning player, `Amount` times `CreateCard<SweepingGaze>(player)` +
+                // `AddGeneratedCardToCombat(card, Hand, addedByPlayer: true)`. Build the
+                // token via the content card factory — SweepingGaze's spec already carries
+                // Ethereal + Exhaust, so no keyword fixup is needed — and spawn it straight
+                // into hand. SweepingGaze reads no RNG, so this is RNG-order-neutral w.r.t.
+                // CallOfTheVoid's `combat_card_generation` reads, but its HAND position
+                // still follows the power-list order. Bead `sts2-rs-4wppb`.
+                for _ in 0..sentry_total {
+                    if let Some(card) =
+                        crate::lookup_card_factory().and_then(|f| f(CardId::SweepingGaze, false))
+                    {
+                        // C# `AddGeneratedCardToCombat(card, Hand, addedByPlayer: true)` — the
+                        // player is the creator for turn-start power generations, so Regalite
+                        // (+2 Block on `creator == Owner`) fires. Force the explicit origin
+                        // rather than the empty-Play-pile heuristic (which yields `false`).
+                        let _ = crate::card_effects::spawn_card_into_pile_with_origin(
+                            state,
+                            card,
+                            crate::card_effects::PileKind::Hand,
+                            true,
+                        );
+                    }
+                }
+            }
+
+            // CallOfTheVoid: `Amount` independent single-card generations from the
+            // character pool (matches the C# `for i in 0..Amount { GetDistinctForCombat(1)
+            // }` loop — separate shuffles, no cross-iteration dedup), each forced
+            // Ethereal and routed into hand.
+            BeforeHandDrawArm::CallOfTheVoid => {
+                if cotv_total > 0 {
+                    // No character ⇒ no pool: skip only this arm (later arms in the
+                    // power-list order still fire).
+                    let Some(character) = state.player.character else {
+                        continue;
+                    };
+                    // C# `CallOfTheVoidPower.cs:44` flashes ONCE per `BeforeHandDraw` call
+                    // where the unlocked non-Basic/non-Ancient pool is non-empty — after
+                    // the whole `Amount`-card batch is generated, before routing it into
+                    // hand. It does not flash once per generated card.
+                    crate::event_log::flash_player_power(state, PowerKind::CallOfTheVoid);
+                    for _ in 0..cotv_total {
+                        let uids =
+                            crate::card_effects::sample_character_cards(state, character, 1, None);
+                        for &uid in &uids {
+                            if let Some(card) = state.cards.iter_mut().find(|c| c.uid == uid) {
+                                crate::card_effects::apply_ethereal_keyword(card);
+                            }
+                        }
+                        crate::card_effects::route_generated_into_hand(state, &uids);
+                    }
+                }
+            }
+
+            // HelloWorld (C# `HelloWorldPower.BeforeHandDraw`, HelloWorldPower.cs:21-29,
+            // GH #636): for the owning player, generate `AmountOnTurnStart` DISTINCT
+            // **Common** cards from the owner's character pool —
+            // `GetDistinctForCombat(Character.CardPool where Rarity == Common,
+            // AmountOnTurnStart, Rng.CombatCardGeneration)` — and
+            // `AddGeneratedCardsToCombat(.., Hand, player)`.
+            //
+            // ONE distinct draw of `Amount` cards (a single shuffle of the Common
+            // slice), like SpectrumShift above — NOT CallOfTheVoid's `Amount` separate
+            // count=1 whole-pool shuffles. The rarity narrowing happens BEFORE the
+            // shuffle, so it sets both which cards can be drawn and how many ints come
+            // off `combat_card_generation`; see
+            // `sample_character_common_cards_for_hook` in sts2-content.
+            //
+            // `AmountOnTurnStart` (C# `PowerModel.cs:205`) is the stack count captured
+            // by `Creature.BeforeTurnStart` (`Creature.cs:678-684`) before any hook
+            // runs, so at `BeforeHandDraw` it still equals `Amount` — nothing between
+            // the two mutates the stack. Read `power.amount`, the same substitution the
+            // `SummonNextTurn` arm makes for the same field.
+            BeforeHandDrawArm::HelloWorld => {
+                if hello_world_total >= 1 {
+                    // C# `HelloWorldPower.cs:24` flashes inside the
+                    // `AmountOnTurnStart >= 1` guard and BEFORE the generation — not after
+                    // it like SpectrumShift, and not conditioned on the pool being
+                    // non-empty. Emit it before the character lookup so an empty pool still
+                    // announces the trigger, as the C# does.
+                    crate::event_log::flash_player_power(state, PowerKind::HelloWorld);
+                    if let Some(character) = state.player.character {
+                        let uids = crate::card_effects::sample_character_common_cards(
+                            state,
+                            character,
+                            hello_world_total.max(0) as usize,
+                        );
+                        crate::card_effects::route_generated_into_hand(state, &uids);
+                    }
+                }
+            }
+
+            // CreativeAi (C# `CreativeAiPower.BeforeHandDraw`, CreativeAiPower.cs):
+            // for the owning player, `Amount` times generate ONE distinct random
+            // POWER card from the character pool —
+            // `GetDistinctForCombat(Character.CardPool where Type==Power, 1,
+            // Rng.CombatCardGeneration)` — and `AddGeneratedCardToCombat(card, Hand,
+            // addedByPlayer: true)`. Same shape as CallOfTheVoid (separate count=1
+            // shuffles, NO cross-iteration dedup), but filtered to Power cards and NOT
+            // forced Ethereal. Two corrections vs the prior `after_side_turn_start` +
+            // `Effect::SpawnCharacterCardIntoHand { count: Amount }` wiring (Defect
+            // parity seed 82): (1) that emitted ONE whole-pool shuffle taking `Amount`
+            // distinct cards (Discovery-style), so the `combat_card_generation` read
+            // count was `pool-1` instead of C#'s `Amount × (pool-1)` and the 2nd+ card
+            // differed (one shuffle's 2nd element vs a fresh shuffle's 1st); (2) it ran
+            // AFTER the hand draw, so the generated cards trailed the drawn cards in
+            // hand instead of preceding them as C#'s BeforeHandDraw does.
+            BeforeHandDrawArm::CreativeAi => {
+                if creative_ai_total > 0 {
+                    if let Some(character) = state.player.character {
+                        for _ in 0..creative_ai_total {
+                            let uids = crate::card_effects::sample_character_cards(
+                                state,
+                                character,
+                                1,
+                                Some(crate::cards::CardType::Power),
+                            );
+                            crate::card_effects::route_generated_into_hand(state, &uids);
+                        }
+                    }
+                }
+            }
+
+            // ForegoneConclusion (C# `ForegoneConclusionPower.BeforeHandDraw`,
+            // ForegoneConclusionPower.cs): for the owning player, `ShuffleIfNecessary`
+            // then `CardSelectCmd.FromSimpleGrid(draw sorted by Rarity,Id, Amount)` →
+            // `CardPileCmd.Add(selected, Hand)`, then `PowerCmd.Remove(this)`. The
+            // grid select is auto-resolved by the parity harness with the first-Amount
+            // (option-0 prefix) candidates; the move reads no RNG (a reshuffle would,
+            // but at BeforeHandDraw the draw pile holds the deck minus hand/discard and
+            // is effectively never empty for the small Amount taken here, so the
+            // ShuffleIfNecessary is a no-op in practice — reshuffle only when the draw
+            // pile genuinely cannot supply the take). Bead `sts2-rs-jxz`.
+            BeforeHandDrawArm::ForegoneConclusion => {
+                if foregone_total > 0 {
+                    run_foregone_conclusion_select(state, foregone_total, &foregone_uids);
+                }
+            }
+
+            // Nightmare (C# `NightmarePower.BeforeHandDraw`, NightmarePower.cs:35-47):
+            // for the owning player, `Amount` times `CreateClone()` of the stashed
+            // selected card → `AddGeneratedCardToCombat(clone, Hand, addedByPlayer:
+            // true)`, then `PowerCmd.Remove(this)`. The clones land in hand BEFORE the
+            // natural turn-start draw (this is the regular `BeforeHandDraw` phase). The
+            // prior port emitted these on `after_side_turn_start` (post-draw), so the
+            // clones trailed the drawn cards instead of preceding them. The selected
+            // card uid was stashed in `counter` by the OnPlay select resolver. Bead
+            // `sts2-rs-nightmare-select`. IsInstanced: each instance fires at its own
+            // position in the power list.
+            BeforeHandDrawArm::Nightmare(job) => {
+                let (puid, card_uid, count) = nightmare_jobs[job];
+                // v0.107.1 `NightmarePower.SetSelectedCard` clones the picked card and
+                // `CardCmd.ClearAffliction`s the clone before stashing it, so every
+                // next-turn copy is affliction-free (the picked hand card keeps its
+                // own affliction). Pass `clear_affliction = true`.
+                //
+                // `None` ⇒ the selected card is unrecoverable (a wire-reconstructed
+                // instance, GH #364 A2). Emit no clones — the identity is simply not
+                // knowable — but still fall through to the removal below, because C#
+                // `NightmarePower.cs:51` removes the power unconditionally. A stuck
+                // power is a permanent divergence; a missing clone is a one-turn one.
+                if let Some(card_uid) = card_uid {
+                    clone_card_to_hand(state, card_uid, count, true);
+                }
                 let pid = puid.0;
                 state.powers.retain(|p| p.id != pid);
                 state.player.powers.retain(|u| u.0 != pid);
@@ -14143,64 +14664,44 @@ pub fn dispatch_before_hand_draw_powers(state: &mut CombatState) {
                     c.powers.retain(|u| u.0 != pid);
                 }
             }
-        } else if state.pending_choice.is_none() {
-            // Pile larger than the take: C# surfaces a player `card_select`
-            // (FromSimpleGrid opens `NSimpleCardSelectScreen` when
-            // `cards.Count > MinSelect`). Defer the picks AND the
-            // `PowerCmd.Remove(this)` into the resolver — removing the power
-            // now would let it re-fire next turn before the select resolves.
-            // Guard like the Stratagem path against a pre-existing open choice.
-            let options: Vec<crate::ChoiceOption> = sorted
-                .into_iter()
-                .map(|uid| {
-                    let card = state.cards.get(uid.0.get() as usize - 1);
-                    crate::ChoiceOption {
-                        card_id: card.map_or(crate::cards::CardId::StrikeIronclad, |c| c.card_id),
-                        upgraded: card.is_some_and(|c| c.upgraded),
-                        card_uid: Some(uid),
-                        source_pile: Some(crate::cards::PileKind::Draw),
-                    }
-                })
-                .collect();
-            let sel = u8::try_from(take).unwrap_or(u8::MAX);
-            state.request_card_choice(
-                crate::ChoiceKind::ForegoneConclusionFromDraw,
-                options,
-                sel,
-                sel,
-                false,
-            );
         }
     }
+}
 
-    // Nightmare (C# `NightmarePower.BeforeHandDraw`, NightmarePower.cs:35-47):
-    // for the owning player, `Amount` times `CreateClone()` of the stashed
-    // selected card → `AddGeneratedCardToCombat(clone, Hand, addedByPlayer:
-    // true)`, then `PowerCmd.Remove(this)`. The clones land in hand BEFORE the
-    // natural turn-start draw (this is the regular `BeforeHandDraw` phase). The
-    // prior port emitted these on `after_side_turn_start` (post-draw), so the
-    // clones trailed the drawn cards instead of preceding them. The selected
-    // card uid was stashed in `counter` by the OnPlay select resolver. Bead
-    // `sts2-rs-nightmare-select`.
-    for (puid, card_uid, count) in nightmare_jobs {
-        // v0.107.1 `NightmarePower.SetSelectedCard` clones the picked card and
-        // `CardCmd.ClearAffliction`s the clone before stashing it, so every
-        // next-turn copy is affliction-free (the picked hand card keeps its
-        // own affliction). Pass `clear_affliction = true`.
-        //
-        // `None` ⇒ the selected card is unrecoverable (a wire-reconstructed
-        // instance, GH #364 A2). Emit no clones — the identity is simply not
-        // knowable — but still fall through to the removal below, because C#
-        // `NightmarePower.cs:51` removes the power unconditionally. A stuck
-        // power is a permanent divergence; a missing clone is a one-turn one.
-        if let Some(card_uid) = card_uid {
-            clone_card_to_hand(state, card_uid, count, true);
-        }
-        let pid = puid.0;
-        state.powers.retain(|p| p.id != pid);
-        state.player.powers.retain(|u| u.0 != pid);
+/// One `BeforeHandDraw` power arm of [`dispatch_before_hand_draw_powers`],
+/// recorded in the order its power first appears in the owner's power list.
+/// `Nightmare` carries the index of its per-instance job.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BeforeHandDrawArm {
+    SpectrumShift,
+    InfiniteBlades,
+    SentryMode,
+    CallOfTheVoid,
+    HelloWorld,
+    CreativeAi,
+    ForegoneConclusion,
+    Nightmare(usize),
+}
+
+/// Remove every `kind` instance attached to creature `uid` (no hooks — the
+/// post-death strip).
+fn strip_power_kind_from_creature(state: &mut CombatState, uid: CreatureUid, kind: PowerKind) {
+    let pids: SmallVec<[u32; 2]> = state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .map(|c| {
+            c.powers
+                .iter()
+                .filter(|u| state.powers.get_by_id(u.0).is_some_and(|p| p.kind == kind))
+                .map(|u| u.0.get())
+                .collect()
+        })
+        .unwrap_or_default();
+    for pid in pids {
+        state.powers.retain(|p| p.id.get() != pid);
         for c in &mut state.creatures {
-            c.powers.retain(|u| u.0 != pid);
+            c.powers.retain(|u| u.0.get() != pid);
         }
     }
 }
@@ -14548,7 +15049,263 @@ const AFTER_CARD_PLAYED_ORDERED_ENEMY_HIT_KINDS: crate::PowerKindSet =
         PowerKind::Panache,
     ]);
 
+/// C# `SkittishPower.AfterAttack`
+/// (`SkittishPower.cs:56-69`):
+/// ONCE PER TURN, when a card-sourced (`command.ModelSource is CardModel`)
+/// `ValueProp.Move` attack lands UNBLOCKED damage on the owner, the owner
+/// gains `Amount` block with `ValueProp.Unpowered`.
+///
+/// Two-phase like CurlUp: the content `skittish_after_damage` hook
+/// arms `skip_next_tick` on the hit, and the grant lands HERE — after the
+/// whole card resolves — so none of the triggering card's own hits are
+/// absorbed by the fresh block (C# grants after the `AttackCommand`, which
+/// is the same boundary for every single-command card; see the hook's
+/// doc-comment for the residual two-command case). A play that pauses on a
+/// selection after its attack (Headbutt's discard pick) has finished that
+/// command too, so `combat_loop::play_card` grants here before surfacing
+/// the choice.
+///
+/// `counter` is C#'s `Data.hasGainedBlockThisTurn`: set to 1 on grant, reset
+/// to 0 by the `AfterSideTurnEnd(side != Owner.Side)` analogue in
+/// [`dispatch_after_turn_end`] (player-side turn end, since Skittish only
+/// ever lives on a monster). The power is NOT removed — unlike CurlUp it
+/// re-arms every turn.
+pub fn grant_latched_skittish(state: &mut CombatState) {
+    // The same after-attack boundary owes the player's `BoneFlute.AfterAttack`
+    // block for an Osty attack command (BoneFlute.cs).
+    crate::relic_effects::bone_flute::grant_latched_bone_flute(state);
+    // present_kinds lane gate (perf): no live Skittish ⇒ nothing latched.
+    if power_kind_live(state, PowerKind::Skittish) {
+        let latched: SmallVec<[(CreatureUid, i32, crate::PowerUid); 2]> = state
+            .powers
+            .iter()
+            .filter(|p| {
+                p.kind == PowerKind::Skittish && p.skip_next_tick && p.counter == 0 && p.amount > 0
+            })
+            .filter_map(|p| {
+                state
+                    .creatures
+                    .iter()
+                    .find(|c| c.powers.iter().any(|pu| pu.0 == p.id) && c.current_hp > 0)
+                    .map(|c| (CreatureUid(c.id), p.amount, crate::PowerUid(p.id)))
+            })
+            .collect();
+        for (owner, amount, pid) in latched {
+            // C# `CreatureCmd.GainBlock(Owner, Amount, ValueProp.Unpowered)` —
+            // `Effect::GainBlockCreature` is the enemy-side unpowered grant
+            // (monster block never scales with the player's Dexterity/Frail).
+            apply_effects(
+                state,
+                &[Effect::GainBlockCreatureUnpowered {
+                    target: CreatureRef::Enemy(owner),
+                    amount,
+                }],
+            );
+            if let Some(p) = state.powers.get_mut_by_id(pid.0) {
+                p.skip_next_tick = false;
+                p.counter = 1;
+            }
+        }
+        // Disarm any latch that could not be granted (owner died to the very
+        // card that armed it) so it cannot fire on a later play this turn.
+        for p in &mut state.powers {
+            if p.kind == PowerKind::Skittish {
+                p.skip_next_tick = false;
+            }
+        }
+    }
+}
+
 pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
+    dispatch_after_card_played_impl(state, ctx, true);
+}
+
+/// [`dispatch_after_card_played`] minus the ordered enemy-hitting walk
+/// ([`dispatch_after_card_played_ordered_enemy_hits`]). The card-play
+/// pipeline (`combat_loop::dispatch_after_card_played_buses`) runs that walk
+/// first, then the relic bus, then this — C# `Hook.AfterCardPlayed` iterates
+/// `IterateHookListeners()` (`CombatState.cs:115-131`): each creature's
+/// powers, THEN that player's relics, so Serpent Form's random hit draws
+/// `CombatTargets` before Kusarigama's (Silent full-tier seed:5469).
+pub fn dispatch_after_card_played_rest(state: &mut CombatState, ctx: &CardCtx) {
+    dispatch_after_card_played_impl(state, ctx, false);
+}
+
+/// The ordered player-power walk of `Hook.AfterCardPlayed` that mutates
+/// enemies — SerpentForm / Haunt (random single-target `CombatTargets` hits)
+/// and Panache (AoE). Runs in player-power application order.
+pub fn dispatch_after_card_played_ordered_enemy_hits(state: &mut CombatState, ctx: &CardCtx) {
+    // ── React (ordered): player powers that hit enemies ─────────────────
+    // C# `Hook.AfterCardPlayed` (Hook.cs:181) fans out to
+    // `combatState.IterateHookListeners()` (CombatState.cs:521), which walks
+    // each creature's `Powers` in LIST (application) order, allies before
+    // enemies — so a player's after-card-played reactions fire in the order
+    // the powers were applied. Most player reactions (block / energy / orbs /
+    // card-add / self-power consume, handled in the `pending` loop above and
+    // the lanes below) are COMMUTATIVE: they never touch enemy HP or the
+    // `combat_targets` RNG, so their relative order is unobservable and they
+    // stay where they are. The three exceptions — SerpentForm, Haunt (random
+    // single-target damage, `combat_targets` draws) and Panache (AoE that can
+    // kill an enemy → StockPower respawn) — DO mutate enemy state, so their
+    // relative order is observable and must follow application order.
+    //
+    // Bead `sts2-rs-after-card-played-power-order-w2i4c` (Silent fuzz seed
+    // 1679, AXEBOTS_NORMAL): player powers applied [.., PANACHE, SERPENT_FORM,
+    // ..]. On the 5th card of a turn Panache's AoE 14 kills an 8-hp Axebot →
+    // StockPower respawns a 43-hp bot; SerpentForm then deals 4 to a random
+    // hittable enemy. C# fires Panache before SerpentForm (application order),
+    // so SerpentForm hits the NEW bot → 39. The prior hardcoded order fired
+    // SerpentForm (in the `pending` loop) before Panache (a late standalone
+    // block), wasting the hit on the dying bot so the respawn stayed at 43.
+    // Walking these three in `player_power_uids` order reproduces C#. This walk
+    // also runs in the player stage — BEFORE the enemy lanes (Slow / Oblivion /
+    // Strangle) below — matching C#'s allies-before-enemies listener order
+    // (the old standalone Panache block wrongly trailed those enemy lanes).
+    //
+    // `player_power_uids` is the deduped mirror+legacy union (each power once),
+    // so no instance double-fires.
+    //
+    // Perf 2026-07-04: absence-gated on the three kinds this walk
+    // discriminates on — when none is live the walk matches nothing.
+    if !state
+        .powers
+        .present_kinds()
+        .intersects(&AFTER_CARD_PLAYED_ORDERED_ENEMY_HIT_KINDS)
+    {
+        return;
+    }
+    let is_soul = ctx.card_id == Some(crate::cards::CardId::Soul);
+    let ordered_walk_uids = state.player_power_uids();
+    for uid in ordered_walk_uids.iter().copied() {
+        let kind = match state.powers.get_by_id(uid.0) {
+            Some(power) => power.kind,
+            None => continue,
+        };
+        match kind {
+            // SerpentForm: `counter` holds the pre-OnPlay AMOUNT snapshot (set
+            // by the before-play arm; only instances armed BEFORE this card's
+            // OnPlay fire, so a freshly-played SerpentForm card deals no
+            // random-hit on its own play). Deal exactly that to a random alive
+            // enemy, then disarm. Routed through [`crate::damage::apply_damage`]
+            // with `UNPOWERED` (bead `sts2-rs-zlx.4`) so the pipeline walks
+            // listeners but Strength/Vulnerable NO-op on the powered arms.
+            PowerKind::SerpentForm => {
+                let snapshot = match state.powers.get_mut_by_id(uid.0) {
+                    Some(power) if power.counter >= 1 => {
+                        let s = power.counter;
+                        power.counter = 0;
+                        s
+                    }
+                    _ => continue,
+                };
+                if snapshot > 0 {
+                    let alive: SmallVec<[crate::CreatureUid; 4]> = state
+                        .enemy_uids
+                        .iter()
+                        .copied()
+                        .filter(|uid| {
+                            state
+                                .creatures
+                                .iter()
+                                .any(|c| c.id == uid.0 && c.current_hp > 0)
+                        })
+                        .collect();
+                    if !alive.is_empty() {
+                        let idx = state
+                            .run_rng
+                            .combat_targets
+                            .next_int_exclusive(0, alive.len() as i32)
+                            as usize;
+                        let target = alive[idx];
+                        crate::damage::apply_damage(
+                            state,
+                            CreatureRef::Player,
+                            target,
+                            snapshot,
+                            ValueProps::UNPOWERED,
+                            None,
+                        );
+                    }
+                }
+            }
+            // Haunt: when the owner plays a Soul, deal `Amount`
+            // UNBLOCKABLE | UNPOWERED damage to a single random hittable enemy
+            // (`get_random_enemy` mirrors `Rng.CombatTargets.NextItem`). C#
+            // passes a `null` dealer; attributed to the player (SerpentForm
+            // precedent). C# `HauntPower.AfterCardPlayed` (HauntPower.cs:19-30).
+            PowerKind::Haunt if is_soul => {
+                let amount = state.powers.get_by_id(uid.0).map_or(0, |p| p.amount);
+                if amount > 0 {
+                    if let Some(target) = state.get_random_enemy() {
+                        crate::damage::apply_damage(
+                            state,
+                            CreatureRef::Player,
+                            target,
+                            amount,
+                            ValueProps::UNBLOCKABLE.union(ValueProps::UNPOWERED),
+                            None,
+                        );
+                    }
+                }
+            }
+            // Panache (Colorless Uncommon power): C# `PanachePower
+            // .AfterCardPlayed` (PanachePower.cs:39-58) — decrement `CardsLeft`
+            // (counter) and when it reaches 0 deal `Amount` Unpowered damage to
+            // all hittable enemies, then reset `CardsLeft = 5`. Counter
+            // encoding: `counter == -1` means `alreadyApplied == false` — the
+            // first call (the Panache card's own play) sets counter = 5 without
+            // decrementing (C# `data.alreadyApplied`, PanachePower.cs:47-52).
+            // Panache is IsInstanced, so each instance is an independent
+            // countdown; the ordered walk handles each in application order.
+            // `cardPlay.Card.Owner == base.Owner.Player` is always true here.
+            // Bead `sts2-rs-5jgpx`.
+            PowerKind::Panache => {
+                let (damage_amount, counter) = match state.powers.get_by_id(uid.0) {
+                    Some(power) => (power.amount, power.counter),
+                    None => continue,
+                };
+                if counter == -1 {
+                    if let Some(power) = state.powers.get_mut_by_id(uid.0) {
+                        power.counter = 5;
+                    }
+                } else {
+                    let new_counter = counter.saturating_sub(1);
+                    if new_counter <= 0 {
+                        let alive_enemies: SmallVec<[CreatureUid; 4]> = state
+                            .enemy_uids
+                            .iter()
+                            .copied()
+                            .filter(|uid| {
+                                state
+                                    .creatures
+                                    .iter()
+                                    .any(|c| c.id == uid.0 && c.current_hp > 0)
+                            })
+                            .collect();
+                        for enemy_uid in alive_enemies {
+                            crate::damage::apply_damage(
+                                state,
+                                CreatureRef::Player,
+                                enemy_uid,
+                                damage_amount,
+                                ValueProps::UNPOWERED,
+                                None,
+                            );
+                        }
+                        if let Some(power) = state.powers.get_mut_by_id(uid.0) {
+                            power.counter = 5;
+                        }
+                    } else if let Some(power) = state.powers.get_mut_by_id(uid.0) {
+                        power.counter = new_counter;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn dispatch_after_card_played_impl(state: &mut CombatState, ctx: &CardCtx, run_ordered_walk: bool) {
     // ── Read-only listener walk ─────────────────────────────────────────
     // Listener bodies are `() -> ()` no-ops at this pin (`noop_hook!`). Perf
     // (sts2-rs-05mjm / #51): the per-power walk over every player/ally/enemy
@@ -14567,6 +15324,19 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
         && power_kind_live(state, PowerKind::PaleBlueDot)
     {
         pale_blue_dot_after_card_played_v0111(state);
+    }
+
+    // ── React: Sneaky (co-op) ──────────────────────────────────────────
+    // C# `SneakyPower.AfterCardPlayed` (SneakyPower.cs:22-25): when ANOTHER
+    // player plays an Attack, the owner gains `Amount` Unpowered block. The
+    // seated player's own Sneaky never answers their own cards, so only the
+    // teammates waiting in their seats do (GH #1004).
+    if ctx.card_type == Some(crate::cards::CardType::Attack)
+        && power_kind_live(state, PowerKind::Sneaky)
+    {
+        crate::coop::each_unseated_holder(state, PowerKind::Sneaky, |state, amount| {
+            let _ = crate::card_effects::gain_block_player_unpowered(state, amount);
+        });
     }
 
     // ── React: VitalSpark (Infested Prism, enemy power) ────────────────
@@ -14988,11 +15758,18 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
                 // latch keys on the card's owner, so an Osty-attack card spends
                 // the buff whenever the Osty actually attacked; seed 396 is the
                 // Osty-missing case, where no command runs.
-                if is_gigantification_attack && amount > 0 => {
+                // Only the latched command's `AfterAttack` decrements: a card
+                // auto-played inside the latched attack (Uproar → Tesla Coil)
+                // finishes first and must not spend it.
+                if is_gigantification_attack
+                    && amount > 0
+                    && gigantification_latched_on(state, ctx.card_uid) =>
+                {
                     let mut remove_pid = None;
                     for uid in player_power_uids.iter().copied() {
                         if let Some(power) = state.powers.get_mut_by_id(uid.0) {
                             if power.kind == PowerKind::Gigantification {
+                                power.counter = 0;
                                 power.amount = power.amount.saturating_sub(1).max(0);
                                 if power.amount == 0 {
                                     remove_pid = Some(uid.0);
@@ -15055,172 +15832,11 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
     }
 
     // ── React (ordered): player powers that hit enemies ─────────────────
-    // C# `Hook.AfterCardPlayed` (Hook.cs:181) fans out to
-    // `combatState.IterateHookListeners()` (CombatState.cs:521), which walks
-    // each creature's `Powers` in LIST (application) order, allies before
-    // enemies — so a player's after-card-played reactions fire in the order
-    // the powers were applied. Most player reactions (block / energy / orbs /
-    // card-add / self-power consume, handled in the `pending` loop above and
-    // the lanes below) are COMMUTATIVE: they never touch enemy HP or the
-    // `combat_targets` RNG, so their relative order is unobservable and they
-    // stay where they are. The three exceptions — SerpentForm, Haunt (random
-    // single-target damage, `combat_targets` draws) and Panache (AoE that can
-    // kill an enemy → StockPower respawn) — DO mutate enemy state, so their
-    // relative order is observable and must follow application order.
-    //
-    // Bead `sts2-rs-after-card-played-power-order-w2i4c` (Silent fuzz seed
-    // 1679, AXEBOTS_NORMAL): player powers applied [.., PANACHE, SERPENT_FORM,
-    // ..]. On the 5th card of a turn Panache's AoE 14 kills an 8-hp Axebot →
-    // StockPower respawns a 43-hp bot; SerpentForm then deals 4 to a random
-    // hittable enemy. C# fires Panache before SerpentForm (application order),
-    // so SerpentForm hits the NEW bot → 39. The prior hardcoded order fired
-    // SerpentForm (in the `pending` loop) before Panache (a late standalone
-    // block), wasting the hit on the dying bot so the respawn stayed at 43.
-    // Walking these three in `player_power_uids` order reproduces C#. This walk
-    // also runs in the player stage — BEFORE the enemy lanes (Slow / Oblivion /
-    // Strangle) below — matching C#'s allies-before-enemies listener order
-    // (the old standalone Panache block wrongly trailed those enemy lanes).
-    //
-    // `player_power_uids` is the deduped mirror+legacy union (each power once),
-    // so no instance double-fires.
-    //
-    // Perf 2026-07-04: absence-gated on the three kinds this walk
-    // discriminates on — when none is live the walk matches nothing.
-    let ordered_walk_uids: &[crate::PowerUid] = if state
-        .powers
-        .present_kinds()
-        .intersects(&AFTER_CARD_PLAYED_ORDERED_ENEMY_HIT_KINDS)
-    {
-        &player_power_uids
-    } else {
-        &[]
-    };
-    for uid in ordered_walk_uids.iter().copied() {
-        let kind = match state.powers.get_by_id(uid.0) {
-            Some(power) => power.kind,
-            None => continue,
-        };
-        match kind {
-            // SerpentForm: `counter` holds the pre-OnPlay AMOUNT snapshot (set
-            // by the before-play arm; only instances armed BEFORE this card's
-            // OnPlay fire, so a freshly-played SerpentForm card deals no
-            // random-hit on its own play). Deal exactly that to a random alive
-            // enemy, then disarm. Routed through [`crate::damage::apply_damage`]
-            // with `UNPOWERED` (bead `sts2-rs-zlx.4`) so the pipeline walks
-            // listeners but Strength/Vulnerable NO-op on the powered arms.
-            PowerKind::SerpentForm => {
-                let snapshot = match state.powers.get_mut_by_id(uid.0) {
-                    Some(power) if power.counter >= 1 => {
-                        let s = power.counter;
-                        power.counter = 0;
-                        s
-                    }
-                    _ => continue,
-                };
-                if snapshot > 0 {
-                    let alive: SmallVec<[crate::CreatureUid; 4]> = state
-                        .enemy_uids
-                        .iter()
-                        .copied()
-                        .filter(|uid| {
-                            state
-                                .creatures
-                                .iter()
-                                .any(|c| c.id == uid.0 && c.current_hp > 0)
-                        })
-                        .collect();
-                    if !alive.is_empty() {
-                        let idx = state
-                            .run_rng
-                            .combat_targets
-                            .next_int_exclusive(0, alive.len() as i32)
-                            as usize;
-                        let target = alive[idx];
-                        crate::damage::apply_damage(
-                            state,
-                            CreatureRef::Player,
-                            target,
-                            snapshot,
-                            ValueProps::UNPOWERED,
-                            None,
-                        );
-                    }
-                }
-            }
-            // Haunt: when the owner plays a Soul, deal `Amount`
-            // UNBLOCKABLE | UNPOWERED damage to a single random hittable enemy
-            // (`get_random_enemy` mirrors `Rng.CombatTargets.NextItem`). C#
-            // passes a `null` dealer; attributed to the player (SerpentForm
-            // precedent). C# `HauntPower.AfterCardPlayed` (HauntPower.cs:19-30).
-            PowerKind::Haunt if is_soul => {
-                let amount = state.powers.get_by_id(uid.0).map_or(0, |p| p.amount);
-                if amount > 0 {
-                    if let Some(target) = state.get_random_enemy() {
-                        crate::damage::apply_damage(
-                            state,
-                            CreatureRef::Player,
-                            target,
-                            amount,
-                            ValueProps::UNBLOCKABLE.union(ValueProps::UNPOWERED),
-                            None,
-                        );
-                    }
-                }
-            }
-            // Panache (Colorless Uncommon power): C# `PanachePower
-            // .AfterCardPlayed` (PanachePower.cs:39-58) — decrement `CardsLeft`
-            // (counter) and when it reaches 0 deal `Amount` Unpowered damage to
-            // all hittable enemies, then reset `CardsLeft = 5`. Counter
-            // encoding: `counter == -1` means `alreadyApplied == false` — the
-            // first call (the Panache card's own play) sets counter = 5 without
-            // decrementing (C# `data.alreadyApplied`, PanachePower.cs:47-52).
-            // Panache is IsInstanced, so each instance is an independent
-            // countdown; the ordered walk handles each in application order.
-            // `cardPlay.Card.Owner == base.Owner.Player` is always true here.
-            // Bead `sts2-rs-5jgpx`.
-            PowerKind::Panache => {
-                let (damage_amount, counter) = match state.powers.get_by_id(uid.0) {
-                    Some(power) => (power.amount, power.counter),
-                    None => continue,
-                };
-                if counter == -1 {
-                    if let Some(power) = state.powers.get_mut_by_id(uid.0) {
-                        power.counter = 5;
-                    }
-                } else {
-                    let new_counter = counter.saturating_sub(1);
-                    if new_counter <= 0 {
-                        let alive_enemies: SmallVec<[CreatureUid; 4]> = state
-                            .enemy_uids
-                            .iter()
-                            .copied()
-                            .filter(|uid| {
-                                state
-                                    .creatures
-                                    .iter()
-                                    .any(|c| c.id == uid.0 && c.current_hp > 0)
-                            })
-                            .collect();
-                        for enemy_uid in alive_enemies {
-                            crate::damage::apply_damage(
-                                state,
-                                CreatureRef::Player,
-                                enemy_uid,
-                                damage_amount,
-                                ValueProps::UNPOWERED,
-                                None,
-                            );
-                        }
-                        if let Some(power) = state.powers.get_mut_by_id(uid.0) {
-                            power.counter = 5;
-                        }
-                    } else if let Some(power) = state.powers.get_mut_by_id(uid.0) {
-                        power.counter = new_counter;
-                    }
-                }
-            }
-            _ => {}
-        }
+    // See [`dispatch_after_card_played_ordered_enemy_hits`]. The play pipeline
+    // runs that walk itself BEFORE the relic bus (C# listener order: player
+    // powers, then relics) and passes `run_ordered_walk = false`.
+    if run_ordered_walk {
+        dispatch_after_card_played_ordered_enemy_hits(state, ctx);
     }
 
     // Juggling: on the 3rd Attack played this turn, clone the card
@@ -15596,7 +16212,7 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
         for (owner, amount, pid) in latched {
             apply_effects(
                 state,
-                &[Effect::GainBlockCreature {
+                &[Effect::GainBlockCreatureUnpowered {
                     target: CreatureRef::Enemy(owner),
                     amount,
                 }],
@@ -15610,64 +16226,8 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
     }
 
     // ── React: Skittish (enemy, PhantasmalGardener) ────────────────────
-    // C# `SkittishPower.AfterAttack`
-    // (`../sts2-wiki/decompiled/v0.107.1/MegaCrit.Sts2.Core.Models.Powers/SkittishPower.cs:56-69`):
-    // ONCE PER TURN, when a card-sourced (`command.ModelSource is CardModel`)
-    // `ValueProp.Move` attack lands UNBLOCKED damage on the owner, the owner
-    // gains `Amount` block with `ValueProp.Unpowered`.
-    //
-    // Two-phase like CurlUp above: the content `skittish_after_damage` hook
-    // arms `skip_next_tick` on the hit, and the grant lands HERE — after the
-    // whole card resolves — so none of the triggering card's own hits are
-    // absorbed by the fresh block (C# grants after the `AttackCommand`, which
-    // is the same boundary for every single-command card; see the hook's
-    // doc-comment for the residual two-command case).
-    //
-    // `counter` is C#'s `Data.hasGainedBlockThisTurn`: set to 1 on grant, reset
-    // to 0 by the `AfterSideTurnEnd(side != Owner.Side)` analogue in
-    // [`dispatch_after_turn_end`] (player-side turn end, since Skittish only
-    // ever lives on a monster). The power is NOT removed — unlike CurlUp it
-    // re-arms every turn.
-    // present_kinds lane gate (perf): no live Skittish ⇒ nothing latched.
-    if power_kind_live(state, PowerKind::Skittish) {
-        let latched: SmallVec<[(CreatureUid, i32, crate::PowerUid); 2]> = state
-            .powers
-            .iter()
-            .filter(|p| {
-                p.kind == PowerKind::Skittish && p.skip_next_tick && p.counter == 0 && p.amount > 0
-            })
-            .filter_map(|p| {
-                state
-                    .creatures
-                    .iter()
-                    .find(|c| c.powers.iter().any(|pu| pu.0 == p.id) && c.current_hp > 0)
-                    .map(|c| (CreatureUid(c.id), p.amount, crate::PowerUid(p.id)))
-            })
-            .collect();
-        for (owner, amount, pid) in latched {
-            // C# `CreatureCmd.GainBlock(Owner, Amount, ValueProp.Unpowered)` —
-            // `Effect::GainBlockCreature` is the enemy-side unpowered grant
-            // (monster block never scales with the player's Dexterity/Frail).
-            apply_effects(
-                state,
-                &[Effect::GainBlockCreature {
-                    target: CreatureRef::Enemy(owner),
-                    amount,
-                }],
-            );
-            if let Some(p) = state.powers.get_mut_by_id(pid.0) {
-                p.skip_next_tick = false;
-                p.counter = 1;
-            }
-        }
-        // Disarm any latch that could not be granted (owner died to the very
-        // card that armed it) so it cannot fire on a later play this turn.
-        for p in &mut state.powers {
-            if p.kind == PowerKind::Skittish {
-                p.skip_next_tick = false;
-            }
-        }
-    }
+    // See [`grant_latched_skittish`].
+    grant_latched_skittish(state);
 
     // ── React: Monologue (Regent power) ────────────────────────────────
     // C# `MonologuePower.AfterCardPlayed` (MonologuePower.cs:63-72): for every
@@ -15768,15 +16328,20 @@ pub fn dispatch_after_card_played(state: &mut CombatState, ctx: &CardCtx) {
 /// `AddThisCombat` is a combat-lifetime relative modifier, and a combat card is
 /// a fresh copy of its deck card, so the reduction is applied to the instance
 /// cost directly (floored at 0, C#'s final `Math.Max(0, num)`).
+///
+/// No owner check: a co-op teammate's Midnights get cheaper too, and so do
+/// ours when they exhaust (GH #1004). Their piles wait in `state.allies`.
 fn reduce_midnight_costs_v0111(state: &mut CombatState) {
-    let p = &state.player;
-    let midnights: SmallVec<[CardUid; 4]> = p
-        .draw
-        .iter()
-        .chain(p.hand.iter())
-        .chain(p.discard.iter())
-        .chain(p.exhaust.iter())
-        .chain(p.play.iter())
+    let midnights: SmallVec<[CardUid; 4]> = std::iter::once(&state.player)
+        .chain(state.allies.iter())
+        .flat_map(|p| {
+            p.draw
+                .iter()
+                .chain(p.hand.iter())
+                .chain(p.discard.iter())
+                .chain(p.exhaust.iter())
+                .chain(p.play.iter())
+        })
         .copied()
         .filter(|u| {
             state
@@ -15790,7 +16355,39 @@ fn reduce_midnight_costs_v0111(state: &mut CombatState) {
             if c.cost > 0 {
                 c.cost -= 1;
             }
+            let counted = c.combat_var(crate::cards::VarKey::MidnightExhaustsCounted);
+            c.set_combat_var(
+                crate::cards::VarKey::MidnightExhaustsCounted,
+                counted.saturating_add(1),
+            );
         }
+    }
+}
+
+/// Midnight's `AfterCardEnteredCombat` (v0.111.0): a Midnight that enters
+/// combat after cards were exhausted starts that much cheaper.
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The engine has no clone flag, so the shave is what the card has not yet
+/// counted ([`crate::cards::VarKey::MidnightExhaustsCounted`]): a fresh card
+/// counts none, and a copy of one already in combat carries the original's
+/// count, which is all of them.
+pub fn midnight_entered_combat_v0111(state: &mut CombatState, uid: CardUid) {
+    let total = i32::try_from(crate::coop::cards_exhausted_this_combat(state)).unwrap_or(i32::MAX);
+    let Some(c) = state.cards.get_mut(uid.0.get() as usize - 1) else {
+        return;
+    };
+    if c.card_id != crate::cards::CardId::Midnight {
+        return;
+    }
+    let missed = total - c.combat_var(crate::cards::VarKey::MidnightExhaustsCounted);
+    if missed > 0 {
+        c.cost = c
+            .cost
+            .saturating_sub(i8::try_from(missed).unwrap_or(i8::MAX))
+            .max(0);
+        c.set_combat_var(crate::cards::VarKey::MidnightExhaustsCounted, total);
     }
 }
 
@@ -15809,6 +16406,10 @@ pub fn dispatch_after_card_exhausted(
     // the player as a card-owning side, so the scalar bump is exact.
     state.combat_log.cards_exhausted_this_turn =
         state.combat_log.cards_exhausted_this_turn.saturating_add(1);
+    state.combat_log.cards_exhausted_this_combat = state
+        .combat_log
+        .cards_exhausted_this_combat
+        .saturating_add(1);
 
     // v0.111.0 (GH #793): Midnight's card-side `AfterCardExhausted` listener
     // (decomp Midnight.cs:44-48). The card exists in no v0.107.1 state.
@@ -16023,8 +16624,27 @@ pub fn dispatch_before_turn_end(state: &mut CombatState, ctx: &TurnSideCtx) {
 /// the enemies). Co-op teammates hear it in [`crate::coop::seat_pass`].
 fn dispatch_before_turn_end_seated(state: &mut CombatState, ctx: &TurnSideCtx) {
     power_hook_dispatch(state, PowerHook::BeforeTurnEnd, |state| {
-        let effects = collect_before_turn_end(state, ctx);
-        apply_effects(state, &effects);
+        if !state
+            .powers
+            .present_kinds()
+            .intersects(&BEFORE_TURN_END_ARMS)
+        {
+            let effects = collect_before_turn_end(state, ctx);
+            apply_effects(state, &effects);
+            return;
+        }
+        // C# awaits each `BeforeSideTurnEnd` listener in turn, so a later
+        // listener reads the board an earlier one left: TheBomb kills a
+        // GremlinMerc, its SurprisePower spawns two gremlins, and Hailstorm
+        // then hits `HittableEnemies` including them (HailstormPower.cs:30-40,
+        // TheBombPower.cs:39-59; Defect full seed 2328). Resolve and apply one
+        // listener at a time instead of collecting the whole walk up front.
+        let listeners: SmallVec<[ListenerRef; 16]> = iter_power_listeners(state).collect();
+        for listener in listeners {
+            if let Some(effects) = before_turn_end(state, listener, ctx) {
+                apply_effects(state, &effects);
+            }
+        }
     });
 }
 
@@ -16536,6 +17156,7 @@ const AFTER_TURN_END_KINDS: crate::PowerKindSet = crate::PowerKindSet::from_kind
     PowerKind::Constrict,
     PowerKind::Coordinate,
     PowerKind::CorrosiveWave,
+    PowerKind::Covered,
     PowerKind::CrushUnder,
     PowerKind::DarkShackles,
     PowerKind::Debilitate,
@@ -16641,7 +17262,19 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
     // Bead `sts2-rs-6ynt.6.1`: collect deferred effects from the
     // SetupStrike / ManglePower listener arms, then apply post-walk
     // so the listener iteration doesn't observe mutated power state.
+    //
+    // Three buckets, applied in C# order: the turn-ending player's own
+    // `AfterSideTurnEnd` powers, then every other creature's, then the
+    // `AfterSideTurnEndLate` ones (DisintegrationPower.cs:19, run after every
+    // `AfterSideTurnEnd` listener). C# collects listeners per creature —
+    // the player's powers, then the player's RELICS, then the next creature
+    // (CombatState.cs:115-131) — so Parrying Shield (a relic) reads the
+    // player's Block after Constrict's self-damage (ConstrictPower.cs:15)
+    // but before Disintegration's. The relic bus runs after this dispatch,
+    // so record that Block between the first two buckets.
     let mut effects: SmallVec<[Effect; 4]> = SmallVec::new();
+    let mut others: SmallVec<[Effect; 4]> = SmallVec::new();
+    let mut late: SmallVec<[Effect; 2]> = SmallVec::new();
     // present_kinds gate (perf-gates sweep 2026-07-04): [`after_turn_end`]'s
     // power arms only react to kinds in [`AFTER_TURN_END_ARMS`] (relics
     // return `None` up front), so the walk is skipped when none is live. See
@@ -16651,45 +17284,45 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
         .present_kinds()
         .intersects(&AFTER_TURN_END_ARMS)
     {
-        if ctx.side == Side::Player && state.game_version >= crate::GameVersion::V0_111_0 {
-            // v0.111.0: player-side Doom joined this hook (decomp
-            // DoomPower.cs:68), so the order of the player's own listeners
-            // decides whether an earlier listener's HP loss (Constrict,
-            // ConstrictPower.cs:15) lands before the Doom check. C# walks a
-            // creature's powers in application order; `iter_power_listeners`
-            // yields the mirror-creature powers before the legacy-surface ones
-            // (where monster debuffs such as Constrict live), so walk the
-            // player's powers by PowerUid (allocated max+1, i.e. application
-            // order) and the rest unchanged. DisintegrationPower rides
-            // `AfterSideTurnEndLate` (decomp DisintegrationPower.cs:15), which
-            // C# runs after every `AfterSideTurnEnd` listener (Hook.cs:1443),
-            // so its damage lands after the Doom check.
-            let mut player_uids = state.player_power_uids();
-            player_uids.sort_unstable_by_key(|u| u.0);
-            let rest = iter_power_listeners(state)
-                .filter(|l| !matches!(l, ListenerRef::Power(u) if player_uids.contains(u)));
-            let mut late: SmallVec<[Effect; 2]> = SmallVec::new();
-            for listener in player_uids
-                .iter()
-                .copied()
-                .map(ListenerRef::Power)
-                .chain(rest)
-            {
-                if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
-                    let is_late = matches!(listener, ListenerRef::Power(u)
-                        if state.powers.get_by_id(u.0).is_some_and(|p| p.kind == PowerKind::Disintegration));
-                    if is_late {
-                        late.extend(listener_effects);
-                    } else {
-                        effects.extend(listener_effects);
-                    }
-                }
-            }
-            effects.extend(late);
+        let mut player_uids = if ctx.side == Side::Player {
+            state.player_power_uids()
         } else {
-            for listener in iter_power_listeners(state) {
-                if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
+            SmallVec::new()
+        };
+        let listeners: SmallVec<[ListenerRef; 16]> =
+            if ctx.side == Side::Player && state.game_version >= crate::GameVersion::V0_111_0 {
+                // v0.111.0: player-side Doom joined this hook (decomp
+                // DoomPower.cs:68), so the order of the player's own listeners
+                // decides whether an earlier listener's HP loss (Constrict,
+                // ConstrictPower.cs:15) lands before the Doom check. C# walks a
+                // creature's powers in application order; `iter_power_listeners`
+                // yields the mirror-creature powers before the legacy-surface ones
+                // (where monster debuffs such as Constrict live), so walk the
+                // player's powers by PowerUid (allocated max+1, i.e. application
+                // order) and the rest unchanged.
+                player_uids.sort_unstable_by_key(|u| u.0);
+                let rest = iter_power_listeners(state)
+                    .filter(|l| !matches!(l, ListenerRef::Power(u) if player_uids.contains(u)));
+                player_uids
+                    .iter()
+                    .copied()
+                    .map(ListenerRef::Power)
+                    .chain(rest)
+                    .collect()
+            } else {
+                iter_power_listeners(state).collect()
+            };
+        for listener in listeners {
+            if let Some(listener_effects) = after_turn_end(state, listener, ctx) {
+                let is_late = matches!(listener, ListenerRef::Power(u)
+                    if state.powers.get_by_id(u.0).is_some_and(|p| p.kind == PowerKind::Disintegration));
+                let is_own = matches!(listener, ListenerRef::Power(u) if player_uids.contains(&u));
+                if is_late {
+                    late.extend(listener_effects);
+                } else if is_own || ctx.side != Side::Player {
                     effects.extend(listener_effects);
+                } else {
+                    others.extend(listener_effects);
                 }
             }
         }
@@ -16708,6 +17341,11 @@ fn dispatch_after_turn_end_body(state: &mut CombatState, ctx: &TurnSideCtx) {
         after_turn_end(state, listener, ctx).is_none()
     });
     apply_effects(state, &effects);
+    if ctx.side == Side::Player {
+        state.combat_log.block_before_late_turn_end = state.player.block;
+    }
+    others.extend(late);
+    apply_effects(state, &others);
 
     // ── React: DarkEmbracePower.AfterTurnEnd(Player) ───────────────────
     // C# `DarkEmbracePower.AfterTurnEnd` (DarkEmbracePower.cs:45-53): on the
@@ -17663,62 +18301,102 @@ pub fn dispatch_after_power_applied(state: &mut CombatState, ctx: &PowerAppliedC
         _ => {}
     }
 
-    // SleightOfFlesh (C# `SleightOfFleshPower.AfterPowerAmountChanged`): `if
-    // amount != 0 && power.GetTypeForAmount(amount) == Debuff && power.Owner
-    // .IsEnemy && applier == Owner && !(power is ITemporaryPower) { Damage(
-    // power.Owner, Amount, Unpowered, Owner) }`. When the owning player applies
-    // a non-temporary DEBUFF to an enemy, deal `Amount` Unpowered damage to that
-    // enemy per SleightOfFlesh instance. This reactor keys off the *type* of the
-    // applied power (debuff), not a single kind, so it lives outside the
-    // per-kind match above. `delta > 0` (the early return) covers `amount != 0`;
-    // `applier == player` is already gated.
-    //
-    // Debuff classification uses the shared `afflictions::classify` table,
-    // which includes `Doom` (C# `DoomPower.Type == Debuff`) as of bead
-    // `sts2-rs-30xk8` — the prior local Doom whitelist here is now redundant
-    // and has been dropped. The ITemporaryPower set (TemporaryStrength/
-    // Dexterity/Focus) is excluded — those are buffs in `classify` anyway, but
-    // the guard is explicit to mirror C#. Damage is Unpowered (no Strength/
-    // Vulnerable scaling) and dealt by the player; it cannot re-enter this lane
-    // (dealing damage applies no power). Bead `sts2-rs-4wppb`.
-    let target_is_enemy = matches!(ctx.target, CreatureRef::Enemy(_));
-    let is_debuff = crate::afflictions::classify(ctx.power_kind).is_debuff();
-    let is_temporary = matches!(
-        ctx.power_kind,
-        PowerKind::TemporaryStrength | PowerKind::TemporaryDexterity | PowerKind::TemporaryFocus
-    );
-    if target_is_enemy && is_debuff && !is_temporary {
-        if let Some(target_uid) = ctx.target.to_creature_uid(state) {
-            let sof_amounts: SmallVec<[i32; 2]> = state
-                .player_power_uids()
-                .into_iter()
-                .filter_map(|puid| state.powers.get_by_id(puid.0))
-                .filter(|p| p.kind == PowerKind::SleightOfFlesh && p.amount > 0)
-                .map(|p| p.amount)
-                .collect();
-            for amount in sof_amounts {
-                // Re-check the target is still alive between per-instance hits
-                // (a prior hit could have killed it).
-                let alive = state
-                    .creatures
-                    .iter()
-                    .any(|c| c.id == target_uid.0 && c.current_hp > 0);
-                if !alive {
-                    break;
-                }
-                // C# `SleightOfFleshPower.cs:25` flashes inside this same
-                // guard, before the Damage call.
-                crate::event_log::flash_player_power(state, PowerKind::SleightOfFlesh);
-                crate::damage::apply_damage(
-                    state,
-                    CreatureRef::Player,
-                    target_uid,
-                    amount,
-                    ValueProps::UNPOWERED,
-                    None,
-                );
-            }
+    if let Some(target_uid) = ctx.target.to_creature_uid(state) {
+        if matches!(ctx.target, CreatureRef::Enemy(_)) {
+            sleight_of_flesh_react(state, target_uid, ctx.power_kind, ctx.delta);
         }
+    }
+}
+
+/// Player-applied SIGNED power change on `target_uid` (a negative
+/// Strength/Dexterity/Focus drain). The canonical [`dispatch_after_power_applied`]
+/// is positive-only, so the signed-apply helpers call this after a drain lands.
+/// C# fires `Hook.AfterPowerAmountChanged` for every non-zero apply, silent or
+/// not (PowerCmd.cs:152-156, 247-250), and `GetTypeForAmount(-n)` on an
+/// `AllowNegative` power is Debuff, so SleightOfFlesh reacts (Shared Fate's
+/// enemy Strength loss — Necrobinder full seed 1875, quick seed 201).
+pub fn dispatch_after_signed_power_applied_by_player(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    delta: i32,
+) {
+    if delta >= 0 || state.player.creature_uid == Some(target_uid) {
+        return;
+    }
+    sleight_of_flesh_react(state, target_uid, kind, delta);
+}
+
+/// SleightOfFlesh (C# `SleightOfFleshPower.AfterPowerAmountChanged`): `if
+/// amount != 0 && power.GetTypeForAmount(amount) == Debuff && power.Owner
+/// .IsEnemy && applier == Owner && !(power is ITemporaryPower) { Damage(
+/// power.Owner, Amount, Unpowered, Owner) }`. When the owning player applies
+/// a non-temporary DEBUFF to an enemy, deal `Amount` Unpowered damage to that
+/// enemy per SleightOfFlesh instance. Callers gate `applier == player` and
+/// the enemy target.
+///
+/// `ITemporaryPower` debuffs (EnfeeblingTouch, ShacklingPotion, …) are
+/// excluded: SleightOfFlesh reacts instead to the negative Strength their
+/// `TemporaryStrengthPower.BeforeApplied` applies (TemporaryStrengthPower.cs:131),
+/// which the content ports route through the signed-apply helpers →
+/// [`dispatch_after_signed_power_applied_by_player`]. Damage is Unpowered and
+/// applies no power, so it cannot re-enter this lane. Bead `sts2-rs-4wppb`.
+fn sleight_of_flesh_react(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    delta: i32,
+) {
+    if delta == 0
+        || !crate::afflictions::is_debuff_for_amount(kind, delta)
+        || crate::afflictions::is_temporary_power_debuff(kind)
+        || matches!(
+            kind,
+            PowerKind::TemporaryStrength
+                | PowerKind::TemporaryDexterity
+                | PowerKind::TemporaryFocus
+        )
+    {
+        return;
+    }
+    let sof_amounts: SmallVec<[i32; 2]> = state
+        .player_power_uids()
+        .into_iter()
+        .filter_map(|puid| state.powers.get_by_id(puid.0))
+        .filter(|p| p.kind == PowerKind::SleightOfFlesh && p.amount > 0)
+        .map(|p| p.amount)
+        .collect();
+    if !sof_amounts.is_empty() {
+        // A card's debuff apply follows its `DamageCmd.Attack`, whose
+        // `AfterAttack` already granted Skittish's block (SkittishPower.cs:56-69)
+        // — so the gardener's fresh block absorbs this damage (Fear's
+        // Vulnerable → SleightOfFlesh, Necrobinder full seed 4610). Rust
+        // latches Skittish until the card resolves; settle it first. (A debuff
+        // applied INSIDE an attack, between hits, is the residual this cannot
+        // tell apart.)
+        grant_latched_skittish(state);
+    }
+    for amount in sof_amounts {
+        // Re-check the target is still alive between per-instance hits
+        // (a prior hit could have killed it).
+        let alive = state
+            .creatures
+            .iter()
+            .any(|c| c.id == target_uid.0 && c.current_hp > 0);
+        if !alive {
+            break;
+        }
+        // C# `SleightOfFleshPower.cs:25` flashes inside this same
+        // guard, before the Damage call.
+        crate::event_log::flash_player_power(state, PowerKind::SleightOfFlesh);
+        crate::damage::apply_damage(
+            state,
+            CreatureRef::Player,
+            target_uid,
+            amount,
+            ValueProps::UNPOWERED,
+            None,
+        );
     }
 }
 
@@ -19993,6 +20671,45 @@ mod tests {
         );
     }
 
+    /// C# awaits a Stratagem `AfterShuffle` select opened by FC's own
+    /// `ShuffleIfNecessary` and THEN runs the FC select
+    /// (`ForegoneConclusionPower.cs:22-24`). Rust parks on the Stratagem
+    /// choice and skips FC; once it resolves, the turn-start resume must
+    /// re-run the still-live FC power (Regent full 1643/5156/5499/5503/5687).
+    #[test]
+    fn foregone_conclusion_reruns_after_a_blocking_choice() {
+        use crate::cards::{CardId, CardType, TargetType};
+        let (mut state, power_uid) = state_with_player_power(PowerKind::ForegoneConclusion, 2);
+        for i in 0..2u32 {
+            let uid = crate::CardUid::new(i + 1).expect("nz");
+            state.cards.push(crate::Card {
+                uid,
+                card_id: CardId::StrikeIronclad,
+                card_type: CardType::Attack,
+                target_type: TargetType::Enemy,
+                ..crate::Card::pod_defaults()
+            });
+            state.player.draw.push(uid);
+        }
+        assert!(!resume_foregone_conclusion_after_blocking_choice(
+            &mut state
+        ));
+        assert_eq!(
+            state.player.hand.len(),
+            2,
+            "FC took its 2 cards on the re-run"
+        );
+        assert!(
+            !state.powers.iter().any(|p| p.id == power_uid.0),
+            "FC removed once it fired",
+        );
+        // Nothing left to re-run.
+        assert!(!resume_foregone_conclusion_after_blocking_choice(
+            &mut state
+        ));
+        assert_eq!(state.player.hand.len(), 2);
+    }
+
     /// Final-branch-review finding (bead `sts2-rs-ztl78`): the
     /// `BeforeHandDraw` auto-take fast path (`cards.Count <= MinSelect`)
     /// raw-removes each card from `draw` without going through
@@ -20592,6 +21309,9 @@ mod tests {
                 remaining: 1,
                 from_hand_draw: true,
                 resume_turn_setup: false,
+                then_put_back_from_hand: false,
+                then_auto_play_skill_from_hand: false,
+                then_discard_from_hand: 0,
             }),
             "the undrawn remainder is stashed for the post-choice resume"
         );
@@ -20816,6 +21536,52 @@ mod tests {
         // Latched to card_a, active card is now card_b (nested auto-play) → +0.
         state.player.play.push(card_b);
         assert_eq!(dispatch_modify_damage_additive(&state, &ctx), 0);
+    }
+
+    /// `GetWithModifiers(CostModifiers.Local)` (CardEnergyCost.cs:94-115) sees
+    /// the per-card until-played riders but no global hook — v0.107.1 Scrape
+    /// keeps a RocketPunch made free by a status draw (Defect full parity seed
+    /// 3042).
+    #[test]
+    fn local_card_cost_folds_only_local_modifiers() {
+        let state = CombatState::default();
+        let mut card = crate::cards::Card {
+            cost: 2,
+            ..crate::cards::Card::pod_defaults()
+        };
+        assert_eq!(local_card_cost(&state, &card), 2);
+        card.set_combat_var(crate::cards::VarKey::CostReductionUntilPlayed, 1);
+        assert_eq!(local_card_cost(&state, &card), 1);
+        card.set_combat_var(crate::cards::VarKey::FreeUntilPlayed, 1);
+        assert_eq!(local_card_cost(&state, &card), 0);
+        card.cost = -1;
+        assert_eq!(local_card_cost(&state, &card), -1, "unplayable base stays");
+    }
+
+    /// **Gigantification command scope**: C# `commandToModify` limits the ×3
+    /// to the latched card's hits (`GigantificationPower.cs:52-70`). The
+    /// latched card uid lives in the power's `counter`. A card auto-played
+    /// inside the latched attack (Uproar → Tesla Coil, Defect quick seed 591)
+    /// is not tripled.
+    #[test]
+    fn gigantification_scoped_to_latched_card() {
+        let (mut state, uid) = state_with_player_power(PowerKind::Gigantification, 1);
+        let card_a = CardUid::new(11).unwrap();
+        let card_b = CardUid::new(22).unwrap();
+        let ctx = DamageCtx {
+            dealer: CreatureRef::Player,
+            target: CreatureRef::Enemy(CreatureUid::new(99).unwrap()),
+            props: ValueProps::MOVE,
+        };
+        state.player.play.clear();
+        state.player.play.push(card_a);
+        assert_eq!(modify_damage(&state, 6, &ctx), 18, "not latched: ×3");
+        state.powers.get_mut_by_id(uid.0).unwrap().counter = 11;
+        assert_eq!(modify_damage(&state, 6, &ctx), 18, "latched card: ×3");
+        state.player.play.push(card_b);
+        assert_eq!(modify_damage(&state, 6, &ctx), 6, "other card: ×1");
+        assert!(!gigantification_latched_on(&state, Some(card_b)));
+        assert!(gigantification_latched_on(&state, Some(card_a)));
     }
 
     /// **Vigor guard**: an UNPOWERED hit (e.g. SerpentForm self-damage)
@@ -23799,6 +24565,34 @@ mod tests {
         assert_eq!(state.player.block, 4, "block reduced by the absorbed 6");
     }
 
+    /// The Block Parrying Shield reads (`block_before_late_turn_end`) is
+    /// taken after the player's own `AfterSideTurnEnd` powers (Constrict
+    /// absorbs into Block first) but before `AfterSideTurnEndLate`
+    /// Disintegration (CombatState.cs:115-131, DisintegrationPower.cs:19).
+    /// Necrobinder act23 seed 1016: 11 Block, Constrict 6 → Parrying Shield
+    /// must see 5 and stay quiet.
+    #[test]
+    fn after_turn_end_records_parrying_block_after_constrict_before_disintegration() {
+        let (mut state, _) = state_with_player_power(PowerKind::Constrict, 6);
+        state.player.current_hp = 50;
+        state.player.max_hp = 50;
+        state.player.block = 11;
+        state.powers.push(Power {
+            id: power_uid(2).0,
+            kind: PowerKind::Disintegration,
+            amount: 4,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(power_uid(2));
+
+        dispatch_after_turn_end(&mut state, &TurnSideCtx { side: Side::Player });
+
+        assert_eq!(state.combat_log.block_before_late_turn_end, 5);
+        assert_eq!(state.player.block, 1, "Disintegration lands after the read");
+    }
+
     /// Owner-side gate: player-owned Disintegration must not tick on the
     /// enemy turn-end.
     #[test]
@@ -24803,7 +25597,6 @@ mod tests {
     // -------------------------------------------------------------------
     // Bead `sts2-rs-zlx.1`: on-card-exhaust listener bus tests.
     //
-    // Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/card_play_effects.py`:
     //   - FeelNoPainPower.after_card_exhausted (lines 137-140)
     //   - DarkEmbracePower.after_card_exhausted (lines 114-117)
     // -------------------------------------------------------------------
@@ -25202,7 +25995,6 @@ mod tests {
     // -------------------------------------------------------------------
     // Bead `sts2-rs-zlx.3`: on-attack-played listener bus tests.
     //
-    // Port-pin: `sts2-rl-agent@01c094d:sts2_env/powers/card_play_effects.py`:
     //   - RagePower.after_card_played (Attack → gain block).
     //   - AfterimagePower.after_card_played (any card → gain block).
     //   - PhantomBladesPower.after_card_played (Shiv → counter +=1).
@@ -25483,6 +26275,84 @@ mod tests {
             poison_count, 1,
             "Envenom(1) must apply 1 Poison to the attacked enemy",
         );
+    }
+
+    /// **Envenom on the killing blow**: C# fires `AfterDamageGiven` before
+    /// `Kill` (`CreatureCmd.cs:390, :409`) and `CanReceivePowers` admits a
+    /// corpse, so the just-killed target still takes the Poison (which an
+    /// Outbreak then counts — Silent full-tier seed:1859) before `Kill`
+    /// strips it.
+    #[test]
+    fn envenom_poisons_the_target_its_hit_just_killed() {
+        let mut state = CombatState::default();
+        let env_uid = power_uid(1);
+        state.powers.push(Power {
+            id: env_uid.0,
+            kind: PowerKind::Envenom,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(env_uid);
+        let corpse_id = NonZeroU32::new(2).unwrap();
+        state.creatures.push(Creature {
+            id: corpse_id,
+            current_hp: 0,
+            max_hp: 31,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(MonsterKind::ShrinkerBeetle),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: crate::MonsterId("ShrinkerBeetle"),
+            ai: None,
+        });
+        let corpse_uid = CreatureUid::new(2).unwrap();
+        state.enemy_uids.push(corpse_uid);
+        let ctx = DamageCtx {
+            dealer: CreatureRef::Player,
+            target: CreatureRef::Enemy(corpse_uid),
+            props: ValueProps::MOVE,
+        };
+        // Outbreak(11) one application short of its 3rd: the corpse's Poison
+        // must count (the AoE fires), and `Kill`'s strip then removes it.
+        let ob_uid = power_uid(3);
+        state.powers.push(Power {
+            id: ob_uid.0,
+            kind: PowerKind::Outbreak,
+            amount: 11,
+            counter: 2,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(ob_uid);
+        let bystander_id = NonZeroU32::new(4).unwrap();
+        state.creatures.push(Creature {
+            id: bystander_id,
+            current_hp: 40,
+            max_hp: 40,
+            block: 0,
+            powers: SmallVec::new(),
+            species: Some(MonsterKind::ShrinkerBeetle),
+            intent: None,
+            intent_history: IntentHistory::default(),
+            monster_id: crate::MonsterId("ShrinkerBeetle"),
+            ai: None,
+        });
+        state.enemy_uids.push(CreatureUid::new(4).unwrap());
+        dispatch_after_damage_given(&mut state, &ctx, 8, 8, false);
+        assert_eq!(
+            state.creatures[1].current_hp, 29,
+            "the corpse's Poison is Outbreak's 3rd application (11 to the living)"
+        );
+        let corpse_poisoned = state.creatures[0].powers.iter().any(|uid| {
+            state
+                .powers
+                .iter()
+                .any(|p| p.id == uid.0 && p.kind == PowerKind::Poison)
+        });
+        assert!(!corpse_poisoned, "Kill strips the corpse's Poison");
     }
 
     /// **Envenom predicate**: a zero-damage hit does NOT apply Poison
@@ -26328,6 +27198,32 @@ mod tests {
                 .any(|p| p.id == u.0 && p.kind == PowerKind::CrabRage)),
             "surviving arm's CrabRage is consumed after firing"
         );
+    }
+
+    /// An AoE that kills one KaiserCrab arm hits the other BEFORE CrabRage
+    /// shields it: C# kills the felled targets only after the whole
+    /// `CreatureCmd.Damage` (CreatureCmd.cs:351-409). Regent act23 seed 1010
+    /// (Black Hole's star damage).
+    #[test]
+    fn aoe_kill_enrages_partner_only_after_every_hit_lands() {
+        let mut state = kaiser_crab_scenario();
+        let crusher = CreatureUid::new(10).unwrap();
+        let rocket = CreatureUid::new(11).unwrap();
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == crusher.0) {
+            c.current_hp = 3;
+        }
+        crate::card_effects::deal_damage_to_all_alive_enemies(
+            &mut state,
+            3,
+            ValueProps::UNPOWERED,
+            None,
+        );
+        let rocket_c = state.creatures.iter().find(|c| c.id == rocket.0).unwrap();
+        assert_eq!(
+            rocket_c.current_hp, 97,
+            "the hit landed before the rage block"
+        );
+        assert_eq!(rocket_c.block, 99, "CrabRage still fired after the batch");
     }
 
     /// **`CrabRage` side gate** (`sts2-rs-ybtmu`): a power never enrages off
@@ -29667,7 +30563,15 @@ mod power_kind_mask_drift {
     #[test]
     fn after_card_played_masks_cover_dispatcher_lanes() {
         let src = sanitize(SRC);
-        let body = fn_body(&src, "dispatch_after_card_played");
+        // The dispatcher is split: the ordered enemy-hitting walk runs ahead
+        // of the relic bus (`dispatch_after_card_played_ordered_enemy_hits`),
+        // every other lane lives in `dispatch_after_card_played_impl`.
+        let body_owned = format!(
+            "{}\n{}",
+            fn_body(&src, "dispatch_after_card_played_impl"),
+            fn_body(&src, "dispatch_after_card_played_ordered_enemy_hits")
+        );
+        let body = body_owned.as_str();
         let union = super::AFTER_CARD_PLAYED_PLAYER_REACT_KINDS;
 
         // (a) The per-pass sub-masks must be subsets of the outer union mask:
@@ -31452,6 +32356,7 @@ mod power_hook_liveness {
                 PowerKind::Doom,
                 PowerKind::MonarchsGazeStrengthDown,
                 PowerKind::Poison,
+                PowerKind::Reattach,
                 PowerKind::Strength,
             ],
             player_target_lanes: &[],
@@ -31466,6 +32371,7 @@ mod power_hook_liveness {
                 PowerKind::Doom,
                 PowerKind::MonarchsGazeStrengthDown,
                 PowerKind::Poison,
+                PowerKind::Reattach,
                 PowerKind::Strength,
             ],
             player_target_lanes: &super::AFTER_DAMAGE_GIVEN_PLAYER_TARGET_LANES,
@@ -32050,18 +32956,19 @@ mod power_hook_liveness {
         }
     }
 
-    /// Trap 4 (B5): with no power and no relic at all, the empty-bus return of
-    /// `dispatch_after_block_gained` also skips the Unmovable history tail,
-    /// which C# records unconditionally. J06 keeps that divergence (JIT study
-    /// §6.7): the first Defend is NOT recorded, so the second one, after
-    /// Unmovable lands, IS doubled.
+    /// Trap 4 (B5): with no power and no relic at all, the empty-bus guard of
+    /// `dispatch_after_block_gained` skips the listener walks but NOT the
+    /// Unmovable history tail — C# records every `BlockGainedEntry`
+    /// (UnmovablePower.cs counts the history at modify time). So the first
+    /// Defend is recorded and the second one, after Unmovable(1) lands, is
+    /// not doubled.
     #[test]
-    fn empty_bus_block_gain_keeps_skipping_the_unmovable_history() {
+    fn empty_bus_block_gain_records_the_unmovable_history() {
         for armed in [false, true] {
             let (mut state, player) = combat(armed);
             assert!(state.powers.is_empty() && state.relics.is_empty());
             defend(&mut state, 1, 5);
-            assert!(state.combat_log.unmovable_card_block_plays.is_empty());
+            assert_eq!(state.combat_log.unmovable_card_block_plays.len(), 1);
             crate::card_effects::apply_power_to_creature(
                 &mut state,
                 player,
@@ -32069,7 +32976,7 @@ mod power_hook_liveness {
                 1,
             );
             defend(&mut state, 2, 5);
-            assert_eq!(state.player.block, 15, "the second Defend is doubled");
+            assert_eq!(state.player.block, 10, "the second Defend is not doubled");
         }
     }
 

@@ -15,13 +15,13 @@ use super::prelude::*;
 /// set. Selection now uses the `CombatCardSelection` RNG (`NextItem` ==
 /// `NextInt(0, count)`), replacing the prior Python-pin first-card pick.
 ///
-/// Fidelity caveats: (a) the −1 is applied as a direct `card.cost`
-/// decrement (combat-lifetime POD, reset at combat start) rather than C#'s
-/// `AddUntilPlayed(-1)` until-played modifier — the two differ only if the
-/// reduced retained card is played and redrawn within the same combat;
-/// (b) `c.cost` is the local (non-global-modifier) cost, matching
-/// `GetWithModifiers(CostModifiers.Local)`. Bead `sts2-rs-gsda` (initial) /
-/// `…wb8lk.9` (v0.107.1 AfterFlush + random pick).
+/// The −1 is C#'s `AddUntilPlayed(-1)` — a `Relative`, `WhenPlayed` local
+/// modifier — so it banks in [`crate::cards::VarKey::CostReductionUntilPlayed`],
+/// which the play-time cleanup retires; a permanent `card.cost` decrement kept
+/// the discount through every later redraw. The local cost the filter reads is
+/// `cost - CostReductionUntilPlayed` (`GetWithModifiers(CostModifiers.Local)`
+/// minus the global walk). Bead `sts2-rs-gsda` (initial) / `…wb8lk.9`
+/// (v0.107.1 AfterFlush + random pick).
 pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) -> EffectResult {
     if side != Side::Player {
         return EffectResult::NotImplemented;
@@ -38,7 +38,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .copied()
         .filter(|uid| {
             crate::card_by_uid(&state.cards, *uid).is_some_and(|c| {
-                c.cost > 0
+                i32::from(c.cost) - c.combat_var(crate::cards::VarKey::CostReductionUntilPlayed) > 0
                     && !c.is_x_cost()
                     && c.combat_var(crate::cards::VarKey::FreeThisTurn) == 0
             })
@@ -54,7 +54,7 @@ pub(crate) fn on_after_turn_end_bookmark(state: &mut CombatState, side: Side) ->
         .combat_card_selection
         .next_int_exclusive(0, eligible.len() as i32) as usize];
     if let Some(card) = crate::card_by_uid_mut(&mut state.cards, chosen) {
-        card.cost = (card.cost - 1).max(0);
+        card.add_cost_reduction_until_played(1);
     }
     EffectResult::Resolved
 }

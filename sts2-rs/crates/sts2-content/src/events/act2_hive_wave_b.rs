@@ -9,9 +9,6 @@
 //! `RanwidTheElder`; the M–R boundary is bead-bookkeeping, not a clean
 //! alphabet split.
 //!
-//! Port pin: `sts2-rl-agent@01c094d:sts2_env/events/act2.py:763`+
-//! (`RelicTrader` through `WhisperingHollow`).
-//!
 //! ## Deferred surfaces
 //!
 //! **Status corrected 2026-06-26** (verified against current bodies; the
@@ -686,13 +683,14 @@ pub const STONE_OF_ALL_TIME: EventSpec = EventSpec {
 /// `Symbiote` event-RNG stream name (C# `Id.Entry`, UPPER_SNAKE).
 const SYMBIOTE_STREAM: &str = "SYMBIOTE";
 
-/// C# `Symbiote.CanEnchant(card) => Corrupted.CanEnchant(card)`. Corrupted has
-/// no `CanEnchant` override, so this is the base `EnchantmentModel.CanEnchant`:
-/// not Status/Curse, no existing enchantment, concrete cost (X-cost stays
-/// eligible) — identical to [`super::shared_wave_b`]'s `sown_can_enchant`.
+/// C# `Symbiote.CanEnchant(card) => Corrupted.CanEnchant(card)`: the base
+/// `EnchantmentModel.CanEnchant` (no existing enchantment, concrete cost —
+/// X-cost stays eligible) narrowed by `Corrupted.CanEnchantCardType`, which
+/// admits only Attacks (Corrupted.cs:15-18, same in v0.111.0).
 fn symbiote_can_enchant(c: &sts2_core::cards::Card) -> bool {
     use sts2_core::cards::CardType;
-    !matches!(c.card_type, CardType::Status | CardType::Curse)
+    c.card_type == CardType::Attack
+        && !c.is_quest()
         && c.enchantments.is_empty()
         && (c.cost >= 0 || c.is_x_cost())
 }
@@ -714,8 +712,12 @@ fn symbiote_approach(state: &mut RunState) -> EventOutcome {
             .push(sts2_core::PendingDeckEnchant {
                 enchantment: EnchantmentId::Corrupted,
                 amount: 1,
-                type_restriction: None,
+                // The deck grid lists only Attacks (Corrupted.cs:15-18); with
+                // every card listed, the picked index landed on a different
+                // card (Necrobinder act23 seed 1008: C# Corrupted the Snap).
+                type_restriction: Some(sts2_core::cards::CardType::Attack),
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Corrupted.")
     } else {
@@ -871,12 +873,16 @@ fn future_of_potions_pool(
 /// C# `TheFutureOfPotions.Trade(potion)`: discard it, then offer three cards
 /// of the matched rarity and type, every one UPGRADED.
 ///
-/// The offer goes on `pending_card_selects` rather than
-/// `pending_rewards`, because that is the only surface carrying per-option
-/// upgrade flags — a `CardReward` is a bare id list and would hand the player
-/// an unupgraded card. The run loop moves it into `card_reward_options` and
-/// fans it out as the usual pick-or-skip, so the decision the policy sees is
-/// unchanged in kind (`RewardsCmd.OfferCustom` is skippable in C# too).
+/// C# builds a real `CardReward` and offers it with `RewardsCmd.OfferCustom`
+/// (`TheFutureOfPotions.cs`, same in v0.111.0), so it is a card-REWARD screen
+/// — pick one or skip — not a choose-a-card select: queue it on
+/// `pending_rewards` as a pre-resolved [`CardReward::from_cards`] (which
+/// carries the per-option upgrade flags) like Colorful Philosophers. It used
+/// to go on `pending_card_selects` and surface as a `card_select` where C#
+/// shows `card_reward` (act23 probe: Ironclad seed 1017). The slate runs the
+/// card-reward hooks (`CreateForReward` → `TryModifyCardRewardOptions`, no
+/// `NoModifyHooks`; `IsCardReward` set by the constructor), then
+/// `AfterGenerated` upgrades every card.
 fn the_future_of_potions_trade(state: &mut RunState, slot: usize) -> EventOutcome {
     let Some(&kind) = state.potions.get(slot) else {
         return EventOutcome::finished("That slot was empty.");
@@ -902,14 +908,22 @@ fn the_future_of_potions_trade(state: &mut RunState, slot: usize) -> EventOutcom
         return EventOutcome::finished("The machine had nothing to give.");
     }
     let count = options.len();
+    let version = state.game_version;
+    let cards: Vec<sts2_core::cards::Card> = options
+        .into_iter()
+        .filter_map(|id| crate::cards::v0111::card_pod_for(id, false, version))
+        .collect();
+    let mut cards = state.offer_card_slate(cards, true);
+    for card in &mut cards {
+        if !card.upgraded {
+            card.upgrade_for(version);
+        }
+    }
     state
-        .pending_card_selects
-        .push(sts2_core::runstate::PendingCardSelect {
-            upgraded: vec![true; count],
-            enchantments: Vec::new(),
-            options,
-            post_add: Vec::new(),
-        });
+        .pending_rewards
+        .push(sts2_core::runstate::Reward::Card(
+            sts2_core::runstate::CardReward::from_cards(&cards),
+        ));
     EventOutcome::finished(format!(
         "Fed the machine a potion for {count} upgraded cards to choose from."
     ))
@@ -1784,6 +1798,11 @@ mod tests {
             rs.pending_deck_enchants[0].enchantment,
             EnchantmentId::Corrupted
         );
+        // Corrupted enchants Attacks only (Corrupted.cs:15-18).
+        assert_eq!(
+            rs.pending_deck_enchants[0].type_restriction,
+            Some(sts2_core::cards::CardType::Attack)
+        );
         run(&SYMBIOTE, "kill_fire", &mut rs);
         assert_eq!(rs.pending_deck_transforms.len(), 1);
         assert_eq!(
@@ -1814,11 +1833,15 @@ mod tests {
 
         run(&THE_FUTURE_OF_POTIONS, "trade_0", &mut rs);
         assert_eq!(rs.potions, vec![PotionKind::FirePotion], "slot 0 consumed");
-        assert!(rs.pending_rewards.is_empty(), "not a generic reward");
-        let select = rs.pending_card_selects.first().expect("an offer");
+        // A real card reward (C# `RewardsCmd.OfferCustom(CardReward)`), not
+        // a choose-a-card select.
+        assert!(rs.pending_card_selects.is_empty());
+        let Some(sts2_core::runstate::Reward::Card(select)) = rs.pending_rewards.first() else {
+            panic!("an offered card reward");
+        };
         assert!(!select.options.is_empty());
         assert!(
-            select.upgraded.iter().all(|&u| u),
+            select.upgraded.len() == select.options.len() && select.upgraded.iter().all(|&u| u),
             "C# upgrades every card in the offer"
         );
         for &id in &select.options {

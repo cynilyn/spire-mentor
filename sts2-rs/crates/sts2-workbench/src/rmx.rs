@@ -382,6 +382,15 @@ pub fn pending_deck_enchants(rm: &RunManager) -> u32 {
     u32::try_from(rm.run_state.pending_deck_enchants.len()).unwrap_or(u32::MAX)
 }
 
+/// `pending_enchant_optional`: the front deck-enchant pick is an "up to N"
+/// screen (Kifuda / Gnarled Hammer).
+pub fn pending_enchant_optional(rm: &RunManager) -> bool {
+    rm.run_state
+        .pending_deck_enchants
+        .first()
+        .is_some_and(|p| p.optional)
+}
+
 /// `transform_select_deck_indices()`.
 #[must_use]
 pub fn transform_select_deck_indices(rm: &RunManager) -> Vec<usize> {
@@ -498,6 +507,15 @@ pub fn max_potion_slots(rm: &RunManager) -> i32 {
 #[must_use]
 pub fn total_floor(rm: &RunManager) -> i32 {
     rm.run_state.total_floor
+}
+
+/// The floor number the game shows (`RunState.TotalFloor`, the top bar and
+/// the game-over "Floors Climbed"). The game counts every act's start room
+/// (Neow, the Ancients) as a floor; the engine's `total_floor` does not, so
+/// the two differ by the 1-based act number (48 vs 45 at the act-3 boss).
+#[must_use]
+pub fn game_floor(rm: &RunManager) -> i32 {
+    rm.run_state.total_floor + i32::from(rm.run_state.act_index)
 }
 
 /// Whether an in-combat `pending_choice` (Headbutt etc.) is open.

@@ -2894,3 +2894,37 @@ fn gh650_feral_beats_both_and_costs_no_rebound_stack() {
         "no redirect by Rebound means no stack spent"
     );
 }
+
+/// PaperCuts on a dealer that died mid-hit (Thorns in its own hit's
+/// `BeforeDamageReceived`) no longer fires: C# has already removed the dead
+/// dealer from `IterateHookListeners` when the hit's `AfterDamageGiven` runs
+/// (CreatureCmd.cs:285,412). Ironclad v0.111.0 full seed 2674.
+#[test]
+fn paper_cuts_skips_a_dead_dealer() {
+    let mut state = CombatState::default();
+    state.player.max_hp = 50;
+    state.player.current_hp = 50;
+    let player = state.init_player_creature();
+    let enemy = add_enemy(&mut state, 40);
+    push_enemy_power(&mut state, 1, enemy, PowerKind::PaperCuts, 2);
+    let ctx = sts2_core::hooks::DamageCtx {
+        dealer: CreatureRef::Enemy(enemy),
+        target: CreatureRef::Player,
+        props: ValueProps::MOVE,
+    };
+    let max_hp = |s: &CombatState| {
+        s.creatures
+            .iter()
+            .find(|c| c.id == player.0)
+            .map(|c| c.max_hp)
+            .expect("player creature")
+    };
+    sts2_core::hooks::dispatch_after_damage_given(&mut state, &ctx, 5, 5, false);
+    assert_eq!(max_hp(&state), 48, "a living dealer's PaperCuts fires");
+
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy.0) {
+        c.current_hp = 0;
+    }
+    sts2_core::hooks::dispatch_after_damage_given(&mut state, &ctx, 5, 5, false);
+    assert_eq!(max_hp(&state), 48, "a dead dealer's PaperCuts does not");
+}

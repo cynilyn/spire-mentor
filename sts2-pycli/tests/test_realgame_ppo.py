@@ -1527,12 +1527,23 @@ class TestFakeMerchant:
         decision = rp._build_event(_fake_merchant_state())
         wire = decision.obs["event_options"]
         assert len(wire) == len(native)
-        keys = rp._STRUCTURED_DELTA_KEYS
+        # The buy price is rolled per visit (``MerchantRelicEntry.CalcCost``:
+        # 50 x Shops.NextFloat(0.85, 1.15)), so the fixture's fixed 50g only
+        # matches the engine's roll to within that band.
+        keys = [k for k in rp._STRUCTURED_DELTA_KEYS if k != "gold_delta"]
         for action in decision.actions:
             idx = action["idx"]
             assert {k: wire[idx].get(k, 0) for k in keys} == {
                 k: native[idx].get(k, 0) for k in keys
             }, f"option {idx} ({native[idx]['option_id']})"
+            wire_gold, native_gold = (
+                wire[idx].get("gold_delta", 0),
+                native[idx].get("gold_delta", 0),
+            )
+            if wire_gold == 0:
+                assert native_gold == 0, f"option {idx}"
+            else:
+                assert -57 <= native_gold <= -43, f"option {idx}: {native_gold}"
 
     @pytest.mark.skipif(
         _TORCH_SKIP_REASON is not None, reason=_TORCH_SKIP_REASON or "torch unavailable"

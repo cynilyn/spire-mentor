@@ -345,6 +345,34 @@ fn play_uproar_deals_two_hits_single_target() {
 /// [DefendDefect (Skill), StrikeDefect (Attack, 6)]: Uproar deals 12, then
 /// auto-plays the Strike for 6 → enemy 100 - 12 - 6 = 82; the Strike leaves
 /// the draw pile while the Skill stays.
+/// A killing Uproar does not auto-play its pick: C# `CardCmd.AutoPlay`
+/// returns when combat `IsOverOrEnding` (CardCmd.cs:54). Defect act23 1012.
+#[test]
+fn play_uproar_lethal_leaves_the_pick_in_the_draw_pile() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::Uproar, 6, 0);
+    state.creatures[0].current_hp = 5;
+    let strike_uid = sts2_core::CardUid(NonZeroU32::new(2).expect("nz"));
+    state.cards.push(Card {
+        uid: strike_uid,
+        card_id: CardId::StrikeDefect,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        upgraded: false,
+        base_damage: 6,
+        base_block: 0,
+        ..Card::pod_defaults()
+    });
+    state.player.draw.push(strike_uid);
+    let f = lookup(CardId::Uproar).expect("registered");
+    let _ = f(&mut state, Some(euid));
+    assert!(
+        state.player.draw.contains(&strike_uid),
+        "no auto-play after the kill"
+    );
+}
+
 #[test]
 fn play_uproar_auto_plays_an_attack_from_draw_not_a_skill() {
     install_pool();
@@ -395,6 +423,86 @@ fn play_uproar_auto_plays_an_attack_from_draw_not_a_skill() {
     assert!(
         state.player.draw.contains(&skill_uid),
         "the Skill was not eligible and stays in the draw pile"
+    );
+}
+
+/// v0.111.0 Scrape discards a drawn unplayable Infection: its cost -1 is a
+/// negative base, which `GetWithModifiers(All)` returns unclamped
+/// (CardEnergyCost.cs:101-104), so `!= 0` holds. The 0-cost Claw stays.
+/// Defect QX197 (v0.111.0).
+#[test]
+fn scrape_v0111_discards_a_drawn_unplayable_status() {
+    install_pool();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        let (mut state, euid) = fresh_state(CardId::Scrape, 7, 0);
+        state.game_version = version;
+        let infection = sts2_core::CardUid(NonZeroU32::new(2).expect("nz"));
+        state.cards.push(Card {
+            uid: infection,
+            card_id: CardId::Infection,
+            cost: -1,
+            card_type: CardType::Status,
+            target_type: TargetType::None,
+            ..Card::pod_defaults()
+        });
+        let claw = sts2_core::CardUid(NonZeroU32::new(3).expect("nz"));
+        state.cards.push(Card {
+            uid: claw,
+            card_id: CardId::Claw,
+            cost: 0,
+            card_type: CardType::Attack,
+            target_type: TargetType::Enemy,
+            base_damage: 3,
+            ..Card::pod_defaults()
+        });
+        state.player.draw.extend([infection, claw]);
+        let f = lookup(CardId::Scrape).expect("registered");
+        assert_eq!(f(&mut state, Some(euid)), EffectResult::Resolved);
+        assert!(
+            state.player.discard.contains(&infection),
+            "{version:?}: Infection is discarded"
+        );
+        assert!(state.player.hand.contains(&claw), "{version:?}: Claw stays");
+    }
+}
+
+/// An auto-played card runs its `Enchantment.OnPlay` like a hand play
+/// (CardModel.cs:1930-1943): Uproar auto-playing a Sown(1) Strike gains 1
+/// energy, once. Defect QX189.
+#[test]
+fn uproar_auto_played_sown_strike_gains_energy() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::Uproar, 6, 0);
+    state.player.current_hp = 80;
+    let _ = state.init_player_creature();
+    state.player.energy = 1;
+    let strike_uid = sts2_core::CardUid(NonZeroU32::new(2).expect("nz"));
+    let mut strike = Card {
+        uid: strike_uid,
+        card_id: CardId::StrikeDefect,
+        cost: 1,
+        card_type: CardType::Attack,
+        target_type: TargetType::Enemy,
+        base_damage: 6,
+        ..Card::pod_defaults()
+    };
+    strike.set_enchantment(sts2_core::cards::EnchantmentId::Sown, 1);
+    state.cards.push(strike);
+    state.player.draw.push(strike_uid);
+    let f = lookup(CardId::Uproar).expect("registered");
+    assert_eq!(f(&mut state, Some(euid)), EffectResult::Resolved);
+    assert_eq!(state.creatures[0].current_hp, 82, "6x2 + the Strike's 6");
+    assert_eq!(
+        state.player.energy, 2,
+        "Sown grants its energy on the auto-play"
+    );
+    assert_ne!(
+        state.cards[1].combat_var(sts2_core::cards::VarKey::EnchantmentUsed),
+        0,
+        "Sown is spent"
     );
 }
 
@@ -1962,4 +2070,59 @@ fn creative_ai_generates_amount_power_cards_via_separate_shuffles() {
         2 * reads_1,
         "CreativeAi(2) does TWO separate whole-pool shuffles, not one"
     );
+}
+
+/// C# Compact is ONE batch `CardCmd.Transform(list)` (`Compact.cs:34-46`):
+/// originals are removed first with indices recorded AFTER earlier removals,
+/// then re-inserted at those indices (`CardCmd.cs:384-446`). Statuses at hand
+/// positions 0, 1, 4 therefore become Fuels at 0, 1, 2, not in place
+/// (Defect seed 1017, GH #1054 item 7).
+#[test]
+fn compact_batch_transform_clusters_fuels_like_csharp() {
+    fn push(state: &mut CombatState, id: CardId, ty: CardType) -> sts2_core::CardUid {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = sts2_core::CardUid::new(raw).expect("non-zero");
+        state.cards.push(Card {
+            uid,
+            card_id: id,
+            cost: 1,
+            card_type: ty,
+            target_type: TargetType::Self_,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+        uid
+    }
+    install_pool();
+    let f = lookup(CardId::Compact).expect("registered");
+    let (mut state, _) = fresh_state(CardId::Compact, 0, 6);
+    state.player.hand.clear();
+    push(&mut state, CardId::Wound, CardType::Status);
+    push(&mut state, CardId::Wound, CardType::Status);
+    let cap = push(&mut state, CardId::Capacitor, CardType::Power);
+    let ft = push(&mut state, CardId::FightThrough, CardType::Skill);
+    push(&mut state, CardId::Wound, CardType::Status);
+    let spin = push(&mut state, CardId::Zap, CardType::Skill);
+
+    let _ = f(&mut state, None);
+
+    let ids: Vec<CardId> = state
+        .player
+        .hand
+        .iter()
+        .map(|u| state.cards[u.0.get() as usize - 1].card_id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            CardId::Fuel,
+            CardId::Fuel,
+            CardId::Fuel,
+            CardId::Capacitor,
+            CardId::FightThrough,
+            CardId::Zap,
+        ],
+        "Fuels cluster at the C# batch-transform indices 0,0,2"
+    );
+    assert_eq!(&state.player.hand[3..], &[cap, ft, spin]);
 }

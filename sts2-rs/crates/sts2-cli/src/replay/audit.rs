@@ -205,6 +205,7 @@ pub fn audit_fight(record: &FightRecord) -> Vec<RedFlag> {
             continue;
         };
         match action {
+            Action::PlayCardAtAlly { .. } => play_card_decisions += 1,
             Action::PlayCard { hand_index, target } => {
                 play_card_decisions += 1;
                 if i == last_idx && !record.final_won && killed_self(dec, record) {

@@ -327,6 +327,7 @@ fn build_encounter_state(
         pending_enemy_exec_resume: None,
         combat_log: TurnEvents::default(),
         swipe_stolen: Vec::new(),
+        deck_link: None,
         escaped_creatures: 0,
         coop: sts2_core::coop::CoopState::default(),
         heist_recovered_gold: 0,
@@ -557,9 +558,17 @@ pub(crate) fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> 
     };
 
     match action_kind.as_str() {
-        "play" => Ok(Action::PlayCard {
-            hand_index: req_u8("card_index")?,
-            target: opt_u8("target_index")?,
+        // `ally_index` (co-op, GH #1017): an `AnyAlly` card at that teammate
+        // (`Action::PlayCardAtAlly`); `target_index` is then ignored.
+        "play" => Ok(match opt_u8("ally_index")? {
+            Some(ally) => Action::PlayCardAtAlly {
+                hand_index: req_u8("card_index")?,
+                ally,
+            },
+            None => Action::PlayCard {
+                hand_index: req_u8("card_index")?,
+                target: opt_u8("target_index")?,
+            },
         }),
         "end_turn" => Ok(Action::EndTurn),
         // GH #303: `"potion"` is the back-compat spelling of
@@ -591,9 +600,17 @@ pub(crate) fn parse_bridge_action(dict: &Bound<'_, PyDict>) -> PyResult<Action> 
                      diverge from the world that emitted it",
                 ));
             }
-            Ok(Action::DrinkPotion {
-                potion_slot: req_u8("slot")?,
-                target: opt_u8("target_index")?,
+            // `ally_index` (co-op, GH #1017): thrown at that teammate
+            // (`Action::DrinkPotionAtAlly`); `target_index` is then ignored.
+            Ok(match opt_u8("ally_index")? {
+                Some(ally) => Action::DrinkPotionAtAlly {
+                    potion_slot: req_u8("slot")?,
+                    ally,
+                },
+                None => Action::DrinkPotion {
+                    potion_slot: req_u8("slot")?,
+                    target: opt_u8("target_index")?,
+                },
             })
         }
         "choose" => {
@@ -859,6 +876,21 @@ impl PyCombatState {
         })
     }
 
+    /// Turn the joint co-op hand-off (`sts2_core::coop::CoopState::joint`,
+    /// GH #1046) on or off for this state: on, our `EndTurn` seats the
+    /// teammate, who then moves through [`Self::apply`] until their own
+    /// `EndTurn`, so one search can steer both seats. For experiments.
+    fn set_coop_joint(&mut self, on: bool) {
+        self.inner.coop.joint = on;
+    }
+
+    /// The teammate the joint hand-off has seated (`allies` index), else
+    /// `None`.
+    #[getter]
+    fn coop_joint_acting(&self) -> Option<u8> {
+        self.inner.coop.joint_acting
+    }
+
     /// Run the engine's structural invariant suite against the current
     /// (UNCLAMPED) internal state and return the first violation message, or
     /// `None` when all invariants hold.
@@ -882,6 +914,8 @@ impl PyCombatState {
     ///
     /// Shape contract (mirrors the `sts2-rl-agent` rollout bridge):
     ///   * `{"action": "play", "card_index": i, "target_index": j | None}`
+    ///   * `{"action": "play", "card_index": i, "ally_index": k}` — co-op: an
+    ///     `AnyAlly` card at teammate `allies[k]`
     ///   * `{"action": "end_turn"}`
     ///   * `{"action": "choose", "index": i}` — emitted iff a
     ///     `pending_choice` is open; in that case no other actions
@@ -1204,7 +1238,12 @@ impl PyCombatState {
     /// card's block: 89 of the 123 `$.player.block` records on the v14 sweep
     /// carried Vambrace, against an 11% base rate. Pass the relics the wire
     /// left at `None`; the ones it did disclose keep reality's value.
-    #[pyo3(signature = (carried, enemy_slots = None, carry_rng = true, carry_relic_counters = None, carry_power_counters = None))]
+    ///
+    /// `carry_turn_history`: carry the turn's exhaust count (Evil Eye) and
+    /// card block gains (Unmovable). Pass `false` when the wire disclosed them
+    /// (`cards_exhausted_this_turn` / `card_block_gains_this_turn`, GH #989):
+    /// then reality wins, as it does on `bound_card_played_this_turn`.
+    #[pyo3(signature = (carried, enemy_slots = None, carry_rng = true, carry_relic_counters = None, carry_power_counters = None, carry_turn_history = true))]
     fn transplant_hidden(
         &mut self,
         carried: &Self,
@@ -1212,6 +1251,7 @@ impl PyCombatState {
         carry_rng: bool,
         carry_relic_counters: Option<Vec<String>>,
         carry_power_counters: Option<Vec<String>>,
+        carry_turn_history: bool,
     ) -> PyResult<()> {
         let (fresh_draw, carried_draw) = (
             self.inner.player.draw.len(),
@@ -1451,7 +1491,9 @@ impl PyCombatState {
             dst.status_cards_drawn_this_turn = src.status_cards_drawn_this_turn;
             dst.doom_applied_by_player_this_turn = src.doom_applied_by_player_this_turn;
             dst.osty_attacks_this_turn = src.osty_attacks_this_turn;
-            dst.cards_exhausted_this_turn = src.cards_exhausted_this_turn;
+            if carry_turn_history {
+                dst.cards_exhausted_this_turn = src.cards_exhausted_this_turn;
+            }
             dst.hp_lost_this_turn = src.hp_lost_this_turn;
             dst.unblocked_damage_received_this_combat = src.unblocked_damage_received_this_combat;
             dst.energy_spent_this_turn = src.energy_spent_this_turn;
@@ -1477,8 +1519,10 @@ impl PyCombatState {
             dst.joss_paper_ethereal_count = src.joss_paper_ethereal_count;
             dst.block_zero_at_turn_end = src.block_zero_at_turn_end;
             dst.block_before_late_turn_end = src.block_before_late_turn_end;
-            dst.unmovable_card_block_plays
-                .clone_from(&src.unmovable_card_block_plays);
+            if carry_turn_history {
+                dst.unmovable_card_block_plays
+                    .clone_from(&src.unmovable_card_block_plays);
+            }
             // The HistoryCourse slots, with the uid component dropped — the
             // reconstruction reallocated every CardUid, and
             // `listener_history_course` already falls back to
@@ -1564,10 +1608,10 @@ impl PyCombatState {
                         // reconstructed card's `base_damage` already carries
                         // the growth and re-injecting the var double-counts —
                         // MCTS planned 37 where the game dealt 23 (v34wr seed
-                        // 1020 act-1 boss, round-4 agent 2). The SAME var on
-                        // any other card is Momentum's stash, which C# keeps
-                        // in the enchantment model (never on the wire), so
-                        // that carry must stay.
+                        // 1020 act-1 boss, round-4 agent 2). Momentum's stash
+                        // (`MomentumDamage`, GH #1021) lives in C#'s
+                        // enchantment model (never on the wire), so it is
+                        // carried on every card, Rampage included.
                         .filter(|(k, _)| {
                             !(*k == VarKey::RampageDamage
                                 && dst.card_id == sts2_core::cards::CardId::Rampage)
@@ -2261,6 +2305,47 @@ fn non_removable_cards() -> Vec<String> {
         .collect()
 }
 
+/// Every Curse a removal screen can offer, as canonical UPPER_SNAKE names.
+///
+/// The Curse-typed specs (`random_curse_card`'s pool) filtered by the same
+/// spec-level removability rule as [`non_removable_cards`], so Ascender's
+/// Bane, Curse of the Bell and the other Eternal curses are left out. The
+/// training curriculum for GH #977 draws from it: a curse the policy cannot
+/// remove teaches it nothing about removal.
+#[pyfunction]
+fn removable_curse_cards() -> Vec<String> {
+    use sts2_content::cards::spec_index::{card_is_removable_csharp, STATUS_SPECS};
+    STATUS_SPECS
+        .iter()
+        .map(|factory| factory())
+        .filter(|spec| spec.card_type == sts2_core::cards::CardType::Curse)
+        .filter(|spec| card_is_removable_csharp(spec.id))
+        .map(|spec| spec.id.to_python_name().to_string())
+        .collect()
+}
+
+/// Every card's spec-level `(name, type, rarity)`, as canonical UPPER_SNAKE
+/// names (`("INJURY", "CURSE", "CURSE")`).
+///
+/// The PPO `card_kind` encoder feature reads it to give every card token its
+/// type and rarity, so cards the policy rarely sees (most curses) share an
+/// embedding with the ones it does (GH #977). One list per process: the
+/// per-id lookup is a linear scan. Ids with no spec are left out.
+#[pyfunction]
+fn card_kinds() -> Vec<(String, String, String)> {
+    sts2_core::cards::CardId::all()
+        .iter()
+        .filter_map(|&c| sts2_content::cards::spec_index::spec_for_card_id(c))
+        .map(|spec| {
+            (
+                spec.id.to_python_name().to_string(),
+                format!("{:?}", spec.card_type).to_uppercase(),
+                format!("{:?}", spec.rarity).to_uppercase(),
+            )
+        })
+        .collect()
+}
+
 /// Enchantments that make ANY card non-removable, as canonical UPPER_SNAKE
 /// wire names.
 ///
@@ -2481,8 +2566,9 @@ impl PyCombatState {
 /// `chooser(ally, choice, actions)` sees the open choice as `pending_choice()`
 /// shows it and the legal `choose` actions, and returns an index into them, a
 /// `choose` action dict (any selection the choice allows), or `None` for the
-/// engine's own pick. An exception the chooser raises leaves that pick to the
-/// engine and is re-raised once `body` is done.
+/// engine's own pick. `ally` is -1 when a teammate's card makes us choose
+/// ([`sts2_core::coop::US_CHOOSING`]). An exception the chooser raises leaves
+/// that pick to the engine and is re-raised once `body` is done.
 fn with_py_seat_chooser(chooser: Option<Py<PyAny>>, body: impl FnOnce()) -> PyResult<()> {
     let Some(chooser) = chooser else {
         body();
@@ -2509,7 +2595,12 @@ fn with_py_seat_chooser(chooser: Option<Py<PyAny>>, body: impl FnOnce()) -> PyRe
                         .map(sts2_wire::emit::combat_action_to_value)
                         .collect(),
                 );
-                let args = (ally, value_to_py(py, &choice)?, value_to_py(py, &legal)?);
+                let who = if ally == sts2_core::coop::US_CHOOSING {
+                    -1
+                } else {
+                    i64::try_from(ally).unwrap_or(-1)
+                };
+                let args = (who, value_to_py(py, &choice)?, value_to_py(py, &legal)?);
                 let answer = chooser.call1(py, args)?;
                 let answer = answer.bind(py);
                 if answer.is_none() {
@@ -2932,6 +3023,73 @@ fn search_playout_value(state: &PyCombatState) -> f32 {
     let s = state.inner_ref();
     let (cfg, leaf) = deployed_value_config(s.player.character);
     sts2_mcts::playout_return(s, &cfg, &leaf)
+}
+
+/// The human-agreement probe of GH #1022 phase 3
+/// (`ppo.bc_human.tie_agree`): the deployed pilot's search on `state` in a
+/// `tier` room (`"common"`, `"elite"` or `"boss"`;
+/// [`sts2_runai::policy::pilot_search`]), then its pick re-made under every
+/// rule set in `arms` (`TieRules::parse` strings, e.g. `"none"`,
+/// `"block+free"`) over that same tree. Moves come back as
+/// [`sts2_runai::tie_probe::move_key`]s, the human's `human` action dict
+/// too, so a human who played the other copy of a card agrees.
+///
+/// Returns `{"legal": n, "pick": {"key", "rule", "band"}, "arms": [{"key",
+/// "rule"}, ...], "human": key or None}`.
+#[pyfunction]
+#[pyo3(signature = (state, tier, sims, seed, arms, human = None))]
+fn tie_rule_picks<'py>(
+    py: Python<'py>,
+    state: &PyCombatState,
+    tier: &str,
+    sims: u32,
+    seed: u64,
+    arms: Vec<String>,
+    human: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    use sts2_runai::policy::{pilot_search, BudgetTier};
+    use sts2_runai::tie_probe::move_key;
+    let s = state.inner_ref();
+    let tier = match tier {
+        "common" => BudgetTier::Common,
+        "elite" => BudgetTier::Elite,
+        "boss" => BudgetTier::Boss,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "tie_rule_picks: tier {other:?} is not common, elite or boss"
+            )))
+        }
+    };
+    let rules = arms
+        .iter()
+        .map(|a| sts2_mcts::TieRules::parse(a).map_err(pyo3::exceptions::PyValueError::new_err))
+        .collect::<PyResult<Vec<_>>>()?;
+    let human = human.map(parse_bridge_action).transpose()?;
+    let searched = |e: sts2_mcts::SearchError| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("tie_rule_picks: {e:?}"))
+    };
+    let mut m = pilot_search(s, tier, sims, seed);
+    m.try_search_n(sims).map_err(searched)?;
+    let pick = m.explain_root_pick().map_err(searched)?;
+    let mut arm_rows = Vec::with_capacity(rules.len());
+    for r in rules {
+        let p = m.explain_root_pick_with(r).map_err(searched)?;
+        arm_rows.push(serde_json::json!({
+            "key": move_key(s, &p.action),
+            "rule": p.rule.as_str(),
+        }));
+    }
+    let out = serde_json::json!({
+        "legal": sts2_core::legal_actions(s).len(),
+        "pick": {
+            "key": move_key(s, &pick.action),
+            "rule": pick.rule.as_str(),
+            "band": pick.band.len(),
+        },
+        "arms": arm_rows,
+        "human": human.map(|a| move_key(s, &a)),
+    });
+    value_to_pydict(py, &out)
 }
 
 /// Run `run` over `jobs` once per character (`player.character`): each group
@@ -4226,6 +4384,8 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resolve_potion_swap_flag, m)?)?;
     m.add_function(wrap_pyfunction!(potion_swap_is_rule_side, m)?)?;
     m.add_function(wrap_pyfunction!(non_removable_cards, m)?)?;
+    m.add_function(wrap_pyfunction!(removable_curse_cards, m)?)?;
+    m.add_function(wrap_pyfunction!(card_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(eternal_granting_enchantments, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(build_git, m)?)?;
@@ -4237,6 +4397,7 @@ pub fn sts2_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encounter_acts, m)?)?;
     m.add_function(wrap_pyfunction!(monster_species, m)?)?;
     m.add_function(wrap_pyfunction!(search_playout_value, m)?)?;
+    m.add_function(wrap_pyfunction!(tie_rule_picks, m)?)?;
     m.add_function(wrap_pyfunction!(values_many, m)?)?;
     m.add_function(wrap_pyfunction!(playout, m)?)?;
     m.add_class::<PyLearnedPlayout>()?;
@@ -5154,6 +5315,30 @@ mod tests {
         d
     }
 
+    #[test]
+    fn transplant_hidden_lets_a_disclosed_turn_history_win() {
+        // GH #989: the wire now carries the turn's exhausts and card block
+        // gains. When it did, the reconstruction's values are reality's and
+        // the carried mirror's must not overwrite them; when it did not, the
+        // carry still fills them in.
+        Python::with_gil(|py| {
+            let mut carried = mirror_fixture(py);
+            carried.inner.combat_log.cards_exhausted_this_turn = 2;
+            carried.inner.combat_log.unmovable_card_block_plays.push(1);
+            for (carry, exhausted, gains) in [(true, 2, 1), (false, 0, 0)] {
+                let mut fresh = mirror_fixture(py);
+                fresh
+                    .transplant_hidden(&carried, None, true, None, None, carry)
+                    .expect("shapes agree");
+                assert_eq!(fresh.inner.combat_log.cards_exhausted_this_turn, exhausted);
+                assert_eq!(
+                    fresh.inner.combat_log.unmovable_card_block_plays.len(),
+                    gains
+                );
+            }
+        });
+    }
+
     /// `transplant_hidden` carries exactly the unobservable fields —
     /// A relic's `counter` is also where a one-shot per-combat latch lives,
     /// GH #370, the rest of the class. Each of these has a live content
@@ -5168,7 +5353,7 @@ mod tests {
 
             let mut fresh = mirror_fixture(py);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5229,7 +5414,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             with_chains_of_binding(&mut fresh, 1);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh
@@ -5268,7 +5453,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             fresh.inner.player.card_plays_started_this_turn = 0;
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.player.card_plays_started_this_turn, 3,
@@ -5303,7 +5488,7 @@ mod tests {
             fresh.inner.player.card_plays_started_this_turn = 1;
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.player.card_plays_started_this_turn, 1,
@@ -5338,7 +5523,7 @@ mod tests {
             carried.inner.player.vigor_latch_card = Some(carried.inner.player.play[1]);
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5362,7 +5547,7 @@ mod tests {
             // The play pile emptied between decisions (the play resolved).
             let mut fresh = mirror_fixture(py);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5388,7 +5573,7 @@ mod tests {
             fresh.inner.player.play.swap(0, 1);
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5421,7 +5606,14 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             push(&mut fresh, 0);
             fresh
-                .transplant_hidden(&carried, None, true, Some(vec!["VAMBRACE".into()]), None)
+                .transplant_hidden(
+                    &carried,
+                    None,
+                    true,
+                    Some(vec!["VAMBRACE".into()]),
+                    None,
+                    true,
+                )
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.relics[0].counter, 1,
@@ -5432,7 +5624,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             push(&mut fresh, 0);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
             assert_eq!(
                 fresh.inner.relics[0].counter, 0,
@@ -5467,7 +5659,7 @@ mod tests {
                 .as_ref()
                 .map(sts2_core::MonsterAi::current_state_id);
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             let ai = fresh.inner.creatures[0]
@@ -5497,7 +5689,14 @@ mod tests {
             let carried = mirror_fixture(py);
             let mut fresh = mirror_fixture(py);
             let err = fresh
-                .transplant_hidden(&carried, None, true, Some(vec!["VAMBRAAACE".into()]), None)
+                .transplant_hidden(
+                    &carried,
+                    None,
+                    true,
+                    Some(vec!["VAMBRAAACE".into()]),
+                    None,
+                    true,
+                )
                 .expect_err("an unknown relic must be refused");
             assert!(
                 err.to_string().contains("VAMBRAAACE"),
@@ -5509,9 +5708,8 @@ mod tests {
     /// Rampage's escalation is wire-owned (C# grows `Damage.BaseValue`
     /// itself, so the reconstructed card's `base_damage` already includes
     /// it) and must NOT be re-injected — the double-count had MCTS planning
-    /// 37 damage where the game dealt 23 (v34wr seed 1020). The same var on
-    /// any OTHER card is Momentum's stash, which never crosses the wire and
-    /// must keep being carried.
+    /// 37 damage where the game dealt 23 (v34wr seed 1020). Momentum's stash
+    /// never crosses the wire and must keep being carried, on a Rampage too.
     #[test]
     fn transplant_hidden_skips_rampage_var_on_rampage_only() {
         use sts2_core::cards::{CardId, VarKey};
@@ -5523,7 +5721,8 @@ mod tests {
             let midx = momentum_uid.0.get() as usize - 1;
             carried.inner.cards[ridx].card_id = CardId::Rampage;
             carried.inner.cards[ridx].set_combat_var(VarKey::RampageDamage, 14);
-            carried.inner.cards[midx].set_combat_var(VarKey::RampageDamage, 6);
+            carried.inner.cards[ridx].set_combat_var(VarKey::MomentumDamage, 4);
+            carried.inner.cards[midx].set_combat_var(VarKey::MomentumDamage, 6);
 
             let mut fresh = mirror_fixture(py);
             let f_rampage = fresh.inner.player.draw[0].0.get() as usize - 1;
@@ -5531,7 +5730,7 @@ mod tests {
             fresh.inner.cards[f_rampage].card_id = CardId::Rampage;
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             assert_eq!(
@@ -5541,10 +5740,15 @@ mod tests {
                  carrying the var double-counts"
             );
             assert_eq!(
-                fresh.inner.cards[f_momentum].combat_var(VarKey::RampageDamage),
+                fresh.inner.cards[f_momentum].combat_var(VarKey::MomentumDamage),
                 6,
                 "Momentum's stash on a non-Rampage card never crosses the \
                  wire and must survive the rebuild"
+            );
+            assert_eq!(
+                fresh.inner.cards[f_rampage].combat_var(VarKey::MomentumDamage),
+                4,
+                "a Momentum Rampage keeps its Momentum stash (GH #1021)"
             );
         });
     }
@@ -5577,7 +5781,7 @@ mod tests {
             );
 
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
 
             let k = fresh.draw_pile_knowledge(py).unwrap();
@@ -5625,7 +5829,7 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             fresh.inner.player.draw.pop();
             fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("a shorter draw pile must not fail the transplant");
 
             assert!(
@@ -5650,7 +5854,7 @@ mod tests {
             fresh.inner.enemy_uids.pop();
 
             let err = fresh
-                .transplant_hidden(&carried, None, true, None, None)
+                .transplant_hidden(&carried, None, true, None, None, true)
                 .expect_err("an unaligned roster must be refused");
             assert!(
                 err.to_string().contains("enemy roster disagrees"),
@@ -5669,12 +5873,12 @@ mod tests {
             let mut fresh = mirror_fixture(py);
             fresh.inner.enemy_uids.pop();
             fresh
-                .transplant_hidden(&carried, Some(vec![]), true, None, None)
+                .transplant_hidden(&carried, Some(vec![]), true, None, None, true)
                 .expect("an explicit alignment must be honored");
 
             let mut newly_spawned = mirror_fixture(py);
             newly_spawned
-                .transplant_hidden(&carried, Some(vec![None]), true, None, None)
+                .transplant_hidden(&carried, Some(vec![None]), true, None, None, true)
                 .expect("a `None` slot is a newly-spawned enemy, not an error");
         });
     }
