@@ -64,21 +64,24 @@ import {
 } from "./gameVersion";
 import { bestAction, toggleHintsLatch } from "./hint";
 import { createActionGate } from "./actionGate";
-import { HintsProvider, useHints } from "./hints/HintsContext";
+import { HintsProvider } from "./hints/HintsContext";
+import { useHints } from "./hints/useHints";
 import { isStaticMode, onRestoreProgress } from "./transport";
 import { bugReportEndpointAvailable } from "./bugreport";
 import OfflineButton from "./components/OfflineButton";
 import { BenchButton } from "./components/BenchButton";
 import TopBar from "./topbar/TopBar";
 import { buildCommands } from "./topbar/commands";
-import { usePaletteChord } from "./topbar/CommandPalette";
+import { usePaletteChord } from "./topbar/paletteEntries";
 import TreasureReveal from "./components/TreasureReveal";
 import { debugSettingsLine, debugStepLine } from "./debugLog";
 import { shouldRerunRegret } from "./regretCache";
 import { panelVisible, reasoningView, type LastSearch } from "./searchPanel";
 import { liveSeekTargetForDecision } from "./liveSeek";
-import { EffectsProvider, useEffectsMode } from "./effects/EffectsContext";
-import { SoundProvider, useSound, type SoundValue } from "./sound/SoundContext";
+import { EffectsProvider } from "./effects/EffectsContext";
+import { useEffectsMode } from "./effects/useEffectsMode";
+import { SoundProvider } from "./sound/SoundContext";
+import { useSound, type SoundValue } from "./sound/useSound";
 import SoundBridge from "./sound/SoundBridge";
 import { cueForUi, type UiCueKind } from "./sound/runCues";
 import { actionCues, cardPlayCues } from "./sound/appSoundCues";
@@ -722,7 +725,6 @@ function AppBody() {
       .catch(() => {}) // no active run → stay on the play view's Start screen
       .finally(() => { offProgress(); if (!cancelled) setRestoreProgress(null); });
     return () => { cancelled = true; offProgress(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Tick the play-to-end step timer while a run is active. The loop can't update
   // state mid-await, so the current step's elapsed seconds come from an interval

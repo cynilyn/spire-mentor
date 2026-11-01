@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { LiveNode, LiveTimeline } from "../api";
 import { hasReadableRow } from "../combatlog";
 import { endedSelection } from "../textSelection";
-import { DetailToggle, StepEvents, TurnHeader, turnChips, useDetailMode } from "./turnLedger";
+import { DetailToggle, StepEvents, TurnHeader } from "./turnLedger";
+import { turnChips, useDetailMode } from "./turnLedgerState";
 
 /**
  * The live-run event log, rendered from the server's branch tree.
