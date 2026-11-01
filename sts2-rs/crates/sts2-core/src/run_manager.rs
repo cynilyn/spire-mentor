@@ -691,11 +691,12 @@ pub struct RunManager {
     /// it and returns to [`Phase::Event`] for the event's next page instead
     /// of the map (GH #817).
     resume_event_after_rewards: bool,
-    /// Set when a shop relic purchase offered rewards from its `AfterObtained`
-    /// (v0.111.0: Orrery's card rewards). Once the CardReward phase drains,
-    /// [`Self::advance_after_card_reward`] consumes it and returns to
-    /// [`Phase::Shop`] instead of the map.
-    resume_shop_after_rewards: bool,
+    /// Set (to the bought slot) when a shop relic purchase offered rewards from
+    /// its `AfterObtained` (v0.111.0: Orrery's card rewards). Once the
+    /// CardReward phase drains, [`Self::advance_after_card_reward`] consumes it,
+    /// runs the slot's TheCourier restock and returns to [`Phase::Shop`]
+    /// instead of the map.
+    resume_shop_after_rewards: Option<crate::shop::ShopSlot>,
     /// `true` while the current `card_reward_options` offering is a
     /// *choose screen* drained from
     /// [`crate::runstate::RunState::pending_card_selects`] (C#
@@ -974,7 +975,7 @@ impl RunManager {
             pending_boss_act_advance: false,
             ancient_heal_done: false,
             resume_event_after_rewards: false,
-            resume_shop_after_rewards: false,
+            resume_shop_after_rewards: None,
             card_offer_choose_screen: false,
             pending_choose_screen_post_add: Vec::new(),
             shop_inventory: None,
@@ -3390,9 +3391,12 @@ impl RunManager {
         // (which `return`s above) nor the already-passing chained-RELIC defer
         // case (A5P41 SmallCapsule).
         self.drain_post_pick_deck_cards_if_settled();
-        // Rewards a shop relic purchase offered have drained: back to the
-        // merchant (see `do_shop_buy_relic`).
-        if std::mem::take(&mut self.resume_shop_after_rewards) {
+        // Rewards a shop relic purchase offered have drained: run the bought
+        // slot's TheCourier restock (C# `RestockAfterPurchase` follows the
+        // whole `RewardsSet.Offer`, and its `RollRarity` reads `Rewards` after
+        // every card roll) and go back to the merchant (see `do_shop_buy_relic`).
+        if let Some(slot) = self.resume_shop_after_rewards.take() {
+            self.restock_slot_if_courier(slot);
             self.phase = Phase::Shop;
             return;
         }
@@ -3681,8 +3685,12 @@ impl RunManager {
                 // Cauldron's 5 potions) are rolled and offered in the shop,
                 // BEFORE `RestockAfterPurchase` (whose `RelicFactory.RollRarity`
                 // also reads `Rewards`). A card offering opens CardReward and
-                // returns to the shop once drained; deck selects (Kifuda,
-                // DollysMirror, …) preempt the action surface on their own.
+                // returns to the shop once drained, deferring the restock until
+                // then (the engine rolls each card reward as it surfaces); deck
+                // selects (Kifuda, DollysMirror, …) preempt the action surface on
+                // their own. Version-gated only: non-interactive v0.111.0 hosts
+                // get the reward screens too.
+                let slot = crate::shop::ShopSlot::Relic(idx);
                 if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
                     let opened_card_reward = self.drain_pending_rewards();
                     if self.run_state.direct_event_relic_grant {
@@ -3692,12 +3700,13 @@ impl RunManager {
                         || !self.run_state.relic_rewards.is_empty()
                         || !self.run_state.pending_card_selects.is_empty()
                     {
-                        self.resume_shop_after_rewards = true;
+                        self.resume_shop_after_rewards = Some(slot);
                         self.phase = Phase::CardReward;
                         self.advance_after_card_reward();
+                        return ActionResult::Advanced;
                     }
                 }
-                self.restock_slot_if_courier(crate::shop::ShopSlot::Relic(idx));
+                self.restock_slot_if_courier(slot);
                 ActionResult::Advanced
             }
             other => ActionResult::ShopPurchaseFailed(other),

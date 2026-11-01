@@ -39,7 +39,17 @@ fn buy(rm: &mut RunManager) {
         rm.take_action(RunAction::ShopBuyRelic { idx: 0 }),
         ActionResult::Advanced
     );
-    assert_eq!(rm.run_state.gold, 999 - PRICE);
+    // TheCourier's discount lowers the debit; nothing else does here.
+    assert!(rm.run_state.gold >= 999 - PRICE && rm.run_state.gold < 999);
+}
+
+/// The same shop on a non-interactive host (runai / MCTS / parity sweeps).
+fn non_interactive(mut rm: RunManager) -> RunManager {
+    rm.run_state.interactive_card_removal = false;
+    rm.run_state.interactive_card_upgrade = false;
+    rm.run_state.interactive_card_transform = false;
+    rm.run_state.direct_event_relic_grant = false;
+    rm
 }
 
 fn enchanted(rm: &RunManager, ench: EnchantmentId) -> usize {
@@ -244,4 +254,131 @@ fn v0107_shop_purchase_is_unchanged() {
     buy(&mut rm);
     assert_eq!(rm.phase(), Phase::Shop);
     assert_eq!(rm.run_state.pending_rewards.len(), 5);
+}
+
+/// TheCourier restocks the bought slot only after all five Orrery card rewards
+/// have rolled (C# `RewardsSet.Offer` runs inside `OnTryPurchase`, then
+/// `RestockAfterPurchase` reads `Rewards` in `RelicFactory.RollRarity`). The same
+/// purchase without the Courier reads the identical card rolls; only the last
+/// pick, which returns to the shop, adds the restock reads.
+#[test]
+fn courier_restock_follows_the_orrery_card_rewards() {
+    let mut plain = shop_with(GameVersion::V0_111_0, RelicId::Orrery);
+    let mut courier = shop_with(GameVersion::V0_111_0, RelicId::Orrery);
+    courier.run_state.relics.push(RelicId::TheCourier);
+    let sold_out = |rm: &RunManager| {
+        !sts2_core::shop::is_shop_entry_available(rm.shop_inventory().unwrap().relics[0].price)
+    };
+    buy(&mut plain);
+    buy(&mut courier);
+    for n in 0..5 {
+        assert_eq!(courier.phase(), Phase::CardReward, "card reward {n}");
+        assert!(
+            sold_out(&courier),
+            "no restock while rewards are open ({n})"
+        );
+        assert_eq!(courier.card_reward_options(), plain.card_reward_options());
+        assert_eq!(
+            courier.run_state.rng.rewards.counter(),
+            plain.run_state.rng.rewards.counter(),
+            "card reward {n} rolled before any restock read"
+        );
+        for rm in [&mut plain, &mut courier] {
+            assert_eq!(
+                rm.take_action(RunAction::PickCardReward { idx: None }),
+                ActionResult::Advanced
+            );
+        }
+    }
+    assert_eq!(courier.phase(), Phase::Shop);
+    assert!(sold_out(&plain));
+    assert!(
+        !sold_out(&courier),
+        "the Courier restocked the slot on return"
+    );
+    assert!(courier.run_state.rng.rewards.counter() > plain.run_state.rng.rewards.counter());
+}
+
+/// The shop drain and RoyalStamp's Niche shuffle are gated on the game version
+/// only, so a non-interactive v0.111.0 host (runai / MCTS / parity) changes too:
+/// Orrery's card rewards open in the shop and RoyalStamp reads Niche. The deck
+/// selects stay on their non-interactive arms (Kifuda auto-enchants 3 cards,
+/// DollysMirror duplicates a random card).
+#[test]
+fn non_interactive_v0111_host_also_gets_the_shop_rewards() {
+    let mut rm = non_interactive(shop_with(GameVersion::V0_111_0, RelicId::Orrery));
+    buy(&mut rm);
+    assert_eq!(rm.phase(), Phase::CardReward);
+    for _ in 0..5 {
+        assert_eq!(
+            rm.take_action(RunAction::PickCardReward { idx: None }),
+            ActionResult::Advanced
+        );
+    }
+    assert_eq!(rm.phase(), Phase::Shop);
+
+    let mut rm = non_interactive(shop_with(GameVersion::V0_111_0, RelicId::RoyalStamp));
+    let niche_before = rm.run_state.rng.niche.counter();
+    buy(&mut rm);
+    assert!(rm.run_state.rng.niche.counter() > niche_before);
+    assert_eq!(enchanted(&rm, EnchantmentId::RoyallyApproved), 1);
+    assert_eq!(rm.phase(), Phase::Shop);
+
+    let mut rm = non_interactive(shop_with(GameVersion::V0_111_0, RelicId::Kifuda));
+    buy(&mut rm);
+    assert!(rm.run_state.pending_deck_enchants.is_empty());
+    assert_eq!(enchanted(&rm, EnchantmentId::Adroit), 3);
+
+    let mut rm = non_interactive(shop_with(GameVersion::V0_111_0, RelicId::DollysMirror));
+    let deck = rm.run_state.master_deck.len();
+    buy(&mut rm);
+    assert!(rm.run_state.pending_card_grants.is_empty());
+    assert_eq!(rm.run_state.master_deck.len(), deck + 1);
+}
+
+/// Lost Coffer and Massive Scroll also queue `AfterObtained` reward sentinels,
+/// but both are `RelicRarity.Ancient` (`LostCoffer.cs:12`, `MassiveScroll.cs:17`):
+/// the merchant stocks from the Common / Uncommon / Rare / Shop grab bags, so
+/// they never reach a shop.
+#[test]
+fn lost_coffer_and_massive_scroll_are_never_shop_stock() {
+    let ancient = [RelicId::LostCoffer, RelicId::MassiveScroll];
+    for character in [
+        CharacterId::Ironclad,
+        CharacterId::Silent,
+        CharacterId::Defect,
+        CharacterId::Regent,
+        CharacterId::Necrobinder,
+    ] {
+        let buckets = sts2_content::relics::grab_bag::grab_bag_buckets(character);
+        for relics in buckets.values() {
+            assert!(
+                !relics.iter().any(|r| ancient.contains(r)),
+                "{character:?} grab bag stocks an Ancient reward relic"
+            );
+        }
+    }
+    for relics in sts2_content::relics::grab_bag::shared_grab_bag_buckets().values() {
+        assert!(!relics.iter().any(|r| ancient.contains(r)));
+    }
+}
+
+/// Were one stocked anyway (a hand-built inventory), the generic shop drain would
+/// surface Lost Coffer's card reward and potion and return to the shop.
+#[test]
+fn a_stocked_lost_coffer_would_open_its_rewards_in_the_shop() {
+    let mut rm = shop_with(GameVersion::V0_111_0, RelicId::LostCoffer);
+    buy(&mut rm);
+    assert_eq!(rm.phase(), Phase::CardReward);
+    assert_eq!(
+        rm.run_state.potions.len(),
+        1,
+        "the potion reward is claimed"
+    );
+    assert_eq!(
+        rm.take_action(RunAction::PickCardReward { idx: None }),
+        ActionResult::Advanced
+    );
+    assert_eq!(rm.phase(), Phase::Shop);
+    assert!(rm.run_state.pending_rewards.is_empty());
 }

@@ -467,15 +467,18 @@ impl PyRunManager {
     /// confirmed (C# `prefs.MinSelect`): `0` for an optional 0..=N select
     /// (Kifuda / GnarledHammer on v0.111.0), where `enchant_deck_card` at
     /// `idx == len(enchant_select_deck_indices())` confirms early; otherwise
-    /// `pending_deck_enchants`.
+    /// the leading run of mandatory picks (a later optional select is its own
+    /// screen).
     #[getter]
     fn pending_deck_enchant_min(&self) -> u32 {
-        let queue = &self.inner.run_state.pending_deck_enchants;
-        if queue.first().is_some_and(|e| e.optional) {
-            0
-        } else {
-            u32::try_from(queue.len()).unwrap_or(u32::MAX)
-        }
+        let mandatory = self
+            .inner
+            .run_state
+            .pending_deck_enchants
+            .iter()
+            .take_while(|e| !e.optional)
+            .count();
+        u32::try_from(mandatory).unwrap_or(u32::MAX)
     }
 
     /// WHICH enchantment the front queued deck-enchant pick will stamp
