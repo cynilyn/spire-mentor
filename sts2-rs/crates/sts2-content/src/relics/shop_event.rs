@@ -3181,6 +3181,41 @@ pub(crate) fn try_queue_interactive_enchant(
                 amount,
                 type_restriction,
                 secondary_type,
+                optional: false,
+            });
+    }
+    true
+}
+
+/// v0.111.0 interactive arm for the optional 0..=`max_count` enchant selects
+/// (Kifuda, GnarledHammer: `CardSelectorPrefs(EnchantSelectionPrompt, 0, N)`).
+/// C# `CardSelectCmd.FromDeckForEnchantment` auto-takes only when
+/// `cards.Count <= MinSelect` — an empty pool here — so the selector opens for
+/// any non-empty pool and the player confirms 0..=N cards. Queues one optional
+/// pick per card the pool can fill. Returns `false` (caller falls back) when not
+/// interactive, before v0.111.0, or when nothing is enchantable.
+fn try_queue_optional_interactive_enchant(
+    rs: &mut RunState,
+    ench: sts2_core::cards::EnchantmentId,
+    amount: i32,
+    max_count: usize,
+) -> bool {
+    if !rs.interactive_card_transform || rs.game_version < sts2_core::GameVersion::V0_111_0 {
+        return false;
+    }
+    let candidates = enchantable_candidate_card_ids(rs, ench);
+    if candidates.is_empty() {
+        return false;
+    }
+    let (type_restriction, secondary_type) = enchant_card_type_restriction(ench);
+    for _ in 0..max_count.min(candidates.len()) {
+        rs.pending_deck_enchants
+            .push(sts2_core::PendingDeckEnchant {
+                enchantment: ench,
+                amount,
+                type_restriction,
+                secondary_type,
+                optional: true,
             });
     }
     true
@@ -3199,9 +3234,14 @@ fn listener_gnarled_hammer(rs: &mut RunState) -> EffectResult {
         return EffectResult::NotImplemented;
     }
     // C# `GnarledHammer.AfterObtained` awaits an interactive
-    // `CardSelectCmd.FromDeckForEnchantment` — surface the deck
-    // card-select when the run is interactive.
-    if try_queue_interactive_enchant(
+    // `CardSelectCmd.FromDeckForEnchantment` (0..=3 cards) — surface the
+    // deck card-select when the run is interactive.
+    if try_queue_optional_interactive_enchant(
+        rs,
+        sts2_core::cards::EnchantmentId::Sharp,
+        GNARLED_HAMMER_SHARP,
+        GNARLED_HAMMER_CARDS,
+    ) || try_queue_interactive_enchant(
         rs,
         sts2_core::cards::EnchantmentId::Sharp,
         GNARLED_HAMMER_SHARP,
@@ -3247,9 +3287,14 @@ fn listener_kifuda(rs: &mut RunState) -> EffectResult {
         return EffectResult::NotImplemented;
     }
     // C# `Kifuda.AfterObtained` awaits an interactive
-    // `CardSelectCmd.FromDeckForEnchantment` — surface the deck
-    // card-select when the run is interactive.
-    if try_queue_interactive_enchant(
+    // `CardSelectCmd.FromDeckForEnchantment` (0..=3 cards) — surface the
+    // deck card-select when the run is interactive.
+    if try_queue_optional_interactive_enchant(
+        rs,
+        sts2_core::cards::EnchantmentId::Adroit,
+        KIFUDA_ADROIT,
+        KIFUDA_CARDS,
+    ) || try_queue_interactive_enchant(
         rs,
         sts2_core::cards::EnchantmentId::Adroit,
         KIFUDA_ADROIT,
@@ -3422,6 +3467,15 @@ fn beautiful_bracelet_v0111(rs: &mut RunState) {
 fn listener_royal_stamp(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::RoyalStamp) {
         return EffectResult::NotImplemented;
+    }
+    // v0.111.0 `RoyalStamp.AfterObtained` (`RoyalStamp.cs:33-37`) hands the
+    // select its pool through `UnstableShuffle(Rng.Niche)`;
+    // `FromDeckForEnchantment` re-sorts it into deck order, so only the Niche
+    // reads (one per card but the first) survive.
+    if rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        let mut pool =
+            enchantable_candidate_card_ids(rs, sts2_core::cards::EnchantmentId::RoyallyApproved);
+        rs.rng.niche.shuffle(&mut pool);
     }
     // C# `RoyalStamp.AfterObtained` awaits an interactive
     // `CardSelectCmd.FromDeckForEnchantment` (pick 1 of the enchantable
@@ -3706,6 +3760,35 @@ fn listener_driftwood_allow_reroll(rs: &mut RunState, allow: &mut bool) -> Effec
 fn listener_dollys_mirror(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::DollysMirror) {
         return EffectResult::NotImplemented;
+    }
+    // v0.111.0 interactive host: C# `DollysMirror.AfterObtained`
+    // (`DollysMirror.cs:16-24`) awaits `CardSelectCmd.FromDeckGeneric(prefs 1,
+    // Type != Quest)` — the player picks the card, nothing is rolled — and adds
+    // `CloneCard(card)` to the Deck. Surface it as a mandatory pick-1 grant over
+    // copies of the eligible deck cards; a single eligible card is auto-taken
+    // (`list.Count <= MinSelect`).
+    if rs.interactive_card_transform && rs.game_version >= sts2_core::GameVersion::V0_111_0 {
+        let options: Vec<sts2_core::Card> = rs
+            .master_deck
+            .iter()
+            .filter(|c| !c.is_quest())
+            .copied()
+            .collect();
+        match options.len() {
+            0 => {}
+            1 => rs.add_card_to_deck_with_hooks(
+                options[0],
+                sts2_core::relic_effects::AddSource::RelicGain,
+            ),
+            _ => rs
+                .pending_card_grants
+                .push(sts2_core::runstate::PendingCardGrant {
+                    options,
+                    pick: 1,
+                    min_pick: 1,
+                }),
+        }
+        return EffectResult::Resolved;
     }
     let _ = rs.duplicate_card_from_deck();
     EffectResult::Resolved

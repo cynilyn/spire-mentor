@@ -717,6 +717,7 @@ fn symbiote_approach(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: attack_only.then_some(CardType::Attack),
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Corrupted.")
     } else {

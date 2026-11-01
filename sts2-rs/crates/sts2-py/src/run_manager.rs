@@ -463,6 +463,21 @@ impl PyRunManager {
         u32::try_from(self.inner.run_state.pending_deck_enchants.len()).unwrap_or(u32::MAX)
     }
 
+    /// Picks the queued deck-enchant select still REQUIRES before it may be
+    /// confirmed (C# `prefs.MinSelect`): `0` for an optional 0..=N select
+    /// (Kifuda / GnarledHammer on v0.111.0), where `enchant_deck_card` at
+    /// `idx == len(enchant_select_deck_indices())` confirms early; otherwise
+    /// `pending_deck_enchants`.
+    #[getter]
+    fn pending_deck_enchant_min(&self) -> u32 {
+        let queue = &self.inner.run_state.pending_deck_enchants;
+        if queue.first().is_some_and(|e| e.optional) {
+            0
+        } else {
+            u32::try_from(queue.len()).unwrap_or(u32::MAX)
+        }
+    }
+
     /// WHICH enchantment the front queued deck-enchant pick will stamp
     /// (`"GOOPY"`, `"PERFECT_FIT"`, …), or `None` when nothing is queued.
     ///

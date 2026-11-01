@@ -691,6 +691,11 @@ pub struct RunManager {
     /// it and returns to [`Phase::Event`] for the event's next page instead
     /// of the map (GH #817).
     resume_event_after_rewards: bool,
+    /// Set when a shop relic purchase offered rewards from its `AfterObtained`
+    /// (v0.111.0: Orrery's card rewards). Once the CardReward phase drains,
+    /// [`Self::advance_after_card_reward`] consumes it and returns to
+    /// [`Phase::Shop`] instead of the map.
+    resume_shop_after_rewards: bool,
     /// `true` while the current `card_reward_options` offering is a
     /// *choose screen* drained from
     /// [`crate::runstate::RunState::pending_card_selects`] (C#
@@ -969,6 +974,7 @@ impl RunManager {
             pending_boss_act_advance: false,
             ancient_heal_done: false,
             resume_event_after_rewards: false,
+            resume_shop_after_rewards: false,
             card_offer_choose_screen: false,
             pending_choose_screen_post_add: Vec::new(),
             shop_inventory: None,
@@ -1203,6 +1209,14 @@ impl RunManager {
         Ok(())
     }
 
+    /// Open the merchant with `inventory` as stocked (no roll) — a test /
+    /// reconstruction surface like [`Self::debug_place_on_map`]. Never call it
+    /// on a recorded or parity-pinned run.
+    pub fn debug_open_shop(&mut self, inventory: crate::shop::ShopInventory) {
+        self.shop_inventory = Some(inventory);
+        self.phase = Phase::Shop;
+    }
+
     /// Drop the run into `combat` as it stands — the workbench's state-import
     /// combat lane (GH #708): a fight rebuilt from a live-game paste
     /// (`sts2_wire::state_from_json`) grafted onto the run the run lane
@@ -1292,11 +1306,18 @@ impl RunManager {
         }
         // Interactive deck enchant (Wood Carvings Snake → Slither). `idx`
         // indexes the eligible subset (C# `FromDeckForEnchantment` pool =
-        // cards `CanEnchant` accepts). Mandatory, no skip.
-        if !self.run_state.pending_deck_enchants.is_empty() {
-            return (0..self.enchant_eligible_deck_indices().len())
+        // cards `CanEnchant` accepts). Mandatory, no skip — except an optional
+        // 0..=N select (Kifuda / GnarledHammer, C# `MinSelect 0`), which
+        // `idx == len` confirms early with the picks made so far.
+        if let Some(front) = self.run_state.pending_deck_enchants.first() {
+            let len = self.enchant_eligible_deck_indices().len();
+            let mut actions: Vec<_> = (0..len)
                 .map(|idx| RunAction::EnchantDeckCard { idx })
                 .collect();
+            if front.optional {
+                actions.push(RunAction::EnchantDeckCard { idx: len });
+            }
+            return actions;
         }
         // Interactive multi-pick card grant (RoomFullOfCheese Gorge). `idx`
         // indexes the front grant's current generated options; one action per
@@ -3369,6 +3390,12 @@ impl RunManager {
         // (which `return`s above) nor the already-passing chained-RELIC defer
         // case (A5P41 SmallCapsule).
         self.drain_post_pick_deck_cards_if_settled();
+        // Rewards a shop relic purchase offered have drained: back to the
+        // merchant (see `do_shop_buy_relic`).
+        if std::mem::take(&mut self.resume_shop_after_rewards) {
+            self.phase = Phase::Shop;
+            return;
+        }
         // Rewards offered by an intermediate event page have drained: back to
         // the event for its next page (see `route_mid_event_rewards`).
         if std::mem::take(&mut self.resume_event_after_rewards) {
@@ -3648,6 +3675,28 @@ impl RunManager {
         };
         match crate::shop::buy_relic(&mut self.run_state, inv, idx) {
             crate::shop::ShopPurchaseOutcome::Bought => {
+                // v0.111.0: `MerchantRelicEntry.OnTryPurchase` awaits
+                // `RelicCmd.Obtain`, so the rewards the relic's `AfterObtained`
+                // offers (`RewardsCmd.OfferCustom` — Orrery's 5 card rewards,
+                // Cauldron's 5 potions) are rolled and offered in the shop,
+                // BEFORE `RestockAfterPurchase` (whose `RelicFactory.RollRarity`
+                // also reads `Rewards`). A card offering opens CardReward and
+                // returns to the shop once drained; deck selects (Kifuda,
+                // DollysMirror, …) preempt the action surface on their own.
+                if self.run_state.game_version >= crate::GameVersion::V0_111_0 {
+                    let opened_card_reward = self.drain_pending_rewards();
+                    if self.run_state.direct_event_relic_grant {
+                        let _ = self.run_state.drain_relic_rewards_directly();
+                    }
+                    if opened_card_reward
+                        || !self.run_state.relic_rewards.is_empty()
+                        || !self.run_state.pending_card_selects.is_empty()
+                    {
+                        self.resume_shop_after_rewards = true;
+                        self.phase = Phase::CardReward;
+                        self.advance_after_card_reward();
+                    }
+                }
                 self.restock_slot_if_courier(crate::shop::ShopSlot::Relic(idx));
                 ActionResult::Advanced
             }
@@ -4201,10 +4250,24 @@ impl RunManager {
     /// `CardCmd.Enchant<T>(card, amount)` — the enchantment is
     /// run-persistent on the master-deck card).
     fn do_enchant_deck_card_at(&mut self, idx: usize) -> ActionResult {
-        if self.run_state.pending_deck_enchants.is_empty() {
+        let Some(front) = self.run_state.pending_deck_enchants.first() else {
             return ActionResult::InvalidForPhase;
+        };
+        let eligible = self.enchant_eligible_deck_indices();
+        if idx == eligible.len() && front.optional {
+            // Confirm an optional select early: drop the rest of its batch.
+            let enchantment = front.enchantment;
+            let batch = self
+                .run_state
+                .pending_deck_enchants
+                .iter()
+                .take_while(|e| e.optional && e.enchantment == enchantment)
+                .count();
+            self.run_state.pending_deck_enchants.drain(..batch);
+            self.settle_after_deck_pick();
+            return ActionResult::Advanced;
         }
-        let Some(&deck_idx) = self.enchant_eligible_deck_indices().get(idx) else {
+        let Some(&deck_idx) = eligible.get(idx) else {
             return ActionResult::InvalidForPhase;
         };
         let entry = self.run_state.pending_deck_enchants.remove(0);
@@ -6029,6 +6092,7 @@ mod tests {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         // Eligible subset = [Bash, Strike] (Wound excluded) → idx 1 = Strike.
         assert_eq!(rm.enchant_eligible_deck_indices(), vec![1, 2]);
@@ -6074,6 +6138,7 @@ mod tests {
                 amount: 2,
                 type_restriction: Some(crate::cards::CardType::Attack),
                 secondary_type: None,
+                optional: false,
             });
         // Attacks only: Bash (0) + Strike (2); the Skill is filtered out.
         assert_eq!(rm.enchant_eligible_deck_indices(), vec![0, 2]);
@@ -6112,6 +6177,7 @@ mod tests {
                 amount: 1,
                 type_restriction: Some(crate::cards::CardType::Attack),
                 secondary_type: Some(crate::cards::CardType::Skill),
+                optional: false,
             });
         // Attack (0) + Skill (1); the Power (2) is filtered out.
         assert_eq!(rm.enchant_eligible_deck_indices(), vec![0, 1]);
@@ -6151,6 +6217,7 @@ mod tests {
                 amount: 3,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         rm.run_state
             .pending_deck_transforms

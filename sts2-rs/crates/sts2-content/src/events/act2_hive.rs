@@ -702,6 +702,7 @@ fn field_of_man_sized_holes_enter(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Perfect Fit.")
     } else {

@@ -20,6 +20,7 @@ fn enchant_pick_candidates_follow_each_enchantments_can_enchant_on_v0111_only() 
             amount: 1,
             type_restriction: None,
             secondary_type: None,
+            optional: false,
         });
         rm.enchant_eligible_deck_indices()
             .into_iter()

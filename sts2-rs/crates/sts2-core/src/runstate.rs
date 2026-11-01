@@ -780,6 +780,12 @@ pub struct PendingDeckEnchant {
     /// which a single `type_restriction` can't express. `None` for the
     /// single-type / unrestricted cases.
     pub secondary_type: Option<crate::cards::CardType>,
+    /// `true` for a pick of an optional 0..=N select (C#
+    /// `CardSelectorPrefs(EnchantSelectionPrompt, 0, N)` — Kifuda,
+    /// GnarledHammer): the player may confirm early, which drops this and
+    /// the following optional entries of the same enchantment. `false` for a
+    /// mandatory pick (`MinSelect == MaxSelect`).
+    pub optional: bool,
 }
 
 /// `Reward` enum — the open variant set Python has as a class

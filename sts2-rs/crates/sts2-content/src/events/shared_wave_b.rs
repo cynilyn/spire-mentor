@@ -342,6 +342,7 @@ fn sapphire_seed_plant(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
         EventOutcome::finished("Pick a card to enchant with Sown.")
     } else {
@@ -447,6 +448,7 @@ fn self_help_select_and_enchant(
                 amount: SELF_HELP_BOOK_ENCHANT_AMOUNT,
                 type_restriction: Some(card_type),
                 secondary_type: None,
+                optional: false,
             });
     } else if let Some(card) = state
         .master_deck
@@ -2475,6 +2477,7 @@ fn wood_carvings_snake(state: &mut RunState) -> EventOutcome {
                 amount: 1,
                 type_restriction: None,
                 secondary_type: None,
+                optional: false,
             });
     } else {
         // Auto mode: enchant the first eligible card (mirror of
