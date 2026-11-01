@@ -5323,6 +5323,12 @@ mod tests {
         rs: &mut crate::runstate::RunState,
         _ctx: &crate::run_effects::CardAddedRunCtx,
     ) -> crate::EffectResult {
+        // Ownership-gated like the real LuckyFysh listener: the registry is
+        // process-global, so an ungated stub leaked +15 gold into every later
+        // deck add in this binary (the shop buy tests' gold asserts).
+        if !rs.relics.contains(&RelicId::LuckyFysh) {
+            return crate::EffectResult::NotImplemented;
+        }
         rs.gain_gold(15);
         crate::EffectResult::Resolved
     }
@@ -5368,6 +5374,7 @@ mod tests {
     fn map_gold_necro_single_pick_fires_card_added_channel() {
         register_map_gold_necro_stub();
         let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.relics.push(RelicId::LuckyFysh);
         rm.set_phase(Phase::CardReward);
         rm.card_reward_options = vec![crate::cards::CardId::Bash];
         let gold_before = rm.run_state.gold;
@@ -5382,6 +5389,7 @@ mod tests {
     fn map_gold_necro_bundle_fires_per_card() {
         register_map_gold_necro_stub();
         let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.relics.push(RelicId::LuckyFysh);
         rm.set_phase(Phase::CardReward);
         // A Scroll-Boxes bundle pack with three cards: all three land in the
         // deck (no skip), so all three fire the channel → +45 gold.
@@ -5402,6 +5410,7 @@ mod tests {
     fn map_gold_necro_choose_screen_post_add_fires_per_card() {
         register_map_gold_necro_stub();
         let mut rm = RunManager::new(0, CharacterId::Ironclad);
+        rm.run_state.relics.push(RelicId::LuckyFysh);
         rm.set_phase(Phase::CardReward);
         // Choose-screen pick (HeftyTablet-style): the chosen option PLUS the
         // deferred post-add cards each fire the channel. One option + two

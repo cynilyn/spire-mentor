@@ -1672,6 +1672,12 @@ mod tests {
         ctx: &crate::run_effects::CardAddedRunCtx,
     ) -> crate::EffectResult {
         use std::sync::atomic::Ordering;
+        // Ownership-gated like the real LuckyFysh listener: the registry is
+        // process-global, so an ungated stub leaked +15 gold into every later
+        // deck add in this binary (the gold asserts of the buy_card tests).
+        if !rs.relics.contains(&crate::relics::RelicId::LuckyFysh) {
+            return crate::EffectResult::NotImplemented;
+        }
         ADD_FIRED.fetch_add(1, Ordering::SeqCst);
         if ctx.source == crate::relic_effects::AddSource::ShopPurchase {
             ADD_SRC_SHOP.store(true, Ordering::SeqCst);
@@ -1710,6 +1716,7 @@ mod tests {
         );
 
         let mut rs = crate::RunState::default();
+        rs.relics.push(crate::relics::RelicId::LuckyFysh);
         rs.gold = 200;
         let mut inv = inv_with_one_card(50);
 
@@ -2145,6 +2152,7 @@ mod tests {
         );
 
         let mut rs = crate::RunState::default();
+        rs.relics.push(crate::relics::RelicId::LuckyFysh);
         rs.gold = 0;
         let mut inv = inv_with_one_card(150);
         inv.colorless_cards.push(ShopCardEntry {
