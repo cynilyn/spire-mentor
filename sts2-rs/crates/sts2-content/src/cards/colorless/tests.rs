@@ -2339,6 +2339,31 @@ fn play_secret_technique_moves_a_skill_from_draw_to_hand() {
     );
 }
 
+/// C# `SecretTechnique.cs:22` filters `c.Type == CardType.Skill`, and the
+/// Quest cards are `CardType.Quest` (`Dowsing.cs:45`, v0.107.1
+/// `ByrdonisEgg.cs:15`, `LanternKey.cs:17`). Rust models them as Skills, so
+/// the fetch must skip `is_quest()` cards: a draw pile holding only quest
+/// cards moves nothing (Ironclad:6174 @775 moved DOWSING to hand).
+#[test]
+fn secret_technique_skips_quest_cards_in_draw() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::SecretTechnique, 0, 0);
+    state.player.draw.clear();
+    for id in [
+        CardId::Dowsing,
+        CardId::ByrdonisEgg,
+        CardId::LanternKey,
+        CardId::SpoilsMap,
+    ] {
+        push_draw_card_id(&mut state, id);
+    }
+    let hand_before = state.player.hand.len();
+    let _ = lookup(CardId::SecretTechnique).expect("registered")(&mut state, None);
+    assert_eq!(state.player.draw.len(), 4, "no quest card leaves the draw");
+    assert_eq!(state.player.hand.len(), hand_before, "nothing reaches hand");
+    assert!(state.pending_choice.is_none(), "no select prompt opens");
+}
+
 #[test]
 fn play_secret_technique_with_no_skills_is_noop() {
     use sts2_core::cards::{Card, CardType, TargetType};
@@ -2640,7 +2665,8 @@ fn calamity_card_lands_before_withering_presence_wither() {
     // The card-play pipeline order (`combat_loop::dispatch_after_card_played_buses`
     // minus the relic bus, which holds no relics here).
     sts2_core::hooks::dispatch_after_card_played_ordered_enemy_hits(&mut state, &ctx);
-    sts2_core::hooks::dispatch_after_card_played_rest(&mut state, &ctx);
+    sts2_core::hooks::dispatch_after_card_played_player_lanes(&mut state, &ctx);
+    sts2_core::hooks::dispatch_after_card_played_other_creatures(&mut state, &ctx);
     let added: Vec<_> = state.player.hand[hand_before..]
         .iter()
         .map(|uid| {

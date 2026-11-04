@@ -4803,6 +4803,38 @@ fn br_ctx(target: CreatureUid) -> ModifyHpLostCtx {
     }
 }
 
+/// C# `Hook.ModifyHpLost` (`Hook.cs:1870-1905`, same in v0.107.1) folds
+/// `ModifyHpLostAfterOsty` over `IterateHookListeners`, i.e. in the order the
+/// relics were obtained. Tungsten Rod's `-1` and Beating Remnant's cap do not
+/// commute: with 11 already lost this turn, a 12 hit loses `min(11, 9) = 9`
+/// when Rod came first and `min(12, 9) - 1 = 8` when Remnant came first
+/// (Ironclad:6084 @924, Ironclad:6156 @626 had Rod first and lost 9).
+#[test]
+#[serial_test::serial(global_registry)]
+fn modify_hp_lost_folds_in_relic_obtain_order() {
+    ensure_installed();
+    for (first, second, expect) in [
+        (RelicKind::TungstenRod, RelicKind::BeatingRemnant, 9),
+        (RelicKind::BeatingRemnant, RelicKind::TungstenRod, 8),
+    ] {
+        for planned in [false, true] {
+            let mut state = fresh_state_with_player(100, 100);
+            give_player_relic(&mut state, first);
+            give_player_relic(&mut state, second);
+            set_beating_remnant_counter(&mut state, 11);
+            if planned {
+                state.relics.ensure_plan();
+            }
+            let player_uid = state.player.creature_uid.unwrap();
+            assert_eq!(
+                dispatch_modify_hp_lost(&state, &br_ctx(player_uid), 12),
+                expect,
+                "{first:?} before {second:?}, planned={planned}"
+            );
+        }
+    }
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn beating_remnant_caps_first_hit_to_20() {
@@ -6814,6 +6846,78 @@ fn unsettling_lamp_ignores_a_potions_debuff_and_keeps_its_trigger() {
         unsettling_lamp_state(&state),
         Some(UNSETTLING_LAMP_CAPTURED),
         "the card is what spent the trigger"
+    );
+}
+
+/// C# `ReaperFormPower.AfterDamageGiven` (`ReaperFormPower.cs:57-64`, same
+/// in v0.107.1) applies its Doom with `cardSource: null`, and
+/// `UnsettlingLamp.BeforePowerAmountChanged` returns on a null card, so the
+/// Doom a card's hit triggers is neither captured nor doubled
+/// (Ironclad-6030 act2#b0 @764: Anger with Reaper Form 1 gave Doom 6 in C#,
+/// Rust captured it and gave 12).
+#[test]
+#[serial_test::serial(global_registry)]
+fn unsettling_lamp_ignores_reaper_form_doom_during_a_card() {
+    use std::num::NonZeroU32;
+    ensure_installed();
+    register_before_power_amount_changed(
+        RelicId::UnsettlingLamp,
+        on_before_power_amount_changed_unsettling_lamp as BeforePowerAmountChangedFn,
+    );
+    register_modify_power_amount_given(
+        RelicId::UnsettlingLamp,
+        on_modify_power_amount_given_unsettling_lamp as ModifyPowerAmountGivenFn,
+    );
+    let mut state = CombatState::default();
+    let player_uid = CreatureUid::new(1).unwrap();
+    let enemy_uid = CreatureUid::new(2).unwrap();
+    for (uid, hp) in [(player_uid, 80_i32), (enemy_uid, 50)] {
+        state.creatures.push(crate::Creature {
+            id: uid.0,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: None,
+            intent: None,
+            intent_history: crate::IntentHistory::default(),
+            monster_id: crate::MonsterId(""),
+            ai: None,
+        });
+    }
+    state.player.creature_uid = Some(player_uid);
+    state.enemy_uids.push(enemy_uid);
+    state.relics.push(crate::Relic {
+        id: NonZeroU32::new(1).unwrap(),
+        kind: crate::RelicKind::UnsettlingLamp,
+        counter: UNSETTLING_LAMP_ARMED,
+        is_wax: false,
+        is_melted: false,
+    });
+    crate::card_effects::apply_power_to_creature(
+        &mut state,
+        player_uid,
+        crate::PowerKind::ReaperForm,
+        1,
+    );
+    let _resolving = push_resolving_card(&mut state);
+    let _ = crate::damage::apply_damage(
+        &mut state,
+        crate::hooks::CreatureRef::Player,
+        enemy_uid,
+        6,
+        crate::hooks::ValueProps::MOVE,
+        None,
+    );
+    assert_eq!(
+        enemy_power_amount(&state, enemy_uid, crate::PowerKind::Doom),
+        6,
+        "Reaper Form's cardless Doom is not doubled"
+    );
+    assert_eq!(
+        unsettling_lamp_state(&state),
+        Some(UNSETTLING_LAMP_ARMED),
+        "and does not spend the lamp's trigger"
     );
 }
 

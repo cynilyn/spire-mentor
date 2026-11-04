@@ -3476,11 +3476,17 @@ pub fn dispatch_after_death(
     )
 }
 
-/// Dispatch `modify_hp_lost` as a left-to-right fold over registered
-/// listeners — each handler receives the current amount and returns the
-/// new amount. Matches Python `Relic.modify_hp_lost` which returns the
-/// (possibly transformed) amount; the dispatcher iterates the
-/// `BTreeMap` in `RelicId` order so the result is deterministic.
+/// Dispatch `modify_hp_lost` as a left-to-right fold over the owned
+/// relics' listeners — each handler receives the current amount and
+/// returns the new amount.
+///
+/// The fold runs in relic OBTAIN order (`state.relics` order): C#
+/// `Hook.ModifyHpLost` (`Hook.cs:1870-1905`, both builds) folds over
+/// `IterateHookListeners`, and Tungsten Rod's `-1` does not commute with
+/// Beating Remnant's per-turn cap. The Boot (`AfterOstyLate`) only acts on
+/// hits against an enemy, which the other two never touch, so the one
+/// shared fold stays exact. With at most one owned listener the order is
+/// moot and the plan path is kept.
 pub fn dispatch_modify_hp_lost(
     state: &CombatState,
     ctx: &ModifyHpLostCtx,
@@ -3496,7 +3502,14 @@ pub fn dispatch_modify_hp_lost(
         return base_amount;
     }
     let mut current = base_amount;
-    for f in owned_listeners(registry_modify_hp_lost(), OwnedChannel::ModifyHpLost, state) {
+    let mut owned = owned_listeners(registry_modify_hp_lost(), OwnedChannel::ModifyHpLost, state);
+    let Some(first) = owned.next() else {
+        return current;
+    };
+    if owned.next().is_none() {
+        return first(state, ctx, current);
+    }
+    for (_, _, f) in collect_equip_order_listeners(registry_modify_hp_lost(), state) {
         current = f(state, ctx, current);
     }
     current

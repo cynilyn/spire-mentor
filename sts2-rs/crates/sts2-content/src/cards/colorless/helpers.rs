@@ -231,8 +231,11 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
         .iter()
         .copied()
         .filter(|uid| {
-            let idx = uid.0.get() as usize - 1;
-            state.cards[idx].card_type == kind
+            // C# filters `c.Type == kind`; the Quest cards are
+            // `CardType.Quest` (`Dowsing.cs:45`), which Rust models as
+            // Skills, so Secret Technique must not fetch them.
+            let card = &state.cards[uid.0.get() as usize - 1];
+            card.card_type == kind && !card.is_quest()
         })
         .collect();
     // Mirror C# `FromCombatPile`'s `OrderBy(Rarity).ThenBy(Id)` Draw-pile

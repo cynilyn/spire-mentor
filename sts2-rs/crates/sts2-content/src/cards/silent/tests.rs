@@ -2178,6 +2178,30 @@ fn hand_trick_auto_applies_sly_with_one_skill() {
     );
 }
 
+/// HandTrick's filter is C# `card.Type == CardType.Skill` (`HandTrick.cs:30`);
+/// a Quest card (C# `CardType.Quest`, a Skill in Rust) is not a candidate, so
+/// one real Skill + Dowsing auto-applies to the Skill with no prompt.
+#[test]
+fn hand_trick_skips_quest_cards() {
+    install_pool();
+    let mut state = handtrick_state(1);
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let quest = sts2_core::CardUid::new(raw).expect("non-zero");
+    state.cards.push(Card {
+        uid: quest,
+        card_id: CardId::Dowsing,
+        cost: -1,
+        card_type: CardType::Skill,
+        target_type: TargetType::Self_,
+        ..Card::pod_defaults()
+    });
+    state.player.hand.push(quest);
+    let _ = lookup(CardId::HandTrick).expect("registered")(&mut state, None);
+    assert!(state.pending_choice.is_none(), "only one eligible Skill");
+    assert_eq!(state.player.sly_this_turn.len(), 1);
+    assert!(!state.player.sly_this_turn.contains(&quest));
+}
+
 #[test]
 fn play_accelerant_stacks_1_accelerant() {
     install_pool();
@@ -3448,6 +3472,57 @@ fn nightmare_two_hand_cards_opens_select_and_clones_chosen() {
         state.powers.iter().all(|p| p.kind != PowerKind::Nightmare),
         "Nightmare power removed after firing"
     );
+}
+
+/// C# `NightmarePower.SetSelectedCard` stores `card.CreateClone()` at select
+/// time and `BeforeHandDraw` clones that snapshot (NightmarePower.cs:41-63,
+/// both builds; `MutableClone` deep-copies the enchantment state). So a change
+/// to the original after the select (here an upgrade and a spent Glam-style
+/// combat var) does not reach the next-turn copies. Rust cloned the live card
+/// at BeforeHandDraw, so a played Glam original's used bit leaked into the
+/// clones (act23 Ironclad v0.111.0 seed 8180 act 3, step 980).
+#[test]
+fn nightmare_clones_the_select_time_snapshot_not_the_live_card() {
+    use sts2_core::cards::VarKey;
+    use sts2_core::hooks::dispatch_before_hand_draw_powers;
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Nightmare, 0, 0);
+    let mut uids = Vec::new();
+    for (raw, id) in [(2u32, CardId::StrikeSilent), (3, CardId::DefendSilent)] {
+        let uid = sts2_core::CardUid(NonZeroU32::new(raw).expect("nz"));
+        state.cards.push(Card {
+            uid,
+            card_id: id,
+            cost: 1,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+        uids.push(uid);
+    }
+    let _ = lookup(CardId::Nightmare).expect("registered")(&mut state, None);
+    let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+
+    // The original changes after the select.
+    let original = &mut state.cards[uids[0].0.get() as usize - 1];
+    assert_eq!(original.card_id, CardId::StrikeSilent);
+    original.upgraded = true;
+    original.set_combat_var(VarKey::EnchantmentUsed, 1);
+
+    dispatch_before_hand_draw_powers(&mut state);
+    let clones: Vec<&Card> = state
+        .player
+        .hand
+        .iter()
+        .filter(|u| !uids.contains(u))
+        .map(|u| &state.cards[u.0.get() as usize - 1])
+        .collect();
+    assert_eq!(clones.len(), 3);
+    for c in clones {
+        assert_eq!(c.card_id, CardId::StrikeSilent);
+        assert!(!c.upgraded, "the clone is the select-time snapshot");
+        assert_eq!(c.combat_var(VarKey::EnchantmentUsed), 0);
+    }
 }
 
 /// GH #364 A2 — a Nightmare power whose selected card is unrecoverable still

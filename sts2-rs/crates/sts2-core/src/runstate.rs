@@ -3539,21 +3539,29 @@ impl RunState {
         // `RunState.IterateHookListeners` (`RunState.cs:123-156`, same in
         // v0.107.1), which queues every deck card (and enchantment) ahead of
         // relics, potions and modifiers. Bead `sts2-rs-RP24`.
-        if self
+        // The hook runs once per listener with no dedupe, so EACH egg card in
+        // the deck adds its own Hatch option (two eggs: Heal, Smith, Hatch,
+        // Hatch; Ironclad-8178 act2#b1 step 878).
+        for _ in self
             .master_deck
             .iter()
-            .any(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
+            .filter(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
         {
             options.push(RestSiteOption::Hatch);
         }
         let _ = crate::run_effects::dispatch_modify_rest_site_options(self, &mut options);
-        // MiniatureTent's second pick: drop the options already taken here.
-        options.retain(|o| {
-            !self
-                .rest_site_taken
+        // MiniatureTent's second pick: C# removes only the chosen option
+        // (`RestSiteSynchronizer.cs:210` `options.RemoveAt(optionIndex)`), so
+        // drop ONE matching option per taken entry, not every option of that
+        // kind (taking one of two Hatches leaves the other).
+        for taken in &self.rest_site_taken {
+            if let Some(i) = options
                 .iter()
-                .any(|t| std::mem::discriminant(t) == std::mem::discriminant(o))
-        });
+                .position(|o| std::mem::discriminant(o) == std::mem::discriminant(taken))
+            {
+                options.remove(i);
+            }
+        }
         options
     }
 
@@ -9564,6 +9572,32 @@ mod tests {
                 .any(|o| matches!(o, RestSiteOption::Hatch)),
             "Hatch offered once the egg is in the deck"
         );
+    }
+
+    /// C# `Hook.ModifyRestSiteOptions` (`Hook.cs:2101-2112`) calls every
+    /// deck card's `TryModifyRestSiteOptions` with no dedupe, and each
+    /// `ByrdonisEgg` adds a Hatch (`ByrdonisEgg.cs:19-27`): two eggs give
+    /// Heal, Smith, Hatch, Hatch (Ironclad-8178 act2#b1 step 878). Under
+    /// MiniatureTent C# drops only the chosen option
+    /// (`RestSiteSynchronizer.cs:210` `RemoveAt`), so one Hatch remains.
+    #[test]
+    fn rest_site_options_offers_one_hatch_per_egg() {
+        let mut rs = RunState::new();
+        for _ in 0..2 {
+            let mut egg = Card::pod_defaults();
+            egg.card_id = CardId::ByrdonisEgg;
+            rs.master_deck.push(egg);
+        }
+        let hatches = |rs: &RunState| {
+            rs.rest_site_options()
+                .iter()
+                .filter(|o| matches!(o, RestSiteOption::Hatch))
+                .count()
+        };
+        assert_eq!(rs.rest_site_options().len(), 4);
+        assert_eq!(hatches(&rs), 2);
+        rs.rest_site_taken.push(RestSiteOption::Hatch);
+        assert_eq!(hatches(&rs), 1, "taking one Hatch leaves the other");
     }
 
     /// Bead `sts2-rs-RP24`: selecting `Hatch` obtains the `Byrdpip` relic

@@ -32,13 +32,12 @@ use sts2_core::relic_effects::{
     register_after_card_played, register_after_player_turn_start, register_after_side_turn_start,
     register_before_combat_start, register_before_side_turn_start, register_before_turn_end,
     register_modify_damage_additive, register_modify_damage_multiplicative,
-    register_owned_after_card_entered_combat, register_owned_after_combat_end,
-    register_owned_after_potion_used, register_owned_before_hand_draw,
-    register_owned_modify_vulnerable_multiplier, AfterCardEnteredCombatFn, AfterCardPlayedFn,
-    AfterCombatEndFn, AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn,
-    BeforeCombatStartFn, BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx,
-    ModifyDamageAdditiveFn, ModifyDamageCtx, ModifyDamageMultiplicativeFn,
-    ModifyVulnerableMultiplierFn,
+    register_modify_vulnerable_multiplier, register_owned_after_card_entered_combat,
+    register_owned_after_combat_end, register_owned_after_potion_used,
+    register_owned_before_hand_draw, AfterCardEnteredCombatFn, AfterCardPlayedFn, AfterCombatEndFn,
+    AfterPlayerTurnStartFn, AfterPotionUsedFn, AfterSideTurnStartFn, BeforeCombatStartFn,
+    BeforeHandDrawFn, BeforeSideTurnStartFn, BeforeTurnEndFn, CardEventCtx, ModifyDamageAdditiveFn,
+    ModifyDamageCtx, ModifyDamageMultiplicativeFn, ModifyVulnerableMultiplierFn,
 };
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
@@ -324,9 +323,11 @@ pub fn install_pool() {
     // from `VulnerablePower.ModifyDamageMultiplicative`, so the bonus only
     // lands when the target is actually Vulnerable (1.5 → 1.75). Combat-side
     // `on_trigger_paper_phrog` stays a `resolved_marker`. Bead `sts2-rs-0om8p`.
-    register_owned_modify_vulnerable_multiplier(
+    // Plain (`Always`) registration, not `register_owned_*`: C# reads the
+    // relic through `GetRelic`, which a melted Phrog still answers, and the
+    // owned guard would skip it.
+    register_modify_vulnerable_multiplier(
         RelicId::PaperPhrog,
-        RelicKind::PaperPhrog,
         listener_paper_phrog_vulnerable_multiplier as ModifyVulnerableMultiplierFn,
     );
 }
@@ -340,8 +341,13 @@ pub fn install_pool() {
 /// dealer must be the player (the owner) for the bonus to apply — a
 /// powered player attack against a Vulnerable enemy goes 1.5× → 1.75×.
 /// Returns `0` (no contribution) when any gate fails. Bead `sts2-rs-0om8p`.
+///
+/// C# `VulnerablePower.cs:40` fetches it with `GetRelic<PaperPhrog>()`
+/// (`Player.cs:534-537`, `Relics.FirstOrDefault`), which does not skip a
+/// melted relic: Toy Box's melt only drops it from `IterateHookListeners`
+/// (`CombatState.cs:134`). So the gate is "holds one, melted or not".
 fn listener_paper_phrog_vulnerable_multiplier(state: &CombatState, ctx: &hooks::DamageCtx) -> i32 {
-    if !state.relics.owns(RelicKind::PaperPhrog) {
+    if !state.relics.iter().any(|r| r.kind == RelicKind::PaperPhrog) {
         return 0;
     }
     if !ctx.props.is_powered() {
@@ -3242,6 +3248,34 @@ mod tests {
             10,
             "PaperPhrog bumps Vulnerable to 1.75× (floor(6×1.75)=10)"
         );
+    }
+
+    /// **PaperPhrog melted** — C# `VulnerablePower.cs:40` reads the relic
+    /// with `dealer.Player?.GetRelic<PaperPhrog>()`, and `GetRelic`
+    /// (`Player.cs:534-537`) does not skip a melted relic (Toy Box's wax
+    /// melt only drops it from `IterateHookListeners`), so a melted Phrog
+    /// still gives 1.75× (Ironclad-6127 act3#b3 @1106).
+    #[test]
+    fn listener_paper_phrog_applies_while_melted() {
+        use std::num::NonZeroU32;
+        use sts2_core::hooks::{self, DamageCtx};
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        let enemy = paper_phrog_vuln_enemy(&mut state);
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(1).expect("non-zero"),
+            kind: RelicKind::PaperPhrog,
+            counter: 0,
+            is_wax: true,
+            is_melted: true,
+        });
+        state.relics.ensure_plan();
+        let ctx = DamageCtx {
+            dealer: CreatureRef::Player,
+            target: enemy,
+            props: ValueProps::MOVE,
+        };
+        assert_eq!(hooks::modify_damage(&state, 6, &ctx), 10);
     }
 
     /// **PaperPhrog #2** — no bonus on a non-Vulnerable target (the hook

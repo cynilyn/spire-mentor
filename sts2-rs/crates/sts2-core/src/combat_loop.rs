@@ -3474,7 +3474,7 @@ pub fn end_player_turn_phase_two(state: &mut CombatState) -> StepResult {
         // CurrentSide==Player. Flush per-event to match (HEMOKINESIS — a truly
         // played card — already flushed on the play path, so nothing is owed
         // here for it). Fuzz: 4xBURN+Rupture2 gave C#10/RS2 Strength.
-        flush_rupture_deferred_strength(state);
+        flush_rupture_deferred_strength(state, uid);
 
         // Combat-end short-circuit. BECKON / BAD_LUCK / REGRET each
         // call `_check_combat_end()` immediately after their HP loss
@@ -3888,7 +3888,44 @@ fn end_player_turn_phase_two_flush_tail(state: &mut CombatState) -> StepResult {
     if consuming_shadow_early {
         consuming_shadow_evoke(state);
     }
+    let had_choice = state.pending_choice.is_some();
     hooks::dispatch_after_turn_end(state, &TurnSideCtx { side: Side::Player });
+    // A Dark Embrace turn-end draw whose reshuffle opened a Stratagem select:
+    // C# `DarkEmbracePower.AfterSideTurnEnd` awaits the draw inside
+    // `Hook.AfterSideTurnEnd`, so the relics' turn end, the late powers and
+    // the side switch all wait for the pick (DarkEmbracePower.cs:52-57, both
+    // builds). The rest of the draw resumes first, then
+    // [`resume_end_turn_after_turn_end_powers`].
+    if !had_choice && state.pending_choice.is_some() && state.coop.seat_run.is_none() {
+        state.pending_end_turn_resume = Some(crate::EndTurnResume::AfterTurnEndPowers {
+            consuming_shadow_early,
+        });
+        return StepResult::PendingChoice;
+    }
+    finish_phase_two_after_turn_end_powers(state, consuming_shadow_early)
+}
+
+/// Resume the end-turn chain parked inside the player's `AfterSideTurnEnd`
+/// power walk (see the suspend in [`end_player_turn_phase_two_flush_tail`]):
+/// the relic turn end, the late powers, the combat-end and extra-turn checks,
+/// then the enemy turn and the next player turn-start.
+pub(crate) fn resume_end_turn_after_turn_end_powers(
+    state: &mut CombatState,
+    consuming_shadow_early: bool,
+) -> StepResult {
+    let tail = finish_phase_two_after_turn_end_powers(state, consuming_shadow_early);
+    if !matches!(tail, StepResult::Advanced) || state.coop.seat_run.is_some() {
+        return tail;
+    }
+    end_turn_dispatch_from(state, 2)
+}
+
+/// [`end_player_turn_phase_two_flush_tail`] after the player's own
+/// `after_turn_end` power walk.
+fn finish_phase_two_after_turn_end_powers(
+    state: &mut CombatState,
+    consuming_shadow_early: bool,
+) -> StepResult {
     after_turn_end_seated_with(state, !consuming_shadow_early);
     crate::coop::each_teammate(state, after_turn_end_seated);
     // `AfterSideTurnEndLate` (Disintegration) after every `AfterSideTurnEnd`
@@ -7605,11 +7642,19 @@ pub fn dispatch_after_card_played_buses(
     if black_hole_spent > 0 {
         state.apply_black_hole_on_stars_event(black_hole_spent);
     }
+    // C# `IterateHookListeners` (CombatState.cs:117-137): the seated player's
+    // powers, then that player's relics, then the other creatures' powers.
     hooks::dispatch_after_card_played_ordered_enemy_hits(state, hook_ctx);
+    hooks::dispatch_after_card_played_player_lanes(state, hook_ctx);
+    // `RupturePower.AfterCardPlayed` is a player power too, so the Strength
+    // owed to THIS card lands with the player's powers, before the relics.
+    if let Some(card_uid) = hook_ctx.card_uid {
+        flush_rupture_deferred_strength(state, card_uid);
+    }
     if relic_channel_live(state, PlannedChannel::AfterCardPlayed) {
         let _ = crate::relic_effects::dispatch_after_card_played(state, played_ctx);
     }
-    hooks::dispatch_after_card_played_rest(state, hook_ctx);
+    hooks::dispatch_after_card_played_other_creatures(state, hook_ctx);
 }
 
 /// Drain and apply `RupturePower`'s deferred Strength after a card play has
@@ -7623,7 +7668,7 @@ pub fn dispatch_after_card_played_buses(
 /// Play pile; this drains it to `0` and applies the Strength. No-op when
 /// nothing was deferred (drains 0) — the common case for cards that do no
 /// self-HP-loss or for a player without Rupture. Bead `sts2-rs-22ttw`.
-pub fn flush_rupture_deferred_strength(state: &mut CombatState) {
+pub fn flush_rupture_deferred_strength(state: &mut CombatState, card_uid: crate::CardUid) {
     // Perf gate: this runs once per card play + once per replay. With no
     // live Rupture power the drain below provably finds nothing, returns 0
     // and mutates nothing — skip its power-uid union walk entirely.
@@ -7634,7 +7679,7 @@ pub fn flush_rupture_deferred_strength(state: &mut CombatState) {
     {
         return;
     }
-    let owed = state.drain_rupture_deferred_strength();
+    let owed = state.drain_rupture_deferred_strength(card_uid);
     if owed > 0 {
         if let Some(player_uid) = state.player.creature_uid {
             crate::card_effects::apply_power_to_creature(
@@ -8868,10 +8913,9 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
     // `History.CardPlayFinished` bump and both `after_card_played` buses,
     // matching the wrapper's statement order.
     //
-    // First-play `*_USED_BIT` gates are unchanged: they are still flipped by
-    // `enchantment_hooks::dispatch_after_card_played` below (the Rust analogue
-    // of C# `Swift`/`Sown` setting `Status = EnchantmentStatus.Disabled`
-    // inside their own `OnPlay`), which still runs before the replay loops.
+    // Swift / Sown flip their first-play `*_USED_BIT` inside this dispatch, as
+    // C# sets `Status = EnchantmentStatus.Disabled` inside their own `OnPlay`
+    // — so a Music Box clone made in the after-played buses is already spent.
     crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
 
     // Affliction `OnPlay` — the captured Weighted energy drain (bead
@@ -8981,10 +9025,6 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         state.discount_pinpoint_on_skill_played();
     }
     dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-
-    // Bead `sts2-rs-22ttw`: apply RupturePower's deferred Strength now that
-    // the card has fully resolved. See [`flush_rupture_deferred_strength`].
-    flush_rupture_deferred_strength(state);
 
     // Bead `sts2-rs-6ynt.11`: enchantment `after_card_played` channel.
     // Python's `enchantments.after_card_played(card)` runs after the
@@ -9148,10 +9188,6 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         // slot re-stamps per iteration — keeping the parent last after any
         // children this replay's dispatch auto-played.
         stamp_last_attack_skill_played(state, &card, card_uid);
-        // Bead `sts2-rs-22ttw`: each replay is its own C# CardPlay, so
-        // RupturePower's `AfterCardPlayed` deferred Strength flushes once per
-        // replay (un-buffing only that replay's own hits).
-        flush_rupture_deferred_strength(state);
         // C# `CardModel.OnPlayWrapper` runs the SAME per-iteration tail for
         // a `ModifyCardPlayCount` replay as for an Echo replay (one loop,
         // CardModel.cs:1472-1523): per-turn play buckets, the combat-long
@@ -9283,9 +9319,6 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
             bump_brilliant_scarf(state);
             bump_paels_eye_played(state);
-            // Bead `sts2-rs-22ttw`: flush RupturePower's deferred Strength per
-            // Echo replay (each replay is its own C# `AfterCardPlayed`).
-            flush_rupture_deferred_strength(state);
             // Bead `sts2-rs-wvpjv`: each Echo replay also records a fresh
             // `CardPlayFinishedEntry` in C# (CardModel.cs:1472-1523 loops
             // `CardPlayFinished` once per `i < playCount2`). Keep the
@@ -10588,6 +10621,39 @@ pub(crate) fn resolve_auto_played_card_with(
     played
 }
 
+/// C# `CardModel.MoveToResultPileWithoutPlaying` (v0.111.0 CardModel.cs:2103-2121,
+/// same in v0.107.1) for an auto-play that `CardCmd.AutoPlay` declines to play
+/// (Unplayable, a `Hook.ShouldPlay` veto, no enemy / ally target —
+/// CardCmd.cs:51-98). Only a card still on Play is routed, then:
+///   - `IsDupe` → `CardPileCmd.RemoveFromCombat` (no pile), checked FIRST;
+///   - `ExhaustOnNextPlay || Exhaust` keyword (Rust: `force_exhaust` or the
+///     instance's exhaust keyword) → `CardCmd.Exhaust`, firing the exhaust
+///     buses (DemonicShield is AnyAlly + intrinsic Exhaust: fuzz seed 1111);
+///   - else → Discard, firing nothing.
+///
+/// A Chains-bound dupe Anger that Stampede auto-plays is vetoed and must leave
+/// combat, not sit in the discard pile (act23 Ironclad-8184 act 2 @967).
+fn move_auto_play_to_result_pile_without_playing(
+    state: &mut CombatState,
+    uid: crate::CardUid,
+    force_exhaust: bool,
+) {
+    if !state.player.play.contains(&uid) {
+        return;
+    }
+    let card = &state.cards[uid.0.get() as usize - 1];
+    if card.combat_var(VarKey::IsDupe) != 0 {
+        state.player.play.retain(|u| *u != uid);
+        return;
+    }
+    if force_exhaust || crate::card_effects::card_exhausts_inst(card) {
+        let (card_id, tags, card_type) = (card.card_id, card.tags, card.card_type);
+        let _ = exhaust_from_play(state, uid, None, card_id, tags, card_type);
+    } else {
+        let _ = cards::move_card(&mut state.player, uid, PileKind::Play, PileKind::Discard);
+    }
+}
+
 fn resolve_auto_played_card_inner(
     state: &mut CombatState,
     top_uid: crate::CardUid,
@@ -10696,34 +10762,7 @@ fn resolve_auto_played_card_inner(
     // wrongly dispatch its on-play body and fire `after_card_played`
     // listeners. Bead `sts2-rs-ane8r`.
     if crate::card_effects::card_unplayable_inst(&state.cards[top_idx]) {
-        if state.player.play.contains(&top_uid) {
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
-            let dest = if force_exhaust || self_exhausts {
-                PileKind::Exhaust
-            } else {
-                PileKind::Discard
-            };
-            // C# `MoveToResultPileWithoutPlaying` exhausts via `CardCmd.Exhaust`
-            // when `ExhaustOnNextPlay`/Exhaust-keyword, which fires the
-            // exhaust hooks; the plain Discard branch fires nothing. Mirror
-            // that: only dispatch the exhaust buses when we actually
-            // exhausted. (DistilledChaos passes `force_exhaust = false` and
-            // unplayable status cards lack the Exhaust keyword, so this branch
-            // is dead for DistilledChaos itself and only matters for a future
-            // force-exhaust auto-play of an unplayable card.)
-            if matches!(dest, PileKind::Exhaust) {
-                let _ = exhaust_from_play(
-                    state,
-                    top_uid,
-                    None,
-                    top_card_id,
-                    top_card_tags,
-                    top_card_type,
-                );
-            } else {
-                let _ = cards::move_card(&mut state.player, top_uid, PileKind::Play, dest);
-            }
-        }
+        move_auto_play_to_result_pile_without_playing(state, top_uid, force_exhaust);
         return false;
     }
 
@@ -10738,36 +10777,7 @@ fn resolve_auto_played_card_inner(
     // ally present, causing unintended effects (e.g. DemonicShield's 1 HP
     // self-damage executing in single-player where no ally exists).
     if crate::card_effects::card_is_any_ally(top_card_id) && !state.has_any_ally_card_target() {
-        if state.player.play.contains(&top_uid) {
-            // C# `MoveToResultPileWithoutPlaying` (`CardModel.cs:1621-1638`):
-            // a card pulled off Play without being played EXHAUSTS when
-            // `ExhaustOnNextPlay || Keywords.Contains(Exhaust)`, otherwise
-            // discards. DemonicShield is AnyAlly + intrinsic Exhaust, so in
-            // single-player (no ally) Cascade's `forceExhaust:false` auto-play
-            // must still route it to Exhaust (and fire the exhaust hooks), not
-            // Discard. The prior hardcoded Discard dropped it into the discard
-            // pile (fuzz seed 1111: discard cs=3 rs=4, exhaust cs=4 rs=3).
-            // Bead `sts2-rs-ngwsg` follow-up. Same shape as the unplayable
-            // guard above.
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
-            let dest = if force_exhaust || self_exhausts {
-                PileKind::Exhaust
-            } else {
-                PileKind::Discard
-            };
-            if matches!(dest, PileKind::Exhaust) {
-                let _ = exhaust_from_play(
-                    state,
-                    top_uid,
-                    None,
-                    top_card_id,
-                    top_card_tags,
-                    top_card_type,
-                );
-            } else {
-                let _ = cards::move_card(&mut state.player, top_uid, PileKind::Play, dest);
-            }
-        }
+        move_auto_play_to_result_pile_without_playing(state, top_uid, force_exhaust);
         return false;
     }
 
@@ -10781,26 +10791,7 @@ fn resolve_auto_played_card_inner(
     // Shared borrows only — `player_should_play_blocked` reads both `state`
     // and the card immutably, so no `Card` clone is needed here.
     if player_should_play_blocked(state, &state.cards[top_idx]) {
-        if state.player.play.contains(&top_uid) {
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
-            let dest = if force_exhaust || self_exhausts {
-                PileKind::Exhaust
-            } else {
-                PileKind::Discard
-            };
-            if matches!(dest, PileKind::Exhaust) {
-                let _ = exhaust_from_play(
-                    state,
-                    top_uid,
-                    None,
-                    top_card_id,
-                    top_card_tags,
-                    top_card_type,
-                );
-            } else {
-                let _ = cards::move_card(&mut state.player, top_uid, PileKind::Play, dest);
-            }
-        }
+        move_auto_play_to_result_pile_without_playing(state, top_uid, force_exhaust);
         return false;
     }
 
@@ -10821,26 +10812,7 @@ fn resolve_auto_played_card_inner(
     // when no enemy is alive but the combat is not ending (an Adaptable corpse,
     // a pending reinforcement wave).
     if top_target_type == TargetType::Enemy && target_uid.is_none() {
-        if state.player.play.contains(&top_uid) {
-            let self_exhausts = crate::card_effects::card_exhausts_inst(&state.cards[top_idx]);
-            if force_exhaust || self_exhausts {
-                let _ = exhaust_from_play(
-                    state,
-                    top_uid,
-                    None,
-                    top_card_id,
-                    top_card_tags,
-                    top_card_type,
-                );
-            } else {
-                let _ = cards::move_card(
-                    &mut state.player,
-                    top_uid,
-                    PileKind::Play,
-                    PileKind::Discard,
-                );
-            }
-        }
+        move_auto_play_to_result_pile_without_playing(state, top_uid, force_exhaust);
         return false;
     }
 
@@ -11609,17 +11581,6 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
         crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
     }
 
-    // Bead `sts2-rs-50un1`: C# `CardCmd.AutoPlay` runs the full `OnPlayWrapper`,
-    // whose `AfterCardPlayed` fires `RupturePower.AfterCardPlayed` — applying
-    // the Strength owed for any self-HP-loss the auto-played card dealt. An
-    // auto-played self-HP-loss card (OFFERING/Hemokinesis played off the draw
-    // top by Cascade/Havoc) accumulates that owed Strength on the Rupture
-    // instance's `counter` via the `after_damage_received` reaction, so flush
-    // it here to mirror the hand-play flush at `play_card` (combat_loop.rs:4450)
-    // and the HISTORY_COURSE dupe-replay flush (event_reward.rs). Idempotent
-    // no-op without an active Rupture / deferred amount.
-    flush_rupture_deferred_strength(state);
-
     // C# `Hook.AfterCardPlayed` ends with every listener's
     // `AfterCardPlayedLate` (Hook.cs:431-437) — auto-plays included, since
     // `CardCmd.AutoPlay` runs the same `OnPlayWrapper`. Fired after the tally
@@ -11738,10 +11699,6 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
             // GH #1021: and the enchantment's `AfterCardPlayed` per replay
             // (Goopy grows once per play, GH #952).
             crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
-            // Bead `sts2-rs-50un1`: each auto-play replay is its own C#
-            // `AfterCardPlayed`, so flush RupturePower's deferred Strength per
-            // replay (mirrors the hand-play `extra_plays` flush at 4530).
-            flush_rupture_deferred_strength(state);
             crate::card_effects::fire_late_effects(state, &hook_played_ctx);
         }
     }

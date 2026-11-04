@@ -1349,11 +1349,6 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
     // The enchantment's `AfterCardPlayed` (first-play markers, Goopy growth),
     // as after any auto-play.
     sts2_core::enchantment_hooks::dispatch_after_card_played(state, new_uid);
-    // Bead `sts2-rs-50un1`: apply RupturePower's deferred Strength now that the
-    // dupe has fully resolved (its self-HP-loss — e.g. a replayed OFFERING —
-    // deferred +Strength onto the Rupture counter). Mirrors the hand-play /
-    // auto-play flushes (seed 2848: STR cs=2 rs=1).
-    sts2_core::combat_loop::flush_rupture_deferred_strength(state);
     // C# `CardModel.OnPlayWrapper` records a `CardPlayFinished` history entry
     // for the auto-played dupe (CardModel.cs:1523), just like any normal /
     // auto-played card. `GoldAxe.CalculatedDamage` scales on
@@ -1453,6 +1448,13 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
         // `FreeAttackPower.BeforeCardPlayed` decrements per play iteration,
         // the dupe's replays included (the first play consumes above).
         let _ = sts2_core::combat_loop::consume_free_card_power(state, dupe_card_type);
+        // `Stomp.BeforeCardPlayed` (Stomp.cs:62-73) shaves once per Attack
+        // play iteration too — as the hand-play and auto-play replay loops do
+        // (act23 Ironclad-8066 act 3: a Replay-2 Whirlwind dupe, STOMP cs=0
+        // vs rs=2).
+        if matches!(dupe_card_type, sts2_core::cards::CardType::Attack) {
+            state.discount_stomp_on_attack_played();
+        }
         let _ =
             sts2_core::card_effects::dispatch_for_auto_played_card(state, new_uid, card_id, target);
         // `Enchantment.OnPlay` / `AfterCardPlayed` per iteration, as on the
@@ -1468,7 +1470,6 @@ fn listener_history_course(state: &mut CombatState) -> EffectResult {
             &hook_played_ctx,
         );
         sts2_core::enchantment_hooks::dispatch_after_card_played(state, new_uid);
-        sts2_core::combat_loop::flush_rupture_deferred_strength(state);
         state.combat_log.player_card_plays_this_combat = state
             .combat_log
             .player_card_plays_this_combat
@@ -1983,11 +1984,9 @@ fn listener_fresnel_lens_card_reward(rs: &mut RunState, cards: &mut Vec<Card>) -
 /// without this gate FresnelLens also stamped Nimble on added curses.
 fn nimble_can_enchant(card: &Card, version: sts2_core::GameVersion) -> bool {
     card.enchantments.is_empty()
-        && crate::names::deck_card_spec_pool()
-            .iter()
-            .find(|s| s.id == card.card_id)
+        && crate::names::find_deck_card_spec(&crate::names::deck_card_spec_pool(), card.card_id)
             .is_some_and(|spec| {
-                crate::enchantments::can_enchant_card(spec, card, EnchantmentId::Nimble, version)
+                crate::enchantments::can_enchant_card(&spec, card, EnchantmentId::Nimble, version)
             })
 }
 
@@ -3932,6 +3931,53 @@ mod tests {
         assert_eq!(
             cost, 2,
             "Stomp cost reduced by 1 — the attack dupe fired BeforeCardPlayed"
+        );
+    }
+
+    /// A HistoryCourse dupe of a HiddenGem Replay-2 Attack plays 3 times, and
+    /// C# `OnPlayWrapper` fires `Hook.BeforeCardPlayed` on EVERY play iteration
+    /// (CardModel.cs ~1926), so `Stomp.BeforeCardPlayed` (Stomp.cs:62-73)
+    /// shaves 1 per iteration: a cost-3 Stomp drops to 0. The dupe replay loop
+    /// shaved only on the first play (act23 Ironclad-8066 act 3 @1117: a
+    /// Replay-2 Whirlwind dupe left STOMP at cost cs=0 vs rs=2).
+    #[test]
+    fn listener_history_course_replayed_attack_dupe_shaves_stomp_per_play() {
+        use sts2_core::cards::{Card, CardId};
+        crate::relics::dispatch::ensure_installed();
+        crate::cards::dispatch::install_default_registry();
+        let mut state = CombatState::default();
+        let _enemy = history_course_setup(&mut state, 2);
+        let push = |state: &mut CombatState, id: CardId| {
+            let mut c = crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+            let uid =
+                sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).unwrap()).unwrap();
+            c.uid = uid;
+            state.cards.push(c);
+            uid
+        };
+        let strike = push(&mut state, CardId::StrikeIronclad);
+        state.cards[strike.0.get() as usize - 1].base_replay_count = 2;
+        state.player.discard.push(strike);
+        let suid = sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits"))
+            .expect("nz");
+        let mut stomp = Card::pod_defaults();
+        stomp.uid = suid;
+        stomp.card_id = CardId::Stomp;
+        stomp.cost = 3;
+        state.cards.push(stomp);
+        state.player.hand.push(suid);
+        state.combat_log.prev_round_last_attack_skill_played =
+            Some((CardId::StrikeIronclad, false, Some(strike)));
+        let _ = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
+        let cost = state
+            .cards
+            .iter()
+            .find(|c| c.uid == suid)
+            .expect("stomp")
+            .cost;
+        assert_eq!(
+            cost, 0,
+            "one Stomp shave per play iteration (1 play + 2 replays)"
         );
     }
 

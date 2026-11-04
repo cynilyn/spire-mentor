@@ -9867,6 +9867,39 @@ mod tests {
     }
 
     #[test]
+    fn shop_buy_relic_rolls_upon_pickup_rewards_before_courier_restock() {
+        use crate::runstate::{PotionReward, Reward};
+        fn stub_restock(
+            rs: &mut RunState,
+            inv: &mut crate::shop::ShopInventory,
+            slot: crate::shop::ShopSlot,
+        ) {
+            // Record how many potions were already on the belt at restock time.
+            if let crate::shop::ShopSlot::Relic(i) = slot {
+                inv.relics[i].price = 100 + i32::try_from(rs.potions.len()).expect("small");
+            }
+        }
+        let mut inv = make_test_shop_inventory();
+        inv.relics[0].price = 50;
+        let mut rm = make_rm_in_shop_phase_with_inventory(inv)
+            .with_content_callbacks(drain_test_callbacks());
+        rm.callbacks.restock_shop_entry = Some(stub_restock);
+        rm.run_state.relics.push(crate::RelicId::TheCourier);
+        for _ in 0..2 {
+            rm.run_state
+                .pending_rewards
+                .push(Reward::Potion(PotionReward::empty()));
+        }
+        let res = rm.take_action(RunAction::ShopBuyRelic { idx: 0 });
+        assert_eq!(res, ActionResult::Advanced);
+        let inv = rm.shop_inventory.as_ref().expect("shop inventory present");
+        assert_eq!(
+            inv.relics[0].price, 102,
+            "both upon-pickup potions were rolled before the Courier restock"
+        );
+    }
+
+    #[test]
     fn shop_buy_relic_surfaces_upon_pickup_card_reward_then_returns_to_shop() {
         // Orrery-style pickup: the relic's card offering is picked right there
         // and the player is back in the shop afterwards (act23 probe

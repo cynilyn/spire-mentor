@@ -2855,6 +2855,11 @@ pub struct PendingDrawResume {
     /// resumed draw finishes the loop re-tests the drawn card and keeps
     /// drawing — [`CombatState::pillage_draw_loop`].
     pub then_pillage_loop: bool,
+    /// Set by Brightest Flame when its `Draw` suspended: C# awaits the draw
+    /// before `CreatureCmd.LoseMaxHp(…, isFromCard: true)`
+    /// (BrightestFlame.cs:29-31, both builds), so the player's max HP drops
+    /// once the resumed draw finishes. `0` = no deferred loss.
+    pub then_lose_max_hp_from_card: i32,
     /// [`CombatState::last_drawn_card`] when the draw suspended, restored
     /// before the resume: a draw that suspended AFTER taking its card (an
     /// on-draw Hellraiser auto-play that opened a select) still reports that
@@ -3055,6 +3060,14 @@ pub enum EndTurnResume {
     /// (Chains clear, orb passives, phase advance) and the rest of the chain
     /// are owed.
     AfterBeforeTurnEnd,
+    /// Suspended inside phase two's player `AfterSideTurnEnd` power walk: a
+    /// Dark Embrace draw's reshuffle opened a Stratagem select. The relic
+    /// turn end, the late powers, the end-of-turn checks and the rest of the
+    /// chain are owed.
+    AfterTurnEndPowers {
+        /// ConsumingShadow already evoked ahead of the power walk.
+        consuming_shadow_early: bool,
+    },
 }
 
 /// Continuation that re-enters a re-selection auto-play loop for its
@@ -3506,6 +3519,21 @@ pub struct TurnEvents {
     /// `end_player_turn_phase_two`; reset in [`Self::reset_per_turn`].
     /// (sweep seed 5003: FISTICUFFS block 10 + Disintegration 6.)
     pub block_before_late_turn_end: i32,
+    /// Set when a shuffle's power-side `AfterShuffle` (Stratagem) opened its
+    /// select: the relic `after_shuffle` bus (Biiig Hug, The Abacus) comes
+    /// after the player's powers in C# `Hook.AfterShuffle`
+    /// (`IterateCombatHookListeners`, Hook.cs:1286-1295) and is awaited
+    /// behind the select, so it fires once the pick resolves. Holds the
+    /// shuffle's `from_reshuffle` flag; `None` at rest. See
+    /// [`CombatState::fire_after_shuffle`].
+    pub after_shuffle_relics_deferred: Option<bool>,
+    /// C# `NightmarePower.SetSelectedCard` stores `card.CreateClone()` (with
+    /// the affliction cleared) at select time (NightmarePower.cs:57-63, both
+    /// builds); `BeforeHandDraw` clones that snapshot, not the live card. So a
+    /// play, upgrade or cost change of the original after the select (Glam's
+    /// used bit) does not reach the next-turn copies. Keyed by the Nightmare
+    /// power instance; the entry leaves with the power.
+    pub nightmare_snapshots: Vec<(PowerUid, crate::cards::Card)>,
     /// Player hand size snapshotted where C# `Hook.BeforeSideTurnEnd` runs
     /// (`Regret.BeforeSideTurnEnd` stores `CardsInHand`, Regret.cs:41-52),
     /// BEFORE `DoTurnEnd`'s `OrbQueue.BeforeTurnEnd` (CombatManager.cs:1563
@@ -3577,6 +3605,26 @@ pub struct TurnEvents {
     /// the way out, so it is `false` between `apply()` calls (not hashed).
     /// Its only reader is the v0.111.0-only `OneForAllPower` (GH #798).
     pub resolving_auto_play: bool,
+    /// `RupturePower`'s deferred Strength, keyed by the card whose play owes
+    /// it — C# `RupturePower.Data.playedCards` (`Dictionary<CardModel,int>`,
+    /// RupturePower.cs, both builds). The self-HP-loss of a card being played
+    /// adds to that card's entry; that card's `AfterCardPlayed` removes and
+    /// applies only its own entry, so a play nested inside it (a Hellraiser
+    /// auto-play out of Offering's draw) does not flush the outer card's
+    /// Strength (act23 Ironclad-6029). Engine-private scratch: empty at rest,
+    /// never serialized nor hashed. See
+    /// [`CombatState::accumulate_rupture_deferred_strength`].
+    pub rupture_deferred_strength: Vec<(CardUid, i32)>,
+    /// `true` while damage that C# deals with `cardSource = null` but Rust
+    /// routes with `dealer = CreatureRef::Player` is landing (Galvanic's
+    /// after-played self-damage, GalvanicPower.cs). Rupture then grants its
+    /// Strength at once, as C# `RupturePower.AfterDamageReceived` does for a
+    /// null `cardSource`, instead of charging it to whatever card is
+    /// resolving — inside a Cascade auto-play that is the enclosing Cascade,
+    /// whose drain comes after the next auto-played card (seed 4536). Set
+    /// and cleared around the hit; `false` at rest, never serialized nor
+    /// hashed.
+    pub cardless_player_damage: bool,
     /// This combat sits on one of Fur Coat's marked map points, so an enemy
     /// added to it later (a summon) starts at 1 HP:
     /// `FurCoat.AfterCreatureAddedToCombat` (FurCoat.cs:151-163). Raised by
@@ -5744,65 +5792,51 @@ impl CombatState {
         acc
     }
 
-    /// Accumulate `delta` Strength onto the player's `Rupture` power's
-    /// per-instance `counter` (the deferred-Strength bucket), mirroring C#
+    /// Owe `delta` Rupture Strength to the play of `card`, mirroring C#
     /// `RupturePower.AfterDamageReceived`'s `playedCards[cardSource] += Amount`
-    /// branch (`MegaCrit.Sts2.Core.Models.Powers/RupturePower.cs:55`). Used
-    /// when the HP-loss that triggered Rupture was inflicted by the
-    /// currently-playing card, so the Strength must land only *after* the
-    /// card finishes resolving (and thus not buff the card's own hits).
+    /// branch (`MegaCrit.Sts2.Core.Models.Powers/RupturePower.cs`, both
+    /// builds). Used when the HP-loss that triggered Rupture was inflicted by
+    /// the card being played, so the Strength lands only *after* that card
+    /// finishes resolving (and thus never buffs its own hits).
     ///
-    /// The `counter` field is engine-private scratch (never serialized — the
-    /// parity exporter emits only `amount`) and is drained back to `0` by
-    /// [`Self::drain_rupture_deferred_strength`] at the `after_card_played`
-    /// boundary, so it is always `0` at rest. No-op if the player has no
-    /// Rupture instance. Bead `sts2-rs-22ttw`.
-    pub fn accumulate_rupture_deferred_strength(&mut self, delta: i32) {
+    /// Keyed by card like the C# dictionary
+    /// ([`TurnEvents::rupture_deferred_strength`]), so a play nested inside
+    /// `card` (a Hellraiser auto-play out of Offering's draw) drains only its
+    /// own entry. Drained by [`Self::drain_rupture_deferred_strength`] at that
+    /// card's `after_card_played`, so empty at rest. No-op if the player has no
+    /// Rupture instance. Beads `sts2-rs-22ttw`; act23 Ironclad-6029.
+    pub fn accumulate_rupture_deferred_strength(&mut self, card: CardUid, delta: i32) {
         if delta == 0 {
             return;
         }
         // Perf 2026-07-04: `present_kinds` is a superset of live kinds, so
-        // "no Rupture anywhere" provably means the union walk below would
-        // find nothing — skip it (the common case on the search hot path).
+        // "no Rupture anywhere" provably means no instance owes anything.
         if !self.powers.present_kinds().contains(PowerKind::Rupture) {
             return;
         }
-        let Some(uid) = self.player_power_uids().into_iter().find(|uid| {
-            self.powers
-                .get_by_id(uid.0)
-                .is_some_and(|p| p.kind == PowerKind::Rupture)
-        }) else {
-            return;
-        };
-        if let Some(pow) = self.powers.get_mut_by_id(uid.0) {
-            pow.counter = pow.counter.saturating_add(delta);
+        let owed = &mut self.combat_log.rupture_deferred_strength;
+        if let Some(entry) = owed.iter_mut().find(|(c, _)| *c == card) {
+            entry.1 = entry.1.saturating_add(delta);
+        } else {
+            owed.push((card, delta));
         }
     }
 
-    /// Drain and return the player's `Rupture` deferred-Strength accumulator
-    /// (the per-instance `counter`), resetting it to `0`. Returns `0` when no
-    /// Rupture instance exists or nothing was deferred. Called once by
-    /// [`crate::combat_loop::play_card`] right after the `after_card_played`
-    /// dispatch to apply C#'s deferred `PowerCmd.Apply<StrengthPower>` from
-    /// `RupturePower.AfterCardPlayed`. Bead `sts2-rs-22ttw`.
-    pub fn drain_rupture_deferred_strength(&mut self) -> i32 {
-        // Perf 2026-07-04: same `present_kinds` early-out as
-        // `accumulate_rupture_deferred_strength` — this runs once per card
-        // play, and Rupture is almost never live.
-        if !self.powers.present_kinds().contains(PowerKind::Rupture) {
-            return 0;
-        }
-        let Some(uid) = self.player_power_uids().into_iter().find(|uid| {
-            self.powers
-                .get_by_id(uid.0)
-                .is_some_and(|p| p.kind == PowerKind::Rupture)
-        }) else {
+    /// Remove and return the Rupture Strength owed to the play of `card`
+    /// (C# `RupturePower.AfterCardPlayed`'s `playedCards.Remove(card, out
+    /// value)`). Returns `0` when nothing is owed to `card`, or when the
+    /// Rupture power is gone (its `AfterCardPlayed` no longer listens). Called
+    /// by [`crate::combat_loop::flush_rupture_deferred_strength`].
+    pub fn drain_rupture_deferred_strength(&mut self, card: CardUid) -> i32 {
+        let owed = &mut self.combat_log.rupture_deferred_strength;
+        let Some(pos) = owed.iter().position(|(c, _)| *c == card) else {
             return 0;
         };
-        if let Some(pow) = self.powers.get_mut_by_id(uid.0) {
-            let owed = pow.counter;
-            pow.counter = 0;
-            owed
+        let (_, amount) = owed.swap_remove(pos);
+        if self.powers.present_kinds().contains(PowerKind::Rupture)
+            && self.player_power_amount(PowerKind::Rupture) > 0
+        {
+            amount
         } else {
             0
         }
@@ -7662,14 +7696,7 @@ impl CombatState {
                         &perfect_fit_order,
                     );
                     self.player.draw = draw_buf;
-                    let ctx = crate::relic_effects::ShuffleCtx {
-                        from_reshuffle: true,
-                    };
-                    let _ = crate::relic_effects::dispatch_after_shuffle_bus(self, &ctx);
-                    crate::hooks::dispatch_after_shuffle(
-                        self,
-                        &crate::hooks::CombatLifecycleCtx::default(),
-                    );
+                    self.fire_after_shuffle(true);
                     if self.pending_choice.is_some() {
                         // Suspend: the current card has NOT been drawn.
                         self.pending_draw_resume = Some(PendingDrawResume {
@@ -7885,6 +7912,15 @@ impl CombatState {
                 return Some(StepResult::PendingChoice);
             }
         }
+        if pdr.then_lose_max_hp_from_card > 0 {
+            if let Some(player_uid) = self.player.creature_uid {
+                let _ = self.creature_lose_max_hp_from(
+                    player_uid,
+                    pdr.then_lose_max_hp_from_card,
+                    true,
+                );
+            }
+        }
         if pdr.then_put_back_from_hand {
             self.open_put_back_from_hand();
             if self.pending_choice.is_some() {
@@ -7935,6 +7971,7 @@ impl CombatState {
         again.then_discard_from_hand = again.then_discard_from_hand.max(pdr.then_discard_from_hand);
         again.then_draw += pdr.then_draw;
         again.then_pillage_loop |= pdr.then_pillage_loop;
+        again.then_lose_max_hp_from_card += pdr.then_lose_max_hp_from_card;
         true
     }
 
@@ -7957,9 +7994,22 @@ impl CombatState {
     /// The do/while is unbounded in C# too: an auto-play-on-draw power over
     /// an all-Attack pool that never fills the hand recycles forever. A
     /// recycle that deals damage ends when the enemies die; one that goes
-    /// nowhere is cut once a full draw cycle passes with no enemy hp+block
-    /// lost (bead `sts2-rs-65mbx`). A resumed loop restarts that window.
+    /// nowhere is cut once a full draw cycle passes with no progress (bead
+    /// `sts2-rs-65mbx`). A resumed loop restarts that window.
+    ///
+    /// Progress is the enemies' hp+block reaching a new low OR the sum of the
+    /// player's power amounts reaching a new high: a recycle of Setup Strikes
+    /// at deeply negative Strength deals nothing for a while but climbs toward
+    /// a kill, and C# runs it to the end (act23 Ironclad-8109 act 3 @1155:
+    /// Strength -96, 15 Setup Strikes, then the hits killed The Lost inside
+    /// one Pillage play). Only new extremes count, so a recycle that merely
+    /// oscillates (a power gained and spent each lap) still terminates. A
+    /// climb that can never kill (a damage-capped enemy) is cut by the hard
+    /// `PILLAGE_MAX_DRAWS` backstop instead of hanging like the real game.
     pub fn pillage_draw_loop(&mut self, resumed: bool) {
+        /// Hard draw cap per (re-)entry: C#'s loop has none, so any cap is a
+        /// deviation reachable only when the game itself would hang.
+        const PILLAGE_MAX_DRAWS: usize = 4096;
         let enemy_hp_block_total = |s: &CombatState| -> i64 {
             s.enemy_uids
                 .iter()
@@ -7967,10 +8017,19 @@ impl CombatState {
                 .map(|c| i64::from(c.current_hp) + i64::from(c.block))
                 .sum()
         };
+        let player_power_total = |s: &CombatState| -> i64 {
+            s.player_power_uids()
+                .iter()
+                .filter_map(|u| s.powers.get_by_id(u.0))
+                .map(|p| i64::from(p.amount))
+                .sum()
+        };
         // One full recycle of the player's cards bounds a no-progress window.
         let stuck_limit = self.cards.len() + 16;
-        let mut prev_enemy_total = enemy_hp_block_total(self);
+        let mut min_enemy_total = enemy_hp_block_total(self);
+        let mut max_player_powers = player_power_total(self);
         let mut stuck = 0usize;
+        let mut draws = 0usize;
         let mut draw_next = !resumed;
         loop {
             if draw_next {
@@ -7993,9 +8052,16 @@ impl CombatState {
             if self.player.hand.len() >= 10 {
                 break;
             }
+            draws += 1;
+            if draws >= PILLAGE_MAX_DRAWS {
+                break; // hard backstop (see PILLAGE_MAX_DRAWS)
+            }
             let now_enemy_total = enemy_hp_block_total(self);
-            if now_enemy_total < prev_enemy_total {
-                prev_enemy_total = now_enemy_total; // progress: may be a winning loop
+            let now_player_powers = player_power_total(self);
+            if now_enemy_total < min_enemy_total || now_player_powers > max_player_powers {
+                // Progress: may be a winning loop.
+                min_enemy_total = min_enemy_total.min(now_enemy_total);
+                max_player_powers = max_player_powers.max(now_player_powers);
                 stuck = 0;
             } else {
                 stuck += 1;
@@ -8035,6 +8101,35 @@ impl CombatState {
     /// Mayhem auto-play so a reshuffle it triggers fires Stratagem (and can
     /// suspend) exactly like C# `CardPileCmd.AutoPlayFromDrawPile`'s
     /// `ShuffleIfNecessary`. Bead `sts2-rs-o0rz3`.
+    /// C# `Hook.AfterShuffle` (Hook.cs:1286-1295, both builds): walk
+    /// `IterateCombatHookListeners` — the player's powers (Stratagem), then
+    /// their relics (Biiig Hug, The Abacus) — awaiting each. Stratagem's
+    /// select therefore resolves before Biiig Hug rolls the Soot's random
+    /// depth over the (now shorter) draw pile. When the select surfaces, the
+    /// relic bus is parked on [`TurnEvents::after_shuffle_relics_deferred`]
+    /// and fired by [`Self::fire_deferred_after_shuffle_relics`] once the
+    /// pick resolves.
+    pub(crate) fn fire_after_shuffle(&mut self, from_reshuffle: bool) {
+        let had_choice = self.pending_choice.is_some();
+        crate::hooks::dispatch_after_shuffle(self, &crate::hooks::CombatLifecycleCtx::default());
+        if !had_choice && self.pending_choice.is_some() {
+            self.combat_log.after_shuffle_relics_deferred = Some(from_reshuffle);
+            return;
+        }
+        let ctx = crate::relic_effects::ShuffleCtx { from_reshuffle };
+        let _ = crate::relic_effects::dispatch_after_shuffle_bus(self, &ctx);
+    }
+
+    /// The relic half of a [`Self::fire_after_shuffle`] that waited on a
+    /// Stratagem select. Called from the choice resolver right after the
+    /// pick lands, before any suspended draw resumes.
+    pub(crate) fn fire_deferred_after_shuffle_relics(&mut self) {
+        if let Some(from_reshuffle) = self.combat_log.after_shuffle_relics_deferred.take() {
+            let ctx = crate::relic_effects::ShuffleCtx { from_reshuffle };
+            let _ = crate::relic_effects::dispatch_after_shuffle_bus(self, &ctx);
+        }
+    }
+
     pub(crate) fn reshuffle_into_draw_with_after_shuffle(&mut self) -> bool {
         if !self.player.draw.is_empty() || self.player.discard.is_empty() {
             return false;
@@ -8056,14 +8151,7 @@ impl CombatState {
                 &perfect_fit_order,
             );
             self.player.draw = draw_buf;
-            let ctx = crate::relic_effects::ShuffleCtx {
-                from_reshuffle: true,
-            };
-            let _ = crate::relic_effects::dispatch_after_shuffle_bus(self, &ctx);
-            crate::hooks::dispatch_after_shuffle(
-                self,
-                &crate::hooks::CombatLifecycleCtx::default(),
-            );
+            self.fire_after_shuffle(true);
         }
         shuffled
     }
@@ -8116,6 +8204,107 @@ impl CombatState {
             }
         }
 
+        // C# `Hook.AfterCardDrawn` (Hook.cs:345-361, v0.107.1 and v0.111.0)
+        // runs two passes, each a fresh `IterateCombatHookListeners`: every
+        // listener's `AfterCardDrawnEarly`, then every listener's
+        // `AfterCardDrawn`. The only Early listener is HellraiserPower, whose
+        // auto-play of a drawn Strike is awaited in full (its OnPlay, its
+        // nested draws with their own complete `AfterCardDrawn`, its move to
+        // the result pile) before the normal pass starts. So every rider below
+        // sees the post-auto-play state: Confused's cost roll comes after the
+        // auto-play spent the pre-roll cost (`EnergyValue`, CardCmd.cs:125-126)
+        // and after the nested draws rolled, and Chains of Binding counts the
+        // `Bound`s those nested draws took (act23 Ironclad:6183 / 8149 / 8061).
+        // Each pass's iterator yields nothing once the combat is over or
+        // ending (`IsOverOrEnding && !IsStarting`), so a Strike whose auto-play
+        // wins the fight takes no normal-pass rider at all.
+        //
+        // Bead `sts2-rs-bsj93`: walk the mirror+legacy power UNION via
+        // `player_power_amount` — the card-driven `apply_power_to_player`
+        // routes through `apply_power_to_creature` when `player.creature_uid`
+        // is set, so the power lands on `state.creatures[uid].powers`.
+        let has_hellraiser = self.player_power_amount(PowerKind::Hellraiser) > 0;
+        // `HellraiserPower.AfterCardDrawnEarly` (`HellraiserPower.cs:37-68`)
+        // auto-plays every drawn Strike, with ONE cap: while every hittable
+        // enemy shows infinite HP (`HittableEnemies.All(c =>
+        // c.HpDisplay.IsInfinite())`, :45 — the beaten Waterfall Giant at
+        // 999,999,999, or a saturated Hardened Shell), at most 9 Strikes per
+        // turn are auto-played (:47-56); the rest stay in hand. The counter is
+        // reset when a Strike is drawn while some hittable enemy shows finite
+        // HP (:58-61) and at the owner's side-turn end (:70-78). Without the
+        // cap, Pillage's draw-until-a-non-Attack loop (`Pillage.cs:28-33`)
+        // against the beaten giant never fills the hand (GH #832, a search
+        // hang). [`Self::hellraiser_infinite_auto_play_gate`] keeps the counter.
+        //
+        // The infinite branch also covers an EMPTY hittable set (`All` of
+        // nothing is true). C# `CardCmd.AutoPlay` then rolls no target and
+        // moves the Strike to its result pile without playing it
+        // (`CardCmd.cs:76-86`), which `resolve_auto_played_card` mirrors. A
+        // Strike drawn after Twin Strike downs TestSubject (an Adaptable
+        // corpse keeps the combat open) is still discarded; one drawn once the
+        // combat ends stays in hand (act23 Ironclad:1006).
+        //
+        // Under Hellraiser every draw routes through the per-card
+        // [`Self::draw_suspending`] loop ([`Self::per_card_draw_loop_required`]),
+        // so `drawn` holds one card and running the Early pass over the whole
+        // slice before the normal pass is exact.
+        let mut early_auto_played: smallvec::SmallVec<[CardUid; 1]> = smallvec::SmallVec::new();
+        if has_hellraiser {
+            for &uid in &drawn {
+                if crate::combat_loop::combat_is_ending(self) {
+                    break;
+                }
+                let is_strike = self
+                    .cards
+                    .get((uid.get() as usize).saturating_sub(1))
+                    .is_some_and(|c| c.has_tag(crate::cards::CardTag::Strike));
+                if !is_strike {
+                    continue;
+                }
+                let all_hittable_infinite = self.all_hittable_enemies_show_infinite_hp();
+                if !self.hellraiser_infinite_auto_play_gate(all_hittable_infinite) {
+                    continue;
+                }
+                early_auto_played.push(uid);
+                // C# `CardCmd.AutoPlay(choiceContext, card, null)`
+                // (`CardCmd.cs:33-109`) is a FREE play (`EnergySpent = 0`)
+                // that, for an `AnyEnemy` card with a null target, rolls
+                // `CombatTargets.NextItem(HittableEnemies)` before the play
+                // resolves (a read even with one hittable enemy). Route
+                // through the shared FREE auto-play dispatcher
+                // [`crate::combat_loop::resolve_auto_played_card`] (the
+                // Stampede pattern, bead `sts2-rs-lmfsm`), NOT `play_card`,
+                // which no-ops outside `PlayerPlayPhase` (the turn-start hand
+                // draw runs in `PlayerTurnStart`: HELLRAISER+1 quick-sweep seed
+                // 40) and spends energy.
+                if let Some(pos) = self.player.hand.iter().position(|u| *u == uid) {
+                    self.player.hand.remove(pos);
+                    self.player.play.push(uid);
+                    crate::combat_loop::resolve_auto_played_card(
+                        self, uid, /*force_exhaust=*/ false,
+                    );
+                }
+            }
+            if crate::combat_loop::combat_is_ending(self) {
+                // The normal pass is empty. Iteration's first-Status gate
+                // reads `CardDrawnEntry` history, not a listener, so a drawn
+                // Status still counts toward it.
+                for &uid in &drawn {
+                    if self
+                        .cards
+                        .get((uid.get() as usize).saturating_sub(1))
+                        .is_some_and(|c| c.card_type == crate::cards::CardType::Status)
+                    {
+                        self.combat_log.status_cards_drawn_this_turn = self
+                            .combat_log
+                            .status_cards_drawn_this_turn
+                            .saturating_add(1);
+                    }
+                }
+                return;
+            }
+        }
+
         // Silent `SpeedsterPower.AfterCardDrawn` (C# `SpeedsterPower.cs:18-27`):
         // for each card drawn NOT via the turn-start hand draw
         // (`fromHandDraw == false` — the C# default for every `CardPileCmd.Draw`
@@ -8137,45 +8326,6 @@ impl CombatState {
         } else {
             0
         };
-
-        // Bead `sts2-rs-bsj93`: HellraiserPower.AfterCardDrawnEarly (C#
-        // `HellraiserPower.cs:34-42`). Must walk the mirror+legacy power
-        // UNION via `player_power_amount` — the card-driven
-        // `apply_power_to_player` routes through
-        // `apply_power_to_creature` when `player.creature_uid` is set,
-        // so the power lands on `state.creatures[uid].powers`, NOT on
-        // `state.player.powers`. A raw `self.player.powers` scan silently
-        // misses the Hellraiser instance in real combat (same class of
-        // bug fixed for Vigor in `feedback_player_consume_must_walk_mirror_union`).
-        let has_hellraiser = self.player_power_amount(PowerKind::Hellraiser) > 0;
-        // C# v0.107.1 `HellraiserPower.AfterCardDrawnEarly`
-        // (`HellraiserPower.cs:37-68`) auto-plays every drawn Strike, with ONE
-        // cap: while every hittable enemy shows infinite HP
-        // (`HittableEnemies.All(c => c.HpDisplay.IsInfinite())`, :45 — the
-        // beaten Waterfall Giant at 999,999,999, or a saturated Hardened
-        // Shell), at most 9 Strikes per turn are auto-played (:47-56); the
-        // rest stay in hand. The counter is reset when a Strike is drawn while
-        // some hittable enemy shows finite HP (:58-61) and at the owner's
-        // side-turn end (:70-78). Without the cap, Pillage's draw-until-a-
-        // non-Attack loop (`Pillage.cs:28-33`) against the beaten giant never
-        // fills the hand: every auto-played Strike chips the 999,999,999
-        // sentinel and is reshuffled and redrawn (GH #832, a search hang).
-        // [`Self::hellraiser_infinite_auto_play_gate`] keeps the counter.
-        //
-        // The infinite branch also covers an EMPTY hittable set (`All` of
-        // nothing is true). C# `CardCmd.AutoPlay` then rolls no target and
-        // moves the Strike to its result pile without playing it
-        // (`CardCmd.cs:76-86`), which `resolve_auto_played_card` mirrors. The
-        // only gate AutoPlay adds is `IsOverOrEnding` (:35): a Strike drawn
-        // after Twin Strike downs TestSubject (an Adaptable corpse keeps the
-        // combat open) is still discarded, one drawn once the combat ends
-        // stays in hand (act23 Ironclad:1006). Evaluated once: under
-        // Hellraiser the draw routes through the per-card
-        // [`Self::draw_suspending`] loop, which calls this fn once per single
-        // drawn card, so both reads reflect every prior auto-play.
-        let combat_ending = has_hellraiser && crate::combat_loop::combat_is_ending(self);
-        let hellraiser_all_hittable_infinite =
-            has_hellraiser && self.all_hittable_enemies_show_infinite_hp();
 
         // Bead `sts2-rs-lj36b`: ConfusedPower.AfterCardDrawn (Snecko Eye /
         // FAKE_SNECKO_EYE). C# `ConfusedPower.cs::AfterCardDrawn` re-rolls
@@ -8260,11 +8410,6 @@ impl CombatState {
         // `CacophonyPower`'s `CardsVar(33)` (decomp CacophonyPower.cs:20).
         const CACOPHONY_CARDS: i32 = 33;
 
-        let mut auto_play_uids: smallvec::SmallVec<[CardUid; 4]> = smallvec::SmallVec::new();
-        // Hellraiser-auto-played Strikes whose ChainsOfBinding `Bound` lands
-        // only AFTER the auto-play (see the Chains block in the loop).
-        let mut chains_bound_after_auto_play: smallvec::SmallVec<[CardUid; 4]> =
-            smallvec::SmallVec::new();
         // Bead `sts2-rs-q6bix` (F-S): accumulated AutomationPower energy
         // gain, applied once after the per-card loop (deferred past the
         // `self.powers` borrow).
@@ -8311,10 +8456,6 @@ impl CombatState {
             // Captured under the same immutable `card` borrow; consumed by the
             // Iteration first-status-of-turn gate below.
             let card_type = card.card_type;
-            // Short-circuit order (perf 2026-07-04): the gate flag is checked
-            // BEFORE the per-card predicate so the predicate (a pure read) is
-            // only evaluated when its consumer below could act on it.
-            let is_strike = has_hellraiser && card.has_tag(crate::cards::CardTag::Strike);
             // Captured under the same immutable `card` borrow as `card_id`;
             // consumed by the Pagestorm accumulation below (bead `sts2-rs-4wppb`).
             // C# reads `card.Keywords`, which folds `Hook.ModifyKeywordsInCombat`
@@ -8437,38 +8578,16 @@ impl CombatState {
             // `CardModel.Affliction` semantics, and `Bound`'s `CanAfflict`
             // returns false on already-afflicted cards.
             //
-            // C# `Hook.AfterCardDrawn` (Hook.cs:346-362) runs EVERY listener's
-            // `AfterCardDrawnEarly` before any `AfterCardDrawn`, so a Strike
-            // HellraiserPower auto-plays (`AfterCardDrawnEarly`) is played
-            // UNafflicted and only then takes Chains' `Bound`. Decide the
-            // auto-play first; for such a Strike spend the Chains budget now
-            // (the `CardAfflictedEntry` lands before the next card's draw) but
-            // set `Bound` after the auto-play, so the play neither trips
-            // `ShouldPlay` nor sets `boundCardPlayed` (act23 Ironclad:1007).
-            let hellraiser_auto_plays = is_strike
-                && self.hellraiser_infinite_auto_play_gate(hellraiser_all_hittable_infinite)
-                && !combat_ending;
-            if hellraiser_auto_plays {
-                auto_play_uids.push(uid);
-            }
+            // A Strike HellraiserPower auto-played in the Early pass above was
+            // played UNafflicted (so the play neither tripped `ShouldPlay` nor
+            // set `boundCardPlayed`, act23 Ironclad:1007) and takes `Bound`
+            // here, after its nested draws took theirs (`Bound.CanAfflict`
+            // ignores the card's pile).
+            let auto_played = early_auto_played.contains(&uid);
             if chains_stacks > 0
                 && self.combat_log.bound_cards_afflicted_by_chains_this_turn < chains_stacks
             {
-                if hellraiser_auto_plays {
-                    if self.cards.get(idx).is_some_and(|c| {
-                        c.affliction.is_none()
-                            && crate::card_afflictions::CardAffliction::can_afflict_card_type(
-                                crate::card_afflictions::CardAfflictionKind::Bound,
-                                c.card_type,
-                            )
-                    }) {
-                        chains_bound_after_auto_play.push(uid);
-                        self.combat_log.bound_cards_afflicted_by_chains_this_turn = self
-                            .combat_log
-                            .bound_cards_afflicted_by_chains_this_turn
-                            .saturating_add(1);
-                    }
-                } else if let Some(c) = self.cards.get_mut(idx) {
+                if let Some(c) = self.cards.get_mut(idx) {
                     if c.affliction.is_none()
                         && crate::card_afflictions::CardAffliction::can_afflict_card_type(
                             crate::card_afflictions::CardAfflictionKind::Bound,
@@ -8576,7 +8695,7 @@ impl CombatState {
             // the hand by then and `Slither.AfterCardDrawn` returns on
             // `Pile.Type != Hand` without a `CombatEnergyCosts` roll
             // (`Hook.cs:346-361`, act23 Ironclad:4092).
-            if !hellraiser_auto_plays {
+            if !auto_played {
                 crate::enchantment_hooks::dispatch_on_card_drawn(self, uid, from_hand_draw);
             }
         }
@@ -8675,46 +8794,6 @@ impl CombatState {
             crate::event_log::flash_player_power(self, PowerKind::Iteration);
             crate::cards::draw_via_state(self, iteration_draws);
         }
-
-        // Bead `sts2-rs-bsj93`: Hellraiser auto-plays Strike cards as drawn.
-        // C# `CardCmd.AutoPlay(choiceContext, card, null)` (`CardCmd.cs:33-109`)
-        // is a FREE play (`ResourceInfo.EnergySpent = 0`, :104) that — for an
-        // `AnyEnemy`/`Enemy`-targeted card with a null target — rolls
-        //   `card.Owner.RunState.Rng.CombatTargets.NextItem(combatState.HittableEnemies)`
-        // (:56-66) at auto-play time, *before* the play resolves. The roll
-        // consumes a `CombatTargets` read even when only one enemy is hittable
-        // (C# `NextInt` on a 1-element range still advances the counter).
-        //
-        // Route through the shared FREE auto-play dispatcher
-        // [`crate::combat_loop::resolve_auto_played_card`] (the Stampede
-        // hand-side pattern, bead `sts2-rs-lmfsm`), which resolves an Enemy
-        // target via [`Self::get_random_enemy`] off the `combat_targets`
-        // stream — NOT through `play_card`: the latter (a) no-ops outside
-        // `PlayerPlayPhase`, silently skipping every TURN-START draw (the
-        // hand draw runs in `PlayerTurnStart`, before the step-11 phase flip
-        // — the HELLRAISER+1 quick-sweep divergence, seed 40), and (b)
-        // spends energy, while C# AutoPlay is free.
-        for uid in auto_play_uids {
-            if let Some(pos) = self.player.hand.iter().position(|u| *u == uid) {
-                self.player.hand.remove(pos);
-                self.player.play.push(uid);
-                crate::combat_loop::resolve_auto_played_card(
-                    self, uid, /*force_exhaust=*/ false,
-                );
-            }
-            // Chains' `AfterCardDrawn` half for this Strike, now that it has
-            // been played (C# `Bound.CanAfflict` ignores the card's pile).
-            if chains_bound_after_auto_play.contains(&uid) {
-                if let Some(c) = self.cards.get_mut(uid.0.get() as usize - 1) {
-                    if c.affliction.is_none() {
-                        let _ = c.set_affliction(crate::card_afflictions::CardAffliction::new(
-                            crate::card_afflictions::CardAfflictionKind::Bound,
-                            1,
-                        ));
-                    }
-                }
-            }
-        }
     }
 
     /// Shuffle the player's draw pile in place and fire the
@@ -8759,17 +8838,11 @@ impl CombatState {
         // C# `CardPileCmd.Shuffle` runs `Hook.ModifyShuffleOrder` before
         // `Hook.AfterShuffle`, so a BiiigHug Soot lands at a random position
         // in the already-reordered pile and can sit above a PerfectFit card.
-        let ctx = crate::relic_effects::ShuffleCtx {
-            from_reshuffle: false,
-        };
-        let _ = crate::relic_effects::dispatch_after_shuffle_bus(self, &ctx);
-        // Bead `sts2-rs-63mew`: power-side `after_shuffle` walk — C#'s
-        // `CardPileCmd.Shuffle` ends with `Hook.AfterShuffle`
+        // C#'s `CardPileCmd.Shuffle` ends with `Hook.AfterShuffle`
         // (CardPileCmd.cs:857) for explicit shuffles (Reboot,
-        // BottledPotential) too, so a Stratagem stack grid-selects here
-        // as well. No draw is in progress at this surface, so the
-        // opened choice needs no suspension plumbing.
-        crate::hooks::dispatch_after_shuffle(self, &crate::hooks::CombatLifecycleCtx::default());
+        // BottledPotential) too, so a Stratagem stack grid-selects here as
+        // well (bead `sts2-rs-63mew`); the relic half waits for the pick.
+        self.fire_after_shuffle(false);
     }
 
     /// Pop up to `count` cards from the top of the player's draw pile
@@ -8980,14 +9053,7 @@ impl CombatState {
                 );
                 self.player.draw = draw_buf;
             }
-            let ctx = crate::relic_effects::ShuffleCtx {
-                from_reshuffle: true,
-            };
-            let _ = crate::relic_effects::dispatch_after_shuffle_bus(self, &ctx);
-            crate::hooks::dispatch_after_shuffle(
-                self,
-                &crate::hooks::CombatLifecycleCtx::default(),
-            );
+            self.fire_after_shuffle(true);
             true
         } else {
             false
@@ -10243,6 +10309,12 @@ fn resume_suspended_end_turn(state: &mut CombatState) -> Option<StepResult> {
         EndTurnResume::AfterBeforeTurnEnd => Some(
             crate::combat_loop::resume_end_turn_after_before_turn_end(state),
         ),
+        EndTurnResume::AfterTurnEndPowers {
+            consuming_shadow_early,
+        } => Some(crate::combat_loop::resume_end_turn_after_turn_end_powers(
+            state,
+            consuming_shadow_early,
+        )),
     }
 }
 
@@ -10394,6 +10466,9 @@ fn resolve_choice_atomic(
                 }
                 ChoiceKind::AddFromDrawToHand => {
                     resolve_add_from_draw_to_hand(state, &pc, selection);
+                    // A Stratagem shuffle select: the relic `AfterShuffle`
+                    // listeners it held back run now, before the draw resumes.
+                    state.fire_deferred_after_shuffle_relics();
                 }
                 ChoiceKind::ForegoneConclusionFromDraw => {
                     resolve_foregone_conclusion_from_draw(state, &pc, selection);
@@ -11503,11 +11578,30 @@ fn resolve_clone_chosen_card_next_turn(
     };
     // C# `Nightmare.cs:44`: Apply trails the select and precedes SetSelectedCard.
     apply_post_choice_effect(state, pc.post_effect);
-    let stash = i32::try_from(uid.0.get()).unwrap_or(i32::MAX);
-    for power in state.powers.iter_mut().rev() {
-        if power.kind == PowerKind::Nightmare {
-            power.counter = stash;
-            break;
+    state.set_nightmare_selected_card(uid);
+}
+
+impl CombatState {
+    /// C# `NightmarePower.SetSelectedCard` on the freshest Nightmare instance:
+    /// stash the card uid in its `counter` and keep an affliction-free clone
+    /// taken NOW (NightmarePower.cs:57-63, both builds), so later changes to
+    /// the original do not reach the next-turn copies.
+    pub fn set_nightmare_selected_card(&mut self, uid: CardUid) {
+        let stash = i32::try_from(uid.0.get()).unwrap_or(i32::MAX);
+        let mut stashed_in = None;
+        for power in self.powers.iter_mut().rev() {
+            if power.kind == PowerKind::Nightmare {
+                power.counter = stash;
+                stashed_in = Some(PowerUid(power.id));
+                break;
+            }
+        }
+        if let (Some(puid), Some(card)) = (stashed_in, self.cards.get(uid.0.get() as usize - 1)) {
+            let mut snapshot = card.create_clone();
+            let _ = snapshot.clear_affliction();
+            let snaps = &mut self.combat_log.nightmare_snapshots;
+            snaps.retain(|(p, _)| *p != puid);
+            snaps.push((puid, snapshot));
         }
     }
 }
@@ -17793,45 +17887,34 @@ mod tests {
             .powers
             .push(mg_power(rupture_uid, PowerKind::Rupture, 1));
         state.player.powers.push(rupture_uid);
-        let str_uid = PowerUid::new(2).expect("nz");
-        state.powers.push(mg_power(str_uid, PowerKind::Strength, 5));
-        state.player.powers.push(str_uid);
+        let outer = CardUid::new(1).expect("nz");
+        let nested = CardUid::new(2).expect("nz");
 
-        state.accumulate_rupture_deferred_strength(0);
-        assert_eq!(
-            state.powers.get_mut_by_id(rupture_uid.0).unwrap().counter,
-            0,
-            "delta==0 must not touch the Rupture counter"
+        state.accumulate_rupture_deferred_strength(outer, 0);
+        assert!(
+            state.combat_log.rupture_deferred_strength.is_empty(),
+            "delta==0 owes nothing"
         );
 
-        state.accumulate_rupture_deferred_strength(3);
-        state.accumulate_rupture_deferred_strength(2);
+        state.accumulate_rupture_deferred_strength(outer, 3);
+        state.accumulate_rupture_deferred_strength(outer, 2);
+        state.accumulate_rupture_deferred_strength(nested, 1);
         assert_eq!(
-            state.powers.get_mut_by_id(rupture_uid.0).unwrap().counter,
+            state.drain_rupture_deferred_strength(nested),
+            1,
+            "a nested play drains only its own entry"
+        );
+        assert_eq!(
+            state.drain_rupture_deferred_strength(outer),
             5,
-            "accumulate must sum delta into the Rupture counter"
+            "the outer card's entry summed its deltas and survived the nested drain"
         );
         assert_eq!(
-            state.powers.get_mut_by_id(str_uid.0).unwrap().counter,
-            0,
-            "the non-Rupture power's counter must be untouched"
-        );
-
-        let owed = state.drain_rupture_deferred_strength();
-        assert_eq!(
-            owed, 5,
-            "drain must return the accumulated deferred Strength"
-        );
-        assert_eq!(
-            state.powers.get_mut_by_id(rupture_uid.0).unwrap().counter,
-            0,
-            "drain must reset the Rupture counter to 0"
-        );
-        assert_eq!(
-            state.drain_rupture_deferred_strength(),
+            state.drain_rupture_deferred_strength(outer),
             0,
             "second drain owes 0"
         );
+        assert!(state.combat_log.rupture_deferred_strength.is_empty());
     }
 
     #[test]
@@ -17840,15 +17923,15 @@ mod tests {
         let str_uid = PowerUid::new(1).expect("nz");
         state.powers.push(mg_power(str_uid, PowerKind::Strength, 5));
         state.player.powers.push(str_uid);
+        let card = CardUid::new(1).expect("nz");
 
-        state.accumulate_rupture_deferred_strength(4);
-        assert_eq!(
-            state.powers.get_mut_by_id(str_uid.0).unwrap().counter,
-            0,
-            "with no Rupture instance, accumulate must touch nothing"
+        state.accumulate_rupture_deferred_strength(card, 4);
+        assert!(
+            state.combat_log.rupture_deferred_strength.is_empty(),
+            "with no Rupture instance, accumulate must owe nothing"
         );
         assert_eq!(
-            state.drain_rupture_deferred_strength(),
+            state.drain_rupture_deferred_strength(card),
             0,
             "no Rupture → drain 0"
         );

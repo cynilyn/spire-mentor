@@ -1115,6 +1115,23 @@ impl Card {
         self.combat_vars.set(key, value);
     }
 
+    /// C# `CardModel.CreateClone()` of this card: a field-for-field copy that
+    /// is a NEW instance. Everything the clone deep-copies stays — cost
+    /// modifiers, enchantment amounts and their `Status` (Swift / Sown already
+    /// `Disabled` by the played card's own `OnPlay`, EnchantmentModel.cs:309-314
+    /// keeps `_status`). What does not carry over is state the engine derives
+    /// from the card INSTANCE's play history: Bolas / ThrummingHatchet return
+    /// only a card whose own play is in `History.CardPlaysFinished`
+    /// (Bolas.cs:41-46, ThrummingHatchet.cs:35-40), so the copy loses the
+    /// `ReturnIfPlayedRound` stamp. Callers spawn the result (which assigns the
+    /// new uid).
+    #[must_use]
+    pub fn create_clone(&self) -> Self {
+        let mut clone = *self;
+        clone.set_combat_var(VarKey::ReturnIfPlayedRound, 0);
+        clone
+    }
+
     /// C# `EnergyCost.AddUntilPlayed(-amount)`: bank `amount` more energy off
     /// this card until it is played ([`VarKey::CostReductionUntilPlayed`]).
     pub fn add_cost_reduction_until_played(&mut self, amount: i32) {
@@ -1616,6 +1633,11 @@ impl Card {
                 self.revert_upgrade_delta(&base, &upgraded);
             }
         }
+        // C# `DowngradeInternal` (`CardModel.cs:2149-2162`) resets `_keywords`
+        // to the canonical Local set, so a keyword `CardCmd.ApplyKeyword`
+        // added (Ghost Seed's / Music Box's Ethereal, modelled as this combat
+        // var) is gone and nothing re-applies it.
+        self.combat_vars.zero(VarKey::EtherealThisCombat);
         true
     }
 
@@ -6453,5 +6475,28 @@ mod tests {
         let mut store = store_with_ids(&[CardId::StrikeIronclad]);
         store[0].card_id = CardId::Pinpoint;
         let _ = store.holds_id(CardId::Pinpoint);
+    }
+
+    /// C# `CardModel.DowngradeInternal` (`CardModel.cs:2149-2162`, same in
+    /// v0.107.1) resets `_keywords` to the canonical Local set, dropping an
+    /// Ethereal that `CardCmd.ApplyKeyword` added (Ghost Seed, a Music Box
+    /// clone). Dampen's downgrade must clear `EtherealThisCombat`, or the
+    /// end-of-turn sweep exhausts the card (Ironclad:6190 @1049).
+    #[test]
+    fn downgrade_drops_applied_ethereal() {
+        let mut card = Card {
+            card_id: CardId::StrikeIronclad,
+            upgraded: true,
+            ..Card::pod_defaults()
+        };
+        card.set_combat_var(VarKey::EtherealThisCombat, 1);
+        card.set_combat_var(VarKey::DampenDowngradedMarker, 1);
+        assert!(card.downgrade_for(crate::GameVersion::V0_111_0));
+        assert_eq!(card.combat_var(VarKey::EtherealThisCombat), 0);
+        assert_eq!(
+            card.combat_var(VarKey::DampenDowngradedMarker),
+            1,
+            "other instance state survives"
+        );
     }
 }

@@ -2169,20 +2169,36 @@ public class RunSimulator
         // b0: C# deck one card short, Rust correctly parked at card_reward). Run
         // shop entry on the thread pool like a relic purchase, and stash it in
         // `_pendingMapEntryTask` if it parks at a selection; the selection
-        // handlers drive it on. Other rooms keep the synchronous call, so combat
-        // starts are untouched.
+        // handlers drive it on. An Unknown node rolls its room inside
+        // EnterMapCoord, so one that lands on a merchant has the same deadlock
+        // (Ironclad-8084 act2 b1: Unknown -> MerchantRoom -> Lord's Parasol ->
+        // Orrery); it takes the same path. The pool thread must stay: the
+        // headless GetSelectedCardReward blocks its caller, so on the game
+        // thread it deadlocks. But an Unknown node can also roll a combat, and
+        // with no sync context on the pool thread every continuation of that
+        // combat went to the thread pool and ran concurrently with later
+        // commands (Defect-1000 act3: draw/discard counts flaked under load).
+        // So the entry runs with `_syncCtx` installed, which runs each
+        // continuation inline and serialized, as the synchronous path does.
+        // Other rooms keep the synchronous call.
         var point = _runState?.Map.GetPoint(coord);
-        if (point?.PointType == MapPointType.Shop)
+        if (point?.PointType is MapPointType.Shop or MapPointType.Unknown)
         {
-            var task = Task.Run(() => RunManager.Instance.EnterMapCoord(coord));
-            WaitUntilOptionTaskSettles(task, "shop map-entry task or selection");
+            var task = Task.Run(() =>
+            {
+                var prev = SynchronizationContext.Current;
+                SynchronizationContext.SetSynchronizationContext(_syncCtx);
+                try { return RunManager.Instance.EnterMapCoord(coord); }
+                finally { SynchronizationContext.SetSynchronizationContext(prev); }
+            });
+            WaitUntilOptionTaskSettles(task, "shop/unknown map-entry task or selection");
             if (!task.IsCompleted && AnySelectionPending())
             {
                 _pendingMapEntryTask = task;
                 WaitForActionExecutor();
                 return DetectDecisionPoint();
             }
-            WaitForTask(task, 2000, "shop map-entry task");
+            WaitForTask(task, 2000, "shop/unknown map-entry task");
             if (task.IsFaulted) task.GetAwaiter().GetResult();
         }
         else

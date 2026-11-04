@@ -4083,6 +4083,8 @@ mod tests {
             },
         );
         let mut rs = RunState::new();
+        // Dispatch walks the owned relics, so own the sentinel's slot.
+        rs.relics.push(sts2_core::RelicId::FresnelLens);
         let opts = sts2_core::runstate::CardRewardGenerationOptions::default();
         let cards = roll_card_reward_cards(&mut rs, opts, CharacterId::Ironclad);
         assert!(!cards.is_empty());

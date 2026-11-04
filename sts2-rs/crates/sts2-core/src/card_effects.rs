@@ -1088,8 +1088,10 @@ fn apply_power_to_creature_inner(
         kind,
         amount,
         PowerAmountObserverPhase::Before,
+        false,
     );
-    let amount = pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount);
+    let amount =
+        pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount, false);
     // C# `PowerCmd.Apply` scales some enemy powers by the player count.
     let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
@@ -1176,6 +1178,7 @@ fn apply_power_to_creature_inner(
             kind,
             amount,
             PowerAmountObserverPhase::After,
+            false,
         );
         fire_after_power_applied(state, target_uid, kind, amount);
         if let Some(pid) = remove_pid {
@@ -1227,6 +1230,7 @@ fn apply_power_to_creature_inner(
         kind,
         amount,
         PowerAmountObserverPhase::After,
+        false,
     );
     fire_after_power_applied(state, target_uid, kind, amount);
     // Bead `sts2-rs-ig66w`: monster-power AfterApplied dispatch fires
@@ -1416,6 +1420,7 @@ fn pipe_power_amount_through_modify_chain(
     target_uid: CreatureUid,
     kind: PowerKind,
     amount: i32,
+    cardless: bool,
 ) -> i32 {
     // J03: with both relic folds dead (no owned handler) both return
     // `amount`; skip building their context.
@@ -1425,7 +1430,7 @@ fn pipe_power_amount_through_modify_chain(
         let target_ref = creature_ref_for(state, target_uid);
         let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
         let ctx = hooks::PowerAmountCtx {
-            source_card: resolving_card(state),
+            source_card: source_card(state, cardless),
             ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
         };
         let amt = crate::relic_effects::dispatch_modify_power_amount_given(state, &ctx);
@@ -1452,6 +1457,19 @@ fn resolving_card(state: &CombatState) -> Option<CardUid> {
     resolving_card_uid(state)
 }
 
+/// The `cardSource` of one power application: [`resolving_card`], or `None`
+/// for a `cardless` apply — a power hook's own `PowerCmd.Apply(..., null)`
+/// that runs while a card is resolving (Reaper Form's Doom,
+/// `ReaperFormPower.cs:57-64`), which C#'s `cardSource == null` gates
+/// (Unsettling Lamp) must not see as card-sourced.
+fn source_card(state: &CombatState, cardless: bool) -> Option<CardUid> {
+    if cardless {
+        None
+    } else {
+        resolving_card(state)
+    }
+}
+
 /// Bead `sts2-rs-47jv`: fire the observer channels (before-changed +
 /// after-modifying-given + after-modifying-received) around the
 /// power-amount mutation. `before_power_amount_changed` runs before
@@ -1464,6 +1482,7 @@ fn fire_power_amount_observer_channels(
     kind: PowerKind,
     amount: i32,
     when: PowerAmountObserverPhase,
+    cardless: bool,
 ) {
     // J03: the observers' answers are discarded, so channels with no owned
     // handler need neither the context nor the dispatch.
@@ -1483,7 +1502,7 @@ fn fire_power_amount_observer_channels(
         let target_ref = creature_ref_for(state, target_uid);
         let applier_ref = applier.map(|uid| creature_ref_for(state, uid));
         let ctx = hooks::PowerAmountCtx {
-            source_card: resolving_card(state),
+            source_card: source_card(state, cardless),
             ..hooks::PowerAmountCtx::new(applier_ref, target_ref, kind, amount)
         };
         match when {
@@ -1581,7 +1600,9 @@ pub fn apply_power_to_creature_with_applier(
     amount: i32,
     applier: Option<CreatureUid>,
 ) {
-    apply_power_to_creature_with_applier_inner(state, target_uid, kind, amount, applier, false);
+    apply_power_to_creature_with_applier_inner(
+        state, target_uid, kind, amount, applier, false, false,
+    );
 }
 
 /// [`apply_power_to_creature_with_applier`] that also lands on a
@@ -1597,7 +1618,26 @@ pub fn apply_power_to_creature_with_applier_allow_dead(
     amount: i32,
     applier: Option<CreatureUid>,
 ) {
-    apply_power_to_creature_with_applier_inner(state, target_uid, kind, amount, applier, true);
+    apply_power_to_creature_with_applier_inner(
+        state, target_uid, kind, amount, applier, true, false,
+    );
+}
+
+/// [`apply_power_to_creature_with_applier_allow_dead`] for a power hook's
+/// own `PowerCmd.Apply(..., cardSource: null)` that fires while a card is
+/// resolving (Reaper Form's Doom, `ReaperFormPower.cs:57-64`): the apply's
+/// `cardSource` is `None`, not the resolving card, so Unsettling Lamp
+/// (`cardSource == null` → return) neither captures nor doubles it.
+pub fn apply_power_to_creature_cardless_with_applier_allow_dead(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+    applier: Option<CreatureUid>,
+) {
+    apply_power_to_creature_with_applier_inner(
+        state, target_uid, kind, amount, applier, true, true,
+    );
 }
 
 fn apply_power_to_creature_with_applier_inner(
@@ -1607,6 +1647,7 @@ fn apply_power_to_creature_with_applier_inner(
     amount: i32,
     applier: Option<CreatureUid>,
     allow_dead: bool,
+    cardless: bool,
 ) {
     if amount <= 0 {
         return;
@@ -1641,8 +1682,10 @@ fn apply_power_to_creature_with_applier_inner(
         kind,
         amount,
         PowerAmountObserverPhase::Before,
+        cardless,
     );
-    let amount = pipe_power_amount_through_modify_chain(state, applier, target_uid, kind, amount);
+    let amount =
+        pipe_power_amount_through_modify_chain(state, applier, target_uid, kind, amount, cardless);
     // C# `PowerCmd.Apply` scales some enemy powers by the player count.
     let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
@@ -1718,6 +1761,7 @@ fn apply_power_to_creature_with_applier_inner(
             kind,
             amount,
             PowerAmountObserverPhase::After,
+            cardless,
         );
         fire_after_power_applied_with(state, target_uid, kind, amount, applier);
         if let Some(pid) = remove_pid {
@@ -1756,6 +1800,7 @@ fn apply_power_to_creature_with_applier_inner(
         kind,
         amount,
         PowerAmountObserverPhase::After,
+        cardless,
     );
     fire_after_power_applied_with(state, target_uid, kind, amount, applier);
     // Bead `sts2-rs-ig66w`: parallel AfterApplied dispatch for the
