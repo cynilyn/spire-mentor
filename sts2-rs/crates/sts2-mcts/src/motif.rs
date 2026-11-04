@@ -315,7 +315,7 @@ mod tests {
         }
         let player = PlayerCombatState {
             hand: hand_uids,
-            energy,
+            energy: i32::from(energy),
             max_energy: energy.max(3),
             current_hp: hp,
             max_hp: 80,

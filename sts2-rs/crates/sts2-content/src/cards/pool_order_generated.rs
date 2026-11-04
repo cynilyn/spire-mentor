@@ -530,6 +530,55 @@ pub(crate) const COLORLESS_V0107: &[CardId] = &[
     CardId::Volley,
 ];
 
+/// `EventCardPool.GenerateAllCards()`, v0.107.1.
+pub(crate) const EVENT_V0107: &[CardId] = &[
+    CardId::Apotheosis,
+    CardId::Apparition,
+    CardId::BrightestFlame,
+    CardId::ByrdSwoop,
+    CardId::Caltrops,
+    CardId::Clash,
+    CardId::Distraction,
+    CardId::DualWield,
+    CardId::Enlightenment,
+    CardId::Entrench,
+    CardId::Exterminate,
+    CardId::FeedingFrenzyCard,
+    CardId::HelloWorldCard,
+    CardId::MadScience,
+    CardId::Maul,
+    CardId::Metamorphosis,
+    CardId::NeowsFury,
+    CardId::Outmaneuver,
+    CardId::Peck,
+    CardId::Rebound,
+    CardId::Relax,
+    CardId::RipAndTear,
+    CardId::Squash,
+    CardId::Stack,
+    CardId::ToricToughness,
+    CardId::Wish,
+    CardId::Whistle,
+];
+
+/// `TokenCardPool.GenerateAllCards()`, v0.107.1.
+pub(crate) const TOKEN_V0107: &[CardId] = &[
+    CardId::Disintegration,
+    CardId::Fuel,
+    CardId::GiantRock,
+    CardId::Luminesce,
+    CardId::MindRot,
+    CardId::MinionDiveBomb,
+    CardId::MinionSacrifice,
+    CardId::MinionStrike,
+    CardId::Shiv,
+    CardId::SlothStatus,
+    CardId::Soul,
+    CardId::SovereignBlade,
+    CardId::SweepingGaze,
+    CardId::WasteAway,
+];
+
 /// `IroncladCardPool.GenerateAllCards()`, v0.111.0.
 pub(crate) const IRONCLAD_V0111: &[CardId] = &[
     CardId::AggressionCard,
@@ -1071,4 +1120,54 @@ pub(crate) const COLORLESS_V0111: &[CardId] = &[
     CardId::UltimateDefend,
     CardId::UltimateStrike,
     CardId::Volley,
+];
+
+/// `EventCardPool.GenerateAllCards()`, v0.111.0.
+pub(crate) const EVENT_V0111: &[CardId] = &[
+    CardId::Abundance,
+    CardId::Apotheosis,
+    CardId::Apparition,
+    CardId::BrightestFlame,
+    CardId::ByrdSwoop,
+    CardId::Caltrops,
+    CardId::Clash,
+    CardId::Distraction,
+    CardId::DualWield,
+    CardId::Enlightenment,
+    CardId::Entrench,
+    CardId::Exterminate,
+    CardId::FeedingFrenzyCard,
+    CardId::HelloWorldCard,
+    CardId::MadScience,
+    CardId::Maul,
+    CardId::Metamorphosis,
+    CardId::NeowsFury,
+    CardId::Outmaneuver,
+    CardId::Peck,
+    CardId::Rebound,
+    CardId::Relax,
+    CardId::RipAndTear,
+    CardId::Squash,
+    CardId::Stack,
+    CardId::ToricToughness,
+    CardId::Wish,
+    CardId::Whistle,
+];
+
+/// `TokenCardPool.GenerateAllCards()`, v0.111.0.
+pub(crate) const TOKEN_V0111: &[CardId] = &[
+    CardId::Disintegration,
+    CardId::Fuel,
+    CardId::GiantRock,
+    CardId::Luminesce,
+    CardId::MindRot,
+    CardId::MinionDiveBomb,
+    CardId::MinionSacrifice,
+    CardId::MinionStrike,
+    CardId::Shiv,
+    CardId::SlothStatus,
+    CardId::Soul,
+    CardId::SovereignBlade,
+    CardId::SweepingGaze,
+    CardId::WasteAway,
 ];

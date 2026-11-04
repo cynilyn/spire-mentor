@@ -1057,10 +1057,7 @@ pub(crate) fn new_arena_run_manager(
     // event cursor) — 2026-06-12 anomaly triage on the M1 sweeps.
     let mut rm =
         new_run_manager_for_character_with_ascension(seed, character, ascension).with_neow_start();
-    rm.run_state.interactive_card_removal = true;
-    rm.run_state.interactive_card_upgrade = true;
-    rm.run_state.interactive_card_transform = true;
-    rm.run_state.direct_event_relic_grant = true;
+    rm.run_state.set_agent_decisions();
     // GH #252 / #447 acquisition follow-up: full-belt potion rewards
     // surface a discard-to-claim swap decision (priced by the OC table in
     // the run policy) instead of silently dropping. Env-gated OFF — the

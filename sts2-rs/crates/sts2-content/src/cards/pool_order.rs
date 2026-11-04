@@ -49,6 +49,31 @@ pub fn generate_all_cards(pool: Pool, version: GameVersion) -> &'static [CardId]
     }
 }
 
+/// Whether `id` is in a C# card pool whose `IsColorless` is true: the
+/// Colorless, Event and Token pools (`ColorlessCardPool.cs`,
+/// `EventCardPool.cs`, `TokenCardPool.cs`). The fourth such pool,
+/// `DeprecatedCardPool`, holds only `DeprecatedCard`, which has no
+/// `CardId`. The character, Status, Curse and Quest pools are not
+/// colorless.
+///
+/// One answer serves both builds: v0.111.0 adds Abundance (Event) and
+/// TheBall (Colorless), which no v0.107.1 state contains, and no card
+/// changed pools between the builds.
+#[must_use]
+pub fn in_colorless_pool(id: CardId) -> bool {
+    use generated as g;
+    [
+        g::COLORLESS_V0107,
+        g::COLORLESS_V0111,
+        g::EVENT_V0107,
+        g::EVENT_V0111,
+        g::TOKEN_V0107,
+        g::TOKEN_V0111,
+    ]
+    .iter()
+    .any(|pool| pool.contains(&id))
+}
+
 /// `pool`'s combat generation list in game build `version`, for a fight of
 /// one player (`multiplayer == false`) or more: `GenerateAllCards()` order
 /// through `FilterForCombat` and `FilterForPlayerCount`, minus the cards an

@@ -469,6 +469,82 @@ fn scrape_v0111_discards_a_drawn_unplayable_status() {
     }
 }
 
+/// Scrape discards only the cards ITS OWN draw returned (C# `Scrape.cs`:
+/// `(await CardPileCmd.Draw(..)).Where(..)`). Under Iteration, the first
+/// Status drawn fires `IterationPower.AfterCardDrawn`, whose nested
+/// `CardPileCmd.Draw(Amount)` runs inside the per-card loop: those cards land
+/// between Scrape's own draws and are not part of Scrape's result, so they
+/// stay in hand even when they cost energy. Defect act-2 checkpoint branch
+/// (v0.111.0 `Defect-1001-a0-act2#b1`, step 298).
+#[test]
+fn scrape_keeps_cards_drawn_by_iteration() {
+    install_pool();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        let (mut state, euid) = fresh_state(CardId::Scrape, 7, 0);
+        state.game_version = version;
+        // Draw pile top -> bottom: Dazed (Status), then five 1-cost attacks.
+        let mut pile = Vec::new();
+        for (n, id) in [
+            CardId::Dazed,
+            CardId::Dualcast,
+            CardId::Zap,
+            CardId::Leap,
+            CardId::SweepingBeam,
+            CardId::Coolheaded,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let uid = sts2_core::CardUid(NonZeroU32::new(n as u32 + 2).expect("nz"));
+            let status = id == CardId::Dazed;
+            state.cards.push(Card {
+                uid,
+                card_id: id,
+                cost: if status { -1 } else { 1 },
+                card_type: if status {
+                    CardType::Status
+                } else {
+                    CardType::Attack
+                },
+                target_type: TargetType::None,
+                ..Card::pod_defaults()
+            });
+            pile.push(uid);
+        }
+        state.player.draw.extend(pile.iter().copied());
+        let pid = NonZeroU32::new(99).expect("nz");
+        state.powers.push(sts2_core::Power::new(
+            pid,
+            sts2_core::PowerKind::Iteration,
+            2,
+        ));
+        state.player.powers.push(sts2_core::PowerUid(pid));
+
+        let f = lookup(CardId::Scrape).expect("registered");
+        assert_eq!(f(&mut state, Some(euid)), EffectResult::Resolved);
+        // Scrape's own draws: Dazed, then (after Iteration pulled Dualcast and
+        // Zap) Leap, Sweeping Beam, Coolheaded. All cost energy: discarded.
+        let (dazed, dualcast, zap) = (pile[0], pile[1], pile[2]);
+        for own in [dazed, pile[3], pile[4], pile[5]] {
+            assert!(
+                state.player.discard.contains(&own),
+                "{version:?}: own draw {own:?} discarded"
+            );
+        }
+        assert!(
+            state.player.hand.contains(&dualcast),
+            "{version:?}: Iteration's Dualcast stays"
+        );
+        assert!(
+            state.player.hand.contains(&zap),
+            "{version:?}: Iteration's Zap stays"
+        );
+    }
+}
+
 /// An auto-played card runs its `Enchantment.OnPlay` like a hand play
 /// (CardModel.cs:1930-1943): Uproar auto-playing a Sown(1) Strike gains 1
 /// energy, once. Defect QX189.
@@ -831,6 +907,85 @@ fn hologram_auto_returns_lone_discard_card() {
         "lone card auto-returned to hand"
     );
     assert!(state.player.discard.is_empty());
+}
+
+/// Push a card into the arena (uid = arena slot + 1) without putting it in
+/// a pile. For the full-hand tests below.
+fn push_arena_card(
+    state: &mut CombatState,
+    card_id: CardId,
+    cost: i8,
+    card_type: CardType,
+) -> sts2_core::CardUid {
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let uid = sts2_core::CardUid(NonZeroU32::new(raw).expect("nz"));
+    state.cards.push(Card {
+        uid,
+        card_id,
+        cost,
+        card_type,
+        target_type: TargetType::Self_,
+        upgraded: false,
+        base_damage: 0,
+        base_block: 0,
+        ..Card::pod_defaults()
+    });
+    uid
+}
+
+/// Put `n` Strikes in the hand; returns the hand.
+fn push_hand_strikes(state: &mut CombatState, n: usize) -> Vec<sts2_core::CardUid> {
+    for _ in 0..n {
+        let uid = push_arena_card(state, CardId::StrikeDefect, 1, CardType::Attack);
+        state.player.hand.push(uid);
+    }
+    state.player.hand.to_vec()
+}
+
+/// Hologram auto-played with 10 cards in hand: C# `CardPileCmd.Add(card,
+/// Hand)` (`Hologram.cs:32`) puts the lone discard card back on the
+/// discard pile (`CardPileCmd.cs:485-489`).
+#[test]
+fn hologram_full_hand_leaves_lone_discard_card_in_discard() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Hologram, 0, 3);
+    let hand = push_hand_strikes(&mut state, sts2_core::cards::HAND_LIMIT);
+    let lone = push_arena_card(&mut state, CardId::Zap, 1, CardType::Skill);
+    state.player.discard.push(lone);
+    let f = lookup(CardId::Hologram).expect("registered");
+    f(&mut state, None);
+    assert!(state.pending_choice.is_none(), "no prompt for a lone card");
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![lone]);
+}
+
+/// All for One adds each matching card with its own `CardPileCmd.Add`
+/// (`AllForOne.cs:30-33`). Once the hand holds 10, `Add` takes the card off
+/// the discard pile and appends it there again (`CardPileCmd.cs:485-507`),
+/// so it ends up behind the cards that did not match.
+#[test]
+fn all_for_one_stops_at_full_hand_and_reappends_the_rest() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::AllForOne, 10, 0);
+    let hand = push_hand_strikes(&mut state, sts2_core::cards::HAND_LIMIT - 2);
+    let zero_attack = push_arena_card(&mut state, CardId::Claw, 0, CardType::Attack);
+    let zero_skill = push_arena_card(&mut state, CardId::Turbo, 0, CardType::Skill);
+    let zero_power = push_arena_card(&mut state, CardId::StormCard, 0, CardType::Power);
+    let costly = push_arena_card(&mut state, CardId::Zap, 1, CardType::Skill);
+    state
+        .player
+        .discard
+        .extend([zero_attack, zero_skill, zero_power, costly]);
+    let f = lookup(CardId::AllForOne).expect("registered");
+    f(&mut state, Some(euid));
+    let mut expected_hand = hand;
+    expected_hand.extend([zero_attack, zero_skill]);
+    assert_eq!(state.player.hand.to_vec(), expected_hand);
+    assert_eq!(state.player.discard.to_vec(), vec![costly, zero_power]);
 }
 
 #[test]
@@ -1354,6 +1509,66 @@ fn othtc_bulk_up_remove_slots_no_op_when_capacity_zero() {
     );
 }
 
+/// A Defect's belt that Bulk Up emptied, as C# leaves it: `OrbCmd.Channel`
+/// re-adds slots only for a `BaseOrbSlotCount == 0` character, and
+/// `OrbQueue.TryEnqueue` returns false at `Capacity == 0`. The engine used to
+/// snap the belt back to 3 slots on the next channel, so the search blocked
+/// with Frost the game never gave (reported from a live loss by the
+/// lllilgabe123 fork).
+fn defect_with_bulked_up_empty_belt() -> CombatState {
+    install_pool();
+    let f = lookup(CardId::BulkUp).expect("card registered");
+    let (mut state, _) = fresh_state(CardId::BulkUp, 0, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Defect);
+    state.player.orbs = sts2_core::OrbSlots::with_capacity(1);
+    let _ = f(&mut state, None);
+    assert_eq!(state.player.orbs.capacity(), 0);
+    state
+}
+
+#[test]
+fn channel_into_a_belt_bulk_up_emptied_loses_the_orb() {
+    let mut state = defect_with_bulked_up_empty_belt();
+    orbs::channel_orb(&mut state, Orb::Lightning);
+    assert_eq!(state.player.orbs.capacity(), 0, "no snap back to 3 slots");
+    assert_eq!(state.player.orbs.filled_len(), 0, "the orb is lost");
+    // `CombatManager.History.OrbChanneled` sits inside C#'s
+    // `if (TryEnqueue)`: a lost orb is not a channel (Voltaic counts these).
+    assert_eq!(
+        state.combat_log.lightning_orbs_channeled_this_combat, 0,
+        "a lost orb is not counted as channelled"
+    );
+}
+
+#[test]
+fn capacitor_on_a_belt_bulk_up_emptied_grows_it_from_zero() {
+    let mut state = defect_with_bulked_up_empty_belt();
+    let f = lookup(CardId::Capacitor).expect("registered");
+    let _ = f(&mut state, None);
+    // C# `OrbCmd.AddSlots(2)` on Capacity 0 → 2, not the 3 + 2 a fresh
+    // base would give.
+    assert_eq!(state.player.orbs.capacity(), 2);
+}
+
+#[test]
+fn modded_on_a_belt_bulk_up_emptied_grows_it_from_zero() {
+    let mut state = defect_with_bulked_up_empty_belt();
+    let f = lookup(CardId::Modded).expect("registered");
+    let _ = f(&mut state, None);
+    assert_eq!(state.player.orbs.capacity(), 1);
+}
+
+#[test]
+fn an_unsized_defect_fixture_belt_still_gets_the_three_slot_base() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::BulkUp, 0, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Defect);
+    assert!(!state.player.orbs.sized);
+    orbs::channel_orb(&mut state, Orb::Frost);
+    assert_eq!(state.player.orbs.capacity(), 3);
+    assert_eq!(state.player.orbs.count_kind(orbs::OrbKind::Frost), 1);
+}
+
 /// Bead `sts2-rs-q1ljh`: upgraded BulkUp grants 3/3 Strength/Dexterity
 /// per C# `BulkUp.cs:OnUpgrade` `UpgradeValueBy(1m)` on both
 /// `StrengthPower` and `DexterityPower`. Orb-slot REMOVE stays at 1
@@ -1539,6 +1754,53 @@ fn gh639_trash_to_treasure_power_channels_an_orb_on_a_generated_status() {
         state.player.orbs.filled_len(),
         1,
         "TrashToTreasure(1) channels one orb on the generated Void"
+    );
+}
+
+/// GH #1054 (Defect seed 1016): C# `Hook.AfterCardGeneratedForCombat` runs
+/// through `IterateCombatHookListeners`, which yields no listeners once combat
+/// is ending (`Hook.cs:177-207`, `:395-402`). A Gunk Up whose hits kill the
+/// last primary enemy still adds its Slimed (`CardPileCmd.cs:281-313` only
+/// checks `!IsInProgress`), but TrashToTreasure must NOT roll
+/// `GetRandomOrb(CombatOrbGeneration)`. The run-level `combat_orbs` read
+/// would otherwise carry into the next combat.
+#[test]
+fn gh1054_trash_to_treasure_skips_orb_when_gunk_up_ends_combat() {
+    install_pool();
+    let f = lookup(CardId::GunkUp).expect("registered");
+
+    // Control: the enemy survives, so the Slimed rolls one orb.
+    let (mut live, euid) = fresh_state(CardId::GunkUp, 4, 0);
+    apply_power_to_player(&mut live, PowerKind::TrashToTreasure, 1);
+    let before = live.run_rng.combat_orbs.counter();
+    let _ = f(&mut live, Some(euid));
+    assert_eq!(live.player.orbs.filled_len(), 1, "live combat: one orb");
+    assert_eq!(live.run_rng.combat_orbs.counter() - before, 1);
+
+    // Lethal: the hits kill the only enemy, so combat is ending when the
+    // Slimed is generated.
+    let (mut state, euid) = fresh_state(CardId::GunkUp, 4, 0);
+    apply_power_to_player(&mut state, PowerKind::TrashToTreasure, 1);
+    state.creatures[0].current_hp = 1;
+    let before = state.run_rng.combat_orbs.counter();
+    let _ = f(&mut state, Some(euid));
+    assert!(
+        state
+            .player
+            .discard
+            .iter()
+            .any(|u| state.cards[u.0.get() as usize - 1].card_id == CardId::Slimed),
+        "the Slimed is still generated into the discard pile"
+    );
+    assert_eq!(
+        state.player.orbs.filled_len(),
+        0,
+        "no orb once combat is ending"
+    );
+    assert_eq!(
+        state.run_rng.combat_orbs.counter(),
+        before,
+        "no combat_orbs read once combat is ending"
     );
 }
 

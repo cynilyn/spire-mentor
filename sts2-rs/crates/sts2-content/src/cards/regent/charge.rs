@@ -72,7 +72,7 @@ pub(crate) fn play_charge(state: &mut CombatState, _t: Option<CreatureUid>) -> E
                     card.card_id,
                     state.game_version,
                 ),
-                card.card_id.to_python_name(),
+                sts2_core::cards::card_model_entry(card.card_id),
                 uid,
             ))
         })

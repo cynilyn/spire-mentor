@@ -46,14 +46,20 @@ use crate::cards::{CardKeywords, CardRarity, CardSpec};
 /// second enchantment, not even the same one. Overrides (GH #1021):
 /// - Attack-only: Sharp, Momentum, Corrupted, Vigorous, Instinct (and the
 ///   Rust-only Favored); Attack or Skill: RoyallyApproved; Skill-only: Imbued.
-/// - Goopy: a Defend-tagged card. Nimble: [`Card::gains_block`].
+/// - Goopy: a Defend-tagged card. Nimble: [`Card::gains_block_for`] in
+///   game build `version`.
 /// - Spiral: a Basic card tagged Strike or Defend.
 /// - SoulsPower: the card's own keywords include Exhaust.
 /// - Slither: not X-cost.
 /// - Everything else (TezcatarasEmber, Adroit, Swift, Glam, ...): the base
 ///   rule only.
 #[must_use]
-pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId) -> bool {
+pub fn can_enchant_card(
+    spec: &CardSpec,
+    card: &Card,
+    enchantment: EnchantmentId,
+    version: sts2_core::GameVersion,
+) -> bool {
     use sts2_core::cards::{CardTag, KeywordOverride};
     if matches!(card.card_type, CardType::Status | CardType::Curse) || card.is_quest() {
         return false;
@@ -91,7 +97,7 @@ pub fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId
                 && (card.tags.contains(CardTag::Strike) || card.tags.contains(CardTag::Defend))
         }
         EnchantmentId::Goopy => card.tags.contains(CardTag::Defend),
-        EnchantmentId::Nimble => card.gains_block(),
+        EnchantmentId::Nimble => card.gains_block_for(version),
         EnchantmentId::SoulsPower => match card.keyword_override {
             Some(k) => k.contains(KeywordOverride::EXHAUST),
             None => spec.keywords.contains(CardKeywords::EXHAUST),
@@ -334,6 +340,12 @@ mod tests {
 
     use std::num::NonZeroU32;
     use sts2_core::cards::{CardId, TargetType};
+
+    /// [`super::can_enchant_card`] in the default build (v0.107.1); the
+    /// build-dependent Expect a Fight row is pinned in `tests/cards_v0111.rs`.
+    fn can_enchant_card(spec: &CardSpec, card: &Card, enchantment: EnchantmentId) -> bool {
+        super::can_enchant_card(spec, card, enchantment, sts2_core::GameVersion::V0_107_1)
+    }
 
     fn uid(n: u32) -> sts2_core::CardUid {
         sts2_core::CardUid(NonZeroU32::new(n).expect("non-zero"))
@@ -594,7 +606,7 @@ mod tests {
     }
 
     /// C# `Goopy.CanEnchant`: the Defend tag, not "has block".
-    /// `Nimble.CanEnchant`: `CardModel.GainsBlock` ([`Card::gains_block`]).
+    /// `Nimble.CanEnchant`: `CardModel.GainsBlock` ([`Card::gains_block_for`]).
     #[test]
     fn goopy_needs_the_defend_tag_and_nimble_needs_gains_block() {
         let spec = basic_strike_spec();

@@ -18,10 +18,13 @@ pub(crate) fn play_escape_plan(state: &mut CombatState, _t: Option<CreatureUid>)
     let _ = sts2_core::cards::draw_via_state(state, 1);
     if let Some(drawn) = state.last_drawn_card {
         let idx = drawn.0.get() as usize - 1;
+        // C# `cardModel.Type == CardType.Skill`: the Quest cards are modelled
+        // as Skills here but are `CardType.Quest` in C# (act23 Silent:1017:
+        // drawing Byrdonis Egg granted block).
         let is_skill = state
             .cards
             .get(idx)
-            .is_some_and(|c| c.card_type == CardType::Skill);
+            .is_some_and(|c| c.card_type == CardType::Skill && !c.is_quest());
         if is_skill {
             gain_block_player(state, current_card_block(state));
         }

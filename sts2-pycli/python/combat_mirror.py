@@ -1657,7 +1657,7 @@ class CombatMirror:
         self._last_action = action
         self._last_result = result
 
-        if result == "invalid_target":
+        if result in ("invalid_target", "illegal_play"):
             self._diverge(
                 f"engine rejected an action the world committed: {action!r}",
                 kind="invalid_action",

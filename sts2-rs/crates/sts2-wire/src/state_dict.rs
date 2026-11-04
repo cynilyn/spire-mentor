@@ -443,6 +443,12 @@ fn attacks_this_turn(buckets: Option<[u32; 5]>) -> i32 {
 ///   doubles a card's block only while there are fewer than its `Amount`). A
 ///   play still resolving is left out by both producers and by the emitter,
 ///   so every seeded gain is an earlier play's ([`EARLIER_PLAY_TAG`]).
+/// * `extra_turns_taken_this_combat`: extra player turns taken this combat
+///   (PaelsEye, v0.111.0 Ambergris). C# `PlayerCombatState.TurnNumber` runs
+///   one ahead of `RoundNumber` per extra turn, and the turn-number gates
+///   (BagOfPreparation, Lantern, the turn-1 Innate floor, …) read the turn
+///   number, so a board rebuilt right after an extra turn must not fall back
+///   to turn = round (GH #812).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SeatHistory {
     pub unblocked_hits_this_combat: u32,
@@ -450,6 +456,7 @@ pub struct SeatHistory {
     pub cards_exhausted_this_combat: u32,
     pub cards_exhausted_this_turn: u32,
     pub card_block_gains_this_turn: u32,
+    pub extra_turns_taken_this_combat: u16,
 }
 
 /// The play tag a board's earlier card block gains carry in
@@ -474,6 +481,17 @@ fn parse_seat_history<V: WireValue>(d: &V, path: &str) -> WireResult<SeatHistory
         Some(_) => extract_u32(d, path, "card_block_gains_this_turn")?,
         None => 0,
     };
+    let extra_turns_taken_this_combat = match extract_optional(d, "extra_turns_taken_this_combat") {
+        Some(_) => {
+            u16::try_from(extract_u32(d, path, "extra_turns_taken_this_combat")?).map_err(|_| {
+                schema_err(
+                    format!("{path}.extra_turns_taken_this_combat"),
+                    "out of range",
+                )
+            })?
+        }
+        None => 0,
+    };
     let mut powered_hits_this_turn = Vec::new();
     if let Some(v) = extract_optional(d, "powered_hits_this_turn") {
         let list_path = format!("{path}.powered_hits_this_turn");
@@ -491,6 +509,7 @@ fn parse_seat_history<V: WireValue>(d: &V, path: &str) -> WireResult<SeatHistory
         cards_exhausted_this_combat,
         cards_exhausted_this_turn,
         card_block_gains_this_turn,
+        extra_turns_taken_this_combat,
     })
 }
 
@@ -1117,6 +1136,7 @@ fn apply_seat_histories(state: &mut CoreCombatState, parsed: &ParsedState) {
     let h = &parsed.player.history;
     state.combat_log.unblocked_damage_received_this_combat = h.unblocked_hits_this_combat;
     state.combat_log.cards_exhausted_this_combat = h.cards_exhausted_this_combat;
+    state.combat_log.extra_turns_taken_this_combat = h.extra_turns_taken_this_combat;
     seed_turn_history(&mut state.combat_log, h);
     state.player.powered_hits_by_target_this_turn = tally(h);
     for (i, a) in parsed.allies.iter().enumerate() {
@@ -1125,6 +1145,8 @@ fn apply_seat_histories(state: &mut CoreCombatState, parsed: &ParsedState) {
             stash.combat_log.unblocked_damage_received_this_combat =
                 a.history.unblocked_hits_this_combat;
             stash.combat_log.cards_exhausted_this_combat = a.history.cards_exhausted_this_combat;
+            stash.combat_log.extra_turns_taken_this_combat =
+                a.history.extra_turns_taken_this_combat;
             seed_turn_history(&mut stash.combat_log, &a.history);
         }
     }
@@ -1150,6 +1172,11 @@ fn build_orb_belt(orbs: &[ParsedOrb], slots: Option<u32>, focus: i32) -> sts2_co
     let mut belt = sts2_core::OrbSlots {
         slots: SmallVec::new(),
         capacity,
+        // An explicit `orb_slots` (the live game's `OrbQueue.Capacity`) is a
+        // real size, 0 included: a Defect Bulk Up emptied must not get the
+        // lazy 3-slot base back. A wire with no `orb_slots` and no orbs
+        // stays unsized, as before.
+        sized: slots.is_some() || capacity > 0,
     };
     for po in orbs.iter().take(usize::from(capacity)) {
         belt.slots.push(match po.kind {
@@ -3748,7 +3775,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
     state.player.current_hp = parsed.player.hp;
     state.player.max_hp = parsed.player.max_hp;
     state.player.block = parsed.player.block;
-    state.player.energy = i8::try_from(parsed.player.energy).unwrap_or(i8::MAX);
+    state.player.energy = parsed.player.energy;
     state.player.max_energy = i8::try_from(parsed.player.max_energy).unwrap_or(i8::MAX);
     state.player.character = character_id_from_class(&parsed.player.class);
     state.player.powers.clone_from(&player_powers);
@@ -4683,7 +4710,7 @@ pub fn state_from_dict_impl(parsed: &ParsedState) -> WireResult<CoreCombatState>
             continue;
         };
         let seat = &mut state.allies[i];
-        seat.energy = i8::try_from(a.energy).unwrap_or(i8::MAX);
+        seat.energy = a.energy;
         seat.max_energy = i8::try_from(a.max_energy).unwrap_or(i8::MAX);
         seat.character = a.class.as_deref().and_then(character_id_from_class);
         for pp in &a.powers {
@@ -4850,6 +4877,7 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::EnchantmentUsed => "enchantment_used",
         VarKey::StarCostFreeThisTurn => "star_cost_free_this_turn",
         VarKey::MomentumDamage => "momentum_damage",
+        VarKey::BansheesCryEtherealCounted => "banshees_cry_ethereal_counted",
     }
 }
 
@@ -4886,6 +4914,7 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::EnchantmentUsed,
         VarKey::StarCostFreeThisTurn,
         VarKey::MomentumDamage,
+        VarKey::BansheesCryEtherealCounted,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }

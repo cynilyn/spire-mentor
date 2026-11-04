@@ -207,9 +207,9 @@ fn run_random(state: &mut CombatState, rng: &mut sts2_core::dotnet_rng::Rng, lab
             | StepResult::CombatWon
             | StepResult::CombatLost
             | StepResult::PendingChoice => {}
-            StepResult::InvalidTarget => {
+            StepResult::InvalidTarget | StepResult::IllegalPlay => {
                 panic!(
-                    "InvalidTarget on a legal_actions-derived action in '{label}': \
+                    "{result:?} on a legal_actions-derived action in '{label}': \
                      action={action:?}"
                 );
             }

@@ -289,6 +289,11 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
     if !card.has_enchantment(EnchantmentId::Slither) {
         return;
     }
+    // C# `Slither.AfterCardDrawn`: `if (base.Card.Pile.Type != PileType.Hand)
+    // return;` — no roll for a card that already left the hand.
+    if !state.player.hand.contains(&card_uid) {
+        return;
+    }
     let new_cost: i8 = state.run_rng.combat_energy_costs.next_int(0, 3) as i8;
     if let Some(card) = state.cards.get_mut(idx) {
         card.cost = new_cost;
@@ -299,9 +304,11 @@ fn on_card_drawn_stub(state: &mut CombatState, card_uid: CardUid, _from_hand_dra
 // 2. after_player_turn_start
 // ---------------------------------------------------------------------------
 
-/// Fire enchantment `after_player_turn_start` once per player turn
-/// start. Walks the draw pile to surface Imbued cards (auto-play on
-/// turn 1).
+/// Fire the enchantment turn-start channel once per player turn. Walks the
+/// draw pile to surface Imbued cards (auto-play on turn 1). Despite the name,
+/// the caller fires it in the AutoPrePlay phase
+/// (`Imbued.AfterAutoPrePlayPhaseEntered`, Imbued.cs:20), after
+/// `AfterPlayerTurnStart` and `AfterSideTurnStart`.
 ///
 /// Python entry: `enchantments.py:126` —
 /// `after_player_turn_start(owner, combat)`.
@@ -324,10 +331,9 @@ pub fn dispatch_after_player_turn_start(state: &mut CombatState) {
 /// **v0.107.1 retime/rewindow (§8):** C# `Imbued.cs` moved its body from
 /// `BeforePlayPhaseStart` to `AfterAutoPrePlayPhaseEntered` and changed the
 /// window from `CombatState.RoundNumber == 1` to
-/// `PlayerCombatState.TurnNumber <= 1`. Both C# hook points fire after the
-/// turn-setup task completes (after `AfterPlayerTurnStart`), so the relative
-/// dispatch point is unchanged — this remains the engine's per-turn-start
-/// enchant pass. `TurnNumber` starts at `1` and increments once per player
+/// `PlayerCombatState.TurnNumber <= 1`. The AutoPrePlay phase follows
+/// `AfterPlayerTurnStart` and `AfterSideTurnStart`, so the combat loop fires
+/// this from its AutoPrePlay tail. `TurnNumber` starts at `1` and increments once per player
 /// turn; with no extra-turn mechanic in the solo engine `TurnNumber <= 1`
 /// ≡ `round_no() == 1` (see the MrStruggles `RoundNumber→TurnNumber` note),
 /// so the existing round-1 gate below is the faithful window.
@@ -951,6 +957,26 @@ mod tests {
             props: ValueProps::MOVE,
         };
         assert_eq!(crate::hooks::modify_damage(&state, 6, &ctx), 10);
+    }
+
+    /// A relic's `ModifyDamageAdditive` (MiniatureCannon +3) runs in
+    /// `ModifyDamageInternal`, after the enchantment stage, so Corrupted does
+    /// not multiply it: `13 * 1.5 + 3 = 22.5 -> 22`, not `(13 + 3) * 1.5 = 24`.
+    /// Regent 1004 (GH #1054).
+    #[test]
+    fn corrupted_does_not_multiply_a_relic_additive() {
+        let mut state = state_with_one_enchanted_card(EnchantmentId::Corrupted, 1);
+        state.player.hand.clear();
+        state.player.play.push(uid(1));
+        let ctx = crate::hooks::DamageCtx {
+            dealer: crate::hooks::CreatureRef::Player,
+            target: crate::hooks::CreatureRef::Player,
+            props: ValueProps::MOVE,
+        };
+        assert_eq!(
+            crate::hooks::modify_damage_with_relic_additive(&state, 13, 3, &ctx),
+            22
+        );
     }
 
     /// GH #64 §5: the Favored multiplicative (2×) is now threaded into

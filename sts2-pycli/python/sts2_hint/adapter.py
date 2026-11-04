@@ -1463,7 +1463,8 @@ def _copy_seat_history(src: dict[str, Any], out: dict[str, Any]) -> None:
     (Tear Asunder) and its powered hits on each enemy this turn, as
     ``[{enemy, hits}]`` (a teammate's Gang Up), and the cards it exhausted
     this combat (Midnight counts everyone's), and this turn's exhausts (Evil
-    Eye) and card block gains (Unmovable). Zero and empty are omitted, the
+    Eye) and card block gains (Unmovable), and its extra turns this combat
+    (GH #812: PaelsEye, Ambergris). Zero and empty are omitted, the
     wire's default -- except the two turn counts, kept at 0 too: their
     presence says the producer disclosed them, so the live mirror lets
     reality win on them (``combat_mirror``, GH #989)."""
@@ -1472,6 +1473,7 @@ def _copy_seat_history(src: dict[str, Any], out: dict[str, Any]) -> None:
         "cards_exhausted_this_combat",
         "cards_exhausted_this_turn",
         "card_block_gains_this_turn",
+        "extra_turns_taken_this_combat",
     ):
         n = src.get(key)
         if isinstance(n, int) and not isinstance(n, bool) and (n > 0 or key in TURN_HISTORY_KEYS):

@@ -1321,6 +1321,69 @@ fn droplet_of_precognition_noop_on_empty_draw() {
     assert!(state.pending_choice.is_none(), "no choice on empty draw");
 }
 
+/// DropletOfPrecognition drunk with 10 cards in hand. C# `CardPileCmd.Add(
+/// card, Hand)` (`DropletOfPrecognition.cs:28` in v0.111.0, `:25` in
+/// v0.107.1) puts the card on the discard pile (`CardPileCmd.cs:485-489`).
+/// Both paths: the lone draw card added with no prompt, and a pick
+/// resolved through the `AddFromDrawByType` choice.
+#[test]
+fn droplet_of_precognition_full_hand_sends_card_to_discard() {
+    use sts2_core::cards::HAND_LIMIT;
+    ensure_installed();
+    let full_hand = |state: &mut CombatState| -> Vec<sts2_core::CardUid> {
+        for raw in 1..=u32::try_from(HAND_LIMIT).expect("fits") {
+            let uid = push_test_card(state, raw, 1, false);
+            state.player.hand.push(uid);
+        }
+        state.player.hand.to_vec()
+    };
+
+    // One card in the draw pile: no prompt.
+    let mut state = fresh_state_with_player(80, 80);
+    let hand = full_hand(&mut state);
+    let lone = push_test_card(&mut state, 11, 0, false);
+    state.player.draw.push(lone);
+    assert_eq!(
+        dispatch(&mut state, PotionKind::DropletOfPrecognition, None),
+        EffectResult::Resolved
+    );
+    assert!(state.pending_choice.is_none(), "no prompt for a lone card");
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![lone]);
+    assert!(state.player.draw.is_empty());
+
+    // Two cards in the draw pile: the pick goes through the resolver.
+    let mut state = fresh_state_with_player(80, 80);
+    let hand = full_hand(&mut state);
+    for raw in 11..=12u32 {
+        let uid = push_test_card(&mut state, raw, 0, false);
+        state.player.draw.push(uid);
+    }
+    assert_eq!(
+        dispatch(&mut state, PotionKind::DropletOfPrecognition, None),
+        EffectResult::Resolved
+    );
+    let picked = state
+        .pending_choice
+        .as_ref()
+        .expect("draw choice opened")
+        .options[0]
+        .card_uid
+        .expect("draw option carries its uid");
+    resolve_choice_pick(&mut state, 0);
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![picked]);
+    assert_eq!(state.player.draw.len(), 1);
+}
+
 /// EntropicBrew fills the potion belt to capacity. With an unset
 /// (`0`-sentinel) slot cap the effective ceiling is the hard
 /// `MAX_POTIONS` (legacy fixture behavior).
@@ -2869,5 +2932,57 @@ fn entropic_brew_refills_lowest_open_slot_first() {
         state.player.potions.as_slice(),
         [r1, PotionKind::EnergyPotion, r2].as_slice(),
         "first roll fills the drunk Brew's slot 0, second fills slot 2"
+    );
+}
+
+/// Give the combat a Sozu relic (the only `ShouldProcurePotion` override).
+fn give_sozu(state: &mut CombatState) {
+    use std::num::NonZeroU32;
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::Sozu,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+}
+
+/// Sozu vetoes ALCHEMIZE's potion, but only after the roll: C#
+/// `Alchemize.OnPlay` rolls `CreateRandomPotionInCombat` first, then
+/// `PotionCmd.TryToProcure` fails `NotAllowed` (`PotionCmd.cs:31`,
+/// `Sozu.cs:17`). The stream still advances by 2.
+#[test]
+fn alchemize_vetoed_by_sozu_still_rolls() {
+    use sts2_core::potions::CharacterId;
+    let mut state = fresh_state_with_player(50, 50);
+    state.player.character = Some(CharacterId::Ironclad);
+    give_sozu(&mut state);
+    let cpg_before = state.run_rng.combat_potion_generation.counter();
+    crate::potions::all::alchemize_procure_random_potion(&mut state);
+    assert!(state.player.potions.is_empty(), "Sozu blocks the procure");
+    assert_eq!(
+        state.run_rng.combat_potion_generation.counter() - cpg_before,
+        2
+    );
+}
+
+/// Sozu stops EntropicBrew after ONE roll: `EntropicBrew.OnUse` rolls, then
+/// `TryToProcure` fails `NotAllowed` and the loop breaks
+/// (`EntropicBrew.cs:24-29`). DelicateFrond runs the same loop; on Ironclad
+/// seed 2170 (v0.111.0) Rust filled 3 slots with 6 draws where C# drew 2.
+#[test]
+fn entropic_brew_vetoed_by_sozu_rolls_once_and_adds_nothing() {
+    use sts2_core::potions::CharacterId;
+    let mut state = fresh_state_with_player(50, 50);
+    state.player.character = Some(CharacterId::Ironclad);
+    state.player.potion_slots = 3;
+    give_sozu(&mut state);
+    let cpg_before = state.run_rng.combat_potion_generation.counter();
+    crate::potions::all::entropic_brew_fill_belt(&mut state);
+    assert!(state.player.potions.is_empty(), "Sozu blocks every procure");
+    assert_eq!(
+        state.run_rng.combat_potion_generation.counter() - cpg_before,
+        2,
+        "one roll, then the vetoed procure breaks the loop"
     );
 }

@@ -1512,6 +1512,75 @@ mod tests {
         );
     }
 
+    /// A won fight against a killed SwipePower thief that stole the Bash, with
+    /// Pael's Tooth holding an Inflame and Lucky Fysh owned. `steal = false`
+    /// is the control (no thief).
+    fn won_fight_with_reclaimed_bash(steal: bool) -> RunManager {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RoomType;
+        use sts2_core::RelicId;
+        crate::relics::dispatch::ensure_installed();
+        let mut rm = new_ironclad_run_manager(0);
+        let rs = &mut rm.run_state;
+        rs.relics.push(RelicId::PaelsTooth);
+        rs.relics.push(RelicId::LuckyFysh);
+        rs.paels_tooth_stored =
+            vec![
+                crate::cards::v0111::card_pod_for(CardId::Inflame, false, rs.game_version)
+                    .expect("inflame spec"),
+            ];
+        let mut combat = sts2_core::CombatState::default();
+        combat.player.current_hp = 80;
+        combat.player.max_hp = 80;
+        if steal {
+            let thief = sts2_core::CreatureUid::new(7).expect("non-zero");
+            combat.record_swipe_steal(thief, CardId::Bash, false);
+            combat.reclaim_swipe_on_death(thief);
+        }
+        rm.debug_enter_combat(combat, RoomType::Monster);
+        let _ = rm.resolve_combat_fast(0.0, true);
+        rm
+    }
+
+    /// C# `SwipePower.BeforeDeath` (`SwipePower.cs:50-67`) hands the stolen
+    /// card back as a `SpecialCardReward`, whose `OnSelect` is a hooked
+    /// `CardPileCmd.Add(_card, PileType.Deck)` (`SpecialCardReward.cs:82-92`)
+    /// on the reward screen. So the card lands AFTER Pael's Tooth's
+    /// `AfterCombatEnd` return (`PaelsTooth.cs:93-114`; Ironclad seed 2151
+    /// act 2) and pays Lucky Fysh (`LuckyFysh.cs:24-31`; Ironclad seed 2015
+    /// act 2, gold 305 vs 320).
+    #[test]
+    fn reclaimed_swipe_card_lands_after_paels_tooth_with_deck_add_hooks() {
+        use sts2_core::cards::CardId;
+        let control = won_fight_with_reclaimed_bash(false);
+        let rm = won_fight_with_reclaimed_bash(true);
+        let tail: Vec<CardId> = rm
+            .run_state
+            .master_deck
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|c| c.card_id)
+            .collect();
+        assert_eq!(tail, vec![CardId::Inflame, CardId::Bash]);
+        assert_eq!(
+            rm.run_state
+                .master_deck
+                .iter()
+                .filter(|c| c.card_id == CardId::Bash)
+                .count(),
+            1,
+            "the Bash leaves its slot and comes back once"
+        );
+        assert!(rm.run_state.pending_swipe_returns.is_empty());
+        assert_eq!(
+            rm.run_state.gold,
+            control.run_state.gold + crate::relics::uncommon::LUCKY_FYSH_GOLD,
+            "the reclaim is a deck add: Lucky Fysh pays"
+        );
+    }
+
     /// The same channel carries War Hammer (`WarHammer.cs:19-31`): an elite
     /// victory upgrades up to four upgradable deck cards; a monster fight
     /// none.

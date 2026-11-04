@@ -47,6 +47,8 @@ pub fn result_str(r: &ActionResult) -> &'static str {
         ActionResult::RunOver => "run_over",
         ActionResult::ShopPurchaseFailed(_) => "shop_purchase_failed",
         ActionResult::ShopRemoveCardFailed(_) => "shop_remove_card_failed",
+        ActionResult::InvalidTarget => "invalid_target",
+        ActionResult::IllegalPlay => "illegal_play",
         _ => "unknown",
     }
 }
@@ -358,6 +360,16 @@ pub fn pending_card_grants(rm: &RunManager) -> u32 {
         .map_or(0, |g| u32::try_from(g.pick).unwrap_or(u32::MAX))
 }
 
+/// `pending_card_grant_min` (picks the FRONT grant still REQUIRES; `0` for
+/// an optional grid such as SeaGlass's).
+#[must_use]
+pub fn pending_card_grant_min(rm: &RunManager) -> u32 {
+    rm.run_state
+        .pending_card_grants
+        .first()
+        .map_or(0, |g| u32::try_from(g.min_pick).unwrap_or(u32::MAX))
+}
+
 /// `pending_deck_removals`.
 #[must_use]
 pub fn pending_deck_removals(rm: &RunManager) -> u32 {
@@ -509,13 +521,10 @@ pub fn total_floor(rm: &RunManager) -> i32 {
     rm.run_state.total_floor
 }
 
-/// The floor number the game shows (`RunState.TotalFloor`, the top bar and
-/// the game-over "Floors Climbed"). The game counts every act's start room
-/// (Neow, the Ancients) as a floor; the engine's `total_floor` does not, so
-/// the two differ by the 1-based act number (48 vs 45 at the act-3 boss).
+/// The floor number the game shows: [`sts2_core::runstate::RunState::game_floor`].
 #[must_use]
 pub fn game_floor(rm: &RunManager) -> i32 {
-    rm.run_state.total_floor + i32::from(rm.run_state.act_index)
+    rm.run_state.game_floor()
 }
 
 /// Whether an in-combat `pending_choice` (Headbutt etc.) is open.

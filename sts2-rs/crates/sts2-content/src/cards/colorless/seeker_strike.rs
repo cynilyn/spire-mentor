@@ -116,12 +116,15 @@ pub(crate) fn play_seeker_strike(
     // `<= prefs.MinSelect` (CardSelectCmd.cs:397-400, same in v0.111.0) and
     // takes the lone card: a 1-card draw pile adds it to hand with no choice.
     // Surfacing a select here let the run driver skip it (Defect QX182).
+    // `CardPileCmd.Add(card, Hand)` (SeekerStrike.cs:40) sends the card to
+    // the discard pile instead when the hand already holds 10 cards
+    // (CardPileCmd.cs:485-489), which an auto-play from the draw pile reaches.
     if let [uid] = subset.as_slice() {
         let uid = *uid;
         if let Some(pos) = state.player.draw.iter().position(|&u| u == uid) {
             let card = state.player.draw.remove(pos);
             sts2_core::cards::unpin(&mut state.player, card);
-            state.player.hand.push(card);
+            let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
         }
         return EffectResult::Resolved;
     }

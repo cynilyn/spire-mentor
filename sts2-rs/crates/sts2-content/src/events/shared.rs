@@ -834,9 +834,8 @@ const BYRDONIS_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
-/// `ByrdonisNest` spec. Pin: `shared.py:586`. `is_allowed`'s
-/// `has_event_pet()` precondition deferred (no event-pet tracking
-/// on RunState yet); defaults to always-allowed.
+/// `ByrdonisNest` spec. Pin: `shared.py:586`. `is_allowed` is C#
+/// `!HasEventPet()` ([`super::byrdonis_nest_allowed`]).
 pub const BYRDONIS_NEST: EventSpec = EventSpec {
     id: EventId::ByrdonisNest,
     python_name: "ByrdonisNest",
@@ -1522,19 +1521,47 @@ fn grave_confront(state: &mut RunState) -> EventOutcome {
     // TWO things, NEITHER a card-reward choice:
     //  1. `CardPileCmd.AddCurseToDeck<Decay>` — adds one specific Decay curse
     //     directly to the deck (`CardPileCmd.cs:960-978`: CreateCard + Add).
-    //  2. `CardSelectCmd.FromDeckForEnchantment(SoulsPower, 1)` + `Enchant` —
-    //     ENCHANTS an existing deck card; it adds NO card.
-    // The old two `Reward::Card(empty)` placeholders surfaced two random 3-card
-    // ADD choices, inflating the deck by 2 vs C#. Add the Decay curse directly;
-    // the Souls-Power enchant needs an enchant-selection surface (not yet wired)
-    // so it's left unimplemented rather than faked with a phantom card-add —
-    // dropping the phantom keeps deck size correct. Bead `sts2-rs-RP27`.
+    //  2. `CardSelectCmd.FromDeckForEnchantment(SoulsPower, 1)` (MinSelect 1)
+    //     + `Enchant<SoulsPower>` — ENCHANTS an existing Exhaust deck card
+    //     (`SoulsPower.OnEnchant` removes its Exhaust keyword); adds NO card.
+    // Decay goes in first; as a Curse it is never an enchant candidate. The
+    // selector lists eligible cards in deck order and auto-takes at
+    // count <= MinSelect (`CardSelectCmd.cs:676-697`); the interactive host
+    // queues a `pending_deck_enchants` pick — same shape as
+    // `field_of_man_sized_holes_enter`. Bead `sts2-rs-RP27`, GH #1054.
+    use sts2_core::cards::EnchantmentId;
     if let Some(card) =
         crate::cards::spec_index::card_pod_from_id(sts2_core::cards::CardId::Decay, false)
     {
         state.add_card_to_deck_with_hooks(card, sts2_core::relic_effects::AddSource::EventGain);
     }
-    EventOutcome::finished("Added Decay to the deck (Soul's Power enchant deferred).")
+    let version = state.game_version;
+    let eligible = state
+        .master_deck
+        .iter()
+        .filter(|c| super::souls_power_can_enchant(c, version))
+        .count();
+    if state.interactive_card_transform && eligible > 1 {
+        state
+            .pending_deck_enchants
+            .push(sts2_core::PendingDeckEnchant {
+                enchantment: EnchantmentId::SoulsPower,
+                amount: 1,
+                type_restriction: None,
+                secondary_type: None,
+                optional: false,
+            });
+        EventOutcome::finished("Added Decay; pick a card to enchant with Soul's Power.")
+    } else {
+        if let Some(card) = state
+            .master_deck
+            .iter_mut()
+            .find(|c| super::souls_power_can_enchant(c, version))
+        {
+            card.set_enchantment(EnchantmentId::SoulsPower, 1);
+        }
+        EventOutcome::finished("Added Decay and enchanted a card with Soul's Power.")
+    }
 }
 
 fn grave_accept(state: &mut RunState) -> EventOutcome {
@@ -2052,7 +2079,8 @@ mod tests {
         assert!(matches!(
             rs.pending_rewards[0],
             Reward::Potion(PotionReward {
-                potion_kind: Some(_)
+                potion_kind: Some(_),
+                ..
             })
         ));
     }
@@ -2899,6 +2927,56 @@ mod tests {
             Some(sts2_core::cards::CardId::Decay),
         );
         assert!(rs.pending_rewards.is_empty(), "no phantom card reward");
+    }
+
+    fn grave_deck_card(id: sts2_core::cards::CardId) -> sts2_core::cards::Card {
+        crate::cards::spec_index::card_pod_from_id(id, false).unwrap()
+    }
+
+    #[test]
+    fn grave_confront_queues_souls_power_pick_with_several_exhaust_cards() {
+        // C# `FromDeckForEnchantment(SoulsPower, 1)` surfaces the selector
+        // when more than MinSelect (1) cards can take Soul's Power
+        // (`GraveOfTheForgotten.cs:52-66`, `CardSelectCmd.cs:676-697`).
+        use sts2_core::cards::{CardId, EnchantmentId};
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        rs.master_deck.push(grave_deck_card(CardId::FiendFire));
+        rs.master_deck.push(grave_deck_card(CardId::Impervious));
+        (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
+        assert_eq!(rs.pending_deck_enchants.len(), 1);
+        assert_eq!(
+            rs.pending_deck_enchants[0].enchantment,
+            EnchantmentId::SoulsPower
+        );
+        assert!(!rs.pending_deck_enchants[0].optional);
+        assert!(rs.master_deck.iter().all(|c| c.enchantments.is_empty()));
+    }
+
+    #[test]
+    fn grave_confront_auto_enchants_the_single_exhaust_card() {
+        // One eligible card ⇒ C# auto-takes it (count <= MinSelect); Soul's
+        // Power strips Exhaust so the card no longer exhausts on play.
+        use sts2_core::cards::{CardId, EnchantmentId};
+        let mut rs = RunState::new();
+        rs.interactive_card_transform = true;
+        rs.master_deck.push(grave_deck_card(CardId::StrikeIronclad));
+        rs.master_deck.push(grave_deck_card(CardId::FiendFire));
+        (GRAVE_OF_THE_FORGOTTEN.options[0].handler)(&mut rs);
+        assert!(rs.pending_deck_enchants.is_empty());
+        let ff = rs
+            .master_deck
+            .iter()
+            .find(|c| c.card_id == CardId::FiendFire)
+            .unwrap();
+        assert!(ff.has_enchantment(EnchantmentId::SoulsPower));
+        assert!(!sts2_core::card_effects::card_exhausts_inst(ff));
+        let strike = rs
+            .master_deck
+            .iter()
+            .find(|c| c.card_id == CardId::StrikeIronclad)
+            .unwrap();
+        assert!(strike.enchantments.is_empty(), "non-Exhaust card untouched");
     }
 
     #[test]

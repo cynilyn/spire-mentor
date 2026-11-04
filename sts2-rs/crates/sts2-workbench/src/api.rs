@@ -599,10 +599,6 @@ impl Workbench {
                 advisors::last_turn_grade(self.live()?, &config_of(body))?
                     .ok_or_else(|| ApiError::new(409, "no gradable turn just ended"))
             }
-            ("POST", "/api/live/last-move-regret") => {
-                advisors::last_move_regret(self.live()?, &config_of(body))?
-                    .ok_or_else(|| ApiError::new(409, "no prior combat move to assess"))
-            }
             ("POST", "/api/live/last-choice-grade") => self
                 .live()?
                 .last_choice_grade()?

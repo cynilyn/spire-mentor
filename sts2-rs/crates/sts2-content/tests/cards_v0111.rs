@@ -230,6 +230,47 @@ fn expect_a_fight_upgrade_v0111() {
     assert_eq!(state.player.block, 32, "16 + 8 x 2 Strength");
 }
 
+/// v0.111.0 `ExpectAFight.cs:17` `GainsBlock => true` (the block is a
+/// `CalculatedBlockVar`, so the card's `base_block` stays 0), which
+/// `Nimble.CanEnchant` gates on (`Nimble.cs:9-14`). v0.107.1's energy card
+/// has no override (`CardModel.cs:671` `=> false`).
+#[test]
+fn expect_a_fight_gains_block_only_in_v0111() {
+    let v111 = card_pod_from_id_for(CardId::ExpectAFight, false, V111).expect("spec");
+    assert!(v111.gains_block_for(V111), "ExpectAFight.cs:17 GainsBlock");
+    let v107 = card_pod_from_id_for(CardId::ExpectAFight, false, V107).expect("spec");
+    assert!(!v107.gains_block_for(V107), "v0.107.1 has no override");
+    let spec =
+        sts2_content::cards::spec_index::spec_for_card_id(CardId::ExpectAFight).expect("spec");
+    assert!(sts2_content::enchantments::can_enchant_card(
+        &spec,
+        &v111,
+        sts2_core::cards::EnchantmentId::Nimble,
+        V111,
+    ));
+    assert!(!sts2_content::enchantments::can_enchant_card(
+        &spec,
+        &v107,
+        sts2_core::cards::EnchantmentId::Nimble,
+        V107,
+    ));
+}
+
+/// `Nimble.EnchantBlockAdditive => Amount` (`Nimble.cs:17-20`) applies to the
+/// `CreatureCmd.GainBlock(CalculatedBlock.Calculate(..), .., cardPlay)` grant
+/// (`ExpectAFight.cs:36`) through `Hook.ModifyBlock`'s card-source chain.
+#[test]
+fn expect_a_fight_nimble_adds_to_calculated_block_v0111() {
+    let mut state = fresh(V111, CharacterId::Ironclad);
+    add_player_power(&mut state, 900, PowerKind::Strength, 2);
+    let i = push_hand(&mut state, CardId::ExpectAFight, false);
+    let uid = state.player.hand[usize::from(i)];
+    state.cards[uid.0.get() as usize - 1]
+        .add_enchantment(sts2_core::cards::EnchantmentId::Nimble, 3);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert_eq!(state.player.block, 28, "15 + 5 x 2 Strength + 3 Nimble");
+}
+
 #[test]
 fn expect_a_fight_v0107() {
     let mut state = fresh(V107, CharacterId::Ironclad);
@@ -409,6 +450,68 @@ fn eidolon_v0111() {
     assert!(
         state.player.exhaust.contains(&eidolon),
         "Eidolon is Exhaust now (Eidolon.cs:15)"
+    );
+}
+
+/// GH #1054 (Necrobinder-1001 act-3 `hand_count` split): C# `Eidolon.OnPlay`
+/// `await`s each `CardCmd.AutoPlay`, so the first Ethereal Graveblast's
+/// discard pick resolves before the second Graveblast plays. Rust ran the
+/// whole loop at once: the second select replaced the first, and only one
+/// card came back to hand.
+#[test]
+fn eidolon_waits_for_each_auto_played_select_v0111() {
+    let mut state = fresh(V111, CharacterId::Necrobinder);
+    for _ in 0..2 {
+        let g = new_card(&mut state, CardId::Graveblast, false);
+        state.cards[g.0.get() as usize - 1].keyword_override =
+            Some(KeywordOverride::NONE.with(KeywordOverride::ETHEREAL));
+        state.player.exhaust.push(g);
+    }
+    for _ in 0..3 {
+        let d = new_card(&mut state, CardId::DefendNecrobinder, false);
+        state.player.discard.push(d);
+    }
+    let i = push_hand(&mut state, CardId::Eidolon, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    // The first Graveblast's pick surfaces; once it resolves, the rest of
+    // the loop resumes with nested selects draining inline (the C#
+    // `AutoResolveInline` mirror), so the second Graveblast takes its card.
+    let pc = state
+        .pending_choice
+        .as_ref()
+        .expect("the first Graveblast select is open");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDiscardToHand);
+    assert_eq!(pc.options.len(), 3, "all three discard cards are offered");
+    let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    let returned = state
+        .player
+        .hand
+        .iter()
+        .filter(|u| state.cards[u.0.get() as usize - 1].card_id == CardId::DefendNecrobinder)
+        .count();
+    assert_eq!(returned, 2, "each Graveblast returned one discard card");
+    assert!(state.pending_choice.is_none());
+}
+
+/// GH #1054 (Defect-1000 act-3 `hand_costs` split): Snecko Oil rolled a
+/// MomentumStrike to 0 (`SetThisTurnOrUntilPlayed`), then it was played.
+/// C# appends MomentumStrike's `SetThisCombat(0)` AFTER the roll, so when the
+/// roll expires on play the cost stays 0. Rust's roll expiry subtracted the
+/// roll's delta from the new 0, so the card came back at 1.
+#[test]
+fn momentum_strike_keeps_zero_after_a_snecko_roll_expires() {
+    let mut state = fresh(V111, CharacterId::Defect);
+    let i = push_hand(&mut state, CardId::MomentumStrike, false);
+    let uid = state.player.hand[usize::from(i)];
+    // The same banked modifier Snecko Oil's 0 roll leaves on a 1-cost card.
+    state.cards[uid.0.get() as usize - 1].set_this_turn_or_until_played_reduce_only(0);
+    assert_eq!(state.cards[uid.0.get() as usize - 1].cost, 0);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    assert_eq!(
+        state.cards[uid.0.get() as usize - 1].cost,
+        0,
+        "SetThisCombat(0) outlives the expired roll"
     );
 }
 
@@ -674,6 +777,48 @@ fn thinking_ahead_put_back_waits_for_a_suspended_draw_v0107() {
         pc.options.len(),
         4,
         "Strike + the Stratagem pick + 2 drawn cards are offered"
+    );
+}
+
+/// Glimmer has the same shape as ThinkingAhead: C# Glimmer.OnPlay awaits the
+/// whole `CardPileCmd.Draw` (incl. Stratagem's reshuffle grid) before its
+/// `CardSelectCmd.FromHand` put-back (Regent-3002 act2 parity: Rust's
+/// put-back overwrote the grid and offered the partial hand).
+#[test]
+fn glimmer_put_back_waits_for_a_suspended_draw_v0111() {
+    let mut state = fresh(V111, CharacterId::Regent);
+    add_player_power(&mut state, 50, PowerKind::Stratagem, 1);
+    let _ = push_hand(&mut state, CardId::StrikeRegent, false);
+    for id in [
+        CardId::Footwork,
+        CardId::Accelerant,
+        CardId::Backflip,
+        CardId::DefendRegent,
+    ] {
+        let uid = new_card(&mut state, id, false);
+        state.player.discard.push(uid);
+    }
+    let i = push_hand(&mut state, CardId::Glimmer, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    let pc = state.pending_choice.as_ref().expect("a choice is open");
+    assert_eq!(
+        pc.kind,
+        sts2_core::ChoiceKind::AddFromDrawToHand,
+        "Stratagem first"
+    );
+
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
+    );
+    let pc = state.pending_choice.as_ref().expect("the put-back follows");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::PutBack);
+    assert_eq!(
+        pc.options.len(),
+        5,
+        "Strike + the Stratagem pick + 3 drawn cards are offered"
     );
 }
 
@@ -964,5 +1109,41 @@ fn escape_plan_ignores_a_stratagem_pick_v0107() {
     let i = push_hand(&mut state, CardId::EscapePlan, false);
     let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
     assert!(state.player.hand.contains(&skill), "Stratagem took it");
+    assert_eq!(state.player.block, 0);
+}
+
+/// Sweeping Gaze with no hittable enemy (an Adaptable corpse keeps the combat
+/// open): C# still executes the Osty's `AttackCommand`, so `BoneFlute.AfterAttack`
+/// grants its 2 block (act23 Necrobinder:1006).
+#[test]
+fn sweeping_gaze_with_no_target_still_owes_bone_flute() {
+    let mut state = fresh(V111, CharacterId::Necrobinder);
+    state.creatures[0].current_hp = 0;
+    let enemy = state.enemy_uids[0];
+    sts2_core::card_effects::apply_power_to_creature(&mut state, enemy, PowerKind::Adaptable, 1);
+    let _ = state.summon_osty(5);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::BoneFlute,
+        counter: sts2_core::RelicKind::BoneFlute.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+    let i = push_hand(&mut state, CardId::SweepingGaze, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert_eq!(state.player.block, 2);
+}
+
+/// C# grants Escape Plan's block only for a drawn `CardType.Skill`; the Quest
+/// cards (modelled as Skills in Rust) are `CardType.Quest`, so drawing
+/// Byrdonis Egg grants nothing (act23 Silent:1017).
+#[test]
+fn escape_plan_drawing_a_quest_card_grants_no_block() {
+    let mut state = fresh(V111, CharacterId::Silent);
+    let egg = new_card(&mut state, CardId::ByrdonisEgg, false);
+    state.player.draw.push(egg);
+    let i = push_hand(&mut state, CardId::EscapePlan, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert!(state.player.hand.contains(&egg), "the egg was drawn");
     assert_eq!(state.player.block, 0);
 }

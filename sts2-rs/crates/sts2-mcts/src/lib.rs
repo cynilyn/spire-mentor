@@ -1829,7 +1829,7 @@ pub struct NodeSnapshot {
     pub player_hp: i32,
     pub player_max_hp: i32,
     pub player_block: i32,
-    pub energy: i8,
+    pub energy: i32,
     pub round: u16,
     pub enemies: SmallVec<[EnemySnapshot; 8]>,
 }
@@ -4654,6 +4654,12 @@ impl<P: Policy> Mcts<P> {
         if result == StepResult::InvalidTarget {
             self.failed_apply += 1;
             self.invalid_target += 1;
+            return false;
+        }
+        if result == StepResult::IllegalPlay {
+            // GH #1122: the engine now names the early-return no-op.
+            self.failed_apply += 1;
+            self.no_op_playcard += 1;
             return false;
         }
         if is_play_card && state.player.hand.len() == pre_hand_len {

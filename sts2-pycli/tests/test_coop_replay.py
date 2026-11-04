@@ -716,6 +716,29 @@ def test_a_seats_combat_history_from_the_mod_is_kept() -> None:
     assert back["allies"][0]["cards_exhausted_this_combat"] == 4
 
 
+def test_a_seats_extra_turn_count_from_the_mod_reaches_the_engine() -> None:
+    """GH #812: newer mods send each seat's extra turns this combat
+    (PaelsEye, Ambergris: TurnNumber - RoundNumber). The turn-number gates
+    read round + this, so it must survive adapter, wire and engine; a zero
+    stays off the wire, its default."""
+    board = _mod_board()
+    board["player"]["extra_turns_taken_this_combat"] = 1
+    board["allies"][0]["extra_turns_taken_this_combat"] = 2
+    wire = coop_replay.full_fight_wire(to_headless_combat_play(board))
+    assert wire["player"]["extra_turns_taken_this_combat"] == 1
+    assert wire["allies"][0]["extra_turns_taken_this_combat"] == 2
+    import sts2_rs
+
+    back = sts2_rs.state_to_dict(sts2_rs.state_from_dict(wire))
+    assert back["player"]["extra_turns_taken_this_combat"] == 1
+    assert back["allies"][0]["extra_turns_taken_this_combat"] == 2
+
+    board = _mod_board()
+    board["player"]["extra_turns_taken_this_combat"] = 0
+    wire = coop_replay.full_fight_wire(to_headless_combat_play(board))
+    assert "extra_turns_taken_this_combat" not in wire["player"]
+
+
 def _mod_board_with_orbs(orbs: list[dict[str, Any]] | None) -> dict[str, Any]:
     board = _mod_board()
     if orbs is not None:

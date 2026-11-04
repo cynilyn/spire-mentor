@@ -43,8 +43,7 @@ use sts2_core::relic_effects::{
 use sts2_core::relics::RelicId;
 use sts2_core::run_effects::{
     register_after_obtained, register_after_room_entered, register_on_card_added_to_deck,
-    register_on_gold_gained, register_should_gain_gold, AfterObtainedRunFn, AfterRoomEnteredRunFn,
-    CardAddedRunCtx, OnCardAddedToDeckRunFn, OnGoldGainedRunFn, ShouldGainGoldRunFn,
+    AfterObtainedRunFn, AfterRoomEnteredRunFn, CardAddedRunCtx, OnCardAddedToDeckRunFn,
 };
 use sts2_core::runstate::{RoomType, RunState};
 use sts2_core::{CardUid, CombatState, RelicKind, Side};
@@ -154,23 +153,8 @@ pub fn install_pool() {
     // Bead `sts2-rs-u8qa`: real `after_obtained` listener for Pear's
     // `MAX_HP = 10` (Python `uncommon.py::Pear.MAX_HP`).
     register_after_obtained(RelicId::Pear, listener_pear as AfterObtainedRunFn);
-    // Bead `sts2-rs-b31s6`: BowlerHat — 25% bonus on every positive
-    // gold gain (`sts2-rs-oim25` corrected the Python-pin's 20% to
-    // C# `GoldIncrease = 1.25m`). Two-listener wire:
-    // - should_gain_gold latches the integer-floored bonus into
-    //   rs.relic_counters[BowlerHat] (never cancels the gain).
-    // - on_gold_gained reads the latch and re-calls gain_gold(bonus),
-    //   guarded by rs.bowler_hat_applying_bonus so other gold
-    //   listeners (DragonFruit, ...) observe the bonus once while
-    //   BowlerHat itself doesn't compound geometrically.
-    register_should_gain_gold(
-        RelicId::BowlerHat,
-        listener_bowler_hat_should_gain_gold as ShouldGainGoldRunFn,
-    );
-    register_on_gold_gained(
-        RelicId::BowlerHat,
-        listener_bowler_hat_on_gold_gained as OnGoldGainedRunFn,
-    );
+    // BowlerHat has no listener: its C# `ModifyGoldGained` x1.25 is folded
+    // into `RunState::gain_gold` (and `gain_gold_in_combat` in combat).
     // Bead `sts2-rs-onyo`: real `after_room_entered` listener for
     // Pantograph's boss-room heal (Python `uncommon.py::Pantograph`).
     register_after_room_entered(
@@ -571,94 +555,6 @@ fn listener_pear(rs: &mut RunState) -> EffectResult {
     EffectResult::Resolved
 }
 
-/// `BowlerHat::should_gain_gold` — stash the pending bonus
-/// (`amount * MULTIPLIER`, integer-floored). Python pin
-/// `sts2-rl-agent@01c094d:sts2_env/relics/uncommon.py::BowlerHat`:
-/// ```text
-/// def should_gain_gold(self, owner, amount):
-///     if self._is_applying_bonus:
-///         return True
-///     self._pending_bonus_gold = int(amount * self.MULTIPLIER)
-///     return True
-/// ```
-///
-/// The Rust port stashes the pending bonus on
-/// `rs.relic_counters[BowlerHat]` (per-relic state-on-RunState
-/// idiom, same as PumpkinCandle's act snapshot in `f0438`). During
-/// bonus application, the re-entry guard
-/// [`RunState::bowler_hat_applying_bonus`] is `true` and the
-/// listener short-circuits — matching Python's
-/// `_is_applying_bonus` early-return so the bonus doesn't compound
-/// geometrically. Ownership-gated. Never cancels the gain. Bead
-/// `sts2-rs-b31s6`.
-fn listener_bowler_hat_should_gain_gold(
-    rs: &mut RunState,
-    amount: i32,
-    _cancel: &mut bool,
-) -> EffectResult {
-    if !rs.owns_active_relic(RelicId::BowlerHat) {
-        return EffectResult::NotImplemented;
-    }
-    if rs.bowler_hat_applying_bonus {
-        return EffectResult::Resolved;
-    }
-    if amount <= 0 {
-        return EffectResult::NotImplemented;
-    }
-    // Integer-floor `amount * MULTIPLIER` exactly as Python's
-    // `int(amount * 0.2)`. Using `amount * 20 / 100` keeps the
-    // arithmetic in i32 and avoids the f64 round-trip; for the
-    // canonical 20% pin the two are identical for all positive
-    // i32 amounts.
-    let bonus = amount.saturating_mul(BOWLER_HAT_MULTIPLIER_PCT) / 100;
-    rs.relic_counters.insert(RelicId::BowlerHat, bonus);
-    EffectResult::Resolved
-}
-
-/// `BowlerHat::on_gold_gained` — apply the stashed bonus by
-/// calling [`RunState::gain_gold`] again, guarded by
-/// [`RunState::bowler_hat_applying_bonus`] so the recursive
-/// re-fire of the same listener is a no-op. Python pin:
-/// ```text
-/// def on_gold_gained(self, owner, amount):
-///     if self._is_applying_bonus or self._pending_bonus_gold <= 0:
-///         return
-///     bonus = self._pending_bonus_gold
-///     self._pending_bonus_gold = 0
-///     self._is_applying_bonus = True
-///     try:
-///         owner.gain_gold(bonus)
-///     finally:
-///         self._is_applying_bonus = False
-/// ```
-///
-/// The recursive `gain_gold(bonus)` is intentional: other gold-
-/// channel listeners (e.g. DragonFruit's `+1 Max HP per positive
-/// gold gain`) MUST observe the bonus too. The re-entry guard
-/// only suppresses BowlerHat's own re-fire, matching Python.
-/// Ownership-gated. Bead `sts2-rs-b31s6`.
-fn listener_bowler_hat_on_gold_gained(rs: &mut RunState, _amount: i32) -> EffectResult {
-    if !rs.owns_active_relic(RelicId::BowlerHat) {
-        return EffectResult::NotImplemented;
-    }
-    if rs.bowler_hat_applying_bonus {
-        return EffectResult::NotImplemented;
-    }
-    let bonus = rs
-        .relic_counters
-        .get(&RelicId::BowlerHat)
-        .copied()
-        .unwrap_or(0);
-    if bonus <= 0 {
-        return EffectResult::NotImplemented;
-    }
-    rs.relic_counters.insert(RelicId::BowlerHat, 0);
-    rs.bowler_hat_applying_bonus = true;
-    rs.gain_gold(bonus);
-    rs.bowler_hat_applying_bonus = false;
-    EffectResult::Resolved
-}
-
 /// `Pantograph::after_room_entered` — `if room_type.is_boss and
 /// owner.current_hp > 0: owner.heal(25)`. Python pin
 /// `sts2-rl-agent@01c094d:sts2_env/relics/uncommon.py::Pantograph`
@@ -755,11 +651,9 @@ pub const BAG_OF_MARBLES_VULNERABLE: i32 = 1;
 /// (`uncommon.py:85`).
 pub const BOOK_REPAIR_KNIFE_HEAL_PER: i32 = 3;
 /// `BowlerHat` gold-gain bonus — C# `BowlerHat.cs`
-/// `DynamicVar("GoldIncrease", 1.25m)` with
-/// `PendingBonusGold = Math.Floor(amount * (GoldIncrease - 1))` →
-/// 25% bonus, not 20%. Python pin `uncommon.py:107`'s 0.2 multiplier
-/// drifted from the shipped game; corrected per bead `sts2-rs-oim25`.
-/// Stored as integer percent to keep [`RelicSpec`] `Copy`-friendly.
+/// `DynamicVar("GoldIncrease", 1.25m)`, applied as `ModifyGoldGained`
+/// (`amount * 1.25`) inside `RunState::gain_gold`. Stored as integer percent
+/// to keep [`RelicSpec`] `Copy`-friendly.
 pub const BOWLER_HAT_MULTIPLIER_PCT: i32 = 25;
 /// `Candelabra.ENERGY` — round-2 energy gain (`uncommon.py:138`).
 pub const CANDELABRA_ENERGY: i32 = 2;
@@ -1074,17 +968,51 @@ fn listener_pen_nib_modify_damage(state: &CombatState, ctx: &hooks::DamageCtx) -
         return DamageMul::ONE;
     }
     let source = sts2_core::card_effects::resolving_card_uid(state);
-    let doubled = match state.combat_log.pen_nib_attack_to_double {
-        Some(marked) => source == Some(marked),
-        None => {
-            source.is_none() && relic.counter.rem_euclid(PEN_NIB_THRESHOLD) == PEN_NIB_THRESHOLD - 1
-        }
-    };
-    if doubled {
+    if pen_nib_doubles(state, relic.counter, source, source.is_some()) {
         DamageMul::new(2, 1)
     } else {
         DamageMul::ONE
     }
+}
+
+/// Pen Nib's card gate for a `cardSource` that is (`source_in_play`) or is
+/// not on the Play pile: the marked card doubles; with no mark, a source
+/// outside Play doubles on the 9th count (`PenNib.ModifyDamageMultiplicative`).
+fn pen_nib_doubles(
+    state: &CombatState,
+    counter: i32,
+    source: Option<sts2_core::CardUid>,
+    source_in_play: bool,
+) -> bool {
+    match state.combat_log.pen_nib_attack_to_double {
+        Some(marked) => source == Some(marked),
+        None => !source_in_play && counter.rem_euclid(PEN_NIB_THRESHOLD) == PEN_NIB_THRESHOLD - 1,
+    }
+}
+
+/// The `(num, den)` that turns the Pen Nib factor the relic listener gave a
+/// player-dealt, card-less `DamageCtx` (keyed on the resolving card) into the
+/// factor C# gives `fold_source`, a card outside the Play pile. Thrash's fold
+/// calls `Hook.ModifyDamage` with the exhausted attack, still in Hand, as
+/// `cardSource` (`Thrash.cs` OnPlay), but the relic channel's `DamageCtx`
+/// carries no card, so the listener saw Thrash. As the 9th attack the fold is
+/// x2 in C# and x1 in the listener; as the marked 10th it is the other way
+/// round. `(1, 1)` without a live Pen Nib.
+pub(crate) fn pen_nib_fold_rescale(
+    state: &CombatState,
+    fold_source: sts2_core::CardUid,
+) -> (i64, i64) {
+    let Some(relic) = state
+        .relics
+        .iter()
+        .find(|r| !r.is_melted && r.kind == RelicKind::PenNib)
+    else {
+        return (1, 1);
+    };
+    let resolving = sts2_core::card_effects::resolving_card_uid(state);
+    let seen = pen_nib_doubles(state, relic.counter, resolving, resolving.is_some());
+    let wanted = pen_nib_doubles(state, relic.counter, Some(fold_source), false);
+    (if wanted { 2 } else { 1 }, if seen { 2 } else { 1 })
 }
 
 /// `PenNib::before_card_played` — C# `PenNib.BeforeCardPlayed` →
@@ -2168,8 +2096,23 @@ mod tests {
         // recursion so the final total is exactly 1250.
         rs.gain_gold(1000);
         assert_eq!(rs.gold, 1250, "single-level bonus, no compounding");
-        // Guard left clean for subsequent gains.
-        assert!(!rs.bowler_hat_applying_bonus);
+    }
+
+    /// C# `PlayerCmd.GainGold` (v0.111.0 `PlayerCmd.cs:141-170`) folds
+    /// Bowler Hat in as `Hook.ModifyGoldGained` (`BowlerHat.cs:25`, x1.25)
+    /// and credits once, so `Hook.AfterGoldGained` fires ONCE per gain: Dragon
+    /// Fruit (`DragonFruit.cs:22-28`) gives +1 Max HP, not +2.
+    #[test]
+    fn bowler_hat_with_dragon_fruit_fires_after_gold_gained_once() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = sts2_core::runstate::RunState::new();
+        rs.gold = 0;
+        rs.relics.push(RelicId::BowlerHat);
+        rs.relics.push(RelicId::DragonFruit);
+        let before_max = rs.max_hp;
+        rs.gain_gold(15);
+        assert_eq!(rs.gold, 18, "floor(15 * 1.25) = 18");
+        assert_eq!(rs.max_hp, before_max + 1, "AfterGoldGained fires once");
     }
 
     /// No-ownership: no bonus.

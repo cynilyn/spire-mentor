@@ -722,6 +722,10 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
             # (Unmovable) (GH #989). Absent on older mods.
             "cards_exhausted_this_turn": player.get("cards_exhausted_this_turn"),
             "card_block_gains_this_turn": player.get("card_block_gains_this_turn"),
+            # Extra turns taken this combat (PaelsEye, Ambergris): the
+            # turn-number gates read round + this (GH #812). Absent on older
+            # mods.
+            "extra_turns_taken_this_combat": player.get("extra_turns_taken_this_combat"),
             # Run gold, from the bridge envelope's ``run_state`` -- gates the
             # in-combat gold-spending relic hooks (SealOfGold's 5-gold
             # turn-start energy buy). ``sts2_hint.adapter`` only forwards an
@@ -801,6 +805,7 @@ def to_headless_combat_play(state: dict[str, Any]) -> dict[str, Any]:
                 "cards_exhausted_this_combat",
                 "cards_exhausted_this_turn",
                 "card_block_gains_this_turn",
+                "extra_turns_taken_this_combat",
             ):
                 if a.get(key):
                     ally[key] = a[key]

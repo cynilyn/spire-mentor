@@ -19,7 +19,8 @@
 // Placement: docked under the game's top bar by default; the grip at the
 // row's left end drags it anywhere (the strip can cover something the player
 // needs to see), and double-clicking the grip docks it again. The dragged
-// position lasts for the session, like the action log's.
+// position lasts for the session, like the action log's. The advice panel and
+// the coach chips follow a dragged strip (UndockedRect, AdviceColumn).
 //
 // Refresh model: SimRuntime.Changed handles mode flips from any surface;
 // a 150 ms Godot.Timer handles the state that raises no event (SimSpeed,
@@ -157,8 +158,8 @@ internal sealed class SimToolbar
     }
 
     /// <summary>Bottom edge (global Y) of the visible strip, or null when not
-    /// built or dragged off its dock -- SimHud parks the advice panel below
-    /// this, and should not chase a strip the player moved elsewhere.</summary>
+    /// built or dragged off its dock -- the docked panels park below this.
+    /// A dragged strip is <see cref="UndockedRect"/>.</summary>
     public float? BottomY()
     {
         if (_container == null || !GodotObject.IsInstanceValid(_container) ||
@@ -168,6 +169,19 @@ internal sealed class SimToolbar
         }
         Rect2 rect = _container.GetGlobalRect();
         return rect.Position.Y + rect.Size.Y;
+    }
+
+    /// <summary>The visible strip's global rect and the viewport size while
+    /// the player has dragged it off its dock, else null (docked: BottomY).
+    /// SimHud moves the advice panel and the coach chips along with it.</summary>
+    public (Rect2 Rect, Vector2 Viewport)? UndockedRect()
+    {
+        if (_undockedPosition == null || _container == null ||
+            !GodotObject.IsInstanceValid(_container) || !_container.IsVisibleInTree())
+        {
+            return null;
+        }
+        return (_container.GetGlobalRect(), _container.GetViewportRect().Size);
     }
 
     // ------------------------------------------------------------------

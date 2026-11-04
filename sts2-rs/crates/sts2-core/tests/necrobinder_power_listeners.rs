@@ -545,6 +545,58 @@ fn veilpiercer_makes_owned_ethereal_card_cost_zero() {
     );
 }
 
+/// C# `VeilpiercerPower.TryModifyEnergyCostInCombatLate`
+/// (v0.111.0 `VeilpiercerPower.cs:18-44`) gates on `card.Keywords`, and
+/// `HexPower.TryModifyKeywordsInCombat` (`HexPower.cs`) adds Ethereal to every
+/// Hexed card. Under Hex + Veilpiercer a non-Ethereal card is therefore free.
+/// The same holds for a card made Ethereal for the combat (`EtherealThisCombat`).
+#[test]
+fn veilpiercer_discounts_cards_made_ethereal_by_hex_or_this_combat() {
+    let mut state = CombatState::default();
+    push_player_power(&mut state, PowerKind::Veilpiercer, 1);
+    let plain_uid = CardUid::new(state.cards.len() as u32 + 1).expect("nonzero");
+    state.cards.push(Card {
+        uid: plain_uid,
+        ..Card::pod_defaults()
+    });
+    let ctx = CardCostCtx {
+        owner: CreatureRef::Player,
+        card_id: Some(CardId::StrikeIronclad),
+        card_uid: Some(plain_uid),
+        card_type: Some(CardType::Attack),
+        card_tags: CardTags::NONE,
+        base_cost: 2,
+    };
+    assert_eq!(hooks::dispatch_modify_card_cost(&state, &ctx), 2);
+
+    // EtherealThisCombat counts (it shows up in C# `card.Keywords`).
+    state
+        .cards
+        .iter_mut()
+        .find(|c| c.uid == plain_uid)
+        .unwrap()
+        .set_combat_var(sts2_core::cards::VarKey::EtherealThisCombat, 1);
+    assert_eq!(
+        hooks::dispatch_modify_card_cost(&state, &ctx),
+        0,
+        "EtherealThisCombat card is free under Veilpiercer"
+    );
+    state
+        .cards
+        .iter_mut()
+        .find(|c| c.uid == plain_uid)
+        .unwrap()
+        .set_combat_var(sts2_core::cards::VarKey::EtherealThisCombat, 0);
+
+    // Hex makes every owned card Ethereal → free.
+    push_player_power(&mut state, PowerKind::Hex, 2);
+    assert_eq!(
+        hooks::dispatch_modify_card_cost(&state, &ctx),
+        0,
+        "Hexed card is Ethereal, so Veilpiercer makes it cost 0"
+    );
+}
+
 /// C# `VeilpiercerPower.BeforeCardPlayed`: each Ethereal play consumes one
 /// charge; the power is removed when it reaches 0.
 #[test]
@@ -594,6 +646,8 @@ fn push_ethereal_into_draw(state: &mut CombatState) -> CardUid {
 #[test]
 fn pagestorm_cascades_ethereal_draws() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     push_player_power(&mut state, PowerKind::Pagestorm, 1);
     // Three Ethereal cards in the draw pile (uids 1..=3, front-drawn).
     for _ in 0..3 {
@@ -615,6 +669,8 @@ fn pagestorm_cascades_ethereal_draws() {
 #[test]
 fn no_pagestorm_means_no_extra_draw() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     for _ in 0..3 {
         push_ethereal_into_draw(&mut state);
     }
@@ -631,6 +687,8 @@ fn no_pagestorm_means_no_extra_draw() {
 #[test]
 fn pagestorm_ignores_non_ethereal_draws() {
     let mut state = CombatState::default();
+    // A live player: a dead one makes the combat ending, so draws move no card.
+    state.player.current_hp = 80;
     push_player_power(&mut state, PowerKind::Pagestorm, 1);
     // Three plain (non-Ethereal) cards in the draw pile.
     for _ in 0..3 {

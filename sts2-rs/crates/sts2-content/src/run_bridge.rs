@@ -376,26 +376,20 @@ pub fn enter_combat_from_roster(
 
     // Bead `sts2-rs-01o`: seed the combat-side potion belt from the
     // run-level belt so potions procured out of combat (Lost Coffer,
-    // PhialHolster, Tiny Mailbox …) are drinkable this fight. Capped at
-    // the combat-side `MAX_POTIONS` ceiling; `exit_combat` writes the
-    // survivors back.
+    // PhialHolster, Tiny Mailbox …) are drinkable this fight; `exit_combat`
+    // writes the survivors back.
     state.player.potions.clear();
-    for &kind in rs.potions.iter().take(sts2_core::potions::MAX_POTIONS) {
-        state.player.potions.push(kind);
-    }
+    state.player.potions.extend(rs.potions.iter().copied());
     // Physical slot mapping rides along (C# `_potionSlots` hole
     // semantics) so a mid-combat drink + later drop keeps slot order.
     // A desynced run-level mapping (fixture pushed `rs.potions` raw)
     // falls back to the compact 0..len identity.
     state.player.potion_slot_indices.clear();
     if rs.potion_slot_indices.len() == rs.potions.len() {
-        for &s in rs
+        state
+            .player
             .potion_slot_indices
-            .iter()
-            .take(sts2_core::potions::MAX_POTIONS)
-        {
-            state.player.potion_slot_indices.push(s);
-        }
+            .extend(rs.potion_slot_indices.iter().copied());
     } else {
         for i in 0..state.player.potions.len() {
             state.player.potion_slot_indices.push(i as u8);
@@ -405,11 +399,9 @@ pub fn enter_combat_from_roster(
     // `Player.MaxPotionCount`, default `initialMaxPotionSlotCount == 3`)
     // into combat so slot-filling potions (EntropicBrew / Alchemize /
     // DelicateFrond) fill only up to the player's real slot count rather
-    // than the hard `MAX_POTIONS` = 5. Clamped to `MAX_POTIONS` and to
-    // `u8` since the combat-side belt's inline storage is `MAX_POTIONS`.
-    state.player.potion_slots =
-        u8::try_from((rs.max_potion_slots.max(0) as usize).min(sts2_core::potions::MAX_POTIONS))
-            .unwrap_or(sts2_core::potions::MAX_POTIONS as u8);
+    // than the `MAX_POTIONS` = 5 fallback. Not clamped to five: C#
+    // `MaxPotionCount` is the slot list length (Player.cs:42-43).
+    state.player.potion_slots = u8::try_from(rs.potion_belt_cap()).unwrap_or(u8::MAX);
 
     // Relic mirror (bead `sts2-rs-pfiwm`): materialize every
     // run-carried relic into a combat-side [`sts2_core::Relic`] row so
@@ -466,6 +458,20 @@ pub fn enter_combat_from_roster(
 
     spawn_roster(&mut state, roster);
 
+    // `FurCoat.BeforeCombatStart` (FurCoat.cs:130-149): on one of the relic's
+    // marked map points every hittable (living) enemy is set to 1 HP
+    // (`CreatureCmd.SetCurrentHp(item, 1)`, max HP untouched).
+    let fur_coat_room = fur_coat_marks_current_room(rs);
+    if fur_coat_room {
+        for &uid in &state.enemy_uids {
+            if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+                if c.current_hp > 0 {
+                    c.current_hp = c.current_hp.min(1);
+                }
+            }
+        }
+    }
+
     // Bead `sts2-rs-9i1c2`: advance through Setup → PlayerTurnStart →
     // PlayerPlayPhase so the returned state is in the resting phase the
     // dispatch table's `play_card` / `end_turn_dispatch` callers expect.
@@ -488,9 +494,28 @@ pub fn enter_combat_from_roster(
     state.is_boss = room_type == RoomType::Boss;
 
     let _ = sts2_core::combat_loop::start_combat(&mut state);
+    // `start_combat` resets the combat log, so the summon clamp
+    // (`FurCoat.AfterCreatureAddedToCombat`) is armed after it.
+    state.combat_log.fur_coat_one_hp = fur_coat_room;
     let _ = sts2_core::combat_loop::start_player_turn(&mut state);
 
     state
+}
+
+/// `true` when the room being entered is one of Fur Coat's marked map points
+/// (C# `GetMarkedCoords().Contains(CurrentMapPoint.coord)`, FurCoat.cs:133).
+/// A melted relic's hooks do not fire.
+fn fur_coat_marks_current_room(rs: &RunState) -> bool {
+    if !rs.owns_active_relic(sts2_core::RelicId::FurCoat) {
+        return false;
+    }
+    let (Some(map), Some(coord)) = (
+        rs.current_act_map.as_ref(),
+        rs.current_room.as_ref().and_then(|r| r.map_coord),
+    ) else {
+        return false;
+    };
+    map.is_marked_by(coord, sts2_core::RelicId::FurCoat)
 }
 
 /// Write combat results back to `rs`.
@@ -563,7 +588,14 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
             continue;
         };
         if let Some(r) = combat.relics.iter().find(|r| r.kind == kind) {
-            rs.relic_counters.insert(relic_id, r.counter);
+            // Belt Buckle's counter is its `DexterityApplied` latch, which
+            // C# `BeltBuckle.AfterCombatVictory` clears (both builds).
+            let counter = if kind == sts2_core::RelicKind::BeltBuckle {
+                0
+            } else {
+                r.counter
+            };
+            rs.relic_counters.insert(relic_id, counter);
         }
     }
 
@@ -606,10 +638,19 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // (`RewardsCmd.OfferForRoomEnd` → `EmptyForRoom`, `RewardsCmd.cs:26-29`),
     // so none of the room's extras below (Grimoire, Royalties, Heist) are
     // offered. Ported from manojnuthakki/spire-mentor 9262b2d6e.
-    let room_gives_rewards = match &rs.event_combat {
-        Some(req) => req.encounter.grants_base_room_rewards(),
-        None => true,
-    };
+    //
+    // A Boss room in the last act is empty too: `RewardsSet.WithRewardsFromRoom`
+    // returns before the `ExtraRewards` merge (`RewardsSet.cs:91-94`, both
+    // builds). That covers the final boss and the A10 first boss. Rust's
+    // `act_index` is 1-based, so the last act is `>= 3`, the same predicate
+    // `RunManager::exit_combat_and_transition` uses.
+    let last_act_boss = rs.act_index >= 3
+        && rs.current_room.map(|r| r.room_type) == Some(sts2_core::runstate::RoomType::Boss);
+    let room_gives_rewards = !last_act_boss
+        && match &rs.event_combat {
+            Some(req) => req.encounter.grants_base_room_rewards(),
+            None => true,
+        };
     let grimoire_stacks = combat.player_power_amount(sts2_core::PowerKind::ForbiddenGrimoire);
     if room_gives_rewards && grimoire_stacks > 0 {
         rs.add_card_removal_reward(grimoire_stacks as u32);
@@ -711,8 +752,8 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // `SwipePower.Steal` permanently removes the stolen card from the run deck
     // (`CardPileCmd.RemoveFromDeck(card.DeckVersion)`); a thief that DIES
     // restores it (`SwipePower.BeforeDeath`), which the combat already recorded
-    // as `reclaimed`. Drop each un-reclaimed stolen card from `master_deck`
-    // and move each reclaimed one to its end.
+    // as `reclaimed`. Drop each stolen card from `master_deck`; the
+    // reclaimed ones wait on `pending_swipe_returns` for the reward claim.
     // Runs AFTER the folds above, which pair combat cards with master-deck
     // cards by index: removing first would shift those indices.
     remove_swiped_cards_from_master_deck(rs, combat);
@@ -726,6 +767,40 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
     // streams, …) round-trip unchanged, so this is the exact symmetric
     // inverse of the carry-in. Bead `sts2-rs-jenwp` (M3b monster_ai).
     rs.rng = combat.run_rng.clone();
+
+    // `ImprovementPower.AfterCombatEnd` (Mad Science's Improvement rider,
+    // `ImprovementPower.cs`): upgrade `Amount` random upgradable DECK cards,
+    // each drawn by `Rng.CombatCardSelection.NextItem` off a list built once
+    // and shrunk per pick. The combat side applied the power but nothing read
+    // it, so the deck card stayed unupgraded (act23 Necrobinder:1003, GH #1054
+    // item 6). After the flushback for the same reason as FishingRod.
+    //
+    // MUST run BEFORE FishingRod: C# `Hook.AfterCombatEnd` walks
+    // `runState.IterateHookListeners(combatState)`, whose combat half yields
+    // each creature's Powers and THEN its player's Relics
+    // (`CombatState.cs:116-131`, both builds). The streams differ, but each
+    // builds its upgradable list after the other has upgraded, so the order
+    // changes which cards get picked.
+    let improvement = combat.player_power_amount(sts2_core::PowerKind::Improvement);
+    if combat.player_won && improvement > 0 {
+        let mut upgradable: Vec<usize> = rs
+            .master_deck
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_upgradable())
+            .map(|(i, _)| i)
+            .collect();
+        for _ in 0..improvement {
+            if upgradable.is_empty() {
+                break;
+            }
+            let last = i32::try_from(upgradable.len() - 1).unwrap_or(i32::MAX);
+            let idx = rs.rng.combat_card_selection.next_int(0, last) as usize;
+            let deck_idx = upgradable.remove(idx);
+            let version = rs.game_version;
+            rs.master_deck[deck_idx].upgrade_for(version);
+        }
+    }
 
     // Bead `sts2-rs-v0107-content-port-wb8lk.6`: FishingRod.AfterCombatEnd
     // (v0.107.1 `FishingRod.cs:42-60`). On every normal (`RoomType.Monster`)
@@ -782,34 +857,6 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
                     rs.master_deck[deck_idx].upgrade_for(version);
                 }
             }
-        }
-    }
-
-    // `ImprovementPower.AfterCombatEnd` (Mad Science's Improvement rider,
-    // `ImprovementPower.cs`): upgrade `Amount` random upgradable DECK cards,
-    // each drawn by `Rng.CombatCardSelection.NextItem` off a list built once
-    // and shrunk per pick. The combat side applied the power but nothing read
-    // it, so the deck card stayed unupgraded (act23 Necrobinder:1003, GH #1054
-    // item 6). After the flushback for the same reason as FishingRod; another
-    // stream, so its order against FishingRod does not matter.
-    let improvement = combat.player_power_amount(sts2_core::PowerKind::Improvement);
-    if combat.player_won && improvement > 0 {
-        let mut upgradable: Vec<usize> = rs
-            .master_deck
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.is_upgradable())
-            .map(|(i, _)| i)
-            .collect();
-        for _ in 0..improvement {
-            if upgradable.is_empty() {
-                break;
-            }
-            let last = i32::try_from(upgradable.len() - 1).unwrap_or(i32::MAX);
-            let idx = rs.rng.combat_card_selection.next_int(0, last) as usize;
-            let deck_idx = upgradable.remove(idx);
-            let version = rs.game_version;
-            rs.master_deck[deck_idx].upgrade_for(version);
         }
     }
 
@@ -879,9 +926,12 @@ pub fn exit_combat(rs: &mut RunState, combat: &CombatState) {
 /// A reclaimed card does not keep its old slot: C# removed it from the deck at
 /// the steal, and the thief's death hands it back as a `SpecialCardReward`
 /// (SwipePower.cs:51-53) whose `OnSelect` is `CardPileCmd.Add(_card,
-/// PileType.Deck)` (SpecialCardReward.cs:79) — an append. So it moves to the
-/// END of `master_deck`; the deck order seeds every later combat's shuffle
-/// (Defect act23 seed 1005: the next fight's opening hand differed).
+/// PileType.Deck)` (SpecialCardReward.cs:79) — an append. So it leaves its
+/// slot and is stashed on [`RunState::pending_swipe_returns`];
+/// `RunManager::exit_combat_and_transition` appends it with the deck-add hooks
+/// after the run-side `AfterCombatEnd` / `AfterCombatVictory` hooks. The deck
+/// order seeds every later combat's shuffle (Defect act23 seed 1005: the next
+/// fight's opening hand differed).
 fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState) {
     let mut taken = combat.unreclaimed_stolen_deck_indices(&rs.master_deck);
     let mut reclaimed: Vec<usize> = Vec::new();
@@ -898,7 +948,12 @@ fn remove_swiped_cards_from_master_deck(rs: &mut RunState, combat: &CombatState)
     for idx in taken.into_iter().rev() {
         rs.master_deck.remove(idx);
     }
-    rs.master_deck.extend(returned);
+    // Not appended here: the `SpecialCardReward` is claimed on the reward
+    // screen, after the run-side `AfterCombatEnd` / `AfterCombatVictory`
+    // hooks (Pael's Tooth's return lands first, Ironclad seed 2151 act 2).
+    // `RunManager::exit_combat_and_transition` adds these through the hooked
+    // deck add.
+    rs.pending_swipe_returns.extend(returned);
 }
 
 /// Fold each combat-side scaling card's accumulated run-persistent stat (`base_damage` or
@@ -1119,6 +1174,22 @@ mod tests {
         assert!(close(gremlin_merc_gold_proportion(true, false), 0.5));
         // Escaped with stolen gold ⇒ 0%.
         assert!(close(gremlin_merc_gold_proportion(true, true), 0.0));
+    }
+
+    /// `Player.MaxPotionCount => _potionSlots.Count` (Player.cs:42-43, both
+    /// builds): a seven-slot belt carries all six held potions into combat
+    /// and the combat-side cap is seven, not the five-potion fallback.
+    #[test]
+    fn enter_combat_carries_a_belt_past_five_slots() {
+        let mut rs = fresh_run();
+        rs.max_potion_slots = 7;
+        for _ in 0..6 {
+            assert!(rs.add_potion_to_belt(sts2_core::potions::PotionKind::BlockPotion));
+        }
+        let state = enter_combat(&rs, select_first(act1_normal_pool()));
+        assert_eq!(state.player.potions.len(), 6);
+        assert_eq!(state.player.potion_slot_indices.len(), 6);
+        assert_eq!(state.player.effective_potion_slots(), 7);
     }
 
     #[test]
@@ -1741,6 +1812,29 @@ mod tests {
             rs.relic_counters.get(&sts2_core::RelicId::EmberTea),
             Some(&4),
             "decremented counter flushed back to run"
+        );
+    }
+
+    #[test]
+    fn exit_combat_clears_belt_buckle_dexterity_latch() {
+        // C# `BeltBuckle.AfterCombatVictory` resets `DexterityApplied`
+        // (same in v0.107.1 and v0.111.0). A latch carried into the next
+        // combat let an early `BeforeCombatStart` procure (Delicate Frond,
+        // Petrified Toad) retract Dexterity that was never applied there,
+        // starting the fight at Dexterity -2.
+        let mut rs = fresh_run();
+        rs.relics.push(sts2_core::RelicId::BeltBuckle);
+        let mut state = enter_combat(&rs, select_first(act1_normal_pool()));
+        for r in &mut state.relics {
+            if r.kind == sts2_core::RelicKind::BeltBuckle {
+                r.counter = 1; // +2 Dexterity applied, belt ended empty
+            }
+        }
+        exit_combat(&mut rs, &state);
+        assert_eq!(
+            rs.relic_counters.get(&sts2_core::RelicId::BeltBuckle),
+            Some(&0),
+            "the applied latch does not survive the fight"
         );
     }
 
@@ -2403,6 +2497,55 @@ mod tests {
         );
     }
 
+    /// A Boss room in the last act offers an EMPTY reward set: C#
+    /// `RewardsSet.WithRewardsFromRoom` returns before the `ExtraRewards`
+    /// merge (`RewardsSet.cs:91-94`, both builds), so Royalties gold,
+    /// Grimoire removals and Heist gold-back are never offered there
+    /// (Ironclad seed 2164, v0.111.0: Royalties 40 paid at the final boss).
+    /// An earlier act's boss still pays them.
+    #[test]
+    fn exit_combat_no_extra_rewards_on_last_act_boss() {
+        for (act, expect_extras) in [(2, true), (3, false)] {
+            let mut rs = fresh_run();
+            rs.act_index = act;
+            rs.current_room = Some(sts2_core::runstate::Room::new(
+                sts2_core::runstate::RoomType::Boss,
+            ));
+            let gold_before = rs.gold;
+            let mut combat = enter_combat(&rs, select_first(act1_normal_pool()));
+            combat.player_won = true;
+            combat.heist_recovered_gold = 15;
+            let player_uid = combat
+                .player
+                .creature_uid
+                .expect("player-Creature initialized");
+            for (power, amount) in [
+                (sts2_core::PowerKind::Royalties, 40),
+                (sts2_core::PowerKind::ForbiddenGrimoire, 1),
+            ] {
+                sts2_core::card_effects::apply_power_to_creature(
+                    &mut combat,
+                    player_uid,
+                    power,
+                    amount,
+                );
+            }
+
+            exit_combat(&mut rs, &combat);
+
+            let (gold, removals) = if expect_extras {
+                (
+                    gold_before + 55,
+                    vec![sts2_core::runstate::Reward::RemoveCard { count: 1 }],
+                )
+            } else {
+                (gold_before, vec![])
+            };
+            assert_eq!(rs.gold, gold, "act {act} boss gold");
+            assert_eq!(rs.pending_rewards, removals, "act {act} boss removals");
+        }
+    }
+
     /// Royalties gold is NOT granted on a LOST combat (no rewards screen) —
     /// mirrors C# (the extra `GoldReward` is never collected) and the
     /// `royalties_gold_on_victory` helper's `_on_victory` contract.
@@ -2466,10 +2609,11 @@ mod tests {
 
     /// A SwipePower thief that DIES hands the stolen card back as a
     /// `SpecialCardReward` (SwipePower.cs:51-53), whose `CardPileCmd.Add`
-    /// appends it (SpecialCardReward.cs:79): the deck keeps its size but the
-    /// card moves to the end (Defect act23 seed 1005).
+    /// appends it (SpecialCardReward.cs:79) on the reward screen: the exit
+    /// write-back takes it out of its slot and stashes it for the run loop to
+    /// append (Defect act23 seed 1005, Ironclad seed 2151 act 2).
     #[test]
-    fn exit_combat_appends_reclaimed_swiped_card_to_master_deck() {
+    fn exit_combat_stashes_reclaimed_swiped_card_for_the_reward_claim() {
         use sts2_core::cards::CardId;
         let mut rs = fresh_run();
         for id in [CardId::StrikeIronclad, CardId::Zap] {
@@ -2491,10 +2635,10 @@ mod tests {
         combat.reclaim_swipe_on_death(thief);
         exit_combat(&mut rs, &combat);
 
-        let mut expected = before[1..].to_vec();
-        expected.push(victim);
         let after: Vec<_> = rs.master_deck.iter().map(|c| c.card_id).collect();
-        assert_eq!(after, expected);
+        assert_eq!(after, before[1..].to_vec());
+        let stashed: Vec<_> = rs.pending_swipe_returns.iter().map(|c| c.card_id).collect();
+        assert_eq!(stashed, vec![victim]);
     }
 
     #[test]
@@ -2703,9 +2847,9 @@ mod tests {
         exit_combat(&mut rs, &combat);
 
         assert_eq!(
-            rs.master_deck.len(),
+            rs.master_deck.len() + rs.pending_swipe_returns.len(),
             before,
-            "a killed thief's stolen card stays in the run deck"
+            "a killed thief's stolen card stays in the run (deck or pending return)"
         );
     }
 
@@ -2818,6 +2962,67 @@ mod tests {
             u64::from(SEED as u32),
             "legacy combat rng must be seeded from the run's master seed, not 0"
         );
+    }
+
+    /// `FurCoat.BeforeCombatStart` (FurCoat.cs:130-149): a fight on a marked
+    /// map point starts every enemy at 1 HP (max HP untouched), and
+    /// `AfterCreatureAddedToCombat` (FurCoat.cs:151-163) does the same to a
+    /// later summon. An unmarked room, or a run without the relic, is
+    /// untouched. Same code in both builds.
+    #[test]
+    fn fur_coat_marked_room_starts_enemies_at_one_hp() {
+        use sts2_core::map::{ActMap, MapCoord, MapPointType};
+        use sts2_core::runstate::{Room, RoomType};
+        use sts2_core::{GameVersion, RelicId};
+        let marked = MapCoord::new(1, 2);
+        let unmarked = MapCoord::new(0, 2);
+        for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+            for (coord, owns, want_one) in [
+                (marked, true, true),
+                (unmarked, true, false),
+                (marked, false, false),
+            ] {
+                let mut rs = fresh_run();
+                rs.game_version = version;
+                if owns {
+                    rs.relics.push(RelicId::FurCoat);
+                }
+                let mut map = ActMap::new(15);
+                for c in [marked, unmarked] {
+                    let idx = map.get_or_create(c.col, c.row);
+                    map.point_mut(idx).point_type = MapPointType::Monster;
+                }
+                map.mark_room(marked, RelicId::FurCoat);
+                rs.current_act_map = Some(map);
+                rs.current_room = Some(Room {
+                    room_type: RoomType::Monster,
+                    map_coord: Some(coord),
+                    map_point_type: Some(MapPointType::Monster),
+                });
+                let roster = [
+                    (MonsterKind::Nibbit, MonsterSpawnArgs::None, 45),
+                    (MonsterKind::Nibbit, MonsterSpawnArgs::None, 44),
+                ];
+                let mut state = enter_combat_from_roster(&rs, &roster, RoomType::Monster);
+                let label = format!("{version:?} {coord:?} owns={owns}");
+                for uid in state.enemy_uids.clone() {
+                    let c = state
+                        .creatures
+                        .iter()
+                        .find(|c| c.id == uid.0)
+                        .expect("enemy");
+                    assert_eq!(c.current_hp == 1, want_one, "{label}");
+                    assert!(c.max_hp >= 44, "{label}: max HP untouched");
+                }
+                let summon = state.spawn_enemy(MonsterKind::Nibbit);
+                let c = state
+                    .creatures
+                    .iter()
+                    .find(|c| c.id == summon.0)
+                    .expect("summon");
+                assert_eq!(c.current_hp == 1, want_one, "{label} summon");
+            }
+        }
     }
 
     /// `SpawnPosition.alone = (n == 1)` drives the Nibbit AI's opening move:
@@ -3279,6 +3484,66 @@ mod tests {
             rs.rng.combat_card_selection.counter(),
             rng.counter(),
             "the two draws persist into the run stream"
+        );
+    }
+
+    /// Improvement (a POWER) upgrades before FishingRod (a RELIC): C#
+    /// `Hook.AfterCombatEnd` walks `runState.IterateHookListeners`, whose
+    /// combat half yields each creature's Powers and THEN its player's Relics
+    /// (`CombatState.cs:116-131`, both builds). Each builds its upgradable
+    /// list after the other has upgraded, so the order picks different cards
+    /// even though the two draw from different streams (Ironclad-2065 act3).
+    #[test]
+    fn improvement_upgrades_before_fishing_rod() {
+        use sts2_core::cards::CardId;
+        use sts2_core::runstate::RoomType;
+
+        let roster = [(MonsterKind::FuzzyWurmCrawler, MonsterSpawnArgs::None, 57)];
+        let strike = || {
+            crate::cards::spec_index::card_pod_from_id(CardId::StrikeIronclad, false)
+                .expect("Strike POD")
+        };
+        let mut rs = fresh_run();
+        rs.relics.push(sts2_core::RelicId::FishingRod);
+        // The next normal combat is FishingRod's 3rd.
+        rs.relic_counters.insert(sts2_core::RelicId::FishingRod, 2);
+        rs.master_deck = (0..6).map(|_| strike()).collect();
+
+        let mut state = enter_combat_from_roster(&rs, &roster, RoomType::Monster);
+        let player_uid = state.player.creature_uid.expect("player creature");
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            player_uid,
+            sts2_core::PowerKind::Improvement,
+            1,
+        );
+        state.player_won = true;
+
+        let pick = |imp_first: bool| -> Vec<usize> {
+            let mut ccs = state.run_rng.combat_card_selection.clone();
+            let mut niche = state.run_rng.niche.clone();
+            let mut pool: Vec<usize> = (0..6).collect();
+            let mut out = Vec::new();
+            for step in 0..2 {
+                let last = i32::try_from(pool.len() - 1).unwrap();
+                let rng = if (step == 0) == imp_first {
+                    &mut ccs
+                } else {
+                    &mut niche
+                };
+                out.push(pool.remove(rng.next_int(0, last) as usize));
+            }
+            out.sort_unstable();
+            out
+        };
+        let expected = pick(true);
+        assert_ne!(expected, pick(false), "fixture must tell the orders apart");
+
+        exit_combat(&mut rs, &state);
+        let upgraded: Vec<usize> = (0..6).filter(|&i| rs.master_deck[i].upgraded).collect();
+        assert_eq!(
+            upgraded, expected,
+            "Improvement picks first, then FishingRod"
         );
     }
 

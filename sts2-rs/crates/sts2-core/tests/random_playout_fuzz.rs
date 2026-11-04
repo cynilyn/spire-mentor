@@ -230,10 +230,10 @@ fn run_combat_with_invariants(state: &mut CombatState, label: &str, seed: u64) {
                      (EndTurn-only playout should never produce a choice)"
                 );
             }
-            StepResult::InvalidTarget => {
+            StepResult::InvalidTarget | StepResult::IllegalPlay => {
                 panic!(
-                    "{label} seed={seed} turn={turns}: unexpected InvalidTarget \
-                     (EndTurn cannot produce a target-validation error)"
+                    "{label} seed={seed} turn={turns}: unexpected {result:?} \
+                     (EndTurn cannot produce a play-rejection)"
                 );
             }
         }

@@ -9,10 +9,11 @@ use super::prelude::*;
 /// (`EnergyCost.UpgradeBy(-2)`, in card_upgrades_generated.rs).
 ///
 /// The `AfterCardPlayed` discount runs in the engine's play pipeline
-/// (`CombatState::discount_banshees_cry_on_ethereal_play`). NOT modeled: the
+/// (`CombatState::discount_banshees_cry_on_ethereal_play`); the
 /// `AfterCardEnteredCombat` retroactive discount for a Banshee's Cry
-/// generated mid-combat after Ethereal plays (a deck copy enters combat
-/// before any play, where it is 0).
+/// generated mid-combat after Ethereal plays runs in
+/// `card_effects::banshees_cry_entered_combat` (a deck copy enters
+/// combat before any play, where it is 0).
 pub(crate) fn play_banshees_cry(
     state: &mut CombatState,
     _target: Option<CreatureUid>,

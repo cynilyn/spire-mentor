@@ -697,7 +697,7 @@ impl StepCtx {
         let hp = p.current_hp.max(0);
         let max_hp = p.max_hp.max(1);
         let block = p.block.max(0);
-        let energy = i32::from(p.energy.max(0));
+        let energy = p.energy.max(0);
         let mut incoming = 0i32;
         let (mut hp_sum, mut max_sum, mut block_sum, mut str_sum) = (0i32, 0i32, 0i32, 0i32);
         let mut min_hp = i32::MAX;

@@ -2,6 +2,25 @@
 #![allow(unused_imports)]
 use super::prelude::*;
 
+/// Snapshot of the currently hittable (alive) enemies, mirroring C#
+/// `CombatState.HittableEnemies` — a `ToList()` copy (CombatState.cs:401).
+/// Cards that capture it BEFORE `DamageCmd.Attack` and then debuff "the
+/// enemies" (CrushUnder, DyingStar) only touch this list, so an enemy spawned
+/// mid-attack (StockPower.AfterDeath's replacement Axebot) is skipped.
+pub(crate) fn hittable_enemy_snapshot(state: &CombatState) -> Vec<CreatureUid> {
+    state
+        .enemy_uids
+        .iter()
+        .copied()
+        .filter(|uid| {
+            state
+                .creatures
+                .iter()
+                .any(|c| c.id == uid.0 && c.current_hp > 0)
+        })
+        .collect()
+}
+
 /// `true` if `target_uid` is a live enemy carrying an Artifact stack
 /// (`amount > 0`). Peeked BEFORE a debuff apply (the apply consumes the
 /// stack) to decide whether a `TemporaryStrengthPower`'s internal Strength

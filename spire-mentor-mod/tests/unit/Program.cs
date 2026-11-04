@@ -2,6 +2,11 @@
 
 using SpireMentor;
 
+if (args.Length is 2 or 3 && args[0] == "--advisor-child")
+{
+    return WindowsChildProcessTests.RunChild(args[1], args.Length == 3 ? int.Parse(args[2]) : null);
+}
+
 int failures = 0;
 int checks = 0;
 
@@ -567,6 +572,103 @@ using (new FileStream(tailFile, FileMode.Open, FileAccess.ReadWrite, FileShare.R
 File.Delete(tailFile);
 Check("file tail: missing file", BugReportDump.ReadFileTail(tailFile, 10), null);
 Check("screen: run snapshot", BugReportDump.ScreenOf(new Dictionary<string, object?> { ["type"] = "run_snapshot" }), "run");
+
+// CrystalSpherePick (GH #872): which hidden cell F7 divines.
+{
+    // A fresh board: the 11x11 grid minus the four Manhattan-radius-2 corner
+    // diamonds the minigame clears up front, in container (x-major) order.
+    var fresh = new List<(int X, int Y)>();
+    for (int x = 0; x < CrystalSpherePick.GridSize; x++)
+    {
+        for (int y = 0; y < CrystalSpherePick.GridSize; y++)
+        {
+            int dx = Math.Min(x, CrystalSpherePick.GridSize - 1 - x);
+            int dy = Math.Min(y, CrystalSpherePick.GridSize - 1 - y);
+            if (dx + dy > 2)
+            {
+                fresh.Add((x, y));
+            }
+        }
+    }
+    string Cell(List<(int X, int Y)> hidden) => hidden[CrystalSpherePick.Pick(hidden)].ToString();
+    Check("sphere: fresh board starts the first column", Cell(fresh), "(3, 2)");
+    Check("sphere: not the first hidden cell", fresh[0].ToString(), "(0, 3)");
+
+    // Play the six centres out: each Big divination clears its 3x3.
+    var board = new List<(int X, int Y)>(fresh);
+    var order = new List<string>();
+    for (int t = 0; t < 6; t++)
+    {
+        (int cx, int cy) = board[CrystalSpherePick.Pick(board)];
+        order.Add($"({cx},{cy})");
+        board.RemoveAll(c => Math.Abs(c.X - cx) <= 1 && Math.Abs(c.Y - cy) <= 1);
+    }
+    Check("sphere: column first, then the column beside it",
+        string.Join(" ", order), "(3,2) (3,5) (3,8) (6,2) (6,5) (6,8)");
+    Check("sphere: the six blocks never overlap", (fresh.Count - board.Count).ToString(), "54");
+
+    // A centre the player already cleared by hand is skipped.
+    var handPlayed = new List<(int X, int Y)>(fresh);
+    handPlayed.RemoveAll(c => Math.Abs(c.X - 3) <= 1 && Math.Abs(c.Y - 2) <= 1);
+    Check("sphere: a cleared centre is skipped", Cell(handPlayed), "(3, 5)");
+
+    // Past the list: most still-hidden cells in the 3x3, nearest the centre.
+    var leftovers = new List<(int X, int Y)> { (0, 5), (9, 9), (9, 10), (10, 9), (10, 10), (5, 0) };
+    Check("sphere: fallback takes the densest block", Cell(leftovers), "(9, 9)");
+    var lone = new List<(int X, int Y)> { (0, 5), (5, 4), (10, 5) };
+    Check("sphere: fallback tie goes nearest the centre", Cell(lone), "(5, 4)");
+    Check("sphere: nothing hidden", CrystalSpherePick.Pick(new List<(int X, int Y)>()).ToString(), "-1");
+}
+
+// AdviceColumn: the advice panel + coach chips follow a dragged toolbar.
+{
+    string At((float X, float Y) p) => $"({p.X:0},{p.Y:0})";
+    // 1280x720, toolbar 40 px tall; block 430 wide.
+    Check("column: under the strip, at its left edge",
+        At(AdviceColumn.BlockTopLeft(300, 200, 40, 430, 150, 1280, 720)), "(300,248)");
+    Check("column: shifted left to stay on screen",
+        At(AdviceColumn.BlockTopLeft(1200, 200, 40, 430, 150, 1280, 720)), "(850,248)");
+    Check("column: strip near the bottom -> above it",
+        At(AdviceColumn.BlockTopLeft(300, 600, 40, 430, 150, 1280, 720)), "(300,442)");
+    Check("column: fits nowhere, more room below -> below",
+        At(AdviceColumn.BlockTopLeft(300, 100, 40, 430, 900, 1280, 720)), "(300,148)");
+    Check("column: fits nowhere, more room above -> top of the screen",
+        At(AdviceColumn.BlockTopLeft(300, 500, 40, 430, 900, 1280, 720)), "(300,0)");
+    Check("column: viewport narrower than the block -> left edge",
+        At(AdviceColumn.BlockTopLeft(300, 100, 40, 430, 150, 400, 720)), "(0,148)");
+    Check("column: panel + chips", AdviceColumn.BlockHeight(150, true, 60).ToString("0"), "218");
+    Check("column: panel hidden -> chips only", AdviceColumn.BlockHeight(150, false, 60).ToString("0"), "60");
+    Check("column: no chips -> panel only", AdviceColumn.BlockHeight(150, true, 0).ToString("0"), "150");
+    Check("column: nothing", AdviceColumn.BlockHeight(150, false, 0).ToString("0"), "0");
+}
+
+// RewardSwapLayout (GH #1069): reward_screen option indices with full-belt potion swaps.
+{
+    string L(List<RewardOptionSlot> slots) => string.Join(" ", slots.Select(s => s.Kind switch
+    {
+        RewardOptionKind.Pick => $"P{s.Button}",
+        RewardOptionKind.SwapDecline => $"D{s.Button}",
+        RewardOptionKind.Swap => $"S{s.Button}:{s.DiscardSlot}",
+        _ => "X",
+    }));
+    Check("rewards: no blocked potion is the old layout",
+        L(RewardSwapLayout.Build(3, new List<int>(), true)), "P0 P1 P2 X");
+    Check("rewards: one blocked potion, 3-slot belt",
+        L(RewardSwapLayout.Build(2, new List<int> { 3 }, true)), "P0 P1 D0 S0:0 S0:1 S0:2 X");
+    Check("rewards: two blocked potions, no proceed button",
+        L(RewardSwapLayout.Build(0, new List<int> { 2, 2 }, false)), "D0 S0:0 S0:1 D1 S1:0 S1:1");
+    Check("rewards: zero-slot belt still offers decline",
+        L(RewardSwapLayout.Build(1, new List<int> { 0 }, true)), "P0 D0 X");
+}
+
+if (OperatingSystem.IsWindows())
+{
+    WindowsChildProcessTests.Run(Check);
+}
+else
+{
+    Console.WriteLine("SKIP Windows advisor handle-inheritance tests (requires Windows).");
+}
 
 Console.WriteLine(failures == 0
     ? $"ModUnitTests: OK ({checks} checks)"

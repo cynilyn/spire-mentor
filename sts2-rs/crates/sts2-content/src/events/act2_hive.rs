@@ -1261,7 +1261,7 @@ fn ranwid_asks_for(state: &RunState) -> (Option<usize>, Option<RelicId>) {
         .relics
         .iter()
         .copied()
-        .filter(|&id| crate::relics::tradable::relic_is_tradable(id))
+        .filter(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         .collect();
     let relic = (!tradable.is_empty()).then(|| {
         let len = i32::try_from(tradable.len()).unwrap_or(1);
@@ -2013,6 +2013,23 @@ mod tests {
         assert!(outcome.finished);
         assert!(!rs.relics.contains(&given), "{given:?} handed over");
         assert_eq!(rs.relics.len(), 4, "3 - 1 + 2");
+    }
+
+    /// Ranwid asks only for a TRADABLE relic, and C# `IsTradable` is false
+    /// once a wax relic has melted (`RelicModel.cs:188`,
+    /// `RanwidTheElder.cs:74/94`): the melted one is neither picked nor
+    /// counted toward `IsAllowed`.
+    #[test]
+    fn ranwid_skips_melted_relics() {
+        let mut rs = ranwid_state();
+        rs.relics = vec![RelicId::AmethystAubergine];
+        rs.wax_relics.insert(RelicId::AmethystAubergine);
+        rs.melted_relics.insert(RelicId::AmethystAubergine);
+        assert_eq!(ranwid_asks_for(&rs).1, None, "only relic is melted");
+        assert!(!super::super::ranwid_the_elder_allowed(&rs));
+        rs.melted_relics.clear();
+        assert_eq!(ranwid_asks_for(&rs).1, Some(RelicId::AmethystAubergine));
+        assert!(super::super::ranwid_the_elder_allowed(&rs));
     }
 
     // ── FakeMerchant throw_foul (mutant coverage) ────────────────────

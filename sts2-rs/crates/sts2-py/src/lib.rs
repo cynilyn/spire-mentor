@@ -663,6 +663,10 @@ pub struct PyCombatState {
     /// `mcts_recommend` as `intent_damage_known` so consumers know
     /// when the win/loss split is unreliable. Bead `sts2-rs-bpt4`.
     intent_damage_known: bool,
+    /// The C# id of the encounter this combat fights (GH #1097), when the
+    /// builder knew it. The core state carries no encounter identity, so
+    /// the wrapper holds it; see the `encounter_id` getter.
+    encounter_id: Option<&'static str>,
 }
 
 impl PyCombatState {
@@ -681,7 +685,15 @@ impl PyCombatState {
             inner,
             seed,
             intent_damage_known: true,
+            encounter_id: None,
         }
+    }
+
+    /// This state with its `encounter_id` set (GH #1097).
+    #[must_use]
+    pub(crate) fn with_encounter_id(mut self, encounter_id: Option<&'static str>) -> Self {
+        self.encounter_id = encounter_id;
+        self
     }
 }
 
@@ -715,6 +727,8 @@ impl PyCombatState {
             inner,
             seed,
             intent_damage_known: true,
+            // The legacy monster-name encounters are not C# encounters.
+            encounter_id: None,
         })
     }
 
@@ -973,6 +987,78 @@ impl PyCombatState {
         out
     }
 
+    /// The full telegraph of every enemy (GH #1097): one list per enemy, in
+    /// the order of `state_to_dict(cs)["encounter"]`, of intent dicts in the
+    /// wire's shape (`kind`, `amount`, `times`, `effective_amount`,
+    /// `modifiers`). Element 0 is the wire's `intents[0]`; when it is still
+    /// the first intent of the enemy's current move, the move's other intents
+    /// follow, which the wire drops (a multi-attack plus a buff shows both).
+    /// An enemy with no telegraph has `[]`. Read-only.
+    ///
+    /// Raises `ValueError` on a state whose enemy list names a missing
+    /// creature, as `state_to_dict` does.
+    fn telegraph<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let value = sts2_wire::emit::combat::enemy_telegraphs(&self.inner).map_err(emit_err)?;
+        value_to_pylist(py, &value)
+    }
+
+    /// The next `k` moves of every enemy after its current telegraph
+    /// (GH #1097): one list per enemy, in the order of
+    /// `state_to_dict(cs)["encounter"]`, of `{"step": int, "certainty":
+    /// float, "move_id": str, "intents": [intent dict, ...]}`.
+    ///
+    /// Step 1 is the move the enemy telegraphs after the coming enemy turn,
+    /// before and after its first move alike, so the forecast never repeats
+    /// the current telegraph. The walk takes the most likely branch at each
+    /// random pick against the board as it is now; `certainty` is the
+    /// product of those picks' weight shares (1.0 along a fixed pattern). A
+    /// move changed by something the turn itself does (a sleep counter
+    /// running out, an AI counter the telegraphed move decrements) is not
+    /// foreseen. Intent dicts have the `telegraph()` shape, baked against the
+    /// current board. `move_id` is the engine's hidden move-state id, for
+    /// privileged consumers only. An enemy without a move machine has `[]`;
+    /// dead enemies keep a forecast, so mask them with the wire's `is_dead`.
+    ///
+    /// Read-only: no RNG draw, and every hash and `state_to_dict` stay the
+    /// same. Raises `ValueError` for `k` above 255.
+    #[pyo3(signature = (k = 3))]
+    fn peek_intents<'py>(&self, py: Python<'py>, k: usize) -> PyResult<Bound<'py, PyList>> {
+        let value =
+            sts2_wire::emit::combat::enemy_intent_forecast(&self.inner, k).map_err(emit_err)?;
+        value_to_pylist(py, &value)
+    }
+
+    /// The top `k` cards of the player's draw pile in true draw order, top
+    /// (next draw) first, as wire card dicts (GH #1097); the whole pile when
+    /// it holds fewer. Hidden information, for privileged consumers only:
+    /// the same cards as `state_to_dict(cs)["deck"]["draw_pile"][:k]`
+    /// without building the rest of the dict.
+    ///
+    /// Raises `ValueError` on a `belief_view`, whose draw order is not
+    /// decided until a draw happens. A `sample_world` has a concrete order
+    /// and returns it.
+    #[pyo3(signature = (k = 10))]
+    fn true_draw_top<'py>(&self, py: Python<'py>, k: usize) -> PyResult<Bound<'py, PyList>> {
+        let value = sts2_wire::emit::combat::true_draw_top(&self.inner, k).map_err(emit_err)?;
+        value_to_pylist(py, &value)
+    }
+
+    /// The C# id of the encounter this combat fights, such as
+    /// `"TERROR_EEL_ELITE"` or `"FAKE_MERCHANT_EVENT_ENCOUNTER"` (GH #1097),
+    /// or `None` when the state's builder did not know it.
+    ///
+    /// `RunManager.combat_state()` sets it from the run (an event's fight
+    /// reports the event encounter; a map room's fight, the encounter the
+    /// run generated for it) and `build_scenario_state` from its
+    /// `encounter=` argument. `state_from_dict` and the legacy
+    /// `CombatState(encounter=...)` constructor give `None`. It carries over
+    /// to `clone()`, `belief_view` and `sample_world`, and stays fixed when
+    /// the state is stepped.
+    #[getter]
+    fn encounter_id(&self) -> Option<&'static str> {
+        self.encounter_id
+    }
+
     /// The hash the search's transposition table keys on
     /// ([`sts2_core::search_hash`]): every game-observable field, with
     /// order-free card piles and NO RNG cursors. Two states that differ
@@ -1148,6 +1234,7 @@ impl PyCombatState {
             sts2_core::StepResult::CombatWon => "combat_won",
             sts2_core::StepResult::CombatLost => "combat_lost",
             sts2_core::StepResult::InvalidTarget => "invalid_target",
+            sts2_core::StepResult::IllegalPlay => "illegal_play",
         })
     }
 
@@ -1496,6 +1583,16 @@ impl PyCombatState {
             }
             dst.hp_lost_this_turn = src.hp_lost_this_turn;
             dst.unblocked_damage_received_this_combat = src.unblocked_damage_received_this_combat;
+            // PaelsEye / Ambergris extra turns: `turn_number()` = round + this,
+            // and the turn-number gates (BagOfPreparation, Lantern, the
+            // turn-1 Innate floor) read it. Older mods do not send it, so a
+            // rebuild after an extra turn read turn = round (GH #812). Newer
+            // mods do (TurnNumber - RoundNumber), and the count never falls
+            // within a combat, so the larger of wire and mirror is right
+            // either way.
+            dst.extra_turns_taken_this_combat = dst
+                .extra_turns_taken_this_combat
+                .max(src.extra_turns_taken_this_combat);
             dst.energy_spent_this_turn = src.energy_spent_this_turn;
             dst.zero_cost_attacks_played_this_turn = src.zero_cost_attacks_played_this_turn;
             dst.card_plays_finished_this_turn = src.card_plays_finished_this_turn;
@@ -1983,7 +2080,10 @@ impl PyCombatState {
             snapshot: self.inner.player_power_uids(),
             idx: 0,
             autoplay: sts2_core::PendingAutoplay::default(),
-            side_turn_start_fired: false,
+            // C# StartTurn runs Hook.AfterSideTurnStart (and the orb queue)
+            // as soon as SetupPlayerTurn pauses on this screen, so the wire the
+            // mirror was seeded from already carries Akabeko / Lantern / Rampart.
+            side_turn_start_fired: true,
             mayhem_phase: false,
             relic_start: Some(next),
         });
@@ -2049,7 +2149,10 @@ impl PyCombatState {
             snapshot,
             idx,
             autoplay: sts2_core::PendingAutoplay::default(),
-            side_turn_start_fired: false,
+            // C# StartTurn runs Hook.AfterSideTurnStart (and the orb queue)
+            // as soon as SetupPlayerTurn pauses on this screen, so the wire the
+            // mirror was seeded from already carries Akabeko / Lantern / Rampart.
+            side_turn_start_fired: true,
             mayhem_phase: false,
             relic_start: None,
         });
@@ -4548,6 +4651,8 @@ fn state_from_dict_py(d: &Bound<'_, PyDict>) -> PyResult<PyCombatState> {
         inner,
         seed,
         intent_damage_known,
+        // The wire carries no encounter id.
+        encounter_id: None,
     })
 }
 
@@ -4644,6 +4749,8 @@ fn build_scenario_state_py(
         inner,
         seed,
         intent_damage_known: true,
+        // The builder resolved `encounter` through the same table.
+        encounter_id: sts2_content::encounters::find(encounter).map(|def| def.id),
     })
 }
 
@@ -5339,6 +5446,28 @@ mod tests {
         });
     }
 
+    #[test]
+    fn transplant_hidden_keeps_the_larger_extra_turn_count() {
+        // GH #812: newer mods send `extra_turns_taken_this_combat`; older
+        // ones do not. The count only rises within a combat, so whichever
+        // of wire (fresh) and mirror (carried) is ahead wins.
+        Python::with_gil(|py| {
+            for (wire, mirror, want) in [(2u16, 1u16, 2u16), (0, 1, 1), (1, 1, 1)] {
+                let mut carried = mirror_fixture(py);
+                carried.inner.combat_log.extra_turns_taken_this_combat = mirror;
+                let mut fresh = mirror_fixture(py);
+                fresh.inner.combat_log.extra_turns_taken_this_combat = wire;
+                fresh
+                    .transplant_hidden(&carried, None, true, None, None, true)
+                    .expect("shapes agree");
+                assert_eq!(
+                    fresh.inner.combat_log.extra_turns_taken_this_combat, want,
+                    "wire {wire}, mirror {mirror}"
+                );
+            }
+        });
+    }
+
     /// `transplant_hidden` carries exactly the unobservable fields —
     /// A relic's `counter` is also where a one-shot per-combat latch lives,
     /// GH #370, the rest of the class. Each of these has a live content
@@ -5350,11 +5479,19 @@ mod tests {
             carried.inner.player.shivs_played_this_turn = 2;
             carried.inner.player.generated_cards_this_combat = 4;
             carried.inner.player.stars_gained_this_turn = 3;
+            carried.inner.combat_log.extra_turns_taken_this_combat = 1;
 
             let mut fresh = mirror_fixture(py);
             fresh
                 .transplant_hidden(&carried, None, true, None, None, true)
                 .expect("shapes agree");
+
+            assert_eq!(
+                fresh.inner.turn_number(),
+                fresh.inner.round + 1,
+                "an extra turn (PaelsEye / Ambergris) runs the turn number one \
+                 ahead of the round; the turn-number gates read it (GH #812)"
+            );
 
             assert_eq!(
                 fresh.inner.player.shivs_played_this_turn, 2,

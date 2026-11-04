@@ -1707,12 +1707,13 @@ internal sealed class SimHud
                 Layer = 99,
             };
 
-            // Advice panel (below the toolbar strip -- see RepositionPanels).
+            // Advice panel (below the toolbar strip, docked or dragged -- see
+            // RepositionPanels).
             var panel = new PanelContainer
             {
                 Name = "SpireMentorAdvicePanel",
                 Position = new Vector2(PanelLeft, ChipFallbackTop + ChipToPanelGap),
-                CustomMinimumSize = new Vector2(430f, 0f),
+                CustomMinimumSize = new Vector2(PanelWidth, 0f),
                 MouseFilter = Control.MouseFilterEnum.Ignore,
                 Visible = false,
             };
@@ -1778,14 +1779,13 @@ internal sealed class SimHud
     /// <summary>Chip bottom to advice-panel top. The two used to be 16 and 96.</summary>
     private const float ChipToPanelGap = 80f;
 
-    /// <summary>
-    /// Keep the chip and the advice panel clear of the game's own top bar
-    /// (measured every tick -- see SimTopBarLayout.SafeTopY for the why).
-    /// </summary>
+    /// <summary>Advice panel width (its minimum; a coach chip is as wide).</summary>
+    private const float PanelWidth = 430f;
+
     /// <summary>
     /// Where the coach chip (SimCoachChip) goes: just below the advice panel
-    /// when it is showing, else in the panel's own slot under the toolbar.
-    /// Viewport pixels. Main thread.
+    /// when it is showing, else in the panel's own slot (under the toolbar,
+    /// wherever the toolbar is). Viewport pixels. Main thread.
     /// </summary>
     public Vector2 ChipSlot()
     {
@@ -1796,13 +1796,18 @@ internal sealed class SimHud
                 float top = _advicePanel.Position.Y;
                 if (_advicePanel.IsVisibleInTree())
                 {
-                    top += _advicePanel.Size.Y + 8f;
+                    top += _advicePanel.Size.Y + AdviceColumn.Gap;
                 }
-                return new Vector2(PanelLeft, top);
+                return new Vector2(_advicePanel.Position.X, top);
+            }
+            if (SimToolbar.Instance.UndockedRect() is { } toolbar)
+            {
+                return FollowToolbar(toolbar.Rect, toolbar.Viewport, PanelWidth,
+                    SimCoachChip.Instance.StackHeight());
             }
             float? toolbarBottom = SimToolbar.Instance.BottomY();
             return new Vector2(PanelLeft, toolbarBottom.HasValue
-                ? toolbarBottom.Value + 8f
+                ? toolbarBottom.Value + AdviceColumn.Gap
                 : ChipFallbackTop + ChipToPanelGap);
         }
         catch (Exception)
@@ -1811,6 +1816,12 @@ internal sealed class SimHud
         }
     }
 
+    /// <summary>
+    /// Docked toolbar: keep the advice panel (and the chip under it) clear of
+    /// the game's own top bar (measured every tick -- see
+    /// SimTopBarLayout.SafeTopY for the why). Dragged toolbar: the panel and
+    /// the chips travel with it, as one block (AdviceColumn).
+    /// </summary>
     private void RepositionPanels()
     {
         try
@@ -1820,22 +1831,40 @@ internal sealed class SimHud
                 return;
             }
 
-            float top = SimTopBarLayout.SafeTopY(_advicePanel);
-            // Below the toolbar strip when there is one; otherwise leave the
-            // old chip-sized gap so the panel is where it always was.
-            float? toolbarBottom = SimToolbar.Instance.BottomY();
-            float panelTop = toolbarBottom.HasValue
-                ? Math.Max(top, toolbarBottom.Value + 8f)
-                : top + ChipToPanelGap;
-            if (Math.Abs(_advicePanel.Position.Y - panelTop) > 0.5f)
+            Vector2 want;
+            if (SimToolbar.Instance.UndockedRect() is { } toolbar)
             {
-                _advicePanel.Position = new Vector2(PanelLeft, panelTop);
+                float height = AdviceColumn.BlockHeight(_advicePanel.Size.Y,
+                    _advicePanel.IsVisibleInTree(), SimCoachChip.Instance.StackHeight());
+                want = FollowToolbar(toolbar.Rect, toolbar.Viewport,
+                    Math.Max(PanelWidth, _advicePanel.Size.X), height);
+            }
+            else
+            {
+                float top = SimTopBarLayout.SafeTopY(_advicePanel);
+                // Below the toolbar strip when there is one; otherwise leave
+                // the old chip-sized gap so the panel is where it always was.
+                float? toolbarBottom = SimToolbar.Instance.BottomY();
+                want = new Vector2(PanelLeft, toolbarBottom.HasValue
+                    ? Math.Max(top, toolbarBottom.Value + AdviceColumn.Gap)
+                    : top + ChipToPanelGap);
+            }
+            if (_advicePanel.Position.DistanceTo(want) > 0.5f)
+            {
+                _advicePanel.Position = want;
             }
         }
         catch (Exception ex)
         {
             Logger.Log($"[SimHud] RepositionPanels failed: {ex.Message}");
         }
+    }
+
+    private static Vector2 FollowToolbar(Rect2 toolbar, Vector2 viewport, float width, float height)
+    {
+        (float x, float y) = AdviceColumn.BlockTopLeft(toolbar.Position.X, toolbar.Position.Y,
+            toolbar.Size.Y, width, height, viewport.X, viewport.Y);
+        return new Vector2(x, y);
     }
 
     private void EnsureCombatEndedSubscription()

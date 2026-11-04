@@ -67,3 +67,27 @@ fn a_teammate_without_orbs_emits_none() {
     let out = combat_state_to_value(&st).expect("emits");
     assert!(out["allies"][0].get("orbs").is_none());
 }
+
+/// A belt Bulk Up emptied comes over the wire as `orb_slots: 0` (the live
+/// game's `OrbQueue.Capacity`). It must stay a real 0-slot belt through a
+/// round trip, or the next channel hands a Defect the 3-slot base back. A
+/// wire with no orb keys stays an unsized belt, as before.
+#[test]
+fn a_zero_slot_belt_stays_sized_through_the_wire() {
+    let mut v = with_teammate(&json!({"orbs": [], "orb_slots": 0}));
+    v["player"]["orbs"] = json!([]);
+    v["player"]["orb_slots"] = json!(0);
+    let st = state_from_json(&v).expect("builds");
+    assert_eq!(st.player.orbs.capacity, 0);
+    assert!(st.player.orbs.sized, "orb_slots: 0 is a real size");
+    assert!(st.allies[0].orbs.sized);
+    let out = combat_state_to_value(&st).expect("emits");
+    assert_eq!(out["player"]["orb_slots"], 0);
+    assert_eq!(out["allies"][0]["orb_slots"], 0);
+    let back = state_from_json(&out).expect("re-parses");
+    assert_eq!(back.player.orbs, st.player.orbs);
+    assert_eq!(back.allies[0].orbs, st.allies[0].orbs);
+
+    let plain = state_from_json(&with_teammate(&json!({}))).expect("builds");
+    assert!(!plain.player.orbs.sized, "no orb keys: unsized, as before");
+}

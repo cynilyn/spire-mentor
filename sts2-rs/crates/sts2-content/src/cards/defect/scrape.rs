@@ -14,14 +14,12 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
     let base = current_card_damage(state);
     let _ = deal_damage_player_to_enemy(state, t, base);
     let draws = if current_card_upgraded(state) { 5 } else { 4 };
-    let pre = state.player.hand.len();
-    let _ = sts2_core::cards::draw_via_state(state, draws);
-    let post = state.player.hand.len();
+    let own = draw_own_cards(state, draws);
     // Filter the drawn cards to the non-0-cost / X-cost set (C#
     // `Scrape.cs:32` `EnergyCost.GetWithModifiers(Local) != 0 || CostsX`;
     // X-cost is encoded here as `cost == -1`, so `cost != 0` covers both).
     let v0111 = state.game_version >= sts2_core::GameVersion::V0_111_0;
-    let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 8]> = state.player.hand[pre..post]
+    let to_discard: smallvec::SmallVec<[sts2_core::CardUid; 8]> = own
         .iter()
         .copied()
         .filter(|&uid| {
@@ -54,6 +52,50 @@ pub(crate) fn play_scrape(state: &mut CombatState, target: Option<CreatureUid>) 
     // discard. Mirrors Calculated Gamble's use of the same helper.
     let _ = sts2_core::card_effects::discard_and_draw_with_hooks(state, &to_discard, 0);
     EffectResult::Resolved
+}
+
+/// The cards Scrape's own `CardPileCmd.Draw(draws)` returns, in draw order.
+///
+/// C# filters only that call's result, and its per-card draw loop awaits
+/// `Hook.AfterCardDrawn` after each card. So when the first Status drawn this
+/// turn fires `IterationPower.AfterCardDrawn`, Iteration's nested draw lands
+/// in hand between Scrape's own cards and is not part of Scrape's result.
+/// The engine's batch draw instead takes all `draws` cards first and runs
+/// the riders after, which hands Iteration's cards to Scrape's filter (and
+/// gives Scrape cards Iteration should have taken). While Iteration can still
+/// fire this turn, draw one card per call, as C#'s loop does: each call's own
+/// card is the first one it pushes, and the nested draw lands after it.
+/// Otherwise the batch draw is exact and its own cards are the whole suffix.
+fn draw_own_cards(
+    state: &mut CombatState,
+    draws: i32,
+) -> smallvec::SmallVec<[sts2_core::CardUid; 8]> {
+    let iteration_can_fire = state.player_power_amount(sts2_core::PowerKind::Iteration) > 0
+        && state.combat_log.status_cards_drawn_this_turn == 0;
+    if !iteration_can_fire {
+        let pre = state.player.hand.len();
+        let _ = sts2_core::cards::draw_via_state(state, draws);
+        return state.player.hand[pre..].iter().copied().collect();
+    }
+    let mut own = smallvec::SmallVec::new();
+    for _ in 0..draws {
+        let pre = state.player.hand.len();
+        // `Draw(1)` repeated equals `Draw(n)` card by card; it only differs when
+        // the draw is blocked (NoDraw), and then the first call moves nothing.
+        if sts2_core::cards::draw_via_state(state, 1) == 0 {
+            break;
+        }
+        if let Some(&uid) = state.player.hand.get(pre) {
+            own.push(uid);
+        }
+        // A Stratagem reshuffle select suspended the draw. The batch path would
+        // resume the rest after the pick; this one drops them. Stratagem is
+        // Silent's and Iteration Defect's, so it takes a cross-character mix.
+        if state.pending_choice.is_some() {
+            break;
+        }
+    }
+    own
 }
 
 #[must_use]

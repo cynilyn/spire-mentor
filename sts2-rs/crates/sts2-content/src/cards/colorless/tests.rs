@@ -1438,20 +1438,23 @@ fn the_bomb_upgraded_stores_fifty_damage() {
 }
 
 /// Bolas / ThrummingHatchet (sts2-rs-219ds): playing the card stamps the
-/// current combat round into its ReturnIfPlayedRound var (read by the
-/// core turn-start return-to-hand sweep).
+/// current player TURN number into its ReturnIfPlayedRound var (read by the
+/// core turn-start return-to-hand sweep). C# stamps
+/// `PlayerCombatState.TurnNumber` (`CombatHistoryEntry.cs:55`): round 4
+/// after one Pael's Eye extra turn is turn 5.
 #[test]
-fn self_returning_attacks_stamp_play_round() {
+fn self_returning_attacks_stamp_play_turn_number() {
     install_pool();
     for card in [CardId::Bolas, CardId::ThrummingHatchet] {
         let (mut state, euid) = fresh_state(card, 5, 0);
         add_player_creature(&mut state);
         state.round = 4;
+        state.combat_log.extra_turns_taken_this_combat = 1;
         let _ = lookup(card).expect("registered")(&mut state, Some(euid));
         assert_eq!(
             state.cards[0].combat_var(sts2_core::cards::VarKey::ReturnIfPlayedRound),
-            4,
-            "{card:?} stamps the play round"
+            5,
+            "{card:?} stamps the play turn number"
         );
     }
 }
@@ -2600,6 +2603,71 @@ fn calamity_generates_one_attack_into_hand_on_attack_played() {
     );
 }
 
+/// C# `Hook.AfterCardPlayed` walks `CombatState.IterateHookListeners`
+/// (CombatState.cs:115-170): the player's Powers first, then the player's
+/// relics, then each enemy's Powers. So the player's `CalamityPower` card
+/// lands in hand BEFORE the Wither added by the enemy-owned (Aeonglass)
+/// `WitheringPresencePower`. Rust used to fire Calamity in the late commutative
+/// `pending` lane, after the WitheringPresence lane, swapping the two hand
+/// slots (GH #1054, Necrobinder-3005-a0-act2#b3: C# hand [.., SNAP, WITHER]).
+#[test]
+fn calamity_card_lands_before_withering_presence_wither() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    crate::cards::dispatch::ensure_installed();
+    let mut state = CombatState {
+        rng: sts2_core::dotnet_rng::Rng::new(0_i32),
+        ..Default::default()
+    };
+    state.player.current_hp = 70;
+    state.player.max_hp = 70;
+    state.init_player_creature();
+    state.player.character = Some(sts2_core::CharacterId::Ironclad);
+    let _boss = state.spawn_enemy(MonsterKind::Aeonglass);
+    // One card short of the WitheringPresence Wither (countdown on `counter`).
+    let wp = state
+        .powers
+        .iter_mut()
+        .find(|p| p.kind == sts2_core::powers::PowerKind::WitheringPresence)
+        .expect("Aeonglass spawns with WitheringPresence");
+    wp.counter = wp.amount - 1;
+    let puid = state.player.creature_uid.expect("player mirror");
+    apply_power_to_creature(&mut state, puid, sts2_core::powers::PowerKind::Calamity, 1);
+    let hand_before = state.player.hand.len();
+    let ctx = sts2_core::hooks::CardCtx {
+        card_type: Some(CardType::Attack),
+        ..Default::default()
+    };
+    // The card-play pipeline order (`combat_loop::dispatch_after_card_played_buses`
+    // minus the relic bus, which holds no relics here).
+    sts2_core::hooks::dispatch_after_card_played_ordered_enemy_hits(&mut state, &ctx);
+    sts2_core::hooks::dispatch_after_card_played_rest(&mut state, &ctx);
+    let added: Vec<_> = state.player.hand[hand_before..]
+        .iter()
+        .map(|uid| {
+            state
+                .cards
+                .get(uid.0.get() as usize - 1)
+                .expect("card")
+                .card_id
+        })
+        .collect();
+    assert_eq!(
+        added.len(),
+        2,
+        "one Calamity attack + one Wither: {added:?}"
+    );
+    assert_ne!(
+        added[0],
+        sts2_core::cards::CardId::Wither,
+        "the Calamity attack comes first: {added:?}"
+    );
+    assert_eq!(
+        added[1],
+        sts2_core::cards::CardId::Wither,
+        "the enemy-power Wither comes after the player-power card: {added:?}"
+    );
+}
+
 /// OrangeDough (Regent Rare relic) — `AfterSideTurnStart` on round 1 generates
 /// 2 DISTINCT colorless cards into hand via C#
 /// `CardFactory.GetDistinctForCombat(Owner, ColorlessCardPool, 2,
@@ -2858,6 +2926,59 @@ fn play_maul_hits_twice_and_grows_base_damage() {
         state.cards[idx].base_damage, 6,
         "Maul permanently grows its own base_damage by 1"
     );
+}
+
+/// C# `Maul.OnPlay` (v0.107.1 Maul.cs:53-58, v0.111.0 Maul.cs:52-57) buffs
+/// EVERY Maul in `Owner.PlayerCombatState.AllCards` — the five live piles
+/// Hand, Draw, Discard, Exhaust, Play (`PlayerCombatState.cs:76-88`) — via
+/// `BuffFromMaulPlay(Increase)`, where `Increase` is the PLAYED Maul's var.
+/// A Maul instance in no pile (orphaned arena entry) and non-Maul cards are
+/// untouched.
+#[test]
+fn play_maul_buffs_every_maul_in_all_five_piles() {
+    install_pool();
+    for (version, upgraded, inc) in [
+        (sts2_core::GameVersion::default(), false, 1),
+        (sts2_core::GameVersion::default(), true, 2),
+        (sts2_core::GameVersion::V0_111_0, false, 2),
+        (sts2_core::GameVersion::V0_111_0, true, 3),
+    ] {
+        let (mut state, euid) = fresh_state(CardId::Maul, 5, 0);
+        state.game_version = version;
+        let played = *state.player.play.last().expect("play pile");
+        state.cards[played.0.get() as usize - 1].upgraded = upgraded;
+        let mut others = Vec::new();
+        for pile in 0..4 {
+            let uid = push_draw_card_id(&mut state, CardId::Maul);
+            state.cards[uid.0.get() as usize - 1].base_damage = 7;
+            if pile > 0 {
+                state.player.draw.pop();
+                match pile {
+                    1 => state.player.hand.push(uid),
+                    2 => state.player.discard.push(uid),
+                    _ => state.player.exhaust.push(uid),
+                }
+            }
+            others.push(uid);
+        }
+        // Orphan Maul (in no pile) and a non-Maul in hand stay put.
+        let orphan = push_draw_card_id(&mut state, CardId::Maul);
+        state.player.draw.pop();
+        state.cards[orphan.0.get() as usize - 1].base_damage = 7;
+        let strike = push_draw_card_id(&mut state, CardId::StrikeIronclad);
+        state.cards[strike.0.get() as usize - 1].base_damage = 6;
+
+        let f = lookup(CardId::Maul).expect("registered");
+        f(&mut state, Some(euid));
+
+        let bd = |u: CardUid| state.cards[u.0.get() as usize - 1].base_damage;
+        assert_eq!(bd(played), 5 + inc, "{version:?} up={upgraded}: played");
+        for u in &others {
+            assert_eq!(bd(*u), 7 + inc, "{version:?} up={upgraded}: other Maul");
+        }
+        assert_eq!(bd(orphan), 7, "orphan Maul is not in AllCards");
+        assert_eq!(bd(strike), 6, "non-Maul untouched");
+    }
 }
 
 #[test]
@@ -4586,6 +4707,53 @@ fn secret_technique_single_skill_auto_adds_no_prompt() {
     assert!(!state.player.draw.contains(&skill_uid), "removed from draw");
 }
 
+/// SecretTechnique auto-played with 10 cards in hand (Mayhem plays it from
+/// the draw pile, so it frees no hand slot). C# `CardPileCmd.Add(card,
+/// Hand)` (`SecretTechnique.cs:25`) puts the lone Skill on the discard pile
+/// (`CardPileCmd.cs:485-489`).
+#[test]
+fn secret_technique_full_hand_sends_lone_skill_to_discard() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::SecretTechnique, 0, 0);
+    let hand = push_hand_strikes(&mut state, sts2_core::cards::HAND_LIMIT);
+    let skill_uid = push_draw_card(&mut state, &crate::cards::ironclad::defend_ironclad::spec());
+    let f = lookup(CardId::SecretTechnique).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert!(
+        state.pending_choice.is_none(),
+        "single candidate, no prompt"
+    );
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![skill_uid]);
+    assert!(state.player.draw.is_empty());
+}
+
+/// SeekerStrike auto-played with 10 cards in hand and one card in the draw
+/// pile. C# `CardPileCmd.Add(card, Hand)` (`SeekerStrike.cs:40`) puts the
+/// card on the discard pile (`CardPileCmd.cs:485-489`).
+#[test]
+fn seeker_strike_full_hand_sends_lone_draw_card_to_discard() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::SeekerStrike, 9, 0);
+    add_player_creature(&mut state);
+    state.player.current_hp = 80;
+    let hand = push_hand_strikes(&mut state, sts2_core::cards::HAND_LIMIT);
+    let only = push_draw_card_id(&mut state, CardId::Finesse);
+    let _ = lookup(CardId::SeekerStrike).expect("registered")(&mut state, Some(euid));
+    assert!(state.pending_choice.is_none(), "no prompt for a lone card");
+    assert_eq!(
+        state.player.hand.to_vec(),
+        hand,
+        "a full hand takes no card"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![only]);
+    assert!(state.player.draw.is_empty());
+}
+
 /// SecretTechnique with 2+ Skills opens a single-pick
 /// `AddFromDrawByType` choice (no card moved until resolved). Only
 /// Skills are offered — a draw Attack is filtered out.
@@ -4999,6 +5167,47 @@ fn play_enlightenment_cap_reverts_at_turn_start() {
     assert_eq!(state.cards[idx].cost, 1, "capped this turn");
     state.restore_snecko_costs_for_turn_start();
     assert_eq!(state.cards[idx].cost, 3, "the cap expires at turn end");
+}
+
+/// Plain Enlightenment then Enlightenment+: C# appends
+/// `SetThisTurnOrUntilPlayed(1, reduceOnly)` then `SetThisCombat(1,
+/// reduceOnly)` (Enlightenment.cs OnPlay); once the first expires (on play,
+/// `CardEnergyCost.cs:341-344`, or at turn end) the combat cap still holds
+/// the card at 1. Ironclad-2026 act 3: Cinder C# 1, Rust back to 2.
+#[test]
+fn play_enlightenment_plain_then_upgraded_keeps_combat_cap() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::Enlightenment, 0, 0);
+    let mut uids = Vec::new();
+    for _ in 0..2 {
+        let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+        let uid = CardUid::new(raw).expect("nz");
+        let mut card = card_from_spec(&crate::cards::ironclad::strike_ironclad::spec());
+        card.uid = uid;
+        card.cost = 2;
+        state.cards.push(card);
+        state.player.hand.push(uid);
+        uids.push(uid.0.get() as usize - 1);
+    }
+    let f = lookup(CardId::Enlightenment).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    state.cards[0].upgraded = true;
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    for &idx in &uids {
+        assert_eq!(state.cards[idx].cost, 1);
+    }
+    // Card 0: played (WhenPlayed expiry). Card 1: held to the next turn.
+    state.cards[uids[0]].expire_snecko_roll();
+    assert_eq!(state.cards[uids[0]].cost, 1, "combat cap survives the play");
+    state.restore_snecko_costs_for_turn_start();
+    assert_eq!(state.cards[uids[1]].cost, 1, "combat cap survives turn end");
+    for &idx in &uids {
+        assert_eq!(
+            state.cards[idx].combat_var(sts2_core::cards::VarKey::CostAbsolutelySet),
+            1,
+            "an Absolute combat modifier is still live"
+        );
+    }
 }
 
 /// Enlightenment skips X-cost (`cost == -1`) cards per the Python
@@ -6423,4 +6632,85 @@ fn whistle_lethal_does_not_stun() {
     let enemy = &state.creatures[0];
     assert!(enemy.current_hp <= 0);
     assert_eq!(enemy.ai.as_ref().expect("ai").current_state_id(), planned);
+}
+
+/// Stage the Inferno-then-Entropy turn start of act23 Ironclad-2095: one
+/// 5-HP enemy, a Strike in hand, Inferno(9, self-damage 1) applied before
+/// Entropy(1). Inferno's turn-start retaliation kills the last enemy.
+fn inferno_kills_before_entropy_fixture() -> (CombatState, sts2_core::CardUid) {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, euid) = fresh_state(CardId::StrikeIronclad, 6, 0);
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    if let Some(c) = state.creatures.iter_mut().find(|c| c.id == euid.0) {
+        c.current_hp = 5;
+        c.max_hp = 5;
+    }
+    let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+    state.player.play.clear();
+    state.player.hand.push(uid);
+    state.phase = sts2_core::CombatPhase::PlayerTurnStart;
+    state.round = 2;
+    let player_uid = state.init_player_creature();
+    sts2_core::card_effects::apply_power_to_creature(&mut state, player_uid, PowerKind::Inferno, 9);
+    for pid in state.player_power_uids() {
+        if let Some(p) = state.powers.get_mut_by_id(pid.0) {
+            if p.kind == PowerKind::Inferno {
+                p.counter = 1;
+            }
+        }
+    }
+    sts2_core::card_effects::apply_power_to_creature(&mut state, player_uid, PowerKind::Entropy, 1);
+    (state, uid)
+}
+
+/// C# `EntropyPower.AfterPlayerTurnStart` (v0.111.0 `EntropyPower.cs:21-32`)
+/// selects through `CardSelectCmd.FromHand`, which returns nothing once
+/// `CombatManager.IsOverOrEnding` (`CardSelectCmd.cs:822-827`; v0.107.1
+/// `:697-702`). So when an earlier `AfterPlayerTurnStart` power (Inferno,
+/// CrimsonMantle > Juggernaut) kills the last enemy, Entropy transforms
+/// nothing and draws no `CombatCardSelection` (act23 Ironclad-2095: Rust
+/// drew one, leaving the stream one ahead for the next fight).
+#[test]
+fn entropy_skips_once_turn_start_inferno_ended_the_combat() {
+    let (mut state, uid) = inferno_kills_before_entropy_fixture();
+    let counter_before = state.run_rng.combat_card_selection.counter();
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+    assert!(
+        state
+            .creatures
+            .iter()
+            .filter(|c| c.species.is_some())
+            .all(|c| c.current_hp <= 0),
+        "Inferno's retaliation killed the only enemy"
+    );
+    assert_eq!(
+        state.run_rng.combat_card_selection.counter(),
+        counter_before,
+        "Entropy's FromHand is empty once the combat is ending: no transform draw"
+    );
+    assert_eq!(
+        state.cards[uid.0.get() as usize - 1].card_id,
+        CardId::StrikeIronclad,
+        "the hand card is not transformed"
+    );
+}
+
+/// Control for the guard above: with the enemy surviving Inferno, Entropy
+/// still transforms one hand card with one `CombatCardSelection` draw.
+#[test]
+fn entropy_transforms_when_turn_start_inferno_leaves_the_enemy_alive() {
+    let (mut state, _uid) = inferno_kills_before_entropy_fixture();
+    for c in &mut state.creatures {
+        if c.species.is_some() {
+            c.current_hp = 100;
+            c.max_hp = 100;
+        }
+    }
+    let counter_before = state.run_rng.combat_card_selection.counter();
+    let _ = sts2_core::combat_loop::start_player_turn(&mut state);
+    assert_eq!(
+        state.run_rng.combat_card_selection.counter(),
+        counter_before + 1,
+        "a live combat transforms exactly one card"
+    );
 }

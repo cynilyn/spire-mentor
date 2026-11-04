@@ -143,7 +143,6 @@ const WASM_ROUTES = new Set([
   "POST /api/live/search_tree",
   "POST /api/live/choice-ranker",
   "POST /api/live/auto-action",
-  "POST /api/live/last-move-regret",
   "POST /api/live/last-turn-grade",
   "POST /api/live/last-choice-grade",
   "POST /api/live/regret-review",

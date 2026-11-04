@@ -300,8 +300,11 @@ fn upgrade_card_of_type(rs: &RunState, card: &mut Card, ct: CardType) -> bool {
     card.card_type == ct && card.upgrade_for(rs.game_version)
 }
 
+/// Run-hook ownership guard: owned AND not melted. C# builds the run-level
+/// hook-listener list from `Relics.Where(r => !r.IsMelted)` (`RunState.cs:148`),
+/// so a melted Toy Box wax egg stops upgrading cards.
 fn run_owns_rare(rs: &RunState, id: RelicId) -> bool {
-    rs.relics.contains(&id)
+    rs.owns_active_relic(id)
 }
 
 /// `FrozenEgg.modify_card_reward_options_late` — upgrade every Power
@@ -1006,8 +1009,8 @@ mod tests {
         use std::num::NonZeroU32;
         use sts2_core::cards::VarKey;
         use sts2_core::potions::CharacterId;
-        use sts2_core::relic_effects::dispatch_after_side_turn_start;
-        use sts2_core::{CombatState, Relic, RelicKind, Side};
+        use sts2_core::relic_effects::dispatch_after_player_turn_start;
+        use sts2_core::{CombatState, Relic, RelicKind};
 
         crate::relics::dispatch::ensure_installed();
         crate::cards::dispatch::ensure_installed();
@@ -1022,7 +1025,7 @@ mod tests {
             is_wax: false,
             is_melted: false,
         });
-        let _ = dispatch_after_side_turn_start(&mut s, Side::Player);
+        let _ = dispatch_after_player_turn_start(&mut s);
         let uid = *s.player.hand.last().expect("puzzlebox card in hand");
         let card = *sts2_core::card_by_uid(&s.cards, uid).expect("card exists");
         let printed = sts2_core::build_card_for_version(card.card_id, false, s.game_version)
@@ -1595,10 +1598,7 @@ mod tests {
         let uid = ivory_tile_push_card_energy(&mut state, IVORY_TILE_THRESHOLD);
         let ctx = ivory_tile_ctx_for(uid, &state);
         let _ = dispatch_after_card_played(&mut state, &ctx);
-        assert_eq!(
-            state.player.energy,
-            i8::try_from(IVORY_TILE_ENERGY).unwrap()
-        );
+        assert_eq!(state.player.energy, IVORY_TILE_ENERGY);
     }
 
     /// **IvoryTile #2** — card with `energy_spent > THRESHOLD` fires.
@@ -1611,10 +1611,7 @@ mod tests {
         let uid = ivory_tile_push_card_energy(&mut state, IVORY_TILE_THRESHOLD + 2);
         let ctx = ivory_tile_ctx_for(uid, &state);
         let _ = dispatch_after_card_played(&mut state, &ctx);
-        assert_eq!(
-            state.player.energy,
-            i8::try_from(IVORY_TILE_ENERGY).unwrap()
-        );
+        assert_eq!(state.player.energy, IVORY_TILE_ENERGY);
     }
 
     /// **IvoryTile #3** — cards with `energy_spent < THRESHOLD` never
@@ -1903,6 +1900,32 @@ mod tests {
         let mut card = egg_test_card(50_010, CardType::Attack);
         let _ = dispatch_modify_card_being_added_to_deck(&mut rs, &mut card);
         assert!(card.upgraded, "MoltenEgg must upgrade Attack on deck-add");
+    }
+
+    /// A melted (Toy Box wax) egg is off the run-level hook-listener list —
+    /// C# `RunState.cs:148` builds it from `Relics.Where(r => !r.IsMelted)` —
+    /// so it upgrades nothing on any of its three channels
+    /// (Ironclad-2083 act3: a melted MoltenEgg upgraded a CINDER reward).
+    #[test]
+    fn melted_molten_egg_upgrades_nothing() {
+        use sts2_core::run_effects::{
+            dispatch_modify_card_being_added_to_deck, dispatch_modify_card_reward_options_late,
+            dispatch_modify_merchant_card_creation_results,
+        };
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::MoltenEgg);
+        rs.wax_relics.insert(RelicId::MoltenEgg);
+        rs.melted_relics.insert(RelicId::MoltenEgg);
+        let mut card = egg_test_card(50_012, CardType::Attack);
+        let _ = dispatch_modify_card_being_added_to_deck(&mut rs, &mut card);
+        assert!(!card.upgraded, "deck-add: melted egg is inert");
+        let mut cards = vec![egg_test_card(50_013, CardType::Attack)];
+        let _ = dispatch_modify_card_reward_options_late(&mut rs, &mut cards);
+        assert!(!cards[0].upgraded, "reward: melted egg is inert");
+        let mut card = egg_test_card(50_014, CardType::Attack);
+        let _ = dispatch_modify_merchant_card_creation_results(&mut rs, &mut card, false);
+        assert!(!card.upgraded, "merchant: melted egg is inert");
     }
 
     #[test]

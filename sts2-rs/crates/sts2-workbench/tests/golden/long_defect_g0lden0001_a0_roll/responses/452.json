@@ -12118,7 +12118,9 @@
    "act_name": "Overgrowth",
    "combat_log": [],
    "decision": "card_reward",
-   "details": [],
+   "details": [
+    "You HP 10→75 (+65)"
+   ],
    "floor": 17,
    "idx": 243,
    "label": "Take Machine Learning",
@@ -12130,7 +12132,6 @@
    "combat_log": [],
    "decision": "event_choice",
    "details": [
-    "You HP 10→75 (+65)",
     "+Relic Pael's Flesh"
    ],
    "floor": 17,

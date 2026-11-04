@@ -565,7 +565,7 @@ public class SimCombatHandler : IRoomHandler, IHandler
     /// synchronously, so a settle-poll on the slot emptying is enough; no
     /// RequestEnqueue/ActionQueueSynchronizer round-trip is involved).
     /// </summary>
-    private static async Task DiscardPotionAndWaitAsync(
+    internal static async Task DiscardPotionAndWaitAsync(
         Player player, int slot, CancellationToken ct)
     {
         PotionModel? potion = SafeGetPotionAtSlot(player, slot);
@@ -591,6 +591,23 @@ public class SimCombatHandler : IRoomHandler, IHandler
     // (envelope, cards, piles, creatures/intents, potions). This handler
     // now only assembles the combat-specific shape around that.
     // ----------------------------------------------------------------
+
+    /// <summary>
+    /// Extra turns this player has taken this combat (PaelsEye, v0.111.0
+    /// Ambergris), for the seat history's `extra_turns_taken_this_combat`
+    /// (GH #812). TurnNumber and RoundNumber both start at 1 and step together
+    /// at the side switch, except that an extra turn steps only the taking
+    /// players' TurnNumber (decomp CombatManager.cs, the side switch; same in
+    /// v0.107.1 and v0.111.0). The difference is therefore the count. A board
+    /// rebuilt without it reports turn = round to the turn-number gates
+    /// (BagOfPreparation, Lantern, the turn-1 Innate floor).
+    /// </summary>
+    internal static int ExtraTurnsTakenThisCombat(PlayerCombatState? pcs, CombatState? combatState)
+    {
+        if (pcs == null || combatState == null)
+            return 0;
+        return Math.Max(0, pcs.TurnNumber - combatState.RoundNumber);
+    }
 
     /// <summary>
     /// Player card plays started this turn, bucketed by card type in the
@@ -783,6 +800,9 @@ public class SimCombatHandler : IRoomHandler, IHandler
                 // (Unmovable), which a rebuilt board cannot recount (GH #989).
                 ["cards_exhausted_this_turn"] = SimCombatLog.CardsExhaustedThisTurn(creature),
                 ["card_block_gains_this_turn"] = SimCombatLog.CardBlockGainsThisTurn(creature),
+                // TurnNumber - RoundNumber: the turn-number gates read the
+                // turn, and a rebuilt board otherwise sets it to the round.
+                ["extra_turns_taken_this_combat"] = ExtraTurnsTakenThisCombat(pcs, combatState),
                 // Co-op: who we are on the combat log's card-play rows (`owner`).
                 ["net_id"] = player.NetId.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 // Our place in the run's player order: who sets up, draws and
@@ -910,6 +930,8 @@ public class SimCombatHandler : IRoomHandler, IHandler
                     ["cards_exhausted_this_combat"] = SimCombatLog.CardsExhaustedThisCombat(c),
                     ["cards_exhausted_this_turn"] = SimCombatLog.CardsExhaustedThisTurn(c),
                     ["card_block_gains_this_turn"] = SimCombatLog.CardBlockGainsThisTurn(c),
+                    ["extra_turns_taken_this_combat"] = ExtraTurnsTakenThisCombat(
+                        pcs, CombatManager.Instance.DebugOnlyGetState()),
                     // Their belt, slot by slot as ours is: a replay plays a
                     // teammate's logged potion from it.
                     ["potions"] = other.PotionSlots

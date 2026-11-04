@@ -245,15 +245,22 @@ pub(crate) fn move_card_from_draw_to_hand_by_type(
                 cb.card_id,
                 state.game_version,
             ))
-            .then_with(|| ca.card_id.to_python_name().cmp(cb.card_id.to_python_name()))
+            .then_with(|| {
+                sts2_core::cards::card_model_entry(ca.card_id)
+                    .cmp(sts2_core::cards::card_model_entry(cb.card_id))
+            })
     });
     match candidates.as_slice() {
         [] => {}
         [uid] => {
-            // FirstOrDefault: exactly one candidate, no prompt.
+            // FirstOrDefault: exactly one candidate, no prompt. C#
+            // `CardPileCmd.Add(card, Hand)` (`SecretTechnique.cs:25`,
+            // `SecretWeapon.cs:25`) sends it to the discard pile instead
+            // when the hand already holds 10 cards (`CardPileCmd.cs:485-489`),
+            // which an auto-play from the draw pile (Mayhem) can reach.
             if let Some(pos) = state.player.draw.iter().position(|u| u == uid) {
                 let card = state.player.draw.remove(pos);
-                state.player.hand.push(card);
+                let _ = sts2_core::cards::try_add_to_hand(&mut state.player, card);
             }
         }
         _ => {
@@ -297,16 +304,18 @@ pub const HIDDEN_GEM_REPLAY: i32 = 2;
 /// `UpgradeValueBy(1m)` on `Replay`). Bead `sts2-rs-i9wg8`.
 pub const HIDDEN_GEM_REPLAY_UPGRADED: i32 = 3;
 
-/// Stamp the just-played card (top of the Play pile) with the current combat
-/// `round` so the `start_player_turn` sweep can return it to hand next turn
-/// (Bolas / ThrummingHatchet `BeforeHandDraw`). Bead `sts2-rs-219ds`.
+/// Stamp the just-played card (top of the Play pile) with the current player
+/// turn number so the `start_player_turn` sweep can return it to hand next
+/// turn (Bolas / ThrummingHatchet `BeforeHandDraw`). C# `CombatHistoryEntry`
+/// stamps `PlayerCombatState.TurnNumber` (`CombatHistoryEntry.cs:55`), which
+/// an extra turn bumps but the round does not. Bead `sts2-rs-219ds`.
 pub(crate) fn stamp_return_if_played(state: &mut CombatState) {
     if let Some(played) = sts2_core::card_effects::resolving_card_uid(state) {
         sts2_core::card_effects::set_card_var(
             state,
             played,
             VarKey::ReturnIfPlayedRound,
-            i32::from(state.round),
+            i32::from(state.turn_number()),
         );
     }
 }
@@ -1761,13 +1770,23 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
 /// of C# `CardModel.VisualCardPool.IsColorless` (the gate
 /// `HeirloomHammer.cs:33` and other `IsColorless` filters use).
 ///
-/// In C# `IsColorless` is a property of the card's POOL: true for the
-/// Colorless, Token, Event and Deprecated pools, false for every character
-/// pool plus Status and Curse (`*CardPool.cs`). So the predicate is:
-/// membership in the authoritative `COLORLESS_SPECS` set (the full
-/// colorless-proper pool — `is_colorless_card_id` is a narrower hand list
-/// that omits several ids, see its callers) OR a Token/Event rarity
-/// (TokenCardPool / EventCardPool, both `IsColorless`).
+/// `VisualCardPool` is the card's own pool (`CardModel.cs:325`) unless the
+/// card overrides it, and `IsColorless` is a property of the pool: true for
+/// the Colorless, Event, Token and Deprecated pools, false for the
+/// character pools, Status, Curse and Quest (`*CardPool.cs`). Ten Event
+/// cards override `VisualCardPool` with the character pool whose color they
+/// wear, so they do not count: Caltrops, Distraction, Outmaneuver (Silent),
+/// Clash, DualWield, Entrench (Ironclad), HelloWorld, Rebound, RipAndTear,
+/// Stack (Defect). Both the override list and the pools are the same in
+/// v0.107.1 and v0.111.0, apart from the two v0.111.0-only cards
+/// [`crate::cards::pool_order::in_colorless_pool`] describes.
+///
+/// Pool membership comes from the generated C# pool lists. The predicate
+/// used to approximate them with `COLORLESS_SPECS` plus a Token/Event
+/// rarity test, which missed the Ancient-rarity Event cards (Apotheosis,
+/// Apparition, BrightestFlame, Maul, NeowsFury, Relax, Wish, Whistle) and
+/// the Status-rarity Token cards (Disintegration, MindRot, Sloth,
+/// WasteAway), and counted the ten overrides as colorless.
 ///
 /// Bead `sts2-rs-1rv1q`: HeirloomHammer's old `is_colorless_card_id` filter
 /// dropped SOVEREIGN_BLADE (a Token), so when ≥1 other colorless hand card
@@ -1776,31 +1795,22 @@ pub const fn is_colorless_card_id(id: CardId) -> bool {
 /// of the first-in-hand SOVEREIGN_BLADE).
 #[must_use]
 pub fn is_visual_pool_colorless(id: CardId) -> bool {
-    use crate::cards::types::CardRarity;
-    if crate::cards::spec_index::COLORLESS_SPECS
-        .iter()
-        .any(|f| f().id == id)
-    {
-        return true;
-    }
-    // v0.111.0 (GH #793): Abundance is an Ancient-rarity card that lives in
-    // `EventCardPool` (`EventCardPool.cs`, `IsColorless`), so the rarity test
-    // below would miss it. The id exists in no v0.107.1 state.
-    if id == CardId::Abundance {
-        return true;
-    }
-    // v0.111.0: TheBall is listed by `ColorlessCardPool`
-    // (ColorlessCardPool.cs:85) but lives in `V0111_ONLY_SPECS` with Uncommon
-    // rarity, so both tests above missed it — HeirloomHammer skipped a hand
-    // TheBall and cloned the next colorless card (Regent full seed 3441). The
-    // id exists in no v0.107.1 state.
-    if id == CardId::TheBall {
-        return true;
-    }
-    matches!(
-        crate::cards::spec_index::rarity_for_card_id(id),
-        Some(CardRarity::Token | CardRarity::Event)
-    )
+    // `public override CardPoolModel VisualCardPool => ModelDb.CardPool<..>()`
+    // on these ten Event cards (e.g. `Caltrops.cs:17`, `HelloWorld.cs:12`).
+    let character_colored = matches!(
+        id,
+        CardId::Caltrops
+            | CardId::Clash
+            | CardId::Distraction
+            | CardId::DualWield
+            | CardId::Entrench
+            | CardId::HelloWorldCard
+            | CardId::Outmaneuver
+            | CardId::Rebound
+            | CardId::RipAndTear
+            | CardId::Stack
+    );
+    !character_colored && crate::cards::pool_order::in_colorless_pool(id)
 }
 
 /// Card ids in the "colorless modifier" generation pool. Returned in a

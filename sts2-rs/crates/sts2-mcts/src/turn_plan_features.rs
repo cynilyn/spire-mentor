@@ -178,7 +178,7 @@ pub fn plan_features(pre: &CombatState, plan: &TurnPlan) -> [f32; PLAN_DIM] {
     let mut f = [0.0f32; PLAN_DIM];
     f[0] = (post.player.block - pre.player.block) as f32;
     f[1] = (pre.player.current_hp - post.player.current_hp) as f32;
-    f[2] = f32::from(post.player.energy);
+    f[2] = post.player.energy as f32;
     f[3] = hp_removed as f32;
     f[4] = killed as f32;
     f[5] = min_frac;
@@ -261,7 +261,7 @@ pub fn deck_context(state: &CombatState) -> DeckContext {
     let ctx = [
         f32::from(state.round),
         p.current_hp.max(0) as f32 / max_hp,
-        f32::from(p.energy),
+        p.energy as f32,
         f32::from(p.max_energy),
         base_incoming(state) as f32 / max_hp,
         enemies(state).filter(|c| is_alive(c)).count() as f32,

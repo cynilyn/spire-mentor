@@ -28,23 +28,24 @@ pub(crate) fn play_stardust(state: &mut CombatState, _t: Option<CreatureUid>) ->
     // 2010). A manual play now spends + stamps the var in
     // `combat_loop::spend_card_stars` (C# SpendResources, before
     // BeforeCardPlayed); the `spend_stars` fallback only serves direct callers.
-    let auto_star_x = state
-        .player
-        .play
-        .last()
-        .and_then(|&uid| state.cards.get(uid.0.get() as usize - 1))
+    //
+    // The var is NOT cleared after the read: `LastStarsSpent` stays on the card,
+    // so a replay (Duplication, EchoForm) resolves the same X instead of
+    // spending the stars the first play already spent (Regent 1017, GH #1054:
+    // C# hit 6 times, Rust 3). Every play path stamps it before `OnPlay`.
+    let card_idx =
+        sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1);
+    let star_x = card_idx
+        .and_then(|idx| state.cards.get(idx))
         .map_or(0, |c| c.combat_var(sts2_core::cards::VarKey::AutoPlayStarX));
-    let hits = if auto_star_x > 0 {
-        if let Some(idx) =
-            sts2_core::card_effects::resolving_card_uid(state).map(|u| u.0.get() as usize - 1)
-        {
-            if let Some(card) = state.cards.get_mut(idx) {
-                card.set_combat_var(sts2_core::cards::VarKey::AutoPlayStarX, 0);
-            }
-        }
-        auto_star_x - 1
+    let hits = if star_x > 0 {
+        star_x - 1
     } else {
-        state.spend_stars(i32::from(state.player.stars))
+        let spent = state.spend_stars(i32::from(state.player.stars));
+        if let Some(card) = card_idx.and_then(|idx| state.cards.get_mut(idx)) {
+            card.set_combat_var(sts2_core::cards::VarKey::AutoPlayStarX, spent + 1);
+        }
+        spent
     };
     if hits <= 0 {
         return EffectResult::Resolved;

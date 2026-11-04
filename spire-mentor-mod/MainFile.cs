@@ -27,7 +27,7 @@ public static class MainFile
 {
     public const string ModId = "SpireMentor";
     // Keep in sync with SpireMentor.json "version" (package.ps1 reads that one).
-    public const string ModVersion = "0.8.2";
+    public const string ModVersion = "0.8.4";
 
     private static Harmony? _patcher;
     private static SimAutoSlayer? _autoSlayer;
@@ -58,6 +58,7 @@ public static class MainFile
             ShieldBaseLibDamagePreview();
             ApplyPatch(typeof(HitStopTimeScalePatch));
             ApplyPatch(typeof(GameQuitPatch));
+            ApplyPatch(typeof(HotkeyResetPatch));
             // Coach capture (PROTOCOL.md v5 human_action): the human's end
             // turn and their event / campfire picks.
             ApplyPatch(typeof(HumanEndTurnPatch));

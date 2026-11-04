@@ -1294,10 +1294,26 @@ pub fn roll_kaleidoscope_card_rewards(rs: &mut RunState, owner: CharacterId) -> 
 #[must_use]
 pub fn roll_gorge_common_cards(rs: &mut RunState, count: usize) -> Vec<sts2_core::cards::Card> {
     let character = rs.character_id;
-    // C# `GetPossibleCards(player)` (Common-filtered char pool), in
+    roll_uniform_pool_cards(rs, character, CardRarity::Common, count)
+}
+
+/// `CardFactory.CreateForReward(owner, count, ForNonCombatWithUniformOdds(
+/// [character.CardPool], c => c.Rarity == rarity))` for any character's pool:
+/// the body of [`roll_gorge_common_cards`] (see its doc for the one Rewards
+/// read per card, no rarity and no upgrade roll). Shared with
+/// `SeaGlass.AfterObtained` (`SeaGlass.cs:81-87`: three calls of `15 / 3`
+/// cards, Common / Uncommon / Rare, from another character's pool).
+#[must_use]
+pub fn roll_uniform_pool_cards(
+    rs: &mut RunState,
+    character: CharacterId,
+    rarity: CardRarity,
+    count: usize,
+) -> Vec<sts2_core::cards::Card> {
+    // C# `GetPossibleCards(player)` (rarity-filtered char pool), in
     // `GenerateAllCards` order — the same pool `eligible_ids_for_rarity`
     // serves the (parity-clean) regular reward path.
-    let pool = eligible_ids_for_rarity_in(&[character], false, CardRarity::Common, rs.game_version);
+    let pool = eligible_ids_for_rarity_in(&[character], false, rarity, rs.game_version);
     let mut chosen_ids: Vec<CardId> = Vec::new();
     let mut out: Vec<sts2_core::cards::Card> = Vec::new();
     for _ in 0..count {
@@ -3075,6 +3091,12 @@ fn merchant_roll_character_card_slot(
         chosen.insert(id);
         super::v0111::card_pod_for(id, false, version)
     });
+    // MerchantCardEntry.cs:92 (both builds): the filled slot runs
+    // `Hook.ModifyMerchantCardCreationResults` (the eggs upgrade it).
+    let card = card.map(|mut c| {
+        rs.modify_merchant_card_creation_results(&mut c, false);
+        c
+    });
     ShopCardEntry {
         rarity,
         card_type: want_type,
@@ -3113,6 +3135,11 @@ fn merchant_roll_colorless_card_slot(
     let card = pick.and_then(|id| {
         chosen.insert(id);
         super::v0111::card_pod_for(id, false, version)
+    });
+    // MerchantCardEntry.cs:92 (both builds).
+    let card = card.map(|mut c| {
+        rs.modify_merchant_card_creation_results(&mut c, true);
+        c
     });
     ShopCardEntry {
         rarity,
@@ -4665,6 +4692,31 @@ mod tests {
     /// `*` jitter (line 2110) and the potion-rarity match arms (lines
     /// 2127–2128) are exercised by asserting positive relic prices and that
     /// each potion's mapped shop rarity is consistent with its spec rarity.
+    /// `MerchantCardEntry` runs `Hook.ModifyMerchantCardCreationResults`
+    /// over every stocked card as it is filled (MerchantCardEntry.cs:92,
+    /// both builds), so a Frozen Egg owner is shown upgraded Powers.
+    #[test]
+    fn frozen_egg_upgrades_shop_powers() {
+        use sts2_core::relics::RelicId;
+        use sts2_core::GameVersion;
+        crate::relics::dispatch::ensure_installed();
+        for version in [GameVersion::V0_107_1, GameVersion::V0_111_0] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics.push(RelicId::FrozenEgg);
+            let inv = generate_merchant_inventory(&mut rs, CharacterId::Ironclad);
+            let powers: Vec<_> = inv
+                .cards
+                .iter()
+                .chain(inv.colorless_cards.iter())
+                .filter_map(|e| e.card.as_ref())
+                .filter(|c| c.card_type == CardType::Power)
+                .collect();
+            assert!(!powers.is_empty(), "{version:?}");
+            assert!(powers.iter().all(|c| c.upgraded), "{version:?}");
+        }
+    }
+
     #[test]
     fn generate_merchant_inventory_is_well_formed() {
         use sts2_core::shop::{ShopPotionRarity, ShopRelicRarity};

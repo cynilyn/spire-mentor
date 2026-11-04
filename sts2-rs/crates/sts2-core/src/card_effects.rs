@@ -137,6 +137,17 @@ pub fn player_modified_card_damage_frac(state: &CombatState, base: i32) -> (i64,
     hooks::player_modified_card_damage_frac(state, base)
 }
 
+/// Rational-base twin of [`player_modified_card_damage_frac`], delegating to
+/// [`hooks::player_modified_card_damage_frac_of`].
+#[must_use]
+pub fn player_modified_card_damage_frac_of(
+    state: &CombatState,
+    base_num: i64,
+    base_den: i64,
+) -> (i64, i64) {
+    hooks::player_modified_card_damage_frac_of(state, base_num, base_den)
+}
+
 /// Like [`deal_damage_player_to_enemy`] but returns the full
 /// [`damage::DamageOutcome`] so callers that need the unclamped post-block
 /// damage (incl. overkill) — e.g. Fisticuffs' block-on-damage rider
@@ -325,6 +336,24 @@ pub fn deal_damage_from_osty_to_enemy(
     damage::apply_damage(state, dealer, target_uid, base, ValueProps::MOVE, card)
 }
 
+/// Run `f` as ONE Osty `AttackCommand`: its hits leave
+/// `osty_attacks_this_turn` alone and the command counts once when it ends.
+/// C# `AttackCommand.Execute` records a single `CreatureAttackedEntry` after
+/// all hits and targets (AttackCommand.cs:672), and Rattle's hit count reads
+/// those entries. Call only when the Osty is present (`osty_dealer_ref`):
+/// a missing Osty issues no command.
+pub fn osty_attack_command<R>(state: &mut CombatState, f: impl FnOnce(&mut CombatState) -> R) -> R {
+    let outer = state.combat_log.osty_attack_command_open;
+    state.combat_log.osty_attack_command_open = true;
+    let r = f(state);
+    state.combat_log.osty_attack_command_open = outer;
+    if !outer {
+        state.combat_log.osty_attacks_this_turn =
+            state.combat_log.osty_attacks_this_turn.saturating_add(1);
+    }
+    r
+}
+
 /// Osty-dealer analogue of [`deal_damage_to_all_alive_enemies`] (C#
 /// `.FromOsty(...).TargetingAllOpponents(...)`, e.g. Bone Shards). Snapshots the
 /// alive-enemy set up front (matching the player AoE helper's
@@ -346,25 +375,28 @@ pub fn deal_damage_from_osty_to_all_alive_enemies(state: &mut CombatState, base:
                 .any(|c| c.id == uid.0 && c.current_hp > 0)
         })
         .collect();
-    let mut total = 0_i32;
-    for target_uid in targets {
-        let alive = state
-            .creatures
-            .iter()
-            .any(|c| c.id == target_uid.0 && c.current_hp > 0);
-        if !alive {
-            continue;
+    // One command across every target (`TargetingAllOpponents`).
+    osty_attack_command(state, |state| {
+        let mut total = 0_i32;
+        for target_uid in targets {
+            let alive = state
+                .creatures
+                .iter()
+                .any(|c| c.id == target_uid.0 && c.current_hp > 0);
+            if !alive {
+                continue;
+            }
+            total = total.saturating_add(damage::apply_damage(
+                state,
+                dealer,
+                target_uid,
+                base,
+                ValueProps::MOVE,
+                card,
+            ));
         }
-        total = total.saturating_add(damage::apply_damage(
-            state,
-            dealer,
-            target_uid,
-            base,
-            ValueProps::MOVE,
-            card,
-        ));
-    }
-    total
+        total
+    })
 }
 
 /// Sample a uniform-random alive enemy from `state.enemy_uids`, filtered
@@ -1761,13 +1793,41 @@ fn apply_power_to_creature_with_applier_inner(
 /// a distinct method — so a reviving illusion still triggers fatal.
 #[must_use]
 pub fn should_owner_death_trigger_fatal(state: &CombatState, target: CreatureUid) -> bool {
+    fatal_with(state, target, |_| false)
+}
+
+/// [`should_owner_death_trigger_fatal`] read the way C# `Hook.AfterDiedToDoom`
+/// sees it: once the whole `DoomPower.DoomKill` batch has died
+/// (`DoomPower.cs:31-43`). Rust kills a batch one victim at a time and fires
+/// the bus per victim, so a sibling still standing but doomed (`Doom >= HP`)
+/// dies in this same batch and counts as dead here.
+#[must_use]
+pub fn should_owner_death_trigger_fatal_after_doom_batch(
+    state: &CombatState,
+    target: CreatureUid,
+) -> bool {
+    fatal_with(state, target, |c| {
+        c.powers.iter().any(|pu| {
+            state
+                .powers
+                .get_by_id(pu.0)
+                .is_some_and(|p| p.kind == PowerKind::Doom && p.amount >= c.current_hp)
+        })
+    })
+}
+
+fn fatal_with(
+    state: &CombatState,
+    target: CreatureUid,
+    dies_with_it: impl Fn(&crate::Creature) -> bool,
+) -> bool {
     let Some(creature) = state.creatures.iter().find(|c| c.id == target.0) else {
         return true;
     };
     creature.powers.iter().all(|pu| {
         state.powers.get_by_id(pu.0).is_none_or(|p| match p.kind {
             PowerKind::Minion => false,
-            PowerKind::Reattach => all_other_segments_dead(state, target),
+            PowerKind::Reattach => all_other_segments_dead(state, target, &dies_with_it),
             _ => true,
         })
     })
@@ -1777,12 +1837,17 @@ pub fn should_owner_death_trigger_fatal(state: &CombatState, target: CreatureUid
 /// every OTHER teammate carrying a `ReattachPower` is dead. A corpse keeps
 /// its Reattach (`ShouldPowerBeRemovedAfterOwnerDeath` → `false`), so the
 /// scan is over live-and-dead segments alike and only `IsDead` decides.
-fn all_other_segments_dead(state: &CombatState, owner: CreatureUid) -> bool {
+fn all_other_segments_dead(
+    state: &CombatState,
+    owner: CreatureUid,
+    dies_with_it: &impl Fn(&crate::Creature) -> bool,
+) -> bool {
     !state.enemy_uids.iter().any(|uid| {
         *uid != owner
             && state.creatures.iter().any(|c| {
                 c.id == uid.0
                     && c.current_hp > 0
+                    && !dies_with_it(c)
                     && c.powers.iter().any(|pu| {
                         state
                             .powers
@@ -2262,6 +2327,21 @@ pub fn spawn_card_into_pile(
     spawn_card_into_pile_with_origin(state, card, pile, added_by_player)
 }
 
+/// Stamp a card instance freshly generated into combat: C#
+/// `CardModel.DeckVersion == null` ([`crate::cards::VarKey::GeneratedInCombat`]),
+/// and no Dampen restore marker. `DampenPower.cs:29` records the exact card
+/// instances it downgraded and `AfterRemoved` re-upgrades only those; a
+/// clone of a downgraded card (Anger's copy, Juggling, Dual Wield) inherits
+/// the downgraded level but is not in that list, so it stays downgraded.
+pub fn stamp_generated_in_combat(card: &mut crate::cards::Card) {
+    card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    // Only touch the var when set: writing a 0 would still occupy a slot in
+    // the card's inline var store and change its hash.
+    if card.combat_var(crate::cards::VarKey::DampenDowngradedMarker) != 0 {
+        card.set_combat_var(crate::cards::VarKey::DampenDowngradedMarker, 0);
+    }
+}
+
 /// As [`spawn_card_into_pile`], but with an EXPLICIT `added_by_player` flag
 /// (the C# `Player? creator` of `AfterCardGeneratedForCombat`). Enemy-power
 /// card generators (WitheringPresence Withers, enemy-inflicted status cards)
@@ -2279,7 +2359,7 @@ pub fn spawn_card_into_pile_with_origin(
     card.uid = uid;
     // C# `CardModel.DeckVersion == null` for combat-generated cards — the
     // marker deck-scoped pickers (ThievingHopper steal) filter on.
-    card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    stamp_generated_in_combat(&mut card);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
     state.cards.push(card);
@@ -2326,7 +2406,7 @@ pub fn spawn_card_into_draw_pile_random(
     let uid = CardUid::new(raw).expect("non-zero uid");
     let mut card = card;
     card.uid = uid;
-    card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    stamp_generated_in_combat(&mut card);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
     state.cards.push(card);
@@ -2422,6 +2502,19 @@ pub(crate) fn fire_card_generated_for_combat_powers(
     uid: CardUid,
     added_by_player: bool,
 ) {
+    // C# `Hook.AfterCardGeneratedForCombat` dispatches through
+    // `IterateCombatHookListeners`, which yields NO listeners if combat is
+    // over or ending (`CombatManager.IsOverOrEnding`) when the dispatch
+    // begins (`Hook.cs:177-207`, `:395-402`). `AddGeneratedCardsToCombat`
+    // still adds the card and records `History.CardGenerated` (its only
+    // guard is `!IsInProgress`, `CardPileCmd.cs:281-313`), so callers keep
+    // the Supermassive tally outside this gate. A Gunk Up that kills the
+    // last primary enemy and then generates Slimed must NOT roll a
+    // TrashToTreasure orb (Defect seed 1016: the extra `combat_orbs` read
+    // carried into the next combat).
+    if crate::combat_loop::combat_is_ending(state) {
+        return;
+    }
     fire_smokestack_on_status_generation(state, uid, added_by_player);
     fire_arsenal_strength_on_card_generation(state, uid, added_by_player);
     fire_pillar_of_creation_block_on_card_generation(state, uid, added_by_player);
@@ -2811,6 +2904,12 @@ fn fire_after_card_entered_combat(
     if matches!(pile, PileKind::Exhaust) {
         return;
     }
+    // C# `Hook.AfterCardEnteredCombat` dispatches through
+    // `IterateCombatHookListeners`, which yields NO listeners once combat is
+    // over or ending (`Hook.cs:177-207`, `:367-374`).
+    if crate::combat_loop::combat_is_ending(state) {
+        return;
+    }
     let _ = crate::relic_effects::dispatch_after_card_entered_combat(state, uid, added_by_player);
     let _ = crate::monster_power_effects::dispatch_after_card_entered_combat_on_monster_powers(
         state, uid,
@@ -2866,8 +2965,22 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
             crate::hooks::midnight_entered_combat_v0111(state, uid);
             return;
         }
+        // Also combat-long.
+        crate::cards::CardId::BansheesCry => {
+            banshees_cry_entered_combat(state, uid);
+            return;
+        }
         _ => return,
     };
+    // `Stomp.cs:53` / `Pinpoint.cs:43`: `if (base.IsClone) return`. The
+    // engine has no clone flag, but a clone copies its source's per-turn
+    // bank: every in-combat copy is shaved on each play (or back-filled on
+    // entry), so a card arriving with a non-zero bank is a copy that has
+    // already accounted for this turn's plays and keeps its cloned cost.
+    // A fresh generation starts with an empty bank. Both builds.
+    if card.combat_var(var) > 0 {
+        return;
+    }
     let card = &mut state.cards[idx];
     let shave = i32::try_from(plays)
         .unwrap_or(i32::MAX)
@@ -2876,6 +2989,32 @@ pub fn stamp_entered_combat_cost_backfill(state: &mut CombatState, uid: CardUid)
         card.cost -= shave as i8;
         let banked = card.combat_var(var);
         card.set_combat_var(var, banked.saturating_add(shave));
+    }
+}
+
+/// Banshee's Cry's `AfterCardEnteredCombat` (`BansheesCry.cs:42-55`): a
+/// Banshee's Cry that enters combat after Ethereal plays (CallOfTheVoid,
+/// Discovery-style generations, a transform) starts 2 cheaper per Ethereal
+/// card its owner already played this combat.
+///
+/// [decompiled C# omitted — see the cited path]
+///
+/// The engine has no clone flag, so the shave covers only the plays the card
+/// has not yet counted ([`crate::cards::VarKey::BansheesCryEtherealCounted`]):
+/// a fresh card counts none, and a copy of one already in combat carries the
+/// original's count. Floored at 0 like `CardEnergyCost`.
+fn banshees_cry_entered_combat(state: &mut CombatState, uid: CardUid) {
+    let total =
+        i32::try_from(state.combat_log.ethereal_cards_played_this_combat).unwrap_or(i32::MAX);
+    let Some(c) = state.cards.get_mut(uid.0.get() as usize - 1) else {
+        return;
+    };
+    let key = crate::cards::VarKey::BansheesCryEtherealCounted;
+    let missed = total - c.combat_var(key);
+    if missed > 0 {
+        let shave = missed.saturating_mul(2);
+        c.cost = i8::try_from((i32::from(c.cost) - shave).max(0)).unwrap_or(0);
+        c.set_combat_var(key, total);
     }
 }
 
@@ -2912,7 +3051,7 @@ pub fn spawn_card_into_draw_pile_random_position(
     let mut card = card;
     card.uid = uid;
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
-    card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    stamp_generated_in_combat(&mut card);
     // C# `CardPileCmd.Add(.., CardPile, ..)` short-circuits with `success=false`
     // BEFORE the `CardPilePosition.Random` shuffle read
     // (`card.Owner.RunState.Rng.Shuffle.NextInt(targetPile.Cards.Count + 1)`,
@@ -2982,7 +3121,7 @@ pub fn spawn_card_into_draw_pile_bottom(
     let mut card = card;
     card.uid = uid;
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
-    card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    stamp_generated_in_combat(&mut card);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
     state.cards.push(card);
@@ -3046,7 +3185,7 @@ pub fn spawn_card_into_hand_with_origin(
     let mut card = card;
     card.uid = uid;
     // C# `CardModel.DeckVersion == null` marker (see `spawn_card_into_pile`).
-    card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    stamp_generated_in_combat(&mut card);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
     state.cards.push(card);
@@ -3063,27 +3202,32 @@ pub fn spawn_card_into_hand_with_origin(
     } else {
         state.player.discard.push(uid);
     }
-    // Bead `sts2-rs-x2rql`: relic-side `after_card_entered_combat`
-    // fires AFTER the spawn is committed (matches C# `Hook.AfterCard
-    // EnteredCombat` post-`CardPileCmd` ordering — listeners observe a
-    // state where the new uid is already in its destination zone).
-    let _ = crate::relic_effects::dispatch_after_card_entered_combat(state, uid, true);
-    // Bead `sts2-rs-ig66w`: sibling monster-power dispatch lane (9l5c2
-    // sub-2). Walks every alive creature's `powers` vector and routes
-    // through the per-`PowerKind` registry — fires HungerPower's
-    // `AfterCardEnteredCombat` hook when Doormaker is mid-phase-Hunger.
-    // C# `HungerPower.cs:42-52` runs the same per-card afflict check
-    // after each new card materializes.
-    let _ = crate::monster_power_effects::dispatch_after_card_entered_combat_on_monster_powers(
-        state, uid,
-    );
-    // Card-level `AfterCardEnteredCombat` back-fill (bead `sts2-rs-1hlal`): a
-    // generated Stomp/Pinpoint materialized straight into hand (Discovery's
-    // choose-a-card resolver, potion/effect generations) back-fills this
-    // turn's play discounts. No-op for every other card. Mirrors the bundle
-    // in `fire_after_card_entered_combat`, which the inline dispatch above
-    // otherwise duplicates minus this call.
-    stamp_entered_combat_cost_backfill(state, uid);
+    // C# `IterateCombatHookListeners` gate (see
+    // `fire_after_card_entered_combat`): no entered-combat listeners once
+    // combat is over or ending.
+    if !crate::combat_loop::combat_is_ending(state) {
+        // Bead `sts2-rs-x2rql`: relic-side `after_card_entered_combat`
+        // fires AFTER the spawn is committed (matches C# `Hook.AfterCard
+        // EnteredCombat` post-`CardPileCmd` ordering — listeners observe a
+        // state where the new uid is already in its destination zone).
+        let _ = crate::relic_effects::dispatch_after_card_entered_combat(state, uid, true);
+        // Bead `sts2-rs-ig66w`: sibling monster-power dispatch lane (9l5c2
+        // sub-2). Walks every alive creature's `powers` vector and routes
+        // through the per-`PowerKind` registry — fires HungerPower's
+        // `AfterCardEnteredCombat` hook when Doormaker is mid-phase-Hunger.
+        // C# `HungerPower.cs:42-52` runs the same per-card afflict check
+        // after each new card materializes.
+        let _ = crate::monster_power_effects::dispatch_after_card_entered_combat_on_monster_powers(
+            state, uid,
+        );
+        // Card-level `AfterCardEnteredCombat` back-fill (bead `sts2-rs-1hlal`): a
+        // generated Stomp/Pinpoint materialized straight into hand (Discovery's
+        // choose-a-card resolver, potion/effect generations) back-fills this
+        // turn's play discounts. No-op for every other card. Mirrors the bundle
+        // in `fire_after_card_entered_combat`, which the inline dispatch above
+        // otherwise duplicates minus this call.
+        stamp_entered_combat_cost_backfill(state, uid);
+    }
     // C# `AfterCardGeneratedForCombat` fires for EVERY player-generated card
     // regardless of destination pile (`CardPileCmd.AddGeneratedCardToCombat`).
     // ManifestAuthority / Largesse etc. generate straight into hand, so the
@@ -3476,7 +3620,7 @@ pub fn transform_card_in_place(
     new_card.uid = new_uid;
     // A mid-combat transform's product is a fresh combat-scoped CardModel
     // in C# (the run deck is untouched) — `DeckVersion == null` marker.
-    new_card.set_combat_var(crate::cards::VarKey::GeneratedInCombat, 1);
+    stamp_generated_in_combat(&mut new_card);
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     new_card.normalize_for_version(state.game_version);
     state.cards.push(new_card);
@@ -4919,40 +5063,50 @@ pub fn gain_player_gold(amount: i32) {
     }
 }
 
-/// Generate a single random Attack from the player's character pool,
-/// flip its per-instance `VarKey::FreeThisTurn = 1` slot so it plays
-/// at cost 0 this turn, and spawn it into hand. Mirrors Python
-/// `combat.generate_free_attack_in_hand(owner)` referenced from
-/// `sts2-rl-agent@01c094d:sts2_env/relics/shop_event.py::Crossbow`.
+/// Crossbow's turn-start card: one random Attack from the player's
+/// character pool, free this turn, added to hand. C# `Crossbow.cs:17-37`
+/// (the same in v0.107.1 and v0.111.0): `GetDistinctForCombat(Owner,
+/// attacks, 1, Rng.CombatCardGeneration)`, `SetToFreeThisTurn()` on the
+/// card, then `CardPileCmd.AddGeneratedCardsToCombat(list, Hand, Owner)`.
 ///
-/// No-op when:
-/// - The player has no `character` set (`state.player.character` is
-///   `None`).
-/// - No content-side `CharacterCardSamplerFn` is installed (core-only
-///   test build).
-/// - The character pool yields no Attack card (empty
-///   `SmallVec` returned by `sample_character_cards`).
+/// `AddGeneratedCardsToCombat` (`CardPileCmd.cs:281-314` in v0.111.0,
+/// `:216-249` in v0.107.1) does three things per card, in this order:
+/// `History.CardGenerated(cs, card, creator)`, `Add(card, Hand)`, and
+/// `Hook.AfterCardGeneratedForCombat(cs, card, creator)`. `Add` puts the
+/// card on the discard pile instead when the hand already holds
+/// `MaxCardsInHand` (10) cards (`CardPileCmd.cs:485-489` in v0.111.0,
+/// `:420-424` in v0.107.1), and it fires `AfterCardEnteredCombat` because
+/// the card had no pile before. Here [`crate::cards::try_add_to_hand`]
+/// does the placement and [`fire_card_generation_listeners`] does the
+/// rest: the `CardGenerated` event-log row, the Supermassive tally, the
+/// entered-combat listeners (Regalite) and the generated-for-combat
+/// powers. The creator is the player, so `added_by_player` is `true`.
 ///
-/// Bead `sts2-rs-zh82z`.
+/// The previous body pushed the card into hand with no check, so a turn
+/// that started with 10 cards in hand ended with 11, and none of the
+/// listeners ran.
+///
+/// `VarKey::FreeThisTurn` stands in for both halves of
+/// `SetToFreeThisTurn()` (energy and stars). It is set before the card is
+/// placed, as in C#.
+///
+/// No-op when the player has no `character`, when no content-side
+/// `CharacterCardSamplerFn` is installed (core-only test build), or when
+/// the character pool has no Attack.
 pub fn generate_free_attack_in_hand(state: &mut CombatState) {
     let Some(character) = state.player.character else {
         return;
     };
     let sampled = sample_character_cards(state, character, 1, Some(crate::cards::CardType::Attack));
-    let Some(&new_uid) = sampled.first() else {
-        return;
-    };
-    // The sampler already pushed the card into `state.cards`. Flag it
-    // as free-this-turn and route through `spawn_card_into_hand` —
-    // which expects an owned `Card` POD, not a uid handle. Clone the
-    // arena entry and let `spawn_card_into_hand` allocate a fresh
-    // arena row + push to hand (the sampler's allocation stays
-    // unreachable but harmless — Python's reference impl follows the
-    // same "sample-then-clone-into-hand" pattern). We avoid the
-    // double-allocation by NOT calling spawn here and instead
-    // directly pushing the sampled uid to hand.
-    set_card_var(state, new_uid, crate::cards::VarKey::FreeThisTurn, 1);
-    state.player.hand.push(new_uid);
+    for &uid in &sampled {
+        set_card_var(state, uid, crate::cards::VarKey::FreeThisTurn, 1);
+        let pile = if crate::cards::try_add_to_hand(&mut state.player, uid) {
+            PileKind::Hand
+        } else {
+            PileKind::Discard
+        };
+        fire_card_generation_listeners(state, uid, pile, true);
+    }
 }
 
 /// Content-side sampler signature for character-pool ethereal-only
@@ -5270,6 +5424,11 @@ mod tests {
             rng: crate::dotnet_rng::Rng::new(0_i32),
             ..Default::default()
         };
+        // Alive player: a dead one means combat is ending, and C#
+        // `IterateCombatHookListeners` then runs no generation / entered-combat
+        // listener (`Hook.cs:177-207`).
+        state.player.current_hp = 80;
+        state.player.max_hp = 80;
         let id = NonZeroU32::new(1).expect("non-zero");
         state.creatures.push(Creature {
             id,
@@ -7988,6 +8147,8 @@ mod tests {
     fn route_generated_into_hand_fires_pillar_at_turn_start() {
         use std::num::NonZeroU32;
         let mut state = CombatState::default();
+        // Alive player: a dead one means combat is ending (no listeners run).
+        state.player.current_hp = 80;
         let pid = NonZeroU32::new(1).expect("nz");
         state.powers.push(crate::Power {
             id: pid,
@@ -8044,6 +8205,8 @@ mod tests {
     fn spawn_with_origin_true_fires_arsenal_on_empty_play_pile() {
         use std::num::NonZeroU32;
         let mut state = CombatState::default();
+        // Alive player: a dead one means combat is ending (no listeners run).
+        state.player.current_hp = 80;
         let pid = NonZeroU32::new(1).expect("nz");
         state.powers.push(crate::Power {
             id: pid,
@@ -8387,5 +8550,55 @@ mod should_owner_death_trigger_fatal_tests {
             should_owner_death_trigger_fatal(&state, front),
             "a live non-Reattach enemy is not an 'other segment'"
         );
+    }
+}
+
+#[cfg(test)]
+mod banshees_cry_entered_combat_tests {
+    use super::*;
+
+    /// `BansheesCry.AfterCardEnteredCombat` (`BansheesCry.cs:42-55`): a
+    /// Banshee's Cry generated after Ethereal plays starts 2 cheaper per play
+    /// (CallOfTheVoid, Necrobinder 1008 split). A copy of one already in combat
+    /// (C# `CreateClone`, which skips the catch-up) keeps its cost.
+    #[test]
+    fn banshees_cry_entering_combat_catches_up_on_ethereal_plays() {
+        let mut state = CombatState {
+            rng: crate::dotnet_rng::Rng::new(0_i32),
+            ..Default::default()
+        };
+        // Alive player: a dead one means combat is ending (no listeners run).
+        state.player.current_hp = 80;
+        let banshee = |cost| crate::cards::Card {
+            card_id: crate::cards::CardId::BansheesCry,
+            cost,
+            ..crate::cards::Card::pod_defaults()
+        };
+        let cost_of =
+            |state: &CombatState, uid: CardUid| state.cards[uid.0.get() as usize - 1].cost;
+        // A deck copy present before any Ethereal play.
+        let deck = spawn_card_into_pile(&mut state, banshee(9), PileKind::Draw);
+        assert_eq!(cost_of(&state, deck), 9);
+
+        // One Ethereal play: the AfterCardPlayed half shaves the deck copy.
+        state.combat_log.ethereal_cards_played_this_combat = 1;
+        state.discount_banshees_cry_on_ethereal_play();
+        assert_eq!(cost_of(&state, deck), 7);
+
+        // A fresh generation catches up: 9 - 2*1, upgraded 7 - 2*1.
+        let fresh = spawn_card_into_hand(&mut state, banshee(9));
+        assert_eq!(cost_of(&state, fresh), 7);
+        let upgraded = spawn_card_into_hand(&mut state, banshee(7));
+        assert_eq!(cost_of(&state, upgraded), 5);
+
+        // A clone carries the count and is not shaved again.
+        let clone = state.cards[deck.0.get() as usize - 1];
+        let copy = spawn_card_into_hand(&mut state, clone);
+        assert_eq!(cost_of(&state, copy), 7);
+
+        // Floors at 0.
+        state.combat_log.ethereal_cards_played_this_combat = 6;
+        let floored = spawn_card_into_hand(&mut state, banshee(9));
+        assert_eq!(cost_of(&state, floored), 0);
     }
 }

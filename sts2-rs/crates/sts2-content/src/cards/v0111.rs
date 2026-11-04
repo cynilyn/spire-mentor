@@ -689,11 +689,7 @@ mod tests {
             }
             state.player.energy = 0;
             play(&mut state, CardId::Fuel, enemy);
-            assert_eq!(
-                i32::from(state.player.energy),
-                energy,
-                "{version} upgraded={upgraded}"
-            );
+            assert_eq!(state.player.energy, energy, "{version} upgraded={upgraded}");
             assert_eq!(
                 state.player.hand.len(),
                 hand,

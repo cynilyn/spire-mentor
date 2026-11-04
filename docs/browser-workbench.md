@@ -163,7 +163,7 @@ dropped, floats rounded like Python's `round(x, 4)` (exact, ties-to-even —
 requests, 0 divergences** at M1; **6709 requests** at M2 with the advisor
 probes (`hint` / `search_tree` / `choice_ranker` at fixed steps — a 409 off
 combat, a seeded 48-sim search in a fight — plus `auto_action`,
-`last_move_regret`, `regret_review`); **46 scenarios, 7218 requests** at M3;
+`last_move_regret` — since removed, GH #869 — and `regret_review`); **46 scenarios, 7218 requests** at M3;
 **8454 requests** at M4, every scenario ending with a quit and the replay
 block (list, load, timeline, map, steps, deck grades, the reviews, the
 searches, the MCTS Runs page, play-from-here) plus live deck-analysis and
@@ -211,7 +211,7 @@ normalization ignore needs a comment naming a GitHub issue.
 `choice_ranker.py`, `regret_review.py`, `card_advisor.py` and
 `decision_advisor.py` over the live session; `api.rs` mounts them on the
 Python routes (`/api/live/hint`, `search_tree`, `choice-ranker`,
-`auto-action`, `last-move-regret`, `regret-review`, `card-advisor[/stream]`,
+`auto-action`, `last-turn-grade`, `regret-review`, `card-advisor[/stream]`,
 `decision-advisor[/stream]`). Everything is single-threaded — a config's
 `threads` is honoured as 1 — and the search-backed routes are deterministic
 for a config, which is what makes them golden-testable.
@@ -652,6 +652,58 @@ is the wasm's `POST /api/bridge/render-tree` (`enrich::log_names` +
 `combatlog::format_combat_log`, the same formatter a simulated run goes
 through). `/api/bridge/status` and friends stay 501 in the worker: with a URL
 configured, `api.bridge.*` never goes through it.
+
+## Claude link (terminal Claude Code ↔ the open workbench)
+
+A Claude Code session started in the repo can read the run on screen, call
+any workbench route against it, and put charts and explanations into a dock
+next to the board. The run in the browser build exists only in the tab's
+worker, so the link goes through the page:
+
+```
+Claude Code ──stdio MCP──► sts2-pycli/python/claude_link.py ◄──ws://127.0.0.1:8091── the workbench tab
+```
+
+1. `.mcp.json` (repo root and `sts2-pycli/`) registers the relay as the
+   `workbench` MCP server; Claude Code asks once to enable it. It runs in its
+   own `uv run --no-project` env, so it never builds the engine wheel.
+2. In the workbench: Tools → **🤖 Claude link** (remembered in
+   `localStorage`). The first time, it asks for the **pairing token** — ask
+   Claude for it (`wb_status` carries it), or open the workbench with
+   `#claude-link=<token>` appended. The dock shows `connected` once the
+   relay accepts the page.
+3. Ask Claude about the run. Its tools: `wb_status`, `wb_context` (mode + the
+   shown step, render-only fields stripped), `wb_call(route, method, body)`
+   (through `apiFetch`, so the same engine and live run; NDJSON advisor
+   streams come back as their final frame), `wb_show(title, html | markdown |
+   plotly | file)`. The relay's MCP instructions list the useful routes.
+
+Details that matter:
+
+- **Mutations.** A non-GET `/api/live/*` call that is not one of the
+  read-only searches / advisors / reviews (`READ_ONLY_LIVE` in
+  `web/src/claude/link.ts`) makes the page re-read the live state and the
+  timeline afterwards, so a Claude-taken action or seek shows on the board.
+- **Pairing.** The relay closes any connection whose hello lacks its token
+  (code 4003; the page then stops retrying and offers *pair…*). Without it,
+  any local process or localhost page could pose as the page: feed Claude a
+  made-up run and receive what Claude shows. The token lives in
+  `~/.config/spire-mentor/claude-link-token` (0600, created on first use;
+  `CLAUDE_LINK_TOKEN` overrides), so each workbench origin pairs once.
+- **Sandbox.** Every dock item — HTML, markdown, Plotly — renders in an
+  `allow-scripts` iframe with no `allow-same-origin`: opaque origin, no access
+  to the page, its worker or IndexedDB. Markdown (`marked`) and Plotly load
+  from a CDN inside the frame; the link only runs next to an online Claude
+  Code session anyway.
+- **Origins.** The relay binds loopback only and accepts a localhost page or
+  an origin in `CLAUDE_LINK_ORIGINS` (comma-separated). The hosted build needs
+  that variable set for the relay, and Chrome's local-network prompt allowed
+  once (see "Live-game bridge"). `CLAUDE_LINK_PORT` moves the port; the page's
+  stored URL (`sts2.claudeLink`) must match.
+- **One link.** One relay holds the port; another Claude Code session's relay
+  retries every 5 s and its tools say the port is taken. One page holds the
+  relay; a newer tab takes over (close code 4000) and the older one stops
+  retrying.
 
 ## What is not there yet (roadmap)
 

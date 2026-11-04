@@ -2031,8 +2031,8 @@ mod tests {
         let before = state.player.energy;
         let _ = sts2_core::relic_effects::dispatch_after_energy_reset(&mut state);
         assert_eq!(
-            i32::from(state.player.energy),
-            i32::from(before) + VENERABLE_TEA_SET_ENERGY,
+            state.player.energy,
+            before + VENERABLE_TEA_SET_ENERGY,
             "+2 energy on latched consume"
         );
         let consumed_idx = state
@@ -2495,6 +2495,34 @@ mod tests {
             sts2_core::run_effects::dispatch_modify_rest_site_heal_rewards(&mut rs, &mut rewards);
         assert_eq!(rewards.len(), 2);
         assert!(rewards.iter().all(|r| matches!(r, Reward::Potion(_))));
+    }
+
+    /// Tiny Mailbox + Sozu: a rest-site heal still QUEUES both empty potion
+    /// rewards. C# `RewardsCmd.OfferCustom` -> `RewardsSet.GenerateWithoutOffering`
+    /// (v0.111.0 `RewardsSet.cs:128-150`) Populates every reward unconditionally,
+    /// and `PotionReward.Populate` (`PotionReward.cs:54-61`) rolls the potion on
+    /// `PlayerRng.Rewards`; Sozu's veto only bites later in `OnSelect` ->
+    /// `PotionCmd.TryToProcure`. Vetoing at queue time skipped the roll and left
+    /// the rewards stream 4 draws behind (Ironclad seed 2177 act 2).
+    #[test]
+    fn rest_site_heal_queues_tiny_mailbox_potions_under_sozu() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.max_hp = 80;
+        rs.current_hp = 40;
+        rs.relics.push(RelicId::TinyMailbox);
+        rs.relics.push(RelicId::Sozu);
+        rs.pending_rewards.clear();
+        let _ = rs.rest_site_heal(24);
+        let potions = rs
+            .pending_rewards
+            .iter()
+            .filter(|r| matches!(r, Reward::Potion(_)))
+            .count();
+        assert_eq!(
+            potions, 2,
+            "both rewards must reach the drain so they roll on the Rewards stream"
+        );
     }
 
     /// No-op when the relic is not owned: rewards list untouched.

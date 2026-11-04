@@ -17,6 +17,11 @@ use super::prelude::*;
 /// Gracefully no-ops when the player's character is unset, the
 /// character sampler isn't installed (core-only test build), or the
 /// pool is empty. Bead `sts2-rs-t7vn`.
+/// `AfterPlayerTurnStart` entry for [`on_after_side_turn_start_vexing_puzzlebox`].
+fn on_after_player_turn_start_vexing_puzzlebox(state: &mut CombatState) -> EffectResult {
+    on_after_side_turn_start_vexing_puzzlebox(state, Side::Player)
+}
+
 pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
     state: &mut CombatState,
     side: Side,
@@ -46,8 +51,12 @@ pub(crate) fn on_after_side_turn_start_vexing_puzzlebox(
 }
 
 pub(crate) fn install() {
-    register_after_side_turn_start(
+    // C# `VexingPuzzlebox` overrides `AfterPlayerTurnStart` (both builds), so it rides
+    // that equip-ordered relic walk, not the later `AfterSideTurnStart` walk:
+    // its order against ChoicesParadox / GamblingChip / RoyalPoison is the
+    // player's relic order (GH #1054).
+    register_after_player_turn_start(
         RelicId::VexingPuzzlebox,
-        on_after_side_turn_start_vexing_puzzlebox as AfterSideTurnStartFn,
+        on_after_player_turn_start_vexing_puzzlebox as AfterPlayerTurnStartFn,
     );
 }

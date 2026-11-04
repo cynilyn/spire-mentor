@@ -106,7 +106,7 @@ pub struct StateSnapshot {
     pub player_hp: i32,
     pub player_max_hp: i32,
     pub player_block: i32,
-    pub player_energy: i8,
+    pub player_energy: i32,
     pub player_max_energy: i8,
     pub draw_n: usize,
     pub discard_n: usize,
@@ -397,7 +397,10 @@ fn propagate_terminal(state: &mut CombatState, step: StepResult) {
             state.is_over = true;
             state.player_won = false;
         }
-        StepResult::Advanced | StepResult::PendingChoice | StepResult::InvalidTarget => {}
+        StepResult::Advanced
+        | StepResult::PendingChoice
+        | StepResult::InvalidTarget
+        | StepResult::IllegalPlay => {}
     }
 }
 

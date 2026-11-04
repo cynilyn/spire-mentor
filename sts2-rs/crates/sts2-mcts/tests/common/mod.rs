@@ -36,7 +36,7 @@ pub fn build_handful_ex(
     if let Some(c) = state.creatures.iter_mut().find(|c| c.id == enemy_id) {
         c.intent = Some(cultist_intent);
     }
-    state.player.energy = energy;
+    state.player.energy = i32::from(energy);
     state.player.max_energy = energy.max(state.player.max_energy);
     for &p in potions {
         state.player.potions.push(p);

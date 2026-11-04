@@ -151,13 +151,16 @@ pub enum VarKey {
     /// a STRIKE whose cost should have reverted to its base). Bead
     /// `sts2-rs-2e9q2` follow-up.
     SneckoCostDeltaThisTurn,
-    /// Records the combat `round` in which a self-returning Attack
-    /// (Bolas / ThrummingHatchet) was last played. Their C# `BeforeHandDraw`
-    /// hook returns the card to hand at the next turn start iff it was
-    /// played the previous round (`playedRound == RoundNumber - 1`). The
-    /// turn-start sweep in `combat_loop::start_player_turn` reads this slot;
-    /// `0` (unset) means "never played", so it never matches. Bead
-    /// `sts2-rs-219ds`.
+    /// Records the player TURN number (`CombatState::turn_number`, C#
+    /// `PlayerCombatState.TurnNumber`) on which a self-returning Attack
+    /// (Bolas / ThrummingHatchet) was last played — the name predates the
+    /// switch from the round. Their C# `BeforeHandDraw` hook returns the card
+    /// to hand at the next turn start iff it was played on the previous
+    /// player turn (`HappenedLastPlayerTurn`: `playedTurn == TurnNumber - 1`,
+    /// `CombatHistoryEntry.cs:99-108`; an extra turn bumps the turn number,
+    /// not the round). The turn-start sweep in
+    /// `combat_loop::start_player_turn` reads this slot; `0` (unset) means
+    /// "never played", so it never matches. Bead `sts2-rs-219ds`.
     ReturnIfPlayedRound,
     /// Marker (non-zero = flag set) indicating this card was downgraded by
     /// the DAMPEN power. Set when Dampen is applied via `MagiKnight`'s
@@ -378,6 +381,14 @@ pub enum VarKey {
     /// Momentum Rampage counted both twice (GH #1021). Appended so no existing
     /// discriminant moves.
     MomentumDamage,
+    /// Banshee's Cry: how many of the combat's Ethereal plays this card's cost
+    /// already reflects. Each Ethereal play bumps it along with the -2 shave
+    /// (C# `AfterCardPlayed`), and a Banshee's Cry entering combat is shaved 2
+    /// per Ethereal play it has not yet counted (C# `AfterCardEnteredCombat`,
+    /// `BansheesCry.cs:42-55`). A copy (C# `CreateClone`, which keeps the cost
+    /// modifiers and skips the catch-up) carries the count, so it is not shaved
+    /// twice. Appended so no existing discriminant moves.
+    BansheesCryEtherealCounted,
 }
 
 /// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
@@ -1120,11 +1131,31 @@ impl Card {
     /// [`Self::expire_snecko_roll`] does not subtract it from the new 0 (a -1
     /// cost reads as X-cost and drained all energy: Defect full seed 3863).
     pub fn set_free_this_combat(&mut self) {
-        self.cost = 0;
         self.set_combat_var(VarKey::StarCostFreeThisCombat, 1);
+        self.set_cost_this_combat(0);
+    }
+
+    /// C# `EnergyCost.SetThisCombat(cost)` (`CardEnergyCost.cs:238-244`): an
+    /// Absolute local modifier that lasts the combat. Local modifiers apply in
+    /// insertion order (`CardEnergyCost.cs:110-115`), so this later Absolute
+    /// owns the cost even while an earlier Snecko Oil roll is live, and the
+    /// roll's expiry (on play or at end of turn) reveals `cost`. Drop the
+    /// Snecko bank so [`Self::expire_snecko_roll`] does not shift the new
+    /// cost. MomentumStrike played at a Snecko-rolled 0 stayed 0 in C# but
+    /// came back as 1 here (Defect-1000 act-3 `hand_costs`, GH #1054).
+    ///
+    /// The same ordering supersedes the relative `AddThisTurn(-n)` shaves
+    /// Stomp / Pinpoint banked earlier this turn: once `EndOfTurnCleanup`
+    /// drops them (`CardEnergyCost.cs:331-335`) the Absolute still yields
+    /// `cost`, so their banks are dropped too or the next turn-start restore
+    /// re-adds them (Ironclad-2031: Touch-of-Insanity'd Stomp C# 0, Rust 2).
+    pub fn set_cost_this_combat(&mut self, cost: i8) {
+        self.cost = cost;
         self.set_combat_var(VarKey::CostAbsolutelySet, 1);
         self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, 0);
         self.set_combat_var(VarKey::SneckoRollLive, 0);
+        self.set_combat_var(VarKey::StompCostReductionThisTurn, 0);
+        self.set_combat_var(VarKey::PinpointCostReductionThisTurn, 0);
     }
 
     /// C# `EnergyCost.SetThisTurnOrUntilPlayed(cost, reduceOnly: true)`
@@ -1153,6 +1184,40 @@ impl Card {
             };
             self.set_combat_var(VarKey::SneckoRollLive, owner);
         }
+        self.set_combat_var(VarKey::CostAbsolutelySet, 1);
+    }
+
+    /// C# `EnergyCost.SetThisCombat(cost, reduceOnly: true)` (Enlightenment+,
+    /// `CardEnergyCost.cs:238-244`): `cost` caps the card for the rest of
+    /// combat. X-cost cards are skipped.
+    ///
+    /// The modifier is appended after any live this-turn-or-until-played
+    /// rider (plain Enlightenment, a Snecko Oil roll), and local modifiers
+    /// fold in order (`CardEnergyCost.cs:110-115`, reduce-only Absolute =
+    /// `min(current, cost)`, `LocalCostModifier.cs:91`). So the displayed
+    /// cost is `min(cost_now, cap)` and, once the rider expires, the cap
+    /// still applies to the revealed cost: re-bank the rider so
+    /// [`Self::expire_snecko_roll`] reveals `min(revealed, cap)` and keeps
+    /// `CostAbsolutelySet`. Plain-then-upgraded Enlightenment left a 2-cost
+    /// Cinder at 1 in C# but back at 2 here after it was played
+    /// (Ironclad-2026 act 3).
+    pub fn set_this_combat_reduce_only(&mut self, cost: i8) {
+        if self.is_x_cost() {
+            return;
+        }
+        let live = self.combat_var(VarKey::SneckoRollLive);
+        let banked = self.combat_var(VarKey::SneckoCostDeltaThisTurn);
+        if live == 0 && banked == 0 {
+            if self.cost > cost {
+                self.cost = cost;
+            }
+            return;
+        }
+        let displayed = i32::from(self.cost.min(cost));
+        let revealed = (i32::from(self.cost) - banked).min(i32::from(cost));
+        self.cost = displayed as i8;
+        self.set_combat_var(VarKey::SneckoCostDeltaThisTurn, displayed - revealed);
+        self.set_combat_var(VarKey::SneckoRollLive, SNECKO_ROLL_FLAG_PREOWNED);
         self.set_combat_var(VarKey::CostAbsolutelySet, 1);
     }
 
@@ -1300,9 +1365,14 @@ impl Card {
     ///   Skill`; `set_mad_science_variant` stamps that onto `card_type`);
     /// - Sovereign Blade only while its owner has Parry, which no deck card's
     ///   owner has outside combat: `false`.
+    /// - Expect a Fight is build-dependent: v0.111.0 reworked it into a
+    ///   `CalculatedBlockVar` card with `GainsBlock => true`
+    ///   (v0.111.0 `ExpectAFight.cs:17,21-23`), so `base_block` stays 0;
+    ///   v0.107.1's energy card has no override.
     #[must_use]
-    pub fn gains_block(&self) -> bool {
+    pub fn gains_block_for(&self, version: crate::GameVersion) -> bool {
         match self.card_id {
+            CardId::ExpectAFight => version >= crate::GameVersion::V0_111_0,
             CardId::MadScience => self.card_type == CardType::Skill,
             CardId::SovereignBlade | CardId::PillarOfCreation | CardId::Shroud => false,
             CardId::DemonicShield
@@ -1484,6 +1554,13 @@ impl Card {
             }
             // cost_delta >= 0: the absolute modifier still owns the
             // evaluated cost — leave `self.cost` untouched.
+        } else if base.cost >= 0 {
+            // C# resolves `max(0, base + this-combat modifiers)`: upgrading a
+            // card its discounts already took to 0 keeps it at 0. A negative
+            // `cost` is the X-cost sentinel, so the sum must not go below 0
+            // (act23 Necrobinder:1014: Banshee's Cry at 0 upgraded to -2 and
+            // the play spent all 4 energy as an X cost).
+            self.cost = self.cost.saturating_add(cost_delta).max(0);
         } else {
             self.cost = self.cost.saturating_add(cost_delta);
         }
@@ -2626,20 +2703,39 @@ pub fn discard_pile_into_draw_pile(
 fn card_entry(cards: &CardStore, uid: CardUid) -> &str {
     cards
         .get(uid.get() as usize - 1)
-        .map_or("", |c| c.card_id.to_python_name())
+        .map_or("", |c| card_model_entry(c.card_id))
 }
 
-/// Ordinal rank of every [`CardId`] by its `to_python_name()`, assigned by
+/// A card's C# `ModelId.Entry`: `ModelDb.GetEntry(type)` =
+/// `StringHelper.Slugify(type.Name)` (v0.111.0 `ModelDb.cs:535-538`), the
+/// SCREAMING_SNAKE class name. That is `to_python_name()` minus the `_CARD` /
+/// `_STATUS` disambiguation suffix the Rust name table adds where a card
+/// shares its class name with a power (`VICIOUS_CARD`) or a monster/other
+/// model (`SLOTH_STATUS`); no card class name ends in `Card`/`Status` (only
+/// the unused `DeprecatedCard`). The suffix matters for every ordinal
+/// `ModelId` compare (`ModelId.CompareTo`, `ModelId.cs:43-51`): `THUNDER_CARD`
+/// sorts AFTER `THUNDERCLAP` (`'_'` > `'C'`) while C#'s `THUNDER` sorts before
+/// it (act23 Ironclad:2068 reshuffle).
+#[must_use]
+pub fn card_model_entry(card_id: CardId) -> &'static str {
+    let name = card_id.to_python_name();
+    name.strip_suffix("_CARD")
+        .or_else(|| name.strip_suffix("_STATUS"))
+        .unwrap_or(name)
+}
+
+/// Ordinal rank of every [`CardId`] by its C# `ModelId.Entry`
+/// ([`card_model_entry`]), assigned by
 /// sorting all names once in byte order (the rule .NET's
 /// `StringComparison.Ordinal` uses, which Rust `str::cmp` matches). Real
 /// cards rank `1..=N`; the `0` sentinel is reserved so a uid with no backing
 /// `Card` (the `card_entry == ""` defensive case) still sorts BEFORE every
 /// real card — `"".cmp(name)` is always `Less`, and `0 < 1..=N`.
 ///
-/// Card names are unique, so the rank is a faithful O(1) `u16` substitute for
+/// Card entries are unique, so the rank is a faithful O(1) `u16` substitute for
 /// the per-comparison `&str` compare in the reshuffle pre-sort
 /// ([`discard_pile_into_draw_pile_signaling`] / [`shuffle_draw_and_discard`]).
-/// Built at runtime from `to_python_name()` itself, so it cannot drift as
+/// Built at runtime from the name table itself, so it cannot drift as
 /// cards are added — no `@generated` table to keep in sync. (Item 1,
 /// `docs/plans/2026-06-07-mcts-single-threaded-perf-plan.md`.)
 fn reshuffle_rank(card_id: CardId) -> u16 {
@@ -2653,7 +2749,7 @@ fn reshuffle_rank(card_id: CardId) -> u16 {
         // sort compares, is unchanged.
         let all = CardId::all_for(crate::GameVersion::V0_111_0);
         let mut by_name: Vec<CardId> = all.clone();
-        by_name.sort_by(|a, b| a.to_python_name().cmp(b.to_python_name()));
+        by_name.sort_by(|a, b| card_model_entry(*a).cmp(card_model_entry(*b)));
         let mut table = vec![0u16; all.len()];
         for (rank, cid) in by_name.iter().enumerate() {
             // `cid as usize` is the declaration-order discriminant, which is
@@ -2972,7 +3068,15 @@ pub fn shuffle_draw_and_discard(
     // A full shuffle scrambles all draw-pile position knowledge.
     player.pinned_top.clear();
     player.pinned_bottom.clear();
+    // C# `CardPileCmd.Shuffle` (`CardPileCmd.cs:1077-1088`) lists the DISCARD
+    // pile first and appends the draw pile (`list.AddRange(drawPileCards)`).
+    // The pre-sort orders distinct cards the same either way, but above 16
+    // cards the introsort permutes identical copies by input position, so a
+    // draw-first merge put an enchanted Defend 8 slots off C# (act23
+    // Necrobinder:1018).
+    let draw_before = core::mem::take(&mut player.draw);
     player.draw.extend(player.discard.drain(..));
+    player.draw.extend(draw_before);
     // .NET introsort tie-order (see [`dotnet_list_sort`]); the explicit
     // `Shuffle` command (Reboot, BottledPotential) routes through the
     // same C# `StableShuffle` -> `list.Sort()` as the auto-reshuffle.
@@ -3203,6 +3307,14 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
     // piles, full hand) so a caller like Pillage can distinguish "no card
     // drawn" from "card drawn then auto-played out of hand by Hellraiser".
     state.last_drawn_card = None;
+    // C# `CardPileCmd.Draw` returns an empty draw when
+    // `CombatManager.IsOverOrEnding`, BEFORE `Hook.ShouldDraw`
+    // (CardPileCmd.cs:822 v0.107.1, :1012 v0.111.0): a draw issued after the
+    // lethal hit (Pommel Strike, Pillage) moves no card and fires no on-draw
+    // rider.
+    if crate::combat_loop::combat_is_ending(state) {
+        return 0;
+    }
     if card_effect_draw_blocked(state) {
         // C# `NoDrawPower.cs:29` flashes inside `ShouldDraw` on the path that
         // returns false — `!fromHandDraw && player == Owner.Player`.
@@ -3228,22 +3340,6 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
     if state.per_card_draw_loop_required() || state.reshuffle_reorders_mid_draw(n) {
         return state.draw_suspending(n, false);
     }
-    // C# `CardPileCmd.Draw` / `CardPileCmd.Shuffle` (CardPileCmd.cs:749,806)
-    // early-return when `CombatManager.IsOverOrEnding`, so a card-effect draw
-    // issued AFTER a lethal hit (e.g. Pommel Strike's post-attack draw) performs
-    // no `ShuffleIfNecessary`. Cap the batch draw to the cards physically present
-    // in the draw pile when combat is ending so the loop never reshuffles an
-    // exhausted pile — that phantom reshuffle over-reads the run-level `shuffle`
-    // stream by `n-1` and desyncs the next combat's opening shuffle (RP114
-    // Silent). Mirrors the `draw_suspending` skip-reshuffle-when-ending idiom
-    // (lib.rs:4914, PARITY86); reads no RNG either way. The low-level
-    // `cards::draw()` primitive keeps no such guard — turn-start hand draws
-    // legitimately reshuffle while combat is live.
-    let n = if crate::combat_loop::combat_is_ending(state) {
-        n.min(i32::try_from(state.player.draw.len()).unwrap_or(i32::MAX))
-    } else {
-        n
-    };
     let hand_len_before = state.player.hand.len();
     let moved = draw(
         &mut state.player,
@@ -3276,20 +3372,14 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
         // C# `Slither.AfterCardDrawn` re-rolls the card's cost on EVERY
         // draw-pile draw regardless of origin — a Pommel Strike / Drum of
         // Battle / Pillage draw of a Slither card consumes a
-        // `combat_energy_costs` read exactly like a turn-start draw. This
-        // path previously skipped the enchantment bus, leaving the cursor
-        // one read behind C# from the first effect-draw of an enchanted
-        // card onward (shadow census v8: seeds 1003/1006/1042/1049, cost
-        // stale + stream lagged by one). Same suffix-walk-then-rider order
-        // as `draw_into_hand_with_flag`.
-        let drawn: smallvec::SmallVec<[crate::CardUid; 8]> = state.player.hand[hand_len_before..]
-            .iter()
-            .copied()
-            .collect();
-        for uid in drawn {
-            crate::enchantment_hooks::dispatch_on_card_drawn(state, uid, false);
-        }
+        // `combat_energy_costs` read exactly like a turn-start draw (shadow
+        // census v8: seeds 1003/1006/1042/1049). The rider walk below
+        // dispatches the enchantment bus per card, after the power riders.
+        let reported = state.last_drawn_card;
         state.invoke_card_drawn_for_newly_drawn(hand_len_before, false);
+        // A rider's nested draw resets and re-sets the report; this draw
+        // still returns its own card.
+        state.last_drawn_card = reported;
     }
     // Bead `sts2-rs-od6vh`: keep `state.cards_drawn` (combat-wide
     // player-draw counter from sts2-rs-o05r) in sync with card-side
@@ -3325,6 +3415,24 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C# `StableShuffle` pre-sorts with `CardModel.CompareTo` -> ordinal
+    /// `ModelId.Entry` (`ModelDb.cs:535-538` Slugify of the class name):
+    /// Defect's `Thunder` is `THUNDER`, which sorts before `THUNDERCLAP`. The
+    /// Rust name `THUNDER_CARD` flipped that pair (act23 Ironclad seed 2068).
+    #[test]
+    fn reshuffle_rank_orders_by_csharp_entry_thunder_before_thunderclap() {
+        assert_eq!(card_model_entry(CardId::ThunderCard), "THUNDER");
+        assert_eq!(card_model_entry(CardId::Thunderclap), "THUNDERCLAP");
+        assert!(reshuffle_rank(CardId::ThunderCard) < reshuffle_rank(CardId::Thunderclap));
+        // Entries stay unique, so the rank is still a total order on cards.
+        let all = CardId::all_for(crate::GameVersion::V0_111_0);
+        let mut entries: Vec<&str> = all.iter().map(|&c| card_model_entry(c)).collect();
+        entries.sort_unstable();
+        let n = entries.len();
+        entries.dedup();
+        assert_eq!(entries.len(), n, "C# entries are unique");
+    }
     use crate::{CardUid, PlayerCombatState};
 
     fn uid(n: u32) -> CardUid {
@@ -3979,6 +4087,57 @@ mod tests {
             "explicit shuffle pre-sort must be independent of which pile each \
              duplicate-id copy started in"
         );
+    }
+
+    /// C# resolves a card's cost as `max(0, base + this-combat modifiers)`,
+    /// so upgrading a Banshee's Cry its Ethereal discounts already took to 0
+    /// (9 -> 7) leaves it at 0. Rust added the -2 delta to the stored 0 and
+    /// the -2 read as the X-cost sentinel (act23 Necrobinder:1014).
+    #[test]
+    fn upgrade_keeps_a_fully_discounted_cost_at_zero() {
+        let build = |cost: i8| Card {
+            card_id: CardId::BansheesCry,
+            cost,
+            card_type: CardType::Attack,
+            ..Card::pod_defaults()
+        };
+        let mut card = build(0);
+        assert!(card.upgrade_with(|_, up| Some(build(if up { 7 } else { 9 }))));
+        assert_eq!(card.cost, 0);
+
+        // An X-cost card keeps its sentinel.
+        let mut x = build(-1);
+        assert!(x.upgrade_with(|_, _| Some(build(-1))));
+        assert_eq!(x.cost, -1);
+    }
+
+    /// C# `CardPileCmd.Shuffle` merges DISCARD first, then draw
+    /// (`CardPileCmd.cs:1077-1088`). Above 16 cards the introsort pre-sort
+    /// permutes identical copies by input position, so the merge order picks
+    /// which copy lands where (act23 Necrobinder:1018: an enchanted Defend 8
+    /// slots off).
+    #[test]
+    fn shuffle_draw_and_discard_merges_discard_before_draw() {
+        let store: CardStore = (1..=17)
+            .map(|i| Card {
+                uid: uid(i),
+                card_id: CardId::TrueGrit,
+                ..Card::pod_defaults()
+            })
+            .collect();
+        let mut p = PlayerCombatState::default();
+        p.draw.push(uid(1));
+        p.discard.extend((2..=17).map(uid));
+        let mut r = rng();
+        shuffle_draw_and_discard(&mut p, &store, &mut r);
+
+        let mut expected = PlayerCombatState::default();
+        expected.draw.extend((2..=17).map(uid));
+        expected.draw.push(uid(1));
+        presort_draw_for_reshuffle(&mut expected, &store);
+        let mut re = rng();
+        shuffle(&mut expected, &mut re);
+        assert_eq!(p.draw.as_slice(), expected.draw.as_slice());
     }
 
     #[test]
@@ -4871,6 +5030,8 @@ mod tests {
         use crate::{CombatState, Power, PowerKind, PowerUid};
         // Sanity: no NoDraw stack -> draws normally.
         let mut state = CombatState::default();
+        // A live player: a dead one makes the combat ending, so draws move no card.
+        state.player.current_hp = 80;
         for n in 1u32..=5 {
             state.player.draw.push(uid(n));
         }
@@ -4944,6 +5105,8 @@ mod tests {
     fn draw_via_state_fires_slither_reroll_on_effect_draw() {
         use crate::CombatState;
         let mut state = CombatState::default();
+        // A live player: a dead one makes the combat ending, so draws move no card.
+        state.player.current_hp = 80;
         let mut enchanted = Card {
             uid: uid(1),
             card_id: CardId::ShrugItOff,
@@ -4994,6 +5157,8 @@ mod tests {
     fn iteration_first_status_draw_pulls_amount_extra() {
         use crate::{CombatState, Power, PowerKind, PowerUid};
         let mut state = CombatState::default();
+        // A live player: a dead one makes the combat ending, so draws move no card.
+        state.player.current_hp = 80;
         // 8 cards: uid 1 and uid 5 are Status; the rest Attacks. The draw
         // pile is ordered so uid 1 (Status) is on top, then 4 attacks, then
         // uid 5 (the second Status), then more attacks.

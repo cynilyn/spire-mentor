@@ -1811,12 +1811,6 @@ export const api = {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ config }),
       }).then(json<CoachTurnRecord & { searches?: number }>),
-    lastMoveRegret: (config: Record<string, unknown>) =>
-      apiFetch("/api/live/last-move-regret", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ config }),
-      }).then(json<DecisionRegret>),
     // Full-run regret review over the live active line: diff every combat move
     // made so far against the MCTS line and surface the costliest plays. The
     // live twin of the replay `regretReview`.

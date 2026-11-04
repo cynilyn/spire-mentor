@@ -518,7 +518,7 @@ pub fn resolve_event_at_callback(state: &mut RunState, idx: usize) -> bool {
         let Some(event_id) = pick_event(state, None) else {
             return false;
         };
-        begin_event(state, event_id);
+        begin_event_in_entered_room(state, event_id);
     }
     resolve_by_index(state, idx).is_some()
 }
@@ -553,7 +553,7 @@ pub fn event_option_enabled_callback(state: &RunState, idx: usize) -> bool {
 pub fn bind_pending_event_callback(state: &mut RunState) {
     if state.current_event.is_none() {
         if let Some(id) = pick_event(state, None) {
-            begin_event(state, id);
+            begin_event_in_entered_room(state, id);
         }
     }
 }
@@ -565,6 +565,18 @@ pub fn bind_pending_event_callback(state: &mut RunState) {
 /// ([`super::act2_hive::fake_merchant_before_event_started`]).
 pub fn begin_event(state: &mut RunState, event_id: EventId) {
     state.enter_event_room(event_id);
+    if event_id == EventId::FakeMerchant {
+        super::act2_hive::fake_merchant_before_event_started(state);
+    }
+}
+
+/// [`begin_event`] for a room the map move already entered: binds the event
+/// and runs its `BeforeEventStarted` side effects without entering the room
+/// again, so `AfterRoomEntered` (MawBank, Planisphere) fires once per event
+/// room, as in C#. The two pending-room binders use it; [`begin_event`]
+/// stays for callers with no prior room entry (`force_event`, fixtures).
+pub fn begin_event_in_entered_room(state: &mut RunState, event_id: EventId) {
+    state.bind_event(event_id);
     if event_id == EventId::FakeMerchant {
         super::act2_hive::fake_merchant_before_event_started(state);
     }

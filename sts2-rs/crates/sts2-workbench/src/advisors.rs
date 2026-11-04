@@ -1294,37 +1294,6 @@ fn step_of(
     }
 }
 
-/// `last_move_regret`: regret of the move that produced the active node —
-/// `None` when it has no parent or the parent was not a combat decision;
-/// `{error, regret: null}` when the parent cannot be scored; else a
-/// `DecisionRegret` dict (or `None` if the move is unresolvable).
-pub fn last_move_regret(sess: &Session, config: &Value) -> Result<Option<Value>, SessionError> {
-    let node = sess.active_node()?;
-    let Some(parent) = node.parent_id.and_then(|p| sess.node(p)) else {
-        return Ok(None);
-    };
-    if !combat_play(parent) {
-        return Ok(None);
-    }
-    let mut cfg = config_obj(config);
-    let blunder_pct = pop_f64(&mut cfg, "blunder_pct", DEFAULT_BLUNDER_DROP_PCT);
-    let mut step = step_of(parent, node, sess.loc(), &Value::Null, &Value::Null);
-    let no_scores = || json!({"error": "no MCTS scores available", "regret": Value::Null});
-    let (Some(cs), Ok(params)) = (parent.combat.as_ref(), params_for(&cfg, "mcts_recommend"))
-    else {
-        return Ok(Some(no_scores()));
-    };
-    let (result, pv) = score_with_pv(cs, &step.state, &cfg);
-    let mut scores: Vec<Value> = result["scores"].as_array().cloned().unwrap_or_default();
-    if scores.is_empty() {
-        return Ok(Some(no_scores()));
-    }
-    top_up_played(cs, &mut scores, &step.chosen, &params);
-    step.best_line = label_line(cs, &pv, sess.loc());
-    step.node_id = None; // the live coach's step carries no node id
-    Ok(assess_decision(&step, &scores, blunder_pct))
-}
-
 /// `realgame_coach.intent_text`: one enemy's telegraphed move as display
 /// text — `"attack 6"`, `"attack 6×2"`, another intent as its lower-cased
 /// type, joined by `" + "` (`"attack 6×2 + debuff"`); `"unknown"` when
@@ -1436,8 +1405,8 @@ pub const TURN_GRADE_TOP_UP_SIMS: u32 = 400;
 /// (`Session::hint_scores`, if it ran at least the grade's `sims`, default
 /// [`TURN_GRADE_SIMS`]) or a fresh search — at most `max_searches`
 /// (default [`TURN_GRADE_MAX_SEARCHES`]) of them; past the cap the move is
-/// ungraded and the turn silent — then topped up and diffed like
-/// [`last_move_regret`]. A forced move (one legal action) is labelled, not
+/// ungraded and the turn silent — then topped up and diffed by
+/// `assess_decision`. A forced move (one legal action) is labelled, not
 /// graded; an in-combat card select counts in `ungraded_actions`.
 ///
 /// `None` when the active node is not the result of an End turn, or when

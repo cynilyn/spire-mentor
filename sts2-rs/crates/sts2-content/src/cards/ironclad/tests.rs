@@ -1666,6 +1666,37 @@ fn thrash_fold_ignores_vulnerable_on_the_player() {
     );
 }
 
+/// C# `Hook.ModifyDamage` clamps its result at 0 (`Math.Max(0m, num)`), so a
+/// fold under negative Strength adds nothing. Rust folded the raw negative
+/// term and SHRANK Thrash: act23 Ironclad-3000 (act-3 checkpoint, branch 1)
+/// had Thrash at 9 where C# kept 10 after exhausting Sword Boomerang+.
+#[test]
+fn thrash_fold_under_negative_strength_adds_zero() {
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    let pid = NonZeroU32::new(1).expect("non-zero");
+    state.powers.push(Power {
+        id: pid,
+        kind: PowerKind::Strength,
+        amount: -8,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(PowerUid(pid));
+
+    let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+    // The lone 6-damage Attack in hand: 6 - 8 = -2, which C# clamps to 0.
+    push_hand_card(&mut state, CardId::StrikeIronclad);
+    let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+
+    assert_eq!(
+        state.cards[thrash.0.get() as usize - 1].base_damage,
+        4,
+        "a negative fold clamps to 0 and must not shrink Thrash"
+    );
+}
+
 /// Thrash with `stacks` of Gigantification on the player, exhausting a lone
 /// 6-damage attack. Returns (damage the two hits dealt, folded `base_damage`).
 fn thrash_under_gigantification(stacks: i32, version: sts2_core::GameVersion) -> (i32, i32) {
@@ -1769,6 +1800,68 @@ fn thrash_fold_includes_strike_dummy_both_versions() {
     ] {
         assert_eq!(thrash_fold_under_strike_dummy(version), 13, "{version:?}");
     }
+}
+
+/// HP a lone Thrash (base 4, no hand Attack to fold) takes off a 200-HP
+/// enemy with `enchant` on the Thrash itself; `strike_dummy` tags it Strike
+/// and equips StrikeDummy (+3, a relic additive).
+fn thrash_own_enchant_hp_loss(
+    enchant: sts2_core::cards::EnchantmentId,
+    amount: i32,
+    strike_dummy: bool,
+) -> i32 {
+    install_pool();
+    sts2_core::relic_effects::install_default_registry();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.init_player_creature();
+    if strike_dummy {
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("nz"),
+            kind: sts2_core::RelicKind::StrikeDummy,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+    }
+    let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+    let idx = thrash.0.get() as usize - 1;
+    state.cards[idx].set_enchantment(enchant, amount);
+    if strike_dummy {
+        state.cards[idx].tags = CardTags::one(sts2_core::cards::CardTag::Strike);
+    }
+    let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+    200 - state
+        .creatures
+        .iter()
+        .find(|c| CreatureUid(c.id) == enemy)
+        .map_or(0, |c| c.current_hp)
+}
+
+/// C# `Hook.ModifyDamage` applies the card source's enchantment stage
+/// (`EnchantDamageAdditive`, then `EnchantDamageMultiplicative`) before the
+/// listeners (Hook.cs:1638-1652, both builds), Thrash's own two hits
+/// included. The rational Thrash path dropped it: a Corrupted Thrash at base
+/// 4 hit 4 per hit, C# 6 (Ironclad-2158 act 2, Exoskeleton 13 -> 7 -> 1).
+#[test]
+fn thrash_own_enchantment_applies_to_its_hits() {
+    use sts2_core::cards::EnchantmentId;
+    assert_eq!(
+        thrash_own_enchant_hp_loss(EnchantmentId::Corrupted, 1, false),
+        12,
+        "Corrupted: 4 * 1.5 = 6 per hit"
+    );
+    assert_eq!(
+        thrash_own_enchant_hp_loss(EnchantmentId::Sharp, 2, false),
+        12,
+        "Sharp 2: 4 + 2 = 6 per hit"
+    );
+    // The relic additive joins after the enchant stage: 4 * 1.5 + 3 = 9, not
+    // (4 + 3) * 1.5 = 10 (the Regent 1004 / GH #1054 trap).
+    assert_eq!(
+        thrash_own_enchant_hp_loss(EnchantmentId::Corrupted, 1, true),
+        18,
+        "Corrupted + StrikeDummy: 9 per hit"
+    );
 }
 
 /// Push a card POD into `state.cards` and the Hand pile; returns its uid.
@@ -1972,9 +2065,9 @@ fn drum_of_battle_gains_energy_on_exhaust() {
         let (mut state, _enemy) = fresh_state_with_enemy(200);
         let uid = push_hand_card(&mut state, CardId::DrumOfBattleCard);
         state.cards[uid.0.get() as usize - 1].upgraded = upgraded;
-        let energy_before = i32::from(state.player.energy);
+        let energy_before = state.player.energy;
         assert!(sts2_core::card_effects::exhaust_card_uid(&mut state, uid));
-        i32::from(state.player.energy) - energy_before
+        state.player.energy - energy_before
     };
     assert_eq!(gain(false), 2, "exhaust gains 2 energy");
     assert_eq!(gain(true), 3, "upgraded exhaust gains 3 energy");
@@ -2261,6 +2354,55 @@ fn q6bix_mangle_applies_strength_debuff_to_enemy() {
         "enemy loses 10 Strength this turn (BeforeApplied)"
     );
     assert_eq!(ec.current_hp, 60 - 15, "15 base damage dealt");
+}
+
+/// `PowerCmd.Apply` folds `ModifyPowerAmountGiven` (Unsettling Lamp's x2)
+/// before calling `BeforeApplied(target, modifiedAmount)` (PowerCmd.cs:129-136
+/// v0.111.0), and `TemporaryStrengthPower.BeforeApplied` applies
+/// `Sign * amount` Strength (TemporaryStrengthPower.cs:134-136). The Lamp skips
+/// that inner Strength (`HasDoubledTemporaryPowerSource`, UnsettlingLamp.cs:169),
+/// so a Lamp-doubled Mangle lands ManglePower(20) AND Strength -20, which the
+/// turn-end revert (+20) exactly undoes (Ironclad-4128 act2 step 597).
+#[test]
+fn mangle_under_unsettling_lamp_drains_the_doubled_amount() {
+    install_pool();
+    sts2_core::card_effects::install_default_registry();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state_with_enemy(60);
+    crate::cards::dispatch::install_default_registry();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::UnsettlingLamp,
+        counter: sts2_core::RelicKind::UnsettlingLamp.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+
+    let _ = push_play_card(&mut state, CardId::Mangle, 15, 0);
+    let _ = dispatch(&mut state, CardId::Mangle, Some(enemy));
+
+    let ec = state
+        .creatures
+        .iter()
+        .find(|c| c.id == enemy.0)
+        .expect("enemy");
+    let pow = |kind: PowerKind| -> Option<i32> {
+        ec.powers
+            .iter()
+            .filter_map(|u| state.powers.get_by_id(u.0))
+            .find(|p| p.kind == kind)
+            .map(|p| p.amount)
+    };
+    assert_eq!(
+        pow(PowerKind::ManglePower),
+        Some(20),
+        "Lamp doubles ManglePower"
+    );
+    assert_eq!(
+        pow(PowerKind::Strength),
+        Some(-20),
+        "BeforeApplied drains the doubled (landed) amount, not the base 10"
+    );
 }
 
 /// Bead `sts2-rs-uknxs`: Mangle reducing the target's Strength to EXACTLY 0
@@ -4458,13 +4600,74 @@ fn pillage_keeps_drawing_through_hellraiser_autoplay() {
     );
 }
 
-/// Regression (bead `sts2-rs-pillage-hellraiser`): HellraiserPower must NOT
-/// auto-play a drawn Strike when no alive enemy remains (C#
-/// `AfterCardDrawnEarly` gates on a non-empty `HittableEnemies`). Without the
-/// guard, an auto-play into an empty board is a no-op that reshuffles the
-/// Strike back into the draw pile, where Pillage's attack-draw loop redraws
-/// and re-auto-plays it forever (a hang). With the guard the drawn Strikes
-/// stay in hand and the loop terminates when the draw pile empties.
+/// C# `Hook.AfterCardDrawn` (Hook.cs:346-362) runs every `AfterCardDrawnEarly`
+/// before any `AfterCardDrawn`: HellraiserPower auto-plays a drawn Strike
+/// while it is still unafflicted, and only then does ChainsOfBindingPower
+/// afflict it with `Bound`. So the auto-play neither trips Chains'
+/// `ShouldPlay` nor sets `boundCardPlayed`, and a second drawn Strike is
+/// auto-played too. Rust afflicted first, so the first auto-played Strike set
+/// the flag and the second was moved to discard unplayed (act23
+/// Ironclad:1007).
+#[test]
+fn hellraiser_auto_plays_strikes_before_chains_of_binding_binds_them() {
+    // Pillage draws until a non-Attack; Hellraiser auto-plays each Strike.
+    // Returns (the two Strike uids, the Pillage-played state).
+    let run = |chains: i32| {
+        install_pool();
+        let (mut state, enemy) = fresh_state_with_enemy(400);
+        state.init_player_creature();
+        let _ = push_play_card(&mut state, CardId::HellraiserCard, 0, 0);
+        let _ = dispatch(&mut state, CardId::HellraiserCard, None);
+        if chains > 0 {
+            // The monster path (Puppet Strings, act3_glory.rs).
+            crate::monsters::apply_power_to_player_via_legacy_surface(
+                &mut state,
+                PowerKind::ChainsOfBinding,
+                chains,
+            );
+        }
+        let a = push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+        let b = push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+        let _stopper = push_draw_tail(&mut state, CardId::DefendIronclad, CardType::Skill, 0);
+        let _ = push_play_card(&mut state, CardId::Pillage, 6, 0);
+        let _ = dispatch(&mut state, CardId::Pillage, Some(enemy));
+        ([a, b], state)
+    };
+    let (_, control) = run(0);
+    let ([a, b], state) = run(2);
+
+    assert_eq!(
+        state.combat_log.player_card_plays_this_combat,
+        control.combat_log.player_card_plays_this_combat,
+        "Chains must not block either auto-played Strike",
+    );
+    assert_eq!(
+        state.creatures[0].current_hp,
+        control.creatures[0].current_hp
+    );
+    assert!(
+        !state.combat_log.chains_bound_card_played_this_turn,
+        "the Strikes were unafflicted when played",
+    );
+    for uid in [a, b] {
+        assert!(
+            matches!(
+                state.cards[uid.0.get() as usize - 1].affliction,
+                Some(sts2_core::card_afflictions::CardAffliction {
+                    kind: sts2_core::card_afflictions::CardAfflictionKind::Bound,
+                    ..
+                })
+            ),
+            "Chains binds each Strike after its auto-play",
+        );
+    }
+}
+
+/// Regression (bead `sts2-rs-pillage-hellraiser`): Pillage + Hellraiser with
+/// no alive enemy must terminate. It used to hang: each drawn Strike was
+/// auto-played into an empty board, reshuffled and redrawn forever. With the
+/// lone enemy dead the combat is ending, so `CardPileCmd.Draw` moves no card
+/// at all (CardPileCmd.cs:822) and the Strikes stay in the draw pile.
 #[test]
 fn pillage_hellraiser_no_autoplay_without_alive_enemy() {
     install_pool();
@@ -4475,8 +4678,6 @@ fn pillage_hellraiser_no_autoplay_without_alive_enemy() {
     let _ = push_play_card(&mut state, CardId::HellraiserCard, 0, 0);
     let _ = dispatch(&mut state, CardId::HellraiserCard, None);
 
-    // Four Strikes, no terminator: pre-fix this loops forever (each is
-    // auto-played as a no-op, reshuffled, and redrawn).
     let s: Vec<_> = (0..4)
         .map(|_| push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6))
         .collect();
@@ -4485,17 +4686,10 @@ fn pillage_hellraiser_no_autoplay_without_alive_enemy() {
     // Must TERMINATE (a hang = the bug).
     let _ = dispatch(&mut state, CardId::Pillage, Some(enemy));
 
-    // With no alive enemy the Strikes were drawn but NOT auto-played, so they
-    // pile up in hand and the draw pile drains, ending the loop.
-    for uid in &s {
-        assert!(
-            state.player.hand.contains(uid),
-            "drawn Strike stays in hand (not auto-played into an empty board)"
-        );
-    }
-    assert!(
-        state.player.draw.is_empty(),
-        "draw pile drained — the loop terminated instead of looping forever"
+    assert_eq!(
+        state.player.draw.as_slice(),
+        s.as_slice(),
+        "an ending combat draws nothing, so nothing is auto-played either"
     );
 }
 
@@ -4802,4 +4996,227 @@ fn a_reshuffle_that_ends_the_combat_refuses_the_exhaust_after_it() {
             .map(|r| r.counter);
         assert_eq!(counter, Some(0), "Joss Paper isn't told");
     }
+}
+
+/// Thrash with Pen Nib at `counter` (the value Thrash's own
+/// `BeforeCardPlayed` left it at), optionally marked as `AttackToDouble`,
+/// exhausting a lone 6-damage attack. Returns (damage the two hits dealt,
+/// folded `base_damage`).
+fn thrash_under_pen_nib(counter: i32, thrash_is_marked: bool) -> (i32, i32) {
+    install_pool();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    state.init_player_creature();
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::PenNib,
+        counter,
+        is_wax: false,
+        is_melted: false,
+    });
+    let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+    if thrash_is_marked {
+        state.combat_log.pen_nib_attack_to_double = Some(thrash);
+    }
+    push_hand_card(&mut state, CardId::StrikeIronclad);
+    let hp0 = state.creatures[0].current_hp;
+    let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+    (
+        hp0 - state.creatures[0].current_hp,
+        state.cards[thrash.0.get() as usize - 1].base_damage,
+    )
+}
+
+/// Thrash as the 9th attack of a Pen Nib cycle: its hits are in Play, so
+/// x1, but the fold's `cardSource` is the exhausted attack, still in Hand.
+/// `PenNib.ModifyDamageMultiplicative` (same in v0.107.1 and v0.111.0): with
+/// no `AttackToDouble`, a source whose pile is not Play doubles while
+/// `AttacksPlayed == 9`, so the fold banks 6 x 2 (`Thrash.cs` OnPlay:
+/// `Hook.ModifyDamage(..., cardModel, ...)`; seeds 2008 / 2029 / 2103).
+#[test]
+fn thrash_fold_on_the_ninth_pen_nib_attack_is_doubled() {
+    assert_eq!(thrash_under_pen_nib(9, false), (8, 16));
+}
+
+/// Thrash as the marked 10th attack: its own hits double, but the fold's
+/// `cardSource` (the exhausted attack) is not `AttackToDouble`, so x1.
+#[test]
+fn thrash_fold_on_the_marked_tenth_pen_nib_attack_is_not_doubled() {
+    assert_eq!(thrash_under_pen_nib(0, true), (16, 10));
+}
+
+/// The fold's `Hook.ModifyDamage` applies the exhausted card's enchantment
+/// before any listener (v0.111.0 Hook.cs:1643-1652, v0.107.1 Hook.cs:1638):
+/// a Corrupted attack (`Corrupted.cs` x1.5 on a powered attack) folds
+/// 8 x 1.5 = 12 and a Sharp(+2) one folds 8 + 2 (seed 2158: an exhausted
+/// Corrupted Anger+ folded 8 where C# folds 12).
+#[test]
+fn thrash_fold_applies_the_exhausted_cards_enchantment() {
+    use sts2_core::cards::EnchantmentId;
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        for (ench, amount, want) in [
+            (EnchantmentId::Corrupted, 1, 16),
+            (EnchantmentId::Sharp, 2, 14),
+        ] {
+            install_pool();
+            let (mut state, enemy) = fresh_state_with_enemy(200);
+            state.game_version = version;
+            let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+            let picked = push_hand_card(&mut state, CardId::Anger);
+            let card = &mut state.cards[picked.0.get() as usize - 1];
+            card.base_damage = 8;
+            card.set_enchantment(ench, amount);
+            let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+            assert_eq!(
+                state.cards[thrash.0.get() as usize - 1].base_damage,
+                want,
+                "{version}: {ench:?}"
+            );
+        }
+    }
+}
+
+/// Corrupted x1.5 composes with Weak x0.75 and Strength in C#'s order:
+/// `((8 x 1.5) + 1) x 0.75 = 9.75`, so the fold banks 9 and carries 3/4.
+#[test]
+fn thrash_fold_enchantment_multiplier_precedes_strength() {
+    use sts2_core::cards::EnchantmentId;
+    install_pool();
+    let (mut state, enemy) = fresh_state_with_enemy(200);
+    let thrash = push_play_card(&mut state, CardId::Thrash, /*base_damage=*/ 4, 0);
+    let picked = push_hand_card(&mut state, CardId::Anger);
+    let card = &mut state.cards[picked.0.get() as usize - 1];
+    card.base_damage = 8;
+    card.set_enchantment(EnchantmentId::Corrupted, 1);
+    for (raw, kind) in [(1, PowerKind::Strength), (2, PowerKind::Weak)] {
+        let pid = NonZeroU32::new(raw).expect("non-zero");
+        state.powers.push(Power {
+            id: pid,
+            kind,
+            amount: 1,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(PowerUid(pid));
+    }
+    let _ = dispatch(&mut state, CardId::Thrash, Some(enemy));
+    let t = &state.cards[thrash.0.get() as usize - 1];
+    assert_eq!(t.base_damage, 13);
+    let (num, den) = (
+        t.combat_var(VarKey::ThrashFoldRemNum),
+        t.combat_var(VarKey::ThrashFoldRemDen),
+    );
+    assert_eq!(num * 4, den * 3, "remainder 3/4, got {num}/{den}");
+}
+
+/// Exhaust a Drum of Battle carrying `replays` extra plays (Hidden Gem's
+/// `BaseReplayCount`) with `power` (stacks) on the player. Returns (energy
+/// gained, the power's remaining stacks).
+fn drum_exhaust(upgraded: bool, replays: i32, power: Option<(PowerKind, i32)>) -> (i32, i32) {
+    install_pool();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    let uid = push_hand_card(&mut state, CardId::DrumOfBattleCard);
+    let card = &mut state.cards[uid.0.get() as usize - 1];
+    card.upgraded = upgraded;
+    card.card_type = CardType::Skill;
+    card.target_type = TargetType::Self_;
+    card.base_replay_count = replays;
+    if let Some((kind, amount)) = power {
+        let pid = NonZeroU32::new(1).expect("non-zero");
+        state.powers.push(Power {
+            id: pid,
+            kind,
+            amount,
+            counter: 0,
+            applier: None,
+            skip_next_tick: false,
+        });
+        state.player.powers.push(PowerUid(pid));
+    }
+    let energy_before = state.player.energy;
+    assert!(sts2_core::card_effects::exhaust_card_uid(&mut state, uid));
+    let left = power.map_or(0, |(kind, _)| state.player_power_amount(kind));
+    (state.player.energy - energy_before, left)
+}
+
+/// Drum of Battle gains its energy `GeneratePlayCount` times (v0.111.0
+/// DrumOfBattle.cs AfterCardExhausted; CardModel.cs:2029 GeneratePlayCount =
+/// `GetEnchantedReplayCount() + 1` through `ModifyCardPlayCount`, same body in
+/// v0.107.1). Seed 2112: a Hidden-Gemmed (Replay 2) Drum+ exhausted by Cinder
+/// gained 3 x 3 in C#, once in Rust.
+#[test]
+fn drum_of_battle_exhaust_gains_energy_per_play_count() {
+    assert_eq!(drum_exhaust(true, 2, None), (9, 0));
+    assert_eq!(drum_exhaust(false, 1, None), (4, 0));
+}
+
+/// Burst / Duplication raise the play count of the exhaust reaction too, and
+/// `AfterModifyingCardPlayCount` spends a stack (BurstPower.cs,
+/// DuplicationPower.cs).
+#[test]
+fn drum_of_battle_exhaust_play_count_spends_burst_and_duplication() {
+    assert_eq!(drum_exhaust(false, 0, Some((PowerKind::Burst, 2))), (4, 1));
+    assert_eq!(
+        drum_exhaust(false, 0, Some((PowerKind::Duplication, 1))),
+        (4, 0)
+    );
+}
+
+/// C# `CardModel.OnPlayWrapper` moves the played card to its result pile
+/// (`CardCmd.Exhaust`, CardModel.cs:1998, firing `AfterCardExhausted`) BEFORE
+/// `EnergyCost.AfterCardPlayedCleanup()` (:2007). Burning Sticks clones the
+/// exhausted Skill there (`CreateClone` deep-clones `_energyCost` with its
+/// local modifiers, CardEnergyCost.cs:411-420), so the clone of a
+/// free-this-turn Skill is still free this turn while the original's
+/// `WhenPlayed` rider then expires (Ironclad-2184 act 3: an Infernal-Blade-free
+/// Skill's clone cost C# 0, Rust 1).
+#[test]
+fn burning_sticks_clone_of_free_skill_keeps_free_this_turn() {
+    use sts2_core::cards::VarKey;
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    state.init_player_creature();
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.player.energy = 0;
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::BurningSticks,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let mut card =
+        crate::cards::spec_index::card_pod_from_id(CardId::Impervious, false).expect("spec");
+    let imp =
+        sts2_core::CardUid::new(u32::try_from(state.cards.len() + 1).expect("fits")).expect("nz");
+    card.uid = imp;
+    card.set_combat_var(VarKey::FreeThisTurn, 1);
+    state.cards.push(card);
+    state.player.hand.push(imp);
+    let idx = imp.0.get() as usize - 1;
+    let r = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    assert_eq!(r, sts2_core::StepResult::Advanced);
+    assert!(state.player.exhaust.contains(&imp), "Impervious exhausted");
+    let clone_uid = *state
+        .player
+        .hand
+        .iter()
+        .find(|u| state.cards[u.0.get() as usize - 1].card_id == CardId::Impervious)
+        .expect("Burning Sticks cloned the Skill into hand");
+    assert_eq!(
+        sts2_core::hooks::effective_card_cost(&state, clone_uid),
+        0,
+        "the clone carries the live free-this-turn modifier"
+    );
+    assert_eq!(
+        state.cards[idx].combat_var(VarKey::FreeThisTurn),
+        0,
+        "the played original's WhenPlayed rider expired"
+    );
 }

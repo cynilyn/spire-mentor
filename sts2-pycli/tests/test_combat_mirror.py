@@ -1269,8 +1269,11 @@ def test_gambling_chip_mulligan_resumes_the_rest_of_turn_setup(tmp_path):
     wire = sts2_rs.state_to_dict(world)
     # The engine parks the tail itself, so the world board it hands out is the
     # same mid-turn-setup snapshot the DLL serializes.
-    assert [p["name"] for p in wire["player"]["powers"]] == [], (
-        "Akabeko's Vigor must wait behind the mulligan screen"
+    # C# StartTurn runs Hook.AfterSideTurnStart once SetupPlayerTurn pauses
+    # on the screen (CombatManager.cs:779-785 v0.111.0, :516-524 v0.107.1),
+    # so Akabeko's Vigor is already on the board the screen is shown with.
+    assert [(p["name"], p["amount"]) for p in wire["player"]["powers"]] == [("VIGOR", 8)], (
+        "Akabeko's Vigor lands while the mulligan screen is up"
     )
 
     mirror = _mirror(tmp_path)
@@ -1290,6 +1293,7 @@ def test_gambling_chip_mulligan_resumes_the_rest_of_turn_setup(tmp_path):
         (p["name"], p["amount"]) for p in sts2_rs.state_to_dict(mirror.state)["player"]["powers"]
     }
     assert ("VIGOR", 8) in powers, "the deferred turn-start batch must run on resolve"
+    assert ("VIGOR", 16) not in powers, "the side walk that already ran must not run again"
 
 
 requires_power_turn_start_resume = pytest.mark.skipif(

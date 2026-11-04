@@ -425,10 +425,10 @@ class PpoRunEnv:
             character=self.character,
             ascension_level=self.ascension,
             neow_start=True,
-            interactive_card_removal=True,
-            interactive_card_upgrade=True,
-            interactive_card_transform=True,
-            direct_event_relic_grant=True,
+            # GH #981: the deck-decision bundle (removal / upgrade / transform,
+            # which also gates enchant, + direct relic grant) is ONE definition
+            # shared with `arena::new_arena_run_manager`.
+            mode="agent",
             interactive_potion_swap=sts2_rs.resolve_potion_swap_flag(),
             # GH #545: the act this run walks. `arena::run_cell` takes the same
             # token from `--act1`, and G1 compares the two per token, so the
@@ -668,7 +668,13 @@ class PpoRunEnv:
             raise IndexError(f"candidate idx {idx} out of range 0..{len(actions) - 1}")
         self._pending_actions = None
         result = self.rm.take_action(actions[idx])
-        if result in ("shop_purchase_failed", "shop_remove_card_failed", "invalid_for_phase"):
+        if result in (
+            "shop_purchase_failed",
+            "shop_remove_card_failed",
+            "invalid_for_phase",
+            "invalid_target",
+            "illegal_play",
+        ):
             # Tripwire: masking should make this unreachable; a silent
             # no-op here becomes a greedy-policy deadlock, so fail loud
             # (workers fault-isolate the run as outcome='error').

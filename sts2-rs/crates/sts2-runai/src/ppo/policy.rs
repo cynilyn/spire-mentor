@@ -341,6 +341,7 @@ fn build_shop_obs(inv: &ShopInventory) -> ShopObs {
             on_sale: e.on_sale,
             is_colorless: e.is_colorless,
             available: is_shop_entry_available(e.price) && e.card.is_some(),
+            upgraded: e.card.as_ref().is_some_and(|c| c.upgraded),
         })
         .collect();
     let relics: Vec<ShopEntryObs> = inv

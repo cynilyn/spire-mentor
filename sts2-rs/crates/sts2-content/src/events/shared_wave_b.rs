@@ -403,13 +403,14 @@ fn self_help_card_eligible(
     c: &sts2_core::cards::Card,
     card_type: sts2_core::cards::CardType,
     enchantment: sts2_core::cards::EnchantmentId,
+    version: sts2_core::GameVersion,
 ) -> bool {
     c.card_type == card_type
         && c.enchantments.is_empty()
         && (c.cost >= 0 || c.is_x_cost())
         && !c.is_quest()
         // `Nimble.CanEnchant` → `CardModel.GainsBlock` (GH #1021).
-        && (enchantment != sts2_core::cards::EnchantmentId::Nimble || c.gains_block())
+        && (enchantment != sts2_core::cards::EnchantmentId::Nimble || c.gains_block_for(version))
 }
 
 /// C# `PlayerHasCardsAvailable<T>(owner, type)`.
@@ -421,7 +422,7 @@ fn self_help_has_eligible(
     state
         .master_deck
         .iter()
-        .any(|c| self_help_card_eligible(c, card_type, enchantment))
+        .any(|c| self_help_card_eligible(c, card_type, enchantment, state.game_version))
 }
 
 /// C# `SelectAndEnchant<T>(2, typeRestriction, …)`:
@@ -437,10 +438,11 @@ fn self_help_select_and_enchant(
     card_type: sts2_core::cards::CardType,
     finished: &str,
 ) -> EventOutcome {
+    let version = state.game_version;
     let eligible = state
         .master_deck
         .iter()
-        .filter(|c| self_help_card_eligible(c, card_type, enchantment))
+        .filter(|c| self_help_card_eligible(c, card_type, enchantment, version))
         .count();
     if state.interactive_card_transform && eligible > 1 {
         state
@@ -455,7 +457,7 @@ fn self_help_select_and_enchant(
     } else if let Some(card) = state
         .master_deck
         .iter_mut()
-        .find(|c| self_help_card_eligible(c, card_type, enchantment))
+        .find(|c| self_help_card_eligible(c, card_type, enchantment, version))
     {
         // Auto mode (parity-fuzz / headless) takes the first eligible
         // card; the 1-eligible interactive case is C#'s grid auto-take.
@@ -2732,11 +2734,34 @@ const ZEN_WEAVER_OPTIONS: &[EventOptionSpec] = &[
     },
 ];
 
+/// `ZenWeaver.GenerateInitialOptions` (ZenWeaver.cs:41-42, both builds): a
+/// removal option whose cost exceeds the player's gold is replaced by the
+/// null-handler LOCKED option, in the same slot.
+fn zen_weaver_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let mut opts = default_option_info_from_spec(state, spec);
+    for opt in &mut opts {
+        let cost = match opt.option_id {
+            "emotional" => ZEN_WEAVER_EMOTIONAL_COST,
+            "acupuncture" => ZEN_WEAVER_ACUPUNCTURE_COST,
+            _ => continue,
+        };
+        if state.gold < cost {
+            opt.enabled = false;
+            opt.loc_key = "ZEN_WEAVER.pages.INITIAL.options.LOCKED";
+            opt.label = "Locked".to_string();
+            opt.description = "Not enough gold.".to_string();
+            opt.vars = Vec::new();
+            opt.title_vars = Vec::new();
+        }
+    }
+    opts
+}
+
 pub const ZEN_WEAVER: EventSpec = EventSpec {
     id: EventId::ZenWeaver,
     python_name: "ZenWeaver",
     is_allowed: zen_weaver_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: zen_weaver_generate_options,
     options: ZEN_WEAVER_OPTIONS,
 };
 
@@ -2746,6 +2771,34 @@ mod tests {
 
     fn fresh_state() -> RunState {
         RunState::new()
+    }
+
+    /// `ZenWeaver.GenerateInitialOptions` swaps a removal the player cannot
+    /// pay for for the null-handler LOCKED option (ZenWeaver.cs:41-42, both
+    /// builds). Breathing Techniques is never locked.
+    #[test]
+    fn zen_weaver_locks_unaffordable_removals() {
+        for version in [
+            sts2_core::GameVersion::V0_107_1,
+            sts2_core::GameVersion::V0_111_0,
+        ] {
+            let mut rs = fresh_state();
+            rs.game_version = version;
+            let enabled = |rs: &RunState| -> Vec<bool> {
+                (ZEN_WEAVER.generate_options)(rs, &ZEN_WEAVER)
+                    .iter()
+                    .map(|o| o.enabled)
+                    .collect()
+            };
+            rs.gold = 124;
+            assert_eq!(enabled(&rs), [true, false, false], "{version:?}");
+            rs.gold = 249;
+            assert_eq!(enabled(&rs), [true, true, false], "{version:?}");
+            let opts = (ZEN_WEAVER.generate_options)(&rs, &ZEN_WEAVER);
+            assert_eq!(opts[2].loc_key, "ZEN_WEAVER.pages.INITIAL.options.LOCKED");
+            rs.gold = 250;
+            assert_eq!(enabled(&rs), [true, true, true], "{version:?}");
+        }
     }
 
     /// `Nimble.CanEnchant` requires `card.GainsBlock` (`Nimble.cs:7-14`):
@@ -2764,12 +2817,14 @@ mod tests {
         assert!(self_help_card_eligible(
             &defend,
             CardType::Skill,
-            EnchantmentId::Nimble
+            EnchantmentId::Nimble,
+            sts2_core::GameVersion::V0_107_1
         ));
         assert!(!self_help_card_eligible(
             &trance,
             CardType::Skill,
-            EnchantmentId::Nimble
+            EnchantmentId::Nimble,
+            sts2_core::GameVersion::V0_107_1
         ));
     }
 

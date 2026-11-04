@@ -11,6 +11,15 @@ pub(crate) fn play_glimmer(state: &mut CombatState, _t: Option<CreatureUid>) -> 
     // stays 1). Bead `sts2-rs-mnnnf`.
     let draws = if current_card_upgraded(state) { 4 } else { 3 };
     let _ = sts2_core::cards::draw_via_state(state, draws);
+    // C# Glimmer.OnPlay awaits the whole `CardPileCmd.Draw` (including a
+    // Stratagem `AfterShuffle` FromCombatPile select) before
+    // `CardSelectCmd.FromHand`. A suspended Rust draw must defer the put-back
+    // to the draw's resume, or it overwrites the Stratagem select and offers
+    // the partial hand (Regent-3002 act2). Mirrors `play_thinking_ahead`.
+    if let Some(pdr) = state.pending_draw_resume.as_mut() {
+        pdr.then_put_back_from_hand = true;
+        return EffectResult::Resolved;
+    }
     // `CardSelectCmd.FromHand` returns nothing once combat is ending and
     // takes a hand of <= 1 card without asking (CardSelectCmd.cs:699,713).
     if state.player.hand.is_empty() || sts2_core::combat_loop::combat_is_ending(state) {

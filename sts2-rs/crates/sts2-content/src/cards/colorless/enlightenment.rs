@@ -18,9 +18,7 @@ pub(crate) fn play_enlightenment(state: &mut CombatState, _t: Option<CreatureUid
             }
             if upgraded {
                 // `SetThisCombat(1, reduceOnly: true)` (Enlightenment.cs).
-                if card.cost > ENLIGHTENMENT_COST_CAP {
-                    card.cost = ENLIGHTENMENT_COST_CAP;
-                }
+                card.set_this_combat_reduce_only(ENLIGHTENMENT_COST_CAP);
             } else {
                 // `SetThisTurnOrUntilPlayed(1, reduceOnly: true)`: reverts at
                 // turn end or on play. The old permanent `cost = 1` kept a

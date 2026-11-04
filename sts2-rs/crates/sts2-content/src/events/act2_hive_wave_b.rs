@@ -98,7 +98,7 @@ fn relic_trader_owned(state: &RunState) -> Vec<RelicId> {
         .relics
         .iter()
         .copied()
-        .filter(|&id| crate::relics::tradable::relic_is_tradable(id))
+        .filter(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         .collect();
     let mut rng = state.rng.named(RELIC_TRADER_STREAM);
     rng.stable_shuffle_by(&mut valid, &|a: RelicId, b: RelicId| {
@@ -619,12 +619,74 @@ fn stone_lift(state: &mut RunState) -> EventOutcome {
     }
 }
 
+/// `StoneOfAllTime.push` Vigorous amount (`PushVigorousAmount`).
+pub const STONE_PUSH_VIGOROUS: i32 = 8;
+
+/// C# `Vigorous.CanEnchant`: the base `EnchantmentModel.CanEnchant` narrowed
+/// by `Vigorous.CanEnchantCardType` (Attack only, Vigorous.cs:13-16) — the
+/// same filter as Corrupted, so it shares [`symbiote_can_enchant`].
+fn vigorous_can_enchant(c: &sts2_core::cards::Card) -> bool {
+    symbiote_can_enchant(c)
+}
+
 fn stone_push(state: &mut RunState) -> EventOutcome {
+    // C# `StoneOfAllTime.Push` (StoneOfAllTime.cs:103-113): Damage(6,
+    // Unblockable|Unpowered), then `FromDeckForEnchantment(Vigorous, 8)`
+    // pick-1 → `CardCmd.Enchant(vigorous, item, 8)`. Same interactive shape
+    // as `symbiote_approach`: queue the pick when the grid has a real choice,
+    // otherwise enchant the only eligible card.
+    use sts2_core::cards::EnchantmentId;
     let lost = state.lose_hp(STONE_PUSH_DAMAGE);
-    // Python enchants a deck card with Vigorous +8. Enchant deferred.
-    EventOutcome::finished(format!(
-        "Took {lost} damage — Vigorous +8 enchant deferred."
-    ))
+    let eligible = state
+        .master_deck
+        .iter()
+        .filter(|c| vigorous_can_enchant(c))
+        .count();
+    if state.interactive_card_transform && eligible > 1 {
+        state
+            .pending_deck_enchants
+            .push(sts2_core::PendingDeckEnchant {
+                enchantment: EnchantmentId::Vigorous,
+                amount: STONE_PUSH_VIGOROUS,
+                // The deck grid lists only Attacks (Vigorous.cs:13-16).
+                type_restriction: Some(CardType::Attack),
+                secondary_type: None,
+                optional: false,
+            });
+        EventOutcome::finished(format!(
+            "Took {lost} damage. Pick a card to enchant with Vigorous {STONE_PUSH_VIGOROUS}."
+        ))
+    } else {
+        if let Some(card) = state
+            .master_deck
+            .iter_mut()
+            .find(|c| vigorous_can_enchant(c))
+        {
+            card.enchantments
+                .push((EnchantmentId::Vigorous, STONE_PUSH_VIGOROUS));
+        }
+        EventOutcome::finished(format!(
+            "Took {lost} damage. Enchanted a card with Vigorous {STONE_PUSH_VIGOROUS}."
+        ))
+    }
+}
+
+/// `StoneOfAllTime.GenerateInitialOptions` (StoneOfAllTime.cs:89): Push is
+/// replaced by the null-handler `PUSH_LOCKED` option, in the same slot, when
+/// no deck card passes `Vigorous.CanEnchant`.
+fn stone_of_all_time_generate_options(state: &RunState, spec: &EventSpec) -> Vec<EventOptionInfo> {
+    let mut opts = default_option_info_from_spec(state, spec);
+    if !state.master_deck.iter().any(vigorous_can_enchant) {
+        for opt in opts.iter_mut().filter(|o| o.option_id == "push") {
+            opt.enabled = false;
+            opt.loc_key = "STONE_OF_ALL_TIME.pages.INITIAL.options.PUSH_LOCKED";
+            opt.label = "Locked".to_string();
+            opt.description = "Requires an Attack.".to_string();
+            opt.vars = Vec::new();
+            opt.title_vars = Vec::new();
+        }
+    }
+    opts
 }
 
 const STONE_OF_ALL_TIME_OPTIONS: &[EventOptionSpec] = &[
@@ -661,7 +723,10 @@ const STONE_OF_ALL_TIME_OPTIONS: &[EventOptionSpec] = &[
         default_description: "Take 6 damage, enchant a card with Vigorous +8.",
         default_vars: &[
             ("PushHpLoss", EventVarSpec::Int(STONE_PUSH_DAMAGE as i64)),
-            ("PushVigorousAmount", EventVarSpec::Int(8)),
+            (
+                "PushVigorousAmount",
+                EventVarSpec::Int(STONE_PUSH_VIGOROUS as i64),
+            ),
         ],
         vars_fn: None,
         title_vars_fn: None,
@@ -674,7 +739,7 @@ pub const STONE_OF_ALL_TIME: EventSpec = EventSpec {
     python_name: "StoneOfAllTime",
     // C# `CurrentActIndex == 1 && Potions.Any()` (Act 2 + ≥1 potion). Bead `sts2-rs-1hiht`.
     is_allowed: stone_of_all_time_allowed,
-    generate_options: default_option_info_from_spec,
+    generate_options: stone_of_all_time_generate_options,
     options: STONE_OF_ALL_TIME_OPTIONS,
 };
 
@@ -1717,6 +1782,30 @@ mod tests {
         assert!(super::super::relic_trader_allowed(&rs), "now 5 tradable");
     }
 
+    /// C# `IsTradable` is false for a melted relic (`RelicModel.cs:188`), so
+    /// `GetValidRelics` drops a Toy Box wax relic once it has melted — both
+    /// from the five-relic `IsAllowed` count (`RelicTrader.cs:104-110`) and
+    /// from the list `StableShuffle` deals the three slots from (`:51`).
+    #[test]
+    fn relic_trader_skips_melted_relics() {
+        let mut rs = trader_state();
+        rs.relics.push(RelicId::AmethystAubergine);
+        rs.wax_relics.insert(RelicId::AmethystAubergine);
+        rs.melted_relics.insert(RelicId::AmethystAubergine);
+        let mut unmelted = rs.clone();
+        unmelted.relics.pop();
+        assert_eq!(
+            relic_trader_owned(&rs),
+            relic_trader_owned(&unmelted),
+            "a melted relic must not lengthen the shuffled list"
+        );
+        rs.relics.remove(0);
+        assert!(
+            !super::super::relic_trader_allowed(&rs),
+            "four live tradable relics plus a melted one is not five"
+        );
+    }
+
     #[test]
     fn slippery_bridge_hold_on_takes_base_damage() {
         let mut rs = fresh();
@@ -1778,6 +1867,56 @@ mod tests {
         let mut rs = fresh();
         run(&STONE_OF_ALL_TIME, "push", &mut rs);
         assert_eq!(rs.current_hp, 40 - STONE_PUSH_DAMAGE);
+    }
+
+    /// Push enchants a deck Attack with Vigorous 8 (StoneOfAllTime.cs:103-113).
+    /// It used to take only the HP, so an act-2 Strike dealt 6 where C# dealt
+    /// 14 (GH #1054 round 7, Defect-3004-a0-act2#b2).
+    #[test]
+    fn stone_push_enchants_an_attack_with_vigorous() {
+        crate::cards::dispatch::ensure_installed();
+        use sts2_core::cards::EnchantmentId;
+        let card = |id| crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        // Auto mode: the first eligible card (the Defend is skipped).
+        let mut rs = fresh();
+        rs.master_deck = vec![card(CardId::DefendDefect), card(CardId::StrikeDefect)];
+        run(&STONE_OF_ALL_TIME, "push", &mut rs);
+        assert_eq!(rs.current_hp, 40 - STONE_PUSH_DAMAGE);
+        assert!(rs.master_deck[0].enchantments.is_empty());
+        assert_eq!(
+            rs.master_deck[1].enchantments.as_slice(),
+            &[(EnchantmentId::Vigorous, STONE_PUSH_VIGOROUS)]
+        );
+
+        // Interactive with >1 Attack: an Attack-only pick is queued.
+        let mut rs = fresh();
+        rs.interactive_card_transform = true;
+        rs.master_deck = vec![card(CardId::StrikeDefect), card(CardId::StrikeDefect)];
+        run(&STONE_OF_ALL_TIME, "push", &mut rs);
+        assert_eq!(rs.pending_deck_enchants.len(), 1);
+        let pick = &rs.pending_deck_enchants[0];
+        assert_eq!(pick.enchantment, EnchantmentId::Vigorous);
+        assert_eq!(pick.amount, STONE_PUSH_VIGOROUS);
+        assert_eq!(pick.type_restriction, Some(CardType::Attack));
+    }
+
+    /// `PUSH_LOCKED` (StoneOfAllTime.cs:89): no Vigorous-eligible Attack in
+    /// the deck locks Push in its slot.
+    #[test]
+    fn stone_push_locked_without_an_enchantable_attack() {
+        crate::cards::dispatch::ensure_installed();
+        let card = |id| crate::cards::spec_index::card_pod_from_id(id, false).unwrap();
+        let mut rs = fresh();
+        rs.master_deck = vec![card(CardId::DefendDefect)];
+        let opts = (STONE_OF_ALL_TIME.generate_options)(&rs, &STONE_OF_ALL_TIME);
+        assert!(!opts[1].enabled);
+        assert_eq!(
+            opts[1].loc_key,
+            "STONE_OF_ALL_TIME.pages.INITIAL.options.PUSH_LOCKED"
+        );
+        rs.master_deck.push(card(CardId::StrikeDefect));
+        let opts = (STONE_OF_ALL_TIME.generate_options)(&rs, &STONE_OF_ALL_TIME);
+        assert!(opts[1].enabled);
     }
 
     #[test]

@@ -172,6 +172,14 @@ fn before_combat_start_register_and_dispatch_roundtrip() {
         h_before_combat_start as BeforeCombatStartFn,
     );
     let mut state = CombatState::default();
+    // The dispatcher walks the OWNED relics in equip order (CombatState.cs:130).
+    state.relics.push(crate::Relic {
+        id: std::num::NonZeroU32::new(1).expect("nz"),
+        kind: crate::RelicKind::EmberTea,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
     let result = dispatch_before_combat_start(&mut state);
     assert_eq!(result, EffectResult::Resolved);
     assert!(C_BEFORE_COMBAT_START.load(Ordering::SeqCst) >= 1);
@@ -3050,6 +3058,46 @@ fn book_repair_knife_heals_through_doom_kill_path() {
     );
 }
 
+/// Spawn three Reattach segments at `hps`, each carrying 10 Doom.
+fn doomed_segments(state: &mut CombatState, hps: [i32; 3]) {
+    for hp in hps {
+        let uid = state.spawn_enemy(crate::MonsterKind::Nibbit);
+        if let Some(c) = state.creatures.iter_mut().find(|c| c.id == uid.0) {
+            c.current_hp = hp;
+        }
+        crate::card_effects::apply_power_to_enemy(state, uid, crate::PowerKind::Reattach, 25);
+        crate::card_effects::apply_power_to_enemy(state, uid, crate::PowerKind::Doom, 10);
+    }
+}
+
+/// C# heals only for victims whose powers all `ShouldOwnerDeathTriggerFatal`.
+/// A Decimillipede segment whose sibling still stands will REATTACH, so Doom
+/// taking two of three segments heals nothing (act23 Necrobinder:1004: Rust
+/// healed 6).
+#[test]
+#[serial_test::serial(global_registry)]
+fn book_repair_knife_skips_segments_that_will_reattach() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 50);
+    give_player_relic(&mut state, RelicKind::BookRepairKnife);
+    doomed_segments(&mut state, [5, 50, 5]);
+    state.doom_kill_doomed_enemies();
+    assert_eq!(state.player.current_hp, 50);
+}
+
+/// `Hook.AfterDiedToDoom` runs after the whole Doom batch has died, so when
+/// Doom takes every segment at once each one is fatal: +3 per segment.
+#[test]
+#[serial_test::serial(global_registry)]
+fn book_repair_knife_heals_every_segment_of_a_wiped_decimillipede() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 50);
+    give_player_relic(&mut state, RelicKind::BookRepairKnife);
+    doomed_segments(&mut state, [5, 5, 5]);
+    state.doom_kill_doomed_enemies();
+    assert_eq!(state.player.current_hp, 59);
+}
+
 // -----------------------------------------------------------------
 // P10/nax2l — PhylacteryUnbound (event-pool upgrade, START_COMBAT=5,
 // START_TURN=2, no round gate). Same `summon_osty` runtime as
@@ -3293,7 +3341,7 @@ fn vambrace_ignores_non_card_block() {
 
 #[test]
 #[serial_test::serial(global_registry)]
-fn petrified_toad_grants_potion_shaped_rock_on_before_combat_start() {
+fn petrified_toad_grants_potion_shaped_rock_on_before_combat_start_late() {
     ensure_installed();
     let mut state = fresh_state_with_player(70, 70);
     give_player_relic(&mut state, RelicKind::PetrifiedToad);
@@ -3301,7 +3349,7 @@ fn petrified_toad_grants_potion_shaped_rock_on_before_combat_start() {
         state.player.potions.is_empty(),
         "potion belt empty pre-dispatch"
     );
-    let result = dispatch_before_combat_start(&mut state);
+    let result = dispatch_before_combat_start_late(&mut state);
     assert_eq!(result, EffectResult::Resolved);
     assert_eq!(state.player.potions.len(), 1, "one potion procured");
     assert_eq!(
@@ -3331,7 +3379,7 @@ fn petrified_toad_respects_belt_size_not_absolute_max() {
             .potions
             .push(crate::potions::PotionKind::BlockPotion);
     }
-    let _ = dispatch_before_combat_start(&mut full);
+    let _ = dispatch_before_combat_start_late(&mut full);
     assert_eq!(
         full.player.potions.len(),
         3,
@@ -3347,7 +3395,7 @@ fn petrified_toad_respects_belt_size_not_absolute_max() {
             .potions
             .push(crate::potions::PotionKind::BlockPotion);
     }
-    let _ = dispatch_before_combat_start(&mut room);
+    let _ = dispatch_before_combat_start_late(&mut room);
     assert_eq!(room.player.potions.len(), 3, "free slot → procured");
     assert_eq!(
         room.player.potions[2],
@@ -3362,12 +3410,27 @@ fn petrified_toad_inert_without_relic() {
     ensure_installed();
     let mut state = fresh_state_with_player(70, 70);
     let before_len = state.player.potions.len();
-    let _ = dispatch_before_combat_start(&mut state);
+    let _ = dispatch_before_combat_start_late(&mut state);
     assert_eq!(
         state.player.potions.len(),
         before_len,
         "no relic, no potion"
     );
+}
+
+/// Sozu vetoes PetrifiedToad's Rock: C# `PetrifiedToad` calls
+/// `PotionCmd.TryToProcure<PotionShapedRock>`, whose first step is
+/// `Hook.ShouldProcurePotion` (`PotionCmd.cs:31`), and
+/// `Sozu.ShouldProcurePotion` returns false for its owner (`Sozu.cs:17`).
+#[test]
+#[serial_test::serial(global_registry)]
+fn petrified_toad_vetoed_by_sozu() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(70, 70);
+    give_player_relic(&mut state, RelicKind::PetrifiedToad);
+    give_player_relic(&mut state, RelicKind::Sozu);
+    let _ = dispatch_before_combat_start_late(&mut state);
+    assert!(state.player.potions.is_empty(), "Sozu blocks the Rock");
 }
 
 // -----------------------------------------------------------------
@@ -4020,8 +4083,8 @@ fn nunchaku_grants_energy_on_tenth_attack() {
     let _ = dispatch_after_card_played(&mut state, &ctx);
     assert_eq!(nunchaku_counter(&state), 10);
     assert_eq!(
-        i32::from(state.player.energy),
-        i32::from(start_energy) + 1,
+        state.player.energy,
+        start_energy + 1,
         "10th Attack grants +1 energy"
     );
 }
@@ -5382,6 +5445,38 @@ fn red_skull_crossing_back_above_threshold_removes_strength() {
     assert_eq!(red_skull_counter(&state), 0);
 }
 
+/// C# `RedSkull.ModifyStrengthIfNecessary` removes its bonus with
+/// `PowerCmd.Apply<StrengthPower>(-3)` (RedSkull.cs:59-83, both builds), and
+/// Strength is `AllowNegative`: a player already at negative Strength goes
+/// further negative instead of losing the power (Ironclad-4004 act3 full@2751:
+/// STRENGTH -356 -> -359).
+#[test]
+#[serial_test::serial(global_registry)]
+fn red_skull_rise_with_negative_strength_goes_more_negative() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(100, 30);
+    give_player_relic(&mut state, RelicKind::RedSkull);
+    let _ = dispatch_before_combat_start(&mut state);
+    assert_eq!(red_skull_player_strength(&state), 3);
+    // A debuff drives the stack to -5 while the flag stays armed.
+    let player_uid = state.player.creature_uid.expect("player");
+    crate::card_effects::apply_signed_attr_power(&mut state, player_uid, PowerKind::Strength, -8);
+    assert_eq!(red_skull_player_strength(&state), -5);
+    state.player.current_hp = 80;
+    let ctx = crate::hooks::DamageCtx {
+        dealer: crate::hooks::CreatureRef::Player,
+        target: crate::hooks::CreatureRef::Player,
+        props: crate::hooks::ValueProps::NONE,
+    };
+    let _ = dispatch_after_damage_received(&mut state, &ctx, 0);
+    assert_eq!(
+        red_skull_player_strength(&state),
+        -8,
+        "-3 more, kept negative"
+    );
+    assert_eq!(red_skull_counter(&state), 0);
+}
+
 #[test]
 #[serial_test::serial(global_registry)]
 fn red_skull_enemy_damage_does_not_re_probe() {
@@ -5402,31 +5497,29 @@ fn red_skull_enemy_damage_does_not_re_probe() {
     assert_eq!(red_skull_counter(&state), 0);
 }
 
-// C# `RedSkull.AfterCurrentHpChanged` fires on a CURRENT-hp move, so a
-// max-hp change that CLAMPS current HP down (PaperCuts LoseMaxHp) must
-// re-probe the 50% threshold. A `lose_max_hp` that clamps current to the
-// new (smaller) max leaves the player at 100% of max → strength removed.
+// C# `CreatureCmd.LoseMaxHp` (CreatureCmd.cs:824) below current HP first
+// DAMAGES the player down to the new cap (firing `AfterCurrentHpChanged`, so
+// RedSkull re-probes at the OLD max), then `SetMaxHp` clamps silently (no
+// hook, Creature.cs:493). 30/100 losing 90 max: damage 20 -> 10/100 (10%,
+// still armed), cap -> 10/10 with no re-probe: the Strength stays.
 #[test]
 #[serial_test::serial(global_registry)]
-fn red_skull_max_hp_clamp_re_probes() {
+fn red_skull_lose_max_hp_probes_on_the_damage_not_the_clamp() {
     ensure_installed();
     // Armed: 30/100 (< 50%) → +3 Strength at combat start.
     let mut state = fresh_state_with_player(100, 30);
     give_player_relic(&mut state, RelicKind::RedSkull);
     let _ = dispatch_before_combat_start(&mut state);
     assert_eq!(red_skull_player_strength(&state), 3);
-    // Lose 90 max HP: max 100→10, current clamps 30→10 (a current-hp move).
     let player_uid = state.player.creature_uid.expect("player mirror");
     state.creature_lose_max_hp(player_uid, 90);
     assert_eq!(state.player.current_hp, 10);
     assert_eq!(state.player.max_hp, 10);
-    // Now 10/10 = 100% ≥ 50% → RedSkull removes its Strength.
     assert_eq!(
         red_skull_player_strength(&state),
-        0,
-        "max-hp clamp lifts above 50% → STR removed"
+        3,
+        "the silent SetMaxHp clamp must not re-probe RedSkull"
     );
-    assert_eq!(red_skull_counter(&state), 0);
 }
 
 // `creature_gain_max_hp` bumps current HP alongside max (a current-hp move),
@@ -5938,7 +6031,7 @@ fn gremlin_horn_grants_energy_on_enemy_death() {
     let result = dispatch_after_death(&mut state, &ctx);
     assert_eq!(result, EffectResult::Resolved);
     assert_eq!(
-        i32::from(state.player.energy) - i32::from(before_energy),
+        state.player.energy - before_energy,
         GREMLIN_HORN_ENERGY,
         "enemy death should grant +1 energy"
     );
@@ -6003,7 +6096,7 @@ fn gremlin_horn_fires_once_on_lethal_hit_via_apply_damage() {
         "enemy should be dead"
     );
     assert_eq!(
-        i32::from(state.player.energy) - i32::from(before_energy),
+        state.player.energy - before_energy,
         GREMLIN_HORN_ENERGY,
         "a lethal hit should grant exactly +1 energy (once)"
     );
@@ -7618,7 +7711,7 @@ fn paels_tears_grants_two_energy_on_next_player_turn_start() {
     assert_eq!(paels_tears_counter(&state), 1);
     state.player.energy = 0;
     let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
-    assert_eq!(state.player.energy, PAELS_TEARS_ENERGY as i8);
+    assert_eq!(state.player.energy, PAELS_TEARS_ENERGY);
     assert_eq!(
         paels_tears_counter(&state),
         0,
@@ -7679,6 +7772,31 @@ fn paels_tears_no_op_without_ownership() {
     let energy_before = state.player.energy;
     let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
     assert_eq!(state.player.energy, energy_before);
+}
+
+/// Combat ends during the player's end-of-turn with leftover energy
+/// latched (the killing blow lands after `before_turn_end`): C#
+/// `PaelsTears.AfterCombatEnd` clears `HadLeftoverEnergy`, so the latch
+/// must not survive into the next fight's turn-1 start (GH #1054).
+#[test]
+#[serial_test::serial(global_registry)]
+fn paels_tears_after_combat_end_clears_latch() {
+    ensure_installed();
+    let mut state = fresh_state_with_player(80, 80);
+    give_player_relic(&mut state, RelicKind::PaelsTears);
+    state.player.energy = 1;
+    let _ = dispatch_before_turn_end(&mut state, Side::Player);
+    assert_eq!(paels_tears_counter(&state), 1);
+    let _ = dispatch_after_combat_end(&mut state);
+    assert_eq!(
+        paels_tears_counter(&state),
+        0,
+        "after_combat_end clears the leftover latch"
+    );
+    // Next fight's turn-1 start: no bonus.
+    state.player.energy = 3;
+    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    assert_eq!(state.player.energy, 3);
 }
 
 /// Parity-pin: inlined `2` must match `PAELS_TEARS_ENERGY`.
@@ -8197,7 +8315,7 @@ fn emotion_chip_triggers_passive_on_prior_hp_loss() {
             r.counter = 5;
         }
     }
-    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    let _ = dispatch_after_player_turn_start(&mut state);
     assert!(
         state.player.block > block_before,
         "EmotionChip must fire orb passives (Frost grants block) when HP was lost last turn"
@@ -8231,7 +8349,7 @@ fn emotion_chip_with_cables_fired(
             r.counter = 5;
         }
     }
-    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    let _ = dispatch_after_player_turn_start(&mut state);
     state
 }
 
@@ -8286,7 +8404,7 @@ fn emotion_chip_no_fire_without_prior_hp_loss() {
     crate::orbs::channel_orb(&mut state, crate::orbs::Orb::frost());
     let block_before = state.player.block;
     // counter == 0 -> no fire.
-    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    let _ = dispatch_after_player_turn_start(&mut state);
     assert_eq!(
         state.player.block, block_before,
         "Frost passive must not fire when EmotionChip counter is 0"
@@ -8300,7 +8418,7 @@ fn emotion_chip_inert_without_relic() {
     let mut state = fresh_state_with_player(80, 80);
     crate::orbs::channel_orb(&mut state, crate::orbs::Orb::frost());
     let block_before = state.player.block;
-    let _ = dispatch_after_side_turn_start(&mut state, Side::Player);
+    let _ = dispatch_after_player_turn_start(&mut state);
     assert_eq!(state.player.block, block_before, "no relic, no fire");
 }
 
@@ -8431,21 +8549,25 @@ fn gambling_chip_inert_without_relic() {
 /// Mirror-fidelity round-4 defect #13: GamblingChip's round-1 mulligan is an
 /// `await`ed `CardSelectCmd` inside C# `Hook.AfterPlayerTurnStart`
 /// (`GamblingChip.cs` + `CombatManager.SetupPlayerTurn:677`), so the whole
-/// remainder of turn-1 setup blocks on it:
+/// remainder of the setup task blocks on it:
 ///   * later `AfterPlayerTurnStart` relics — MercuryHourglass's 3 to all
 ///     (`MercuryHourglass.cs`),
 ///   * the `AfterPlayerTurnStartLate` pass — BloodVial's heal 2
 ///     (`BloodVial.cs`),
-///   * the outer loop's `Hook.AfterSideTurnStart` (`CombatManager.cs:524`) —
-///     Akabeko's Vigor 8 (`Akabeko.cs`) and Lantern's +1 energy
-///     (`Lantern.cs`),
 ///   * the phase advance to the play phase.
 ///
 /// None of those may have run while the screen is open; all of them must run
-/// once it resolves. The driver mirror seeds from the world's PRE-hook wire at
-/// this very screen, so an engine that ran the batch around the choice (or not
-/// at all) desynced for the rest of the combat — 18 v34wr records, seeds
-/// 1004 / 1047.
+/// once it resolves (18 v34wr records, seeds 1004 / 1047).
+///
+/// The outer loop's `Hook.AfterSideTurnStart` is NOT behind the screen.
+/// `StartTurn` waits on the setup task only until it pauses
+/// (`WaitForPauseOrCompletionWithoutAssigningTask`, v0.111.0
+/// `CombatManager.cs:779-785`, v0.107.1 `:516-524`) and runs the side walk
+/// then. The screen itself waits for that: `SignalPlayerChoiceBegun` awaits
+/// `_taskAssignedCompletionSource` (`HookPlayerChoiceContext.cs`), which only
+/// `RunAutoPrePlayPhase` sets, after the side walk. So Akabeko's Vigor 8
+/// (`Akabeko.cs`) and Lantern's +1 energy (`Lantern.cs`) are already in place
+/// when the pick is made, and they do not fire again after it.
 #[test]
 #[serial_test::serial(global_registry)]
 fn gambling_chip_mulligan_defers_the_rest_of_turn_one_setup() {
@@ -8488,8 +8610,8 @@ fn gambling_chip_mulligan_defers_the_rest_of_turn_one_setup() {
     );
     assert_eq!(
         player_power_amount(&state, PowerKind::Vigor),
-        0,
-        "Akabeko's AfterSideTurnStart Vigor must wait for the pick"
+        8,
+        "Akabeko's AfterSideTurnStart Vigor runs during the pause"
     );
     assert_eq!(
         enemy_current_hp(&state, enemy),
@@ -8501,8 +8623,8 @@ fn gambling_chip_mulligan_defers_the_rest_of_turn_one_setup() {
         "BloodVial's heal must wait for the pick"
     );
     assert_eq!(
-        state.player.energy, 3,
-        "energy is reset before the screen; Lantern's +1 waits for the pick"
+        state.player.energy, 4,
+        "energy is reset before the screen; Lantern's +1 runs during the pause"
     );
     assert_eq!(state.phase, crate::CombatPhase::PlayerTurnStart);
 
@@ -8836,11 +8958,11 @@ fn zdch1_sling_of_courage_resolves_before_combat_start_when_elite() {
 // side for these turn-start hooks).
 #[test]
 #[serial_test::serial(global_registry)]
-fn zdch1_brimstone_resolves_before_player_side_turn_start() {
+fn zdch1_brimstone_resolves_after_player_side_turn_start() {
     ensure_installed();
     let mut state = fresh_state_with_player(80, 50);
     give_player_relic(&mut state, RelicKind::Brimstone);
-    let result = dispatch_before_side_turn_start(&mut state, crate::Side::Player);
+    let result = dispatch_after_side_turn_start(&mut state, crate::Side::Player);
     assert_eq!(result, EffectResult::Resolved);
 }
 

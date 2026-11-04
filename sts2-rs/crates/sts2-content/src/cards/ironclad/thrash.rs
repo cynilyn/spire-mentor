@@ -89,9 +89,30 @@ pub(crate) fn play_thrash(state: &mut CombatState, target: Option<CreatureUid>) 
         // C# folds the UN-floored `ModifyDamage` decimal; capture it as an exact
         // rational `(term_num, term_den)` so the sub-integer part is preserved
         // across plays instead of being floored away each fold.
-        let (term_num, mut term_den) = card_effects::player_modified_card_damage_frac(
+        //
+        // `Hook.ModifyDamage` applies the exhausted card's own enchantment
+        // first, additive then multiplicative (v0.111.0 Hook.cs:1643-1652,
+        // same in v0.107.1): `(base + Sharp) x Corrupted`, and only then the
+        // listener additives (Strength, the relic term) and multipliers. The
+        // Vigor cancel and the relic additive therefore sit OUTSIDE the
+        // enchant multiplier (seed 2158: a Corrupted Anger+ folded 8, not 12).
+        let (ench_add, ench_x100) = {
+            let card = &state.cards[exhausted_uid.0.get() as usize - 1];
+            (
+                sts2_core::enchantment_hooks::enchant_damage_additive_for(
+                    card,
+                    true,
+                    state.game_version,
+                ),
+                sts2_core::enchantment_hooks::enchant_damage_multiplicative_x100(card, true),
+            )
+        };
+        let enchanted_x100 =
+            i64::from(exhausted_base.saturating_add(ench_add)).saturating_mul(i64::from(ench_x100));
+        let (term_num, mut term_den) = card_effects::player_modified_card_damage_frac_of(
             state,
-            exhausted_base - vigor + relic_add,
+            enchanted_x100.saturating_add(i64::from(relic_add - vigor).saturating_mul(100)),
+            100,
         );
         // Gigantification is the other modifier the fold must see after the
         // attack, not during it. Thrash's attack latches it, and its
@@ -103,6 +124,15 @@ pub(crate) fn play_thrash(state: &mut CombatState, target: Option<CreatureUid>) 
         if state.player_power_amount(PowerKind::Gigantification) == 1 {
             term_den = term_den.saturating_mul(3);
         }
+        // Pen Nib keys on the fold's `cardSource` (the exhausted attack, still
+        // in Hand), which the card-less relic `DamageCtx` cannot carry: the
+        // listener judged Thrash instead. Swap its factor for the one C# gives
+        // the exhausted card (x2 when Thrash is the 9th attack, x1 when it is
+        // the marked 10th; seeds 2008 / 2029 / 2103).
+        let (pen_num, pen_den) =
+            crate::relics::uncommon::pen_nib_fold_rescale(state, exhausted_uid);
+        let term_num = term_num.saturating_mul(pen_num);
+        term_den = term_den.saturating_mul(pen_den);
         exhaust_hand_card(state, exhausted_uid);
         // Accumulate `rem + term` (rational add). The integer part flows into
         // `base_damage`; the reduced fractional remainder (in [0, 1)) goes back

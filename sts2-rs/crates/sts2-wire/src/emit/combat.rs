@@ -589,6 +589,13 @@ fn emit_seat_history(
             log.cards_exhausted_this_turn,
         );
     }
+    if log.extra_turns_taken_this_combat > 0 {
+        set(
+            m,
+            "extra_turns_taken_this_combat",
+            log.extra_turns_taken_this_combat,
+        );
+    }
     // Earlier plays' gains only, as the mod sends them: a gain tagged with
     // the current play count is the resolving play's own (the count bumps when
     // a play finishes), which C# Unmovable never counts against that play and
@@ -756,7 +763,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     let emitted_hp = state.player.current_hp.clamp(0, emitted_max_hp);
     set(&mut player, "hp", emitted_hp);
     set(&mut player, "block", state.player.block.max(0));
-    set(&mut player, "energy", i32::from(state.player.energy).max(0));
+    set(&mut player, "energy", state.player.energy.max(0));
     // C# `PlayerCombatState.MaxEnergy` is computed on every read; the stored
     // `max_energy` is the last turn start's, so a max-energy power or relic
     // gained this turn (Demesne, Pyre, Waste Away) would report a turn late.
@@ -906,7 +913,11 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
     // fold in the player's Focus via `ModifyOrbValue` (Plasma excepted).
     // The Rust backend emits `<KIND>_ORB.title` loc keys (server.py resolves
     // them; the C# backend already ships a plain name).
-    if state.player.orbs.capacity > 0 {
+    // A SIZED belt at 0 (Bulk Up emptied it) is emitted too, as
+    // `orbs: []`/`orb_slots: 0`, so a re-import keeps it at 0 instead of
+    // handing the Defect the lazy 3-slot base back. C# omits the keys at
+    // `Capacity == 0`; the import reads that as the same unsized belt.
+    if state.player.orbs.capacity > 0 || state.player.orbs.sized {
         let focus = sts2_core::orbs::focus_bonus(state);
         player.insert("orbs".to_owned(), orbs_to_value(&state.player.orbs, focus));
         set(
@@ -1173,7 +1184,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
             if seats {
                 let path = format!("$.allies[{i}]");
                 set(&mut m, "class", class_str_from_character(a.character));
-                set(&mut m, "energy", i32::from(a.energy));
+                set(&mut m, "energy", a.energy);
                 set(&mut m, "max_energy", i32::from(a.max_energy));
                 m.insert(
                     "powers".to_owned(),
@@ -1206,7 +1217,7 @@ pub fn combat_state_to_value(state: &CombatState) -> Result<Value, EmitError> {
                 if a.stars != 0 {
                     set(&mut m, "stars", i32::from(a.stars));
                 }
-                if a.orbs.capacity > 0 {
+                if a.orbs.capacity > 0 || a.orbs.sized {
                     // Their own Focus: a teammate seat's powers are stashed.
                     let focus = state.coop.stash[i]
                         .powers
@@ -1648,6 +1659,163 @@ pub fn card_block_preview(state: &CombatState) -> Vec<Option<i32>> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Read-only getters beside the wire (GH #1097)
+// ---------------------------------------------------------------------------
+//
+// The e2e campaign's tokenizer reads these from `sts2_rs.CombatState`
+// without a second `combat_state_to_value` call. None of them changes the
+// wire dict or `WIRE_VERSION`.
+
+/// The enemy creature `uid` names, or the same error
+/// [`combat_state_to_value`] raises for a state that lost one.
+fn enemy_creature<'a>(
+    state: &'a CombatState,
+    uid: CreatureUid,
+    path: &str,
+) -> Result<&'a sts2_core::Creature, EmitError> {
+    state
+        .creatures
+        .iter()
+        .find(|c| c.id == uid.0)
+        .ok_or_else(|| EmitError::at(path, "enemy uid not in creatures"))
+}
+
+/// The intents creature `c` telegraphs, head first. Empty when it
+/// telegraphs nothing.
+///
+/// The head is the creature's primed `intent`, the one the wire emits as
+/// `intents[0]`. When that head is still the first intent of the current
+/// move (the AI's `current_move().intents`), the rest of that move's intents
+/// follow, as the game shows them (`MoveState` takes `params
+/// AbstractIntent[]`). A head the engine re-primed away from the move table,
+/// such as the Test Subject's escalated MULTI_CLAW hit count or a revive's
+/// `Heal`, stands alone, so a tail is never attached to a head it does not
+/// belong to.
+#[must_use]
+pub fn telegraph_intents(c: &sts2_core::Creature) -> smallvec::SmallVec<[Intent; 4]> {
+    let Some(head) = c.intent else {
+        return smallvec::SmallVec::new();
+    };
+    match c
+        .ai
+        .as_ref()
+        .and_then(sts2_core::MonsterAi::current_move_opt)
+    {
+        Some(m) if m.intents.first() == Some(&head) => m.intents.clone(),
+        _ => smallvec::smallvec![head],
+    }
+}
+
+/// `CombatState.telegraph()`: per enemy, in the wire's `encounter` order,
+/// the full telegraph from [`telegraph_intents`] as intent dicts in the
+/// [`intent_to_value`] shape. Element 0 of each non-empty list equals the
+/// wire's `encounter[i]["intents"][0]`; an enemy with no telegraph has `[]`.
+///
+/// # Errors
+///
+/// An enemy uid with no creature, as [`combat_state_to_value`] reports it.
+pub fn enemy_telegraphs(state: &CombatState) -> Result<Value, EmitError> {
+    let mut out = Vec::with_capacity(state.enemy_uids.len());
+    for uid in &state.enemy_uids {
+        let c = enemy_creature(state, *uid, "$.telegraph")?;
+        let dealer = CreatureUid(c.id);
+        out.push(Value::Array(
+            telegraph_intents(c)
+                .into_iter()
+                .map(|intent| intent_to_value(intent, state, dealer))
+                .collect(),
+        ));
+    }
+    Ok(Value::Array(out))
+}
+
+/// The most steps [`enemy_intent_forecast`] walks: a step number is a `u8`.
+pub const MAX_FORECAST_STEPS: usize = u8::MAX as usize;
+
+/// `CombatState.peek_intents(k)`: per enemy, in the wire's `encounter`
+/// order, the `k` moves its AI is predicted to telegraph after the current
+/// one ([`sts2_core::MonsterAi::forecast_after_current`]), as
+/// `{"step": int, "certainty": float, "move_id": str, "intents": [intent
+/// dict, …]}`.
+///
+/// Step 1 is the move rolled at the end of the coming enemy turn, whether or
+/// not the monster has moved yet, so the list never repeats the telegraph.
+/// `certainty` is the product of the weight shares of the random picks on
+/// the way (`1.0` along a fixed pattern). Intent dicts have the
+/// [`intent_to_value`] shape, baked against the current board. `move_id` is
+/// the engine's move-state id: hidden state, for a privileged consumer only.
+/// An enemy without an AI, or with one parked on a branch state, has `[]`.
+/// Dead enemies keep their AI's forecast; consumers mask them with the
+/// wire's `is_dead`.
+///
+/// Read-only: no RNG draw and no change to `state`.
+///
+/// # Errors
+///
+/// `k` above [`MAX_FORECAST_STEPS`], or an enemy uid with no creature.
+pub fn enemy_intent_forecast(state: &CombatState, k: usize) -> Result<Value, EmitError> {
+    if k > MAX_FORECAST_STEPS {
+        return Err(EmitError::new(format!(
+            "peek_intents: k={k} is above the {MAX_FORECAST_STEPS}-step limit"
+        )));
+    }
+    let mut out = Vec::with_capacity(state.enemy_uids.len());
+    for uid in &state.enemy_uids {
+        let c = enemy_creature(state, *uid, "$.peek_intents")?;
+        let dealer = CreatureUid(c.id);
+        let steps =
+            c.ai.as_ref()
+                .map(|ai| ai.forecast_after_current(k, state))
+                .unwrap_or_default();
+        let rows: Vec<Value> = steps
+            .iter()
+            .map(|s| {
+                let mut d = obj();
+                set(&mut d, "step", s.step);
+                set(&mut d, "certainty", f64::from(s.certainty));
+                set(&mut d, "move_id", s.move_id);
+                d.insert(
+                    "intents".to_owned(),
+                    Value::Array(
+                        s.intents
+                            .iter()
+                            .map(|intent| intent_to_value(*intent, state, dealer))
+                            .collect(),
+                    ),
+                );
+                Value::Object(d)
+            })
+            .collect();
+        out.push(Value::Array(rows));
+    }
+    Ok(Value::Array(out))
+}
+
+/// `CombatState.true_draw_top(k)`: the top `k` cards of the player's draw
+/// pile in true draw order, top first, as card dicts in the
+/// [`card_to_value`] shape (the whole pile when it holds fewer). The top is
+/// the card the next draw takes. Hidden state, for a privileged consumer
+/// only; this is the order the wire's `deck.draw_pile` lists, without
+/// building the rest of the dict.
+///
+/// # Errors
+///
+/// A state whose draw order is not known (`deferred_draw_order`: a
+/// `belief_view`, whose unknown middle is drawn at random when a draw
+/// happens), or a pile uid with no card. A `sample_world` re-deal has a
+/// concrete order and returns it.
+pub fn true_draw_top(state: &CombatState, k: usize) -> Result<Value, EmitError> {
+    if state.player.deferred_draw_order {
+        return Err(EmitError::new(
+            "true_draw_top: this state's draw order is not known (deferred_draw_order, \
+             as on a belief_view); read it from the real state",
+        ));
+    }
+    let top = &state.player.draw[..k.min(state.player.draw.len())];
+    pile_to_value(state, top, &state.cards, "$.true_draw_top")
 }
 
 #[cfg(test)]

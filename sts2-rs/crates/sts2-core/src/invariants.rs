@@ -75,7 +75,7 @@ macro_rules! ensure {
 /// invariants (e.g. energy delta == card cost).
 #[derive(Debug)]
 pub struct PreStep {
-    pub energy: i8,
+    pub energy: i32,
     pub is_over: bool,
     /// If the action being applied is `PlayCard`, the
     /// `(id, cost, x_cost, weighted_drain)` tuple of the referenced card
@@ -436,7 +436,7 @@ pub fn check_post_step(pre: &PreStep, state: &CombatState, ctx: &str) -> Result<
         {
             // The Weighted drain clamps at 0 rather than going negative
             // (`PlayerCmd.LoseEnergy`), so the floor is part of the contract.
-            let expected = (pre.energy - cost - weighted).max(0);
+            let expected = (pre.energy - i32::from(cost) - i32::from(weighted)).max(0);
             let actual = state.player.energy;
             // Cards whose own OnPlay gains energy (`PlayerCmd.GainEnergy`)
             // legitimately end above `expected`. The gain amount varies

@@ -8,17 +8,23 @@ the printed ``BaseStarCost`` as ``star_cost`` and veto ``can_play`` against it
 costing stars the Silent never has, and as unplayable. Same fields as the
 mod's ``SimStateExtractor`` (``PROTOCOL.md`` "Card object").
 
-Seed ``STARPROBE14``: the Splash offer's option 1 is Astral Pulse (printed
-3 stars).
+Seed ``STARPROBE14`` (v0.107.1) / ``STARPROBE31`` (v0.111.0): the Splash
+offer holds Astral Pulse (printed 3 stars at both builds, ``AstralPulse.cs``).
 """
 
 from __future__ import annotations
 
+import sts2_client
+
 STAR_CARD = "CARD.ASTRAL_PULSE"
+
+#: A Silent seed whose first Splash offers `STAR_CARD`, per game build: v0.111.0
+#: rehashed every seed (XxHash64), so STARPROBE14 offers other cards there.
+_STAR_SEED = {"v0.107.1": "STARPROBE14", "v0.111.0": "STARPROBE31"}
 
 
 def test_splashed_star_card_is_free_in_stars_and_playable(game):
-    state = game.start(character="Silent", seed="STARPROBE14")
+    state = game.start(character="Silent", seed=_STAR_SEED[sts2_client.GAME_VERSION])
     game.skip_neow(state)
     r = game.set_player(hp=70, max_hp=80, deck=["SPLASH"] * 5, relics=[], potions=[])
     assert r.get("type") != "error", r

@@ -2037,7 +2037,7 @@ impl HpAwareCtx {
 /// common case where a Strike or two clears the front enemy.
 fn max_player_attack_damage_this_turn(state: &CombatState) -> i32 {
     use sts2_core::cards::CardType;
-    let energy = i32::from(state.player.energy.max(0));
+    let energy = state.player.energy.max(0);
     if energy <= 0 {
         return 0;
     }
@@ -2540,7 +2540,7 @@ fn obvious_kill_action(state: &CombatState, actions: &[Action]) -> Option<usize>
             (strength, weak)
         });
 
-    let energy = i32::from(state.player.energy.max(0));
+    let energy = state.player.energy.max(0);
 
     for (idx, action) in actions.iter().enumerate() {
         let Action::PlayCard { hand_index, target } = action else {

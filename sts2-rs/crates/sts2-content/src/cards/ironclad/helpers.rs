@@ -195,9 +195,10 @@ pub(crate) fn enemy_vulnerable(state: &CombatState, target: CreatureUid) -> i32 
 }
 
 /// Exhaust the first hand card (`uid`), firing `after_card_exhausted` on both
-/// the power-arena and relic buses so exhaust synergies (Dark Embrace, Feel No
-/// Pain, …) tick. Mirrors the inline `CardCmd.Exhaust` path in
-/// [`sts2_core::combat_loop`]; used by FiendFire / Thrash which exhaust
+/// the power-arena and relic buses (powers first, then relics) so exhaust
+/// synergies (Dark Embrace, Feel No Pain, …) tick. Mirrors the inline
+/// `CardCmd.Exhaust` path in [`sts2_core::combat_loop`]; used by FiendFire /
+/// Thrash / Second Wind which exhaust
 /// hand cards mid-play. No-op if `uid` is not in hand, or once the combat is
 /// ending (`CardCmd.Exhaust` is refused then, `CardCmd.cs:239`: Cinder's
 /// random exhaust after its killing blow).
@@ -216,24 +217,12 @@ pub(crate) fn exhaust_hand_card(state: &mut CombatState, uid: sts2_core::CardUid
         sts2_core::cards::PileKind::Hand,
         sts2_core::cards::PileKind::Exhaust,
     );
-    let exhaust_ctx = sts2_core::relic_effects::CardEventCtx {
-        card_id,
-        card_uid: Some(uid),
-        target: None,
-        card_tags,
-        energy_spent: 0,
-    };
-    let _ = sts2_core::relic_effects::dispatch_after_card_exhausted(state, &exhaust_ctx);
-    let hook_ctx = sts2_core::hooks::CardCtx {
-        card_id: Some(card_id),
-        card_uid: Some(uid),
-        card_tags,
-        card_type: Some(card_type),
-    };
-    // Mid-play hand-card exhaust (FiendFire / Thrash) — not the
-    // end-of-turn ethereal sweep, so `caused_by_ethereal = false`. Bead
-    // `sts2-rs-umouk`.
-    sts2_core::hooks::dispatch_after_card_exhausted(state, &hook_ctx, false);
+    // Mid-play hand-card exhaust (FiendFire / Thrash / Second Wind) — not
+    // the end-of-turn ethereal sweep. Player powers before relics, as C#
+    // `Hook.AfterCardExhausted` walks them (act23 Ironclad-2146).
+    sts2_core::combat_loop::fire_after_card_exhausted(
+        state, card_id, uid, None, card_tags, card_type,
+    );
 }
 
 /// Build a [`sts2_core::PendingChoice`] option list covering every card

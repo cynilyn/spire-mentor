@@ -737,9 +737,11 @@ internal static class SimScreenAdvice
 
     /// <summary>
     /// The crystal sphere is a blind pick -- every remaining cell is hidden,
-    /// which is the whole point of the screen -- so there is nothing for a
-    /// policy to rank and no reason to spend a round trip. Answered locally:
-    /// reveal the next cell, or proceed once the screen offers it.
+    /// which is the whole point of the screen -- so there is nothing for the
+    /// advisor's nets to rank and no reason to spend a round trip. Answered
+    /// locally: divine the cell <see cref="CrystalSpherePick"/> names (a fixed
+    /// block order that can uncover the 4x4 relic, GH #872), or proceed once
+    /// the screen offers it.
     /// </summary>
     private static SimScreenDecision? DescribeCrystalSphere(NCrystalSphereScreen screen)
     {
@@ -760,15 +762,21 @@ internal static class SimScreenAdvice
         }
 
         bool reveal = hidden.Count > 0 && !canProceed;
-        string label = reveal ? "reveal a cell" : "proceed";
+        int pick = reveal
+            ? CrystalSpherePick.Pick(hidden.Select(c => (c.Entity.X, c.Entity.Y)).ToList())
+            : -1;
+        string label = reveal
+            ? $"reveal cell ({hidden[pick].Entity.X},{hidden[pick].Entity.Y})"
+            : "proceed";
         SimScreenDecision decision = LocalDecision(
             NonCombatBridgeProtocol.CrystalSphereState, screen, nameof(NCrystalSphereScreen),
-            $"crystal sphere: {label} (every cell is hidden — nothing to rank)", label,
+            $"crystal sphere: {label} (fixed 3x3 block order; the board's contents are not read)", label,
             _ =>
             {
                 if (reveal)
                 {
-                    return ClickHolder(hidden, 0);
+                    SelectBigDivination(screen);
+                    return ClickHolder(hidden, pick);
                 }
                 if (proceed != null && GodotObject.IsInstanceValid(proceed))
                 {
@@ -782,13 +790,29 @@ internal static class SimScreenAdvice
             // runaway guard) would read the second reveal as the first one
             // repeating.
             signature: $"crystal_sphere:{label}:{hidden.Count}");
-        if (reveal)
-        {
-            // Which cell to reveal is a real choice for a player who reads the
-            // board; "the first hidden cell" is not one (GH #872).
-            decision.HandBack = "the AI has no policy for the Crystal Sphere yet";
-        }
+        // No HandBack: the reveal now follows a policy (GH #872), so F7 plays
+        // it under the default `pause_on: "unsupported"`. A player who wants to
+        // read the board themselves lists "CrystalSphere" in `pause_on`.
         return decision;
+    }
+
+    /// <summary>
+    /// Make sure the Big (3x3) tool is selected before a reveal. Both
+    /// <see cref="CrystalSpherePick"/> (F7) and the driver lane's block order
+    /// assume the Big tool. The minigame starts on Big, but the player may
+    /// have switched to Small before either took over. This goes through the
+    /// screen's own button handler (decomp:
+    /// NCrystalSphereScreen.SetBigDivination: outline swap plus
+    /// CrystalSphereMinigame.SetTool(Big)), which is idempotent and runs
+    /// synchronously, so the click that follows uses the Big tool.
+    /// </summary>
+    internal static void SelectBigDivination(NCrystalSphereScreen screen)
+    {
+        Node? big = screen.GetNodeOrNull<Node>("%BigDivinationButton");
+        if (big != null && GodotObject.IsInstanceValid(big))
+        {
+            screen.Call(NCrystalSphereScreen.MethodName.SetBigDivination, big);
+        }
     }
 
     /// <summary>

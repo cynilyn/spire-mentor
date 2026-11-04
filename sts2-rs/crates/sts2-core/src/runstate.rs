@@ -459,8 +459,8 @@ impl PendingCardSelect {
     }
 }
 
-/// A pending "choose EXACTLY `pick` of N generated cards, add the chosen ones
-/// to the deck" screen raised by a run-side effect — C#
+/// A pending "choose `min_pick..=pick` of N generated cards, add the chosen
+/// ones to the deck" screen raised by a run-side effect — C#
 /// `CardSelectCmd.FromSimpleGridForRewards(prefs(prompt, pick))` over a list of
 /// freshly-generated `CardCreationResult`s, each chosen card then
 /// `CardPileCmd.Add(card, PileType.Deck)`. Distinct from
@@ -468,18 +468,24 @@ impl PendingCardSelect {
 /// the card-reward screen): this is a MANDATORY multi-pick over fully-built
 /// `Card` PODs (carrying their rolled upgrade state) that lands the picks on
 /// the master deck. Queued on [`RunState::pending_card_grants`]; the run loop
-/// surfaces it as a `card_select` (min == max == `pick`, no skip) that preempts
+/// surfaces it as a `card_select` (min `min_pick`, max `pick`) that preempts
 /// the phase, mirroring the `pending_deck_transforms` / `_enchants` deck-op
-/// selects. Used by `RoomFullOfCheese.Gorge` (pick 2 of 8 Common cards). Bead
-/// `sts2-rs-gorge-select`.
+/// selects. Used by `RoomFullOfCheese.Gorge` (exactly 2 of 8 Common cards) and
+/// `SeaGlass` (any 0..=15 of 15). Bead `sts2-rs-gorge-select`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingCardGrant {
     /// The freshly-generated cards on offer (in C# generation order).
     pub options: Vec<Card>,
-    /// How many of `options` the player must pick (C# `prefs.MinSelect ==
-    /// MaxSelect`). Each picked card is appended to the master deck; the
-    /// unpicked remainder is discarded once `pick` reaches 0.
+    /// How many of `options` the player may still pick (C#
+    /// `prefs.MaxSelect`). Each picked card is appended to the master deck;
+    /// the unpicked remainder is discarded once `pick` reaches 0.
     pub pick: usize,
+    /// How many picks are still REQUIRED before the player may stop (C#
+    /// `prefs.MinSelect`). Equal to [`Self::pick`] for a mandatory pick-N
+    /// (Gorge); `0` for an optional 0..=N grid (SeaGlass, `SeaGlass.cs:89`),
+    /// where `GrantDeckCard { idx: options.len() }` confirms the picks made so
+    /// far and closes the grant. Decremented with every pick.
+    pub min_pick: usize,
 }
 
 /// `CardRewardGenerationOptions` POD — mirrors
@@ -648,6 +654,12 @@ pub struct PotionReward {
     /// engine identifies potions by `PotionKind` end-to-end (no Python
     /// `PotionId.<NAME>` indirection lands today).
     pub potion_kind: Option<crate::potions::PotionKind>,
+    /// A direct `PotionCmd.TryToProcure` (PhialHolster, NeowsSacrifice), not
+    /// a reward-screen `PotionReward`. Both queue here, but only a reward
+    /// stays claimable after bouncing off a full belt, so only a reward
+    /// can surface the interactive `PotionSwap` (GH #1069). A direct
+    /// procure on a full belt is simply lost, as in C#.
+    pub direct: bool,
 }
 
 impl PotionReward {
@@ -656,7 +668,10 @@ impl PotionReward {
     /// `PotionReward(player_id)` with no explicit `potion_id`.
     #[must_use]
     pub const fn empty() -> Self {
-        Self { potion_kind: None }
+        Self {
+            potion_kind: None,
+            direct: false,
+        }
     }
 
     /// Construct a `PotionReward` with a pre-rolled `potion_kind`.
@@ -665,6 +680,17 @@ impl PotionReward {
     pub const fn with_kind(potion_kind: crate::potions::PotionKind) -> Self {
         Self {
             potion_kind: Some(potion_kind),
+            direct: false,
+        }
+    }
+
+    /// A direct `PotionCmd.TryToProcure` of `potion_kind` (no reward
+    /// screen): on a full belt it is dropped, never offered as a swap.
+    #[must_use]
+    pub const fn direct(potion_kind: crate::potions::PotionKind) -> Self {
+        Self {
+            potion_kind: Some(potion_kind),
+            direct: true,
         }
     }
 }
@@ -994,11 +1020,16 @@ pub enum RestSiteActionOutcome {
     /// or already removed in auto mode) and the max-HP gain (9 in v0.107.1,
     /// 5 in v0.111.0) lands once the removal resolves.
     Cooked,
+    /// `Clone` selected (Pael's Growth): every deck card carrying the
+    /// `Clone` enchantment was copied back into the deck (C#
+    /// `CloneRestSiteOption.OnSelect`). Zero Clone cards still counts as
+    /// a successful pick.
+    Cloned,
     /// The chosen option's [`RestSiteOption::enabled`] is `false`,
     /// or a pre-existing pending-choice blocked the request. No
     /// state mutation occurred.
     Disabled,
-    /// The chosen variant (Cook before v0.111.0 / Clone / Mend) is
+    /// The chosen variant (`Mend`, multiplayer-only) is
     /// deferred — its handler hasn't landed yet. No state
     /// mutation occurred.
     Unsupported,
@@ -1359,11 +1390,10 @@ pub struct RunState {
     /// also be reduced (Sozu-style relics) — see
     /// [`Self::gain_potion_slots`]'s `amount: i32` signature.
     ///
-    /// Combat-side `PlayerCombatState.potions` remains hard-capped at
-    /// [`crate::potions::MAX_POTIONS`] (= 5); this field tracks the
-    /// run-state intent so PotionBelt / AlchemicalCoffer-style relics
-    /// can grow / shrink the belt before the next combat seeds
-    /// `PlayerCombatState`. Bead `sts2-rs-dsgf9`.
+    /// No five-slot ceiling (C# `MaxPotionCount => _potionSlots.Count`,
+    /// Player.cs:42-43): the next combat seeds
+    /// `PlayerCombatState.potion_slots` from it unclamped. Bead
+    /// `sts2-rs-dsgf9`.
     pub max_potion_slots: i32,
 
     /// Run-level potion belt — the potions the player currently holds
@@ -1457,19 +1487,6 @@ pub struct RunState {
     /// to `RunState` because the Rust port has no per-relic instance
     /// state and the counter must survive `RunManager` reconstruction.
     pub winged_boots_off_path_used: u32,
-
-    /// Re-entry guard for `BowlerHat::on_gold_gained` (Python
-    /// `relics/uncommon.py::BowlerHat._is_applying_bonus`). The
-    /// hook applies a 20%-of-amount bonus by re-calling
-    /// [`Self::gain_gold`], which re-fires the gold-channel
-    /// listeners. This flag is set during the bonus application so
-    /// the BowlerHat listener can skip its own recursive call and
-    /// avoid the geometric `0.2 * 0.2 * ...` compounding. Mirrors
-    /// Python's instance-side bool flag; lifted to `RunState`
-    /// because the Rust port has no per-relic state. Set/cleared
-    /// inside `listener_bowler_hat_on_gold_gained`; defaults to
-    /// `false` at run start. Bead `sts2-rs-b31s6`.
-    pub bowler_hat_applying_bonus: bool,
 
     /// Re-entry guard set during pickup-time reward consumption.
     /// Mirrors Python `RunState.defer_followup_rewards: bool`
@@ -1574,8 +1591,10 @@ pub struct RunState {
     pub pending_removal_paels_tooth: bool,
 
     /// Cards picked so far in a Pael's Tooth stash batch (see
-    /// [`Self::pending_removal_paels_tooth`]).
-    pub pending_paels_tooth_picks: Vec<crate::cards::Card>,
+    /// [`Self::pending_removal_paels_tooth`]), each with its position in the
+    /// batch's ORIGINAL removal offer — the selection order the stash keeps
+    /// for equal `Id.Entry` picks, whatever order the driver removed them in.
+    pub pending_paels_tooth_picks: Vec<(usize, crate::cards::Card)>,
 
     /// Cards to append to [`Self::master_deck`] AFTER the current batch of
     /// interactive [`Self::pending_deck_removals`] fully drains (i.e. when
@@ -1641,6 +1660,17 @@ pub struct RunState {
     /// [`Self::pending_post_removal_cards`], which is scoped to the removal
     /// batch alone. Bead `sts2-rs-1hiht` lineage (decision-granularity).
     pub pending_post_pick_cards: Vec<crate::cards::Card>,
+
+    /// Deck cards a dying `SwipePower` thief hands back, waiting to re-enter
+    /// the deck. C# `SwipePower.BeforeDeath` (v0.111.0 `SwipePower.cs:50-67`)
+    /// only registers the card and queues a `SpecialCardReward`; the deck add
+    /// is its `OnSelect` -> `CardPileCmd.Add(_card, PileType.Deck)`
+    /// (`SpecialCardReward.cs:82-92`) on the reward screen, i.e. AFTER the
+    /// run-side `AfterCombatEnd` / `AfterCombatVictory` deck adds (Pael's
+    /// Tooth) and through the deck-add hooks (Lucky Fysh). Filled by the
+    /// combat exit write-back, drained by
+    /// `RunManager::exit_combat_and_transition`.
+    pub pending_swipe_returns: Vec<crate::cards::Card>,
 
     /// Count of `NeowsBones` curses whose `Niche` ROLL (not just the card-add)
     /// is deferred to grant-batch settle. C# rolls the curse on `Rng.Niche`
@@ -2100,8 +2130,6 @@ impl Default for RunState {
             // Bead `sts2-rs-eboqq`: FurCoat un-obtained at run-start.
             fur_coat_act_index: None,
             winged_boots_off_path_used: 0,
-            // Bead `sts2-rs-b31s6`: BowlerHat re-entry guard, clear at run-start.
-            bowler_hat_applying_bonus: false,
             // Bead `sts2-rs-w785o`: pickup-time reward-redemption guard,
             // matches Python `run_state.py:1415` default.
             defer_followup_rewards: false,
@@ -2125,6 +2153,7 @@ impl Default for RunState {
             pending_post_removal_gold_loss: 0,
             pending_post_upgrade_hp_loss: 0,
             pending_post_pick_cards: Vec::new(),
+            pending_swipe_returns: Vec::new(),
             pending_neows_bones_curses: 0,
             pending_post_pick_relic_grants: Vec::new(),
             interactive_card_upgrade: false,
@@ -2212,6 +2241,18 @@ impl Default for RunState {
     }
 }
 
+/// The engine's `total_floor` for a floor number the game shows
+/// (`RunState.TotalFloor`: the live bridge's `floor`, a pasted position) in
+/// 1-based `act`. The inverse of [`RunState::game_floor`]: the game counts
+/// each act's start room (Neow, the Ancients), the engine counts none, so
+/// the offset is the act number (GH #1051). A missing (`0`) or negative act
+/// reads as act 1, and the result is never negative. Python twin:
+/// `sts2-pycli/python/floors.py`.
+#[must_use]
+pub fn engine_total_floor(game_floor: i64, act: i64) -> i64 {
+    (game_floor - act.max(1)).max(0)
+}
+
 impl RunState {
     /// Construct a fresh, empty `RunState`.
     #[must_use]
@@ -2219,11 +2260,63 @@ impl RunState {
         Self::default()
     }
 
+    /// Agent mode (GH #981): every deck mutation the real game asks the
+    /// player about is surfaced as a decision instead of auto-resolved —
+    /// `interactive_card_removal`, `interactive_card_upgrade`,
+    /// `interactive_card_transform` (which also gates the enchant queue) and
+    /// `direct_event_relic_grant`.
+    ///
+    /// The ONE definition of "agent mode": the arena, the PPO env, and both
+    /// workbenches construct through it (the PyO3 `RunManager(mode="agent")`
+    /// calls this too), so a host cannot turn on three flags and forget the
+    /// fourth. The defaults (all off) are the parity mode, which matches the
+    /// headless C# runner: front-of-deck removal, `master_deck[0]` transform,
+    /// rewards-stream auto-upgrade.
+    ///
+    /// `interactive_potion_swap` is deliberately NOT part of the bundle: the
+    /// hosts disagree on it on purpose (env-gated in the arena / PPO env, off
+    /// in the workbench).
+    pub fn set_agent_decisions(&mut self) {
+        self.interactive_card_removal = true;
+        self.interactive_card_upgrade = true;
+        self.interactive_card_transform = true;
+        self.direct_event_relic_grant = true;
+    }
+
+    /// Whether every flag [`Self::set_agent_decisions`] sets is on.
+    #[must_use]
+    pub fn has_agent_decisions(&self) -> bool {
+        self.interactive_card_removal
+            && self.interactive_card_upgrade
+            && self.interactive_card_transform
+            && self.direct_event_relic_grant
+    }
+
+    /// Whether every flag [`Self::set_agent_decisions`] sets is off (the
+    /// parity mode).
+    #[must_use]
+    pub fn has_parity_decisions(&self) -> bool {
+        !(self.interactive_card_removal
+            || self.interactive_card_upgrade
+            || self.interactive_card_transform
+            || self.direct_event_relic_grant)
+    }
+
     /// Returns the current act index (1, 2, or 3). Mirrors Python
     /// `RunState.act_index`. Bead `sts2-rs-70anj.3.16`.
     #[must_use]
     pub fn act_index(&self) -> u8 {
         self.act_index
+    }
+
+    /// The floor number the game shows (`RunState.TotalFloor`, the top bar
+    /// and the game-over "Floors Climbed"). The game counts every act's
+    /// start room (Neow, the Ancients) as a floor and [`Self::total_floor`]
+    /// does not, so the two differ by the 1-based act number (48 vs 45 at
+    /// the act-3 boss). Inverse: [`engine_total_floor`] (GH #1051).
+    #[must_use]
+    pub fn game_floor(&self) -> i32 {
+        self.total_floor + i32::from(self.act_index)
     }
 
     // -- Pael cluster trackers (bead `sts2-rs-70anj.3.20`) -------------
@@ -2524,6 +2617,16 @@ impl RunState {
     /// Does NOT enforce the combat-side [`crate::potions::MAX_POTIONS`]
     /// ceiling — Python doesn't either; the relic spec gates apply at
     /// the call site (PotionBelt: +2, AlchemicalCoffer: +1, etc.).
+    /// The potion belt's slot count. C# `Player.MaxPotionCount =>
+    /// _potionSlots.Count` (Player.cs:42-43, both builds) has no ceiling of
+    /// its own: PotionBelt, PhialHolster and AlchemicalCoffer stack past
+    /// [`crate::potions::MAX_POTIONS`], which is only the inline size of the
+    /// combat belt's `SmallVec` and the unset-slots fallback.
+    #[must_use]
+    pub fn potion_belt_cap(&self) -> usize {
+        self.max_potion_slots.max(0) as usize
+    }
+
     pub fn gain_potion_slots(&mut self, amount: i32) {
         self.max_potion_slots = self.max_potion_slots.saturating_add(amount).max(0);
     }
@@ -2535,10 +2638,9 @@ impl RunState {
     /// swap decision is the caller's business — reward claims should go
     /// through [`Self::claim_potion_reward`], which models the C#
     /// "discard one to make room" flow. GH #252). The slot ceiling is
-    /// [`Self::max_potion_slots`] clamped to the combat-side
-    /// [`crate::potions::MAX_POTIONS`] hard cap. Bead `sts2-rs-01o`.
+    /// [`Self::potion_belt_cap`]. Bead `sts2-rs-01o`.
     pub fn add_potion_to_belt(&mut self, kind: crate::potions::PotionKind) -> bool {
-        let cap = (self.max_potion_slots.max(0) as usize).min(crate::potions::MAX_POTIONS);
+        let cap = self.potion_belt_cap();
         if self.potions.len() >= cap {
             return false;
         }
@@ -2614,6 +2716,20 @@ impl RunState {
         false
     }
 
+    /// Claim a direct `PotionCmd.TryToProcure` (see [`PotionReward::direct`]):
+    /// the Sozu veto, then the first free slot. A full belt drops it with no
+    /// swap, since no reward screen keeps it claimable (`PhialHolster.cs`).
+    pub fn claim_direct_potion(&mut self, kind: crate::potions::PotionKind) -> bool {
+        if !crate::run_effects::dispatch_should_procure_potion(self) {
+            return false;
+        }
+        if self.add_potion_to_belt(kind) {
+            return true;
+        }
+        self.potions_overflow_dropped += 1;
+        false
+    }
+
     /// Set [`Self::current_room`] to `room` and fire the
     /// `after_room_entered` hook channel
     /// ([`crate::run_effects::dispatch_after_room_entered`]) with the
@@ -2667,6 +2783,18 @@ impl RunState {
     ///
     /// Bead `sts2-rs-6ynt.4.1` (P7 events framework).
     pub fn enter_event_room(&mut self, event_id: crate::events::EventId) {
+        self.bind_event(event_id);
+        self.enter_current_event_room();
+    }
+
+    /// Bind `event_id` as the current event WITHOUT entering a room: the
+    /// work C# `EventRoom.EnterInternal` does before `AfterRoomEntered`
+    /// (`BeginEvent`, then `GenerateInternalCombatStateIfNecessary`). Use it
+    /// when the map move already entered the event room
+    /// (`RunManager::do_map_move` → [`Self::enter_room`]): entering it again
+    /// fired every `AfterRoomEntered` listener twice per event room
+    /// (MawBank paid 24, Planisphere healed 10). C# fires the hook once.
+    pub fn bind_event(&mut self, event_id: crate::events::EventId) {
         self.current_event = Some(event_id);
         // Fresh event → fresh multi-page scratch (page 0, no RNG, no
         // slots). Single-page events never read it. Bead `sts2-rs-2guyj`.
@@ -2687,6 +2815,12 @@ impl RunState {
                 self.game_version,
             );
         }
+    }
+
+    /// The room half of [`Self::enter_event_room`]: enter an Event room at
+    /// the standing map point (or a coord-less one), firing
+    /// `AfterRoomEntered` once.
+    fn enter_current_event_room(&mut self) {
         // Preserve the map coord/point-type of the room we're standing in.
         // Entering a coord-less `Room::new` here wiped `current_room.map_coord`
         // to `None`, so the next `MapChoice` tick read coord=None, fell back to
@@ -2902,11 +3036,14 @@ impl RunState {
     pub fn obtain_relic(&mut self, relic_id: RelicId) {
         self.relics.push(relic_id);
         // C# `RelicCmd.Obtain` removes a non-stackable relic from BOTH
-        // the player bag and the SHARED bag (`RelicCmd.cs:29-30`). Strip
-        // it from the shared per-rarity buckets here so a relic obtained
-        // off the reward/event path can't later resurface from the
-        // treasure-room pull. Stackable relics never live in the grab
-        // bags, so this is a no-op for them (no stackable gate needed).
+        // the player bag and the SHARED bag (`RelicCmd.cs:43-44`, both
+        // builds). Strip both here so a relic obtained off the
+        // treasure/event path can't resurface from a later player-bag
+        // pull once it is lost again (Relic Trader) — `RelicCmd.Remove`
+        // never re-adds it — nor from the treasure-room pull. Stackable
+        // relics never live in the grab bags, so this is a no-op for them
+        // (no stackable gate needed).
+        self.remove_relic_from_player_grab_bag(relic_id);
         self.remove_relic_from_shared_grab_bag(relic_id);
         // Bead `sts2-rs-pfiwm`: initialize the run-side counter for
         // countdown relics at pickup, mirroring C# constructing the
@@ -3145,20 +3282,21 @@ impl RunState {
     }
 
     /// Offer + grant the rest-site heal rewards (C# `ExecuteRestSiteHeal`'s
-    /// `ModifyRestSiteHealRewards` + `OfferCustom` leg). `Reward::Potion`
-    /// routes through [`Self::procure_potion`] (Sozu veto + belt-slot
-    /// overflow); any other reward kind is queued onto [`Self::pending_rewards`]
-    /// for the run loop to drain (e.g. Dream Catcher's `CardReward`). Bead
+    /// `ModifyRestSiteHealRewards` + `OfferCustom` leg). Every reward is
+    /// queued onto [`Self::pending_rewards`] in list order for the run loop
+    /// to drain (Tiny Mailbox potions, Dream Catcher's `CardReward`). Bead
     /// `sts2-rs-RP23`.
+    ///
+    /// Potions are NOT pre-vetoed here: C# `RewardsSet.GenerateWithoutOffering`
+    /// (v0.111.0 `RewardsSet.cs:128-150`) Populates every reward, and
+    /// `PotionReward.Populate` rolls on `PlayerRng.Rewards` even under Sozu;
+    /// the veto is in `OnSelect` -> `PotionCmd.TryToProcure`. The drain rolls
+    /// the empty reward and applies that veto in
+    /// [`Self::claim_potion_reward`]. Routing through [`Self::procure_potion`]
+    /// dropped the reward unrolled and left the rewards stream behind.
     fn grant_rest_site_rewards(&mut self) {
-        for reward in self.offer_rest_site_rewards() {
-            match reward {
-                Reward::Potion(p) => {
-                    let _ = self.procure_potion(p);
-                }
-                other => self.pending_rewards.push(other),
-            }
-        }
+        let rewards = self.offer_rest_site_rewards();
+        self.pending_rewards.extend(rewards);
     }
 
     /// Count of master-deck cards that can be removed. C# spells this out
@@ -3388,17 +3526,19 @@ impl RunState {
                 enabled: has_upgradable,
             },
         ];
-        let _ = crate::run_effects::dispatch_modify_rest_site_options(self, &mut options);
         // C# `ByrdonisEgg.TryModifyRestSiteOptions` (`ByrdonisEgg.cs:19-27`):
         // when the player owns the egg it appends a `HatchRestSiteOption`.
         // The egg is the ONLY *card* implementing the modify hook (the other
         // implementers — Girya / Shovel / MeatCleaver / PaelsGrowth / Midas —
-        // are relics/modifiers, already served by the relic-keyed channel
-        // above), so a deck-scan here is the right-sized mirror rather than a
-        // new card-keyed dispatch bus. In single-player, an egg in the master
-        // deck means `player == Owner`. Appended AFTER the relic channel,
-        // matching C# `Generate` (Heal/Smith first, then the
-        // `Hook.ModifyRestSiteOptions` listener walk). Bead `sts2-rs-RP24`.
+        // are relics/modifiers, served by the relic-keyed channel below), so
+        // a deck-scan here is the right-sized mirror rather than a new
+        // card-keyed dispatch bus. In single-player, an egg in the master
+        // deck means `player == Owner`. Appended BEFORE the relic channel:
+        // C# `Generate` (`RestSiteOption.cs:53-74`) builds Heal/Smith, then
+        // `Hook.ModifyRestSiteOptions` (`Hook.cs:2102-2113` v0.111.0) walks
+        // `RunState.IterateHookListeners` (`RunState.cs:123-156`, same in
+        // v0.107.1), which queues every deck card (and enchantment) ahead of
+        // relics, potions and modifiers. Bead `sts2-rs-RP24`.
         if self
             .master_deck
             .iter()
@@ -3406,6 +3546,7 @@ impl RunState {
         {
             options.push(RestSiteOption::Hatch);
         }
+        let _ = crate::run_effects::dispatch_modify_rest_site_options(self, &mut options);
         // MiniatureTent's second pick: drop the options already taken here.
         options.retain(|o| {
             !self
@@ -3462,10 +3603,7 @@ impl RunState {
     ///   `ByrdSwoop`. Returns [`RestSiteActionOutcome::Hatched`].
     ///
     /// Deferred (returns [`RestSiteActionOutcome::Unsupported`]):
-    /// `Dig` (needs Shovel-relic-driven relic-pool draw), `Lift`
-    /// (Girya `_times_lifted` counter), `Cook` (multi-card removal
-    /// + max-HP gain), `Clone` / `Mend` (boutique relic hooks not yet
-    /// wired). File a sibling bead per option once a caller needs it.
+    /// `Mend` (multiplayer-only; the engine is single-player).
     ///
     /// Bead `sts2-rs-qwp1g` (P9.2.d).
     pub fn do_rest_site_action(&mut self, chosen: RestSiteOption) -> RestSiteActionOutcome {
@@ -3583,7 +3721,31 @@ impl RunState {
                 self.obtain_relic(relic);
                 RestSiteActionOutcome::Dug { relic }
             }
-            RestSiteOption::Clone | RestSiteOption::Mend => RestSiteActionOutcome::Unsupported,
+            RestSiteOption::Clone => {
+                // C# `CloneRestSiteOption.OnSelect` (`CloneRestSiteOption.cs:41-52`,
+                // same body in v0.107.1 and v0.111.0):
+                //
+                //   enumerable = Owner.Deck.Cards.Where(c => c.Enchantment is Clone).ToList();
+                //   foreach (item in enumerable)
+                //       results.Add(await CardPileCmd.Add(RunState.CloneCard(item), PileType.Deck));
+                //
+                // The source list is snapshotted first, so the copies (which
+                // keep the Clone enchantment via `ClonePreservingMutability`)
+                // are not cloned again. One `CardPileCmd.Add` per copy, so the
+                // deck-add hooks run per card. Was `Unsupported` (act23 probe:
+                // Ironclad seed 1019, C# `[HEAL, SMITH, LIFT, CLONE]`).
+                let sources: Vec<Card> = self
+                    .master_deck
+                    .iter()
+                    .filter(|c| c.has_enchantment(EnchantmentId::Clone))
+                    .copied()
+                    .collect();
+                for card in sources {
+                    self.add_card_to_deck_with_hooks(card, crate::relic_effects::AddSource::Other);
+                }
+                RestSiteActionOutcome::Cloned
+            }
+            RestSiteOption::Mend => RestSiteActionOutcome::Unsupported,
         }
     }
 
@@ -4141,6 +4303,18 @@ impl RunState {
         }
     }
 
+    /// Strip `relic_id` from the PLAYER bag's per-rarity deques. Mirrors C#
+    /// `RelicGrabBag.Remove` (`RelicGrabBag.cs:185-193`), which walks only
+    /// `_deques` — not the multiplayer fallback deque, so the
+    /// [`Self::relic_grab_bag_fallback`] vec is left alone. The legacy flat
+    /// [`Self::relic_grab_bag`] mirrors the deques and is kept in lockstep.
+    fn remove_relic_from_player_grab_bag(&mut self, relic_id: RelicId) {
+        self.relic_grab_bag.retain(|&r| r != relic_id);
+        for bucket in self.relic_grab_bag_by_rarity.values_mut() {
+            bucket.retain(|&r| r != relic_id);
+        }
+    }
+
     /// [`Self::pop_relic_from_grab_bag`] sibling drawing from the
     /// SHARED-only bag ([`Self::shared_relic_grab_bag_by_rarity`]) — the
     /// treasure-chest pull (C# `TreasureRoomRelicSynchronizer.
@@ -4302,6 +4476,95 @@ impl RunState {
         crate::boss_ancient_offers::roll_offers_for(self.game_version, ancient, &mut rng, &cond)
     }
 
+    /// The character `SeaGlass.CharacterId` is stamped with by
+    /// `Orobas.GenerateInitialOptions` (`Orobas.cs:188-204`, both builds): the
+    /// FIRST read of the Orobas event rng, `NextItem` over
+    /// `UnlockState.Characters` minus the player's, in `ModelDb.AllCharacters`
+    /// order (Ironclad, Silent, Regent, Necrobinder, Defect, `ModelDb.cs:123`;
+    /// the headless unlock state has all five). The event rng is seeded from
+    /// the run seed alone, so this re-derives the same pick
+    /// [`crate::boss_ancient_offers`] consumes as its first draw. With no
+    /// other character C# falls back to the player's own.
+    #[must_use]
+    pub fn sea_glass_character(&self) -> crate::potions::CharacterId {
+        use crate::potions::CharacterId::{Defect, Ironclad, Necrobinder, Regent, Silent};
+        let others: Vec<_> = [Ironclad, Silent, Regent, Necrobinder, Defect]
+            .into_iter()
+            .filter(|c| *c != self.character_id)
+            .collect();
+        if others.is_empty() {
+            return self.character_id;
+        }
+        let mut rng = crate::boss_ancient_offers::event_rng_for(
+            &self.rng,
+            crate::run_room_gen::AncientId::Orobas,
+        );
+        others[rng.next_int_exclusive(0, others.len() as i32) as usize]
+    }
+
+    /// `Orobas.OptionPool3` (`Orobas.cs:59-93`, identical in both builds):
+    /// TouchOfOrobas iff `TouchOfOrobas.SetupForPlayer` finds a relic with
+    /// `Rarity == Starter` (`TouchOfOrobas.cs:117`), ArchaicTooth iff
+    /// `ArchaicTooth.SetupForPlayer` finds a `TranscendenceUpgrades` key in
+    /// the deck (`ArchaicTooth.cs:26-50,146`: Bash / Neutralize / Unleash /
+    /// FallingStar / Dualcast). Empty means C#'s `OPTION_POOL_3_LOCKED`
+    /// placeholder (`Orobas.cs:88-91`), which
+    /// [`crate::boss_ancient_offers`] rolls as a relic-less slot.
+    fn orobas_pool3(&self) -> Vec<RelicId> {
+        use crate::cards::CardId;
+        // Every relic whose C# `Rarity` is `RelicRarity.Starter`, upgraded
+        // starters included (e.g. `BlackBlood.cs:12`, `InfusedCore.cs:21`).
+        let has_starter_relic = self.relics.iter().any(|r| {
+            matches!(
+                r,
+                RelicId::BurningBlood
+                    | RelicId::BlackBlood
+                    | RelicId::RingOfTheSnake
+                    | RelicId::RingOfTheDrake
+                    | RelicId::CrackedCore
+                    | RelicId::InfusedCore
+                    | RelicId::BoundPhylactery
+                    | RelicId::PhylacteryUnbound
+                    | RelicId::DivineRight
+                    | RelicId::DivineDestiny
+            )
+        });
+        let has_transcendence_card = self.master_deck.iter().any(|c| {
+            matches!(
+                c.card_id,
+                CardId::Bash
+                    | CardId::Neutralize
+                    | CardId::Unleash
+                    | CardId::FallingStar
+                    | CardId::Dualcast
+            )
+        });
+        let mut pool = Vec::with_capacity(2);
+        if has_starter_relic {
+            pool.push(RelicId::TouchOfOrobas);
+        }
+        if has_transcendence_card {
+            pool.push(RelicId::ArchaicTooth);
+        }
+        pool
+    }
+
+    /// C# `Player.HasEventPet()` (`Player.cs:250-256`, identical in v0.107.1
+    /// and v0.111.0): any relic with `AddsPet` — `Byrdpip` (`Byrdpip.cs:20`)
+    /// and `PaelsLegion` (`PaelsLegion.cs:32`) are the only two — or a
+    /// `ByrdonisEgg` in the deck. Gates Pael's `PaelsLegion` offer
+    /// (`Pael.cs:173-178`) and the `ByrdonisNest` event.
+    #[must_use]
+    pub fn has_event_pet(&self) -> bool {
+        self.relics
+            .iter()
+            .any(|r| matches!(r, RelicId::Byrdpip | RelicId::PaelsLegion))
+            || self
+                .master_deck
+                .iter()
+                .any(|c| c.card_id == crate::cards::CardId::ByrdonisEgg)
+    }
+
     /// Deck/run predicates the Ancient `GenerateInitialOptions` methods read.
     /// `act_index_0based` is the next act's `CurrentActIndex` (Darv gate).
     fn compute_ancient_conditions(
@@ -4329,11 +4592,11 @@ impl RunState {
                 ) && c.enchantments.is_empty()
             })
             .count();
-        // Goopy: base.CanEnchant && Tags.Contains(Defend). The Defend
-        // CardTag is not populated on card specs at this pin (see
-        // `relics/neow_relics.rs`), so this is ~always 0 → Pael's
-        // conditional PaelsClaw is currently never added. Documented
-        // divergence (contained to Pael's 2nd offer, isolated RNG).
+        // Goopy: base.CanEnchant && Tags.Contains(Defend). Master-deck
+        // cards carry their C# tags (`tags_for_card_id`), so the Defend
+        // starters count here and Pael's conditional PaelsClaw is added
+        // once the deck has >= 3 unenchanted Defend-tagged cards
+        // (`Pael.cs:162-165`).
         let goopy = self
             .master_deck
             .iter()
@@ -4352,17 +4615,13 @@ impl RunState {
             act_index: act_index_0based,
             goopy_eligible_count: goopy,
             removable_count: self.removable_deck_card_count(),
-            // Ironclad never holds an event pet at this pin.
-            has_event_pet: false,
+            has_event_pet: self.has_event_pet(),
             instinct_eligible_count: instinct,
             swift_eligible_count: swift,
             // Headless `UnlockState.all` exposes all 5 characters; the
             // SeaGlass pick draws from the 4 that aren't the player's.
             num_other_characters: 4,
-            // TouchOfOrobas's starter relic always exists; ArchaicTooth's
-            // transcendence starter card is assumed present (Ironclad). The
-            // C# LOCKED placeholder is therefore unreachable.
-            orobas_pool3: vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth],
+            orobas_pool3: self.orobas_pool3(),
             // Standard runs carry no deck-clearing modifier.
             pandoras_allowed: true,
             tezcatara_basic_strike,
@@ -4822,6 +5081,17 @@ impl RunState {
         if !crate::run_effects::dispatch_should_gain_gold(self, delta) {
             return;
         }
+        // C# `PlayerCmd.GainGold` (`PlayerCmd.cs:141-170`) folds Bowler Hat
+        // in as `Hook.ModifyGoldGained` (`BowlerHat.cs:25`, `amount * 1.25m`)
+        // and truncates on `player.Gold += (int)amount`, then fires
+        // `Hook.AfterGoldGained` ONCE with the modified amount. A recursive
+        // bonus gain would fire it twice (Dragon Fruit +2 Max HP). Same fold
+        // as the in-combat `card_effects::gain_gold_in_combat`.
+        let delta = if self.owns_active_relic(RelicId::BowlerHat) {
+            i32::try_from(i64::from(delta) * 5 / 4).unwrap_or(i32::MAX)
+        } else {
+            delta
+        };
         self.gold = self.gold.saturating_add(delta);
         let _ = crate::run_effects::dispatch_on_gold_gained(self, delta);
     }
@@ -4974,34 +5244,24 @@ impl RunState {
         Some(self.rng.rewards.next_int(low_i, high_i))
     }
 
-    /// Duplicate one random card from [`Self::master_deck`] and append
-    /// the clone back to the deck. Mirrors Python
-    /// `RunState.duplicate_card_from_deck`
-    /// (`sts2-rl-agent@01c094d:sts2_env/run/run_state.py:449`) on the
-    /// headless / agent path: in Python, `request_deck_choice` is the
-    /// interactive intercept; when it returns `False` (no UI), the
-    /// fallback is `candidates[0].clone(...)`. The Rust port elects
-    /// the rewards-rng-randomized analog because (a) the Python
-    /// `candidates[0]` is just "must pick something" stub semantics
-    /// without a real UI, and (b) MCTS rollouts deserve a less
-    /// pathological default than always-duplicate-Strike#1.
+    /// Dolly's Mirror: clone one non-Quest card from [`Self::master_deck`]
+    /// and append the clone to the deck.
     ///
-    /// Filter: STS2's `card.card_type != CardType.QUEST`. The Rust
-    /// port has no Quest CardType, so all deck cards qualify today.
+    /// C# `DollysMirror.AfterObtained` (v0.111.0 and v0.107.1
+    /// `Relics/DollysMirror.cs:17-24`) asks the player through
+    /// `CardSelectCmd.FromDeckGeneric` (filter `c.Type != Quest`, no sorting
+    /// order, so the list is the deck in order: `CardSelectCmd.cs:759-770`)
+    /// and the class touches no Rng. The headless pick is the select's first
+    /// entry, i.e. the first non-Quest deck card. This used to draw the index
+    /// from `rng.rewards`, a tick the real game never takes, which shifted
+    /// every later reward roll of the run.
     ///
-    /// Returns `true` if a duplicate was appended, `false` if the deck
-    /// was empty. Bead `sts2-rs-70anj.3.10`.
+    /// Returns `true` if a duplicate was appended, `false` if no deck card
+    /// was eligible.
     pub fn duplicate_card_from_deck(&mut self) -> bool {
-        if self.master_deck.is_empty() {
+        let Some(clone) = self.master_deck.iter().find(|c| !c.is_quest()).copied() else {
             return false;
-        }
-        // Bead `sts2-rs-hm2eb` (943w7 Stage 3): draw from the dotnet
-        // `RunRngSet` reward stream instead of the legacy Xoshiro
-        // `rewards_rng()` shim. `next_int_exclusive(0, len)` is the
-        // C#-faithful `[0, len)` index draw (one stream counter tick).
-        let len = self.master_deck.len() as i32;
-        let idx = self.rng.rewards.next_int_exclusive(0, len) as usize;
-        let clone = self.master_deck[idx];
+        };
         // C# DollysMirror: `CardPileCmd.Add(CloneCard(card), Deck)`
         // (`DollysMirror.cs:21-22`) — a deck add with the full hooks.
         self.add_card_to_deck_with_hooks(clone, crate::relic_effects::AddSource::RelicGain);
@@ -5123,8 +5383,7 @@ impl RunState {
     /// next call draws an independent sequence.
     ///
     /// **DEPRECATED for production (bead `sts2-rs-hm2eb`, 943w7 Stage 3):**
-    /// every production reward draw (`duplicate_card_from_deck`,
-    /// `upgrade_random_cards`, the colorless/`spec_index` samplers, and the
+    /// every production reward draw (`upgrade_random_cards`, the colorless/`spec_index` samplers, and the
     /// Astrolabe/WingCharm shop-relic listeners) now draws from the dotnet
     /// [`RunRngSet`] `rewards` named stream (`self.rng.rewards`) instead of
     /// this Xoshiro shim. This method + [`Self::rewards_rng_seed`] +
@@ -5729,6 +5988,45 @@ pub const GUILTY_MAX_COMBATS: i32 = 5;
 
 #[cfg(test)]
 mod tests {
+
+    /// C# `Player.HasEventPet()` (`Player.cs:250-256`): a pet relic OR a
+    /// `ByrdonisEgg` in the deck. Feeds Pael's `!HasEventPet()` PaelsLegion
+    /// gate (`Pael.cs:173-178`) — holding Byrdpip used to leave Legion in
+    /// pool 3 and fork the third option (Ironclad:4049).
+    #[test]
+    fn has_event_pet_reads_pet_relics_and_the_egg() {
+        let mut rs = RunState::new();
+        assert!(!rs.has_event_pet());
+        assert!(!rs.compute_ancient_conditions(1).has_event_pet);
+        rs.relics.push(RelicId::Byrdpip);
+        assert!(rs.has_event_pet());
+        assert!(rs.compute_ancient_conditions(1).has_event_pet);
+        rs.relics = vec![RelicId::PaelsLegion];
+        assert!(rs.has_event_pet());
+        rs.relics.clear();
+        rs.master_deck.push(crate::cards::Card {
+            card_id: crate::cards::CardId::ByrdonisEgg,
+            ..crate::cards::Card::pod_defaults()
+        });
+        assert!(rs.has_event_pet());
+    }
+
+    #[test]
+    fn agent_decisions_bundle_is_the_four_deck_flags() {
+        // GH #981: the one definition of agent mode. Parity is the default.
+        let mut rs = RunState::new();
+        assert!(rs.has_parity_decisions() && !rs.has_agent_decisions());
+        rs.set_agent_decisions();
+        assert!(rs.has_agent_decisions() && !rs.has_parity_decisions());
+        assert!(rs.interactive_card_removal);
+        assert!(rs.interactive_card_upgrade);
+        assert!(rs.interactive_card_transform);
+        assert!(rs.direct_event_relic_grant);
+        // Potion swap is a separate, per-host decision.
+        assert!(!rs.interactive_potion_swap);
+        rs.interactive_card_upgrade = false;
+        assert!(!rs.has_agent_decisions() && !rs.has_parity_decisions());
+    }
     use super::*;
 
     /// Bead `sts2-rs-70anj.3.16`: `RunState::act_index` defaults to 1
@@ -5736,6 +6034,26 @@ mod tests {
     /// the Python contract `RunState.act_index` reads. Listeners gated
     /// on act (LavaRock post-Act-1 boss, PumpkinCandle, FurCoat) rely
     /// on both the default and the clamp.
+    /// GH #1051: the game counts each act's start room, the engine does not.
+    #[test]
+    fn game_floor_and_engine_total_floor_differ_by_the_act() {
+        let mut rs = RunState::default();
+        assert_eq!(rs.game_floor(), 1, "Neow: engine 0, game 1");
+        rs.total_floor = 17;
+        rs.advance_act();
+        assert_eq!(rs.game_floor(), 19, "act 2 after a 17-floor act 1");
+        rs.total_floor = 45;
+        rs.advance_act();
+        assert_eq!(rs.game_floor(), 48, "a won A0 run");
+        for (floor, act) in [(1, 1), (19, 2), (48, 3)] {
+            let engine = engine_total_floor(floor, act);
+            assert_eq!(engine + act, floor);
+        }
+        assert_eq!(engine_total_floor(12, 0), 11, "zero act reads as act 1");
+        assert_eq!(engine_total_floor(12, -1), 11, "so does a negative one");
+        assert_eq!(engine_total_floor(1, 3), 0, "never negative");
+    }
+
     #[test]
     fn act_index_default_and_advance() {
         let mut rs = RunState::default();
@@ -5934,6 +6252,29 @@ mod tests {
             rs.shared_relic_grab_bag_by_rarity[&RelicRarity::Rare],
             vec![RelicId::IntimidatingHelmet],
         );
+    }
+
+    /// Obtaining a relic strips it from the PLAYER bag too
+    /// (`RelicCmd.cs:43`, both builds — `player.RelicGrabBag.Remove`), and
+    /// `RelicCmd.Remove` never puts it back. So a relic won off a treasure
+    /// chest (shared bag) and later traded away (Relic Trader) must not come
+    /// back out of a player-bag pull (Ironclad-2143 act2: LETTER_OPENER
+    /// resurfaced at an elite reward where C# dealt JOSS_PAPER).
+    #[test]
+    fn obtain_relic_strips_player_bag_so_a_lost_relic_never_returns() {
+        let mut rs = RunState::default();
+        rs.relic_grab_bag_by_rarity.insert(
+            RelicRarity::Uncommon,
+            vec![RelicId::LetterOpener, RelicId::JossPaper],
+        );
+        rs.relic_grab_bag = vec![RelicId::LetterOpener, RelicId::JossPaper];
+        rs.obtain_relic(RelicId::LetterOpener);
+        assert!(rs.lose_relic(RelicId::LetterOpener));
+        assert_eq!(
+            rs.pop_relic_from_grab_bag(RelicRarity::Uncommon),
+            Some(RelicId::JossPaper),
+        );
+        assert!(!rs.relic_grab_bag.contains(&RelicId::LetterOpener));
     }
 
     // ── Bead sts2-rs-4aunm: RunState::generate_map ──────────────────────
@@ -6667,10 +7008,9 @@ mod tests {
         let hp_before = rs.current_hp;
         // Hatch is no longer deferred (bead `sts2-rs-RP24`) — it obtains
         // Byrdpip; see `do_rest_site_action_hatch_obtains_byrdpip`.
-        let outcomes = [
-            rs.do_rest_site_action(RestSiteOption::Clone),
-            rs.do_rest_site_action(RestSiteOption::Mend),
-        ];
+        // Clone is no longer deferred (Pael's Growth) — see
+        // `sts2-content/tests/paels_growth_clone.rs`.
+        let outcomes = [rs.do_rest_site_action(RestSiteOption::Mend)];
         for outcome in outcomes {
             assert_eq!(outcome, RestSiteActionOutcome::Unsupported);
         }
@@ -7557,6 +7897,39 @@ mod tests {
         let applied = rs.heal(5);
         assert_eq!(applied, 0);
         assert_eq!(rs.current_hp, rs.max_hp);
+    }
+
+    /// `Orobas.OptionPool3` (`Orobas.cs:59-93`, identical in v0.107.1 and
+    /// v0.111.0): TouchOfOrobas only with a Starter-rarity relic (upgraded
+    /// starters like BlackBlood are Starter too, `BlackBlood.cs:12`),
+    /// ArchaicTooth only with a transcendence starter card in the deck, and
+    /// an empty pool is the LOCKED slot (no relic).
+    #[test]
+    fn orobas_pool3_follows_starter_relic_and_transcendence_card() {
+        let card = |id: CardId| {
+            let mut c = Card::pod_defaults();
+            c.card_id = id;
+            c
+        };
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rs = RunState::new();
+            rs.game_version = version;
+            rs.relics = vec![RelicId::BurningBlood];
+            rs.master_deck = vec![card(CardId::StrikeIronclad), card(CardId::Bash)];
+            assert_eq!(
+                rs.orobas_pool3(),
+                vec![RelicId::TouchOfOrobas, RelicId::ArchaicTooth]
+            );
+            rs.master_deck = vec![card(CardId::StrikeIronclad)];
+            assert_eq!(rs.orobas_pool3(), vec![RelicId::TouchOfOrobas]);
+            rs.relics = vec![RelicId::Anchor, RelicId::BlackBlood];
+            assert_eq!(rs.orobas_pool3(), vec![RelicId::TouchOfOrobas]);
+            rs.relics = vec![RelicId::Anchor];
+            rs.master_deck = vec![card(CardId::Dualcast)];
+            assert_eq!(rs.orobas_pool3(), vec![RelicId::ArchaicTooth]);
+            rs.master_deck = vec![card(CardId::StrikeIronclad)];
+            assert!(rs.orobas_pool3().is_empty(), "{version:?}: locked");
+        }
     }
 
     #[test]

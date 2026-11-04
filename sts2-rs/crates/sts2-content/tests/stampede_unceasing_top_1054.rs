@@ -151,3 +151,55 @@ fn stampede_without_unceasing_top_draws_nothing_extra() {
         "without UnceasingTop the top card is drawn at the next turn start"
     );
 }
+
+/// Ironclad 2164 act 3 (v0.111.0, Queen): Stampede picks the only attack in
+/// hand, a `Bound` card after a Bound card was already played this turn.
+/// `Hook.ShouldPlay` vetoes it, so C# `CardCmd.AutoPlay` sends it to its result
+/// pile via `MoveToResultPileWithoutPlaying` and returns (v0.111.0 CardCmd.cs
+/// AutoPlay; v0.107.1 CardCmd.cs:61-66). It never enters `OnPlayWrapper`, whose
+/// tail is the only card-play `CheckForEmptyHand` (CardModel.cs:2006;
+/// v0.107.1 :1993), so UnceasingTop does NOT draw. Rust checked the empty hand
+/// after the blocked auto-play too and drew the draw-pile top.
+#[test]
+#[serial_test::serial(global_registry)]
+fn stampede_blocked_auto_play_does_not_fire_unceasing_top() {
+    let (mut state, top) = setup(true);
+    let strike = state.player.hand[0];
+    let idx = strike.0.get() as usize - 1;
+    assert!(
+        state.cards[idx].set_affliction(sts2_core::card_afflictions::CardAffliction::new(
+            sts2_core::card_afflictions::CardAfflictionKind::Bound,
+            1,
+        ))
+    );
+    // The Queen's PUPPET_STRINGS applies ChainsOfBinding on the legacy player
+    // surface (`apply_power_to_player_via_legacy_surface`, act3_glory.rs).
+    let next_id = state.powers.iter().map(|p| p.id.get()).max().unwrap_or(0) + 1;
+    let id = NonZeroU32::new(next_id).expect("power id non-zero");
+    state.powers.push(sts2_core::Power {
+        id,
+        kind: PowerKind::ChainsOfBinding,
+        amount: 3,
+        counter: 0,
+        applier: None,
+        skip_next_tick: false,
+    });
+    state.player.powers.push(sts2_core::PowerUid(id));
+    state.combat_log.chains_bound_card_played_this_turn = true;
+
+    let _ = apply(&mut state, Action::EndTurn);
+
+    assert!(
+        state.player.discard.contains(&strike),
+        "the vetoed Bound Strike goes to discard unplayed"
+    );
+    assert!(
+        !state.player.discard.contains(&top),
+        "a ShouldPlay-vetoed auto-play never reaches CheckForEmptyHand, so \
+         UnceasingTop must not draw the top card into the end-of-turn flush"
+    );
+    assert!(
+        state.player.hand.contains(&top),
+        "the top card is drawn by the next turn's normal draw instead"
+    );
+}

@@ -101,3 +101,43 @@ fn bad_counters_are_schema_errors() {
         assert!(state_from_json(&v).is_err(), "{key}");
     }
 }
+
+/// GH #812: the extra-turn count survives the wire, so a board rebuilt right
+/// after a PaelsEye / Ambergris extra turn keeps C#'s `TurnNumber` (round + 1)
+/// instead of falling back to turn = round.
+#[test]
+fn extra_turns_round_trip_and_keep_the_turn_number_ahead_of_the_round() {
+    let mut v = fixture();
+    v["player"]["extra_turns_taken_this_combat"] = json!(1);
+    let st = state_from_json(&v).expect("builds");
+    assert_eq!(st.combat_log.extra_turns_taken_this_combat, 1);
+    assert_eq!(st.turn_number(), st.round + 1);
+    let out = combat_state_to_value(&st).expect("emits");
+    assert_eq!(out["player"]["extra_turns_taken_this_combat"], 1);
+    let again = state_from_json(&out).expect("rebuilds");
+    assert_eq!(again.turn_number(), st.turn_number());
+
+    let v = with_teammate(&json!({"extra_turns_taken_this_combat": 2}));
+    let st = state_from_json(&v).expect("builds");
+    assert_eq!(st.coop.stash[0].combat_log.extra_turns_taken_this_combat, 2);
+    let out = combat_state_to_value(&st).expect("emits");
+    assert_eq!(out["allies"][0]["extra_turns_taken_this_combat"], 2);
+}
+
+#[test]
+fn absent_extra_turns_are_zero_and_not_emitted() {
+    let st = state_from_json(&fixture()).expect("builds");
+    assert_eq!(st.combat_log.extra_turns_taken_this_combat, 0);
+    assert_eq!(st.turn_number(), st.round);
+    let out = combat_state_to_value(&st).expect("emits");
+    assert!(out["player"].get("extra_turns_taken_this_combat").is_none());
+}
+
+#[test]
+fn bad_extra_turns_are_schema_errors() {
+    for bad in [json!(-1), json!(70_000), json!("1")] {
+        let mut v = fixture();
+        v["player"]["extra_turns_taken_this_combat"] = bad.clone();
+        assert!(state_from_json(&v).is_err(), "{bad}");
+    }
+}

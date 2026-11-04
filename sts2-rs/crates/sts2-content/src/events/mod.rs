@@ -223,7 +223,10 @@ pub fn grave_of_the_forgotten_allowed(state: &RunState) -> bool {
 /// enchantment rejects). Keywords are the instance's: an upgrade that drops
 /// Exhaust (BurningPact+) stamps `keyword_override`, otherwise the
 /// build-aware spec keywords apply. Unknown ids ⇒ not enchantable.
-fn souls_power_can_enchant(c: &sts2_core::cards::Card, version: sts2_core::GameVersion) -> bool {
+pub(crate) fn souls_power_can_enchant(
+    c: &sts2_core::cards::Card,
+    version: sts2_core::GameVersion,
+) -> bool {
     use crate::cards::CardKeywords;
     use sts2_core::cards::{CardType, KeywordOverride};
     if matches!(c.card_type, CardType::Status | CardType::Curse) || !c.enchantments.is_empty() {
@@ -255,31 +258,34 @@ fn souls_power_can_enchant(c: &sts2_core::cards::Card, version: sts2_core::GameV
 pub fn amalgamator_allowed(state: &RunState) -> bool {
     use sts2_core::cards::CardTag;
     let rank = sts2_core::lookup_card_rarity_rank();
+    let removable = sts2_core::lookup_card_removable();
     let version = state.game_version;
-    let is_basic = |c: &sts2_core::cards::Card| rank.is_none_or(|f| f(c.card_id, version) == 1);
+    // `IsValid` (`Amalgamator.cs:69-79`): tag + Basic + `IsRemovable`. The
+    // instance predicate sees TezcatarasEmber's added Eternal (NutritiousSoup
+    // Strikes), matching the removal path `amalgamator_remove_basic_tagged`.
+    let valid = |c: &sts2_core::cards::Card, tag: CardTag| {
+        c.has_tag(tag)
+            && rank.is_none_or(|f| f(c.card_id, version) == 1)
+            && removable.is_none_or(|f| f(c))
+    };
     let strikes = state
         .master_deck
         .iter()
-        .filter(|c| c.has_tag(CardTag::Strike) && is_basic(c))
+        .filter(|c| valid(c, CardTag::Strike))
         .count();
     let defends = state
         .master_deck
         .iter()
-        .filter(|c| c.has_tag(CardTag::Defend) && is_basic(c))
+        .filter(|c| valid(c, CardTag::Defend))
         .count();
     strikes >= 2 && defends >= 2
 }
 
-/// `ByrdonisNest`: C# `!HasEventPet()` — no pet-adding relic and no
-/// `ByrdonisEgg` in the deck. The relic half is approximated by the deck
-/// check (no pet-relic predicate on the POD; the egg IS the act-1 pet
-/// source this event guards against).
+/// `ByrdonisNest`: C# `!HasEventPet()` — no pet-adding relic (Byrdpip,
+/// PaelsLegion) and no `ByrdonisEgg` in the deck (`Player.cs:250-256`).
 #[must_use]
 pub fn byrdonis_nest_allowed(state: &RunState) -> bool {
-    !state
-        .master_deck
-        .iter()
-        .any(|c| c.card_id == sts2_core::cards::CardId::ByrdonisEgg)
+    !state.has_event_pet()
 }
 
 /// `RoundTeaParty`: C# `CurrentHp >= 12`.
@@ -359,7 +365,7 @@ pub fn ranwid_the_elder_allowed(state: &RunState) -> bool {
         && state
             .relics
             .iter()
-            .any(|&id| crate::relics::tradable::relic_is_tradable(id))
+            .any(|&id| crate::relics::tradable::relic_is_tradable_in(state, id))
         && state.gold >= 100
         && !state.potions.is_empty()
 }
@@ -379,7 +385,7 @@ pub fn relic_trader_allowed(state: &RunState) -> bool {
         && state
             .relics
             .iter()
-            .filter(|&&id| crate::relics::tradable::relic_is_tradable(id))
+            .filter(|&&id| crate::relics::tradable::relic_is_tradable_in(state, id))
             .count()
             >= 5
 }
@@ -883,8 +889,47 @@ mod tests {
         assert!(!amalgamator_allowed(&rs));
     }
 
+    /// `Amalgamator.IsValid` requires `IsRemovable` (`Amalgamator.cs:69-79`);
+    /// TezcatarasEmber adds Eternal (`TezcatarasEmber.cs:18`), so
+    /// NutritiousSoup's Ember'd Strikes do not count and the event is skipped
+    /// by `EnsureNextEventIsValid` (Ironclad:4134).
     #[test]
-    fn byrdonis_nest_blocked_only_by_the_egg() {
+    fn amalgamator_ignores_eternal_embered_strikes() {
+        use sts2_core::cards::EnchantmentId;
+        crate::cards::dispatch::install_default_registry();
+        let strike = |embered: bool| {
+            let mut c = deck_card(
+                CardId::StrikeIronclad,
+                CardType::Attack,
+                sts2_core::cards::CardTags::one(CardTag::Strike),
+            );
+            if embered {
+                c.set_enchantment(EnchantmentId::TezcatarasEmber, 1);
+            }
+            c
+        };
+        let defend = || {
+            deck_card(
+                CardId::DefendIronclad,
+                CardType::Skill,
+                sts2_core::cards::CardTags::one(CardTag::Defend),
+            )
+        };
+        let mut rs = RunState::new();
+        rs.master_deck = vec![strike(true), strike(true), defend(), defend()];
+        assert!(!amalgamator_allowed(&rs));
+        rs.master_deck = vec![
+            strike(true),
+            strike(false),
+            strike(false),
+            defend(),
+            defend(),
+        ];
+        assert!(amalgamator_allowed(&rs));
+    }
+
+    #[test]
+    fn byrdonis_nest_blocked_by_the_egg() {
         let mut rs = RunState::new();
         assert!(byrdonis_nest_allowed(&rs)); // empty deck → allowed (kills `->bool false`)
         rs.master_deck.push(deck_card(
@@ -899,6 +944,17 @@ mod tests {
             sts2_core::cards::CardTags::NONE,
         ));
         assert!(!byrdonis_nest_allowed(&rs)); // egg present (kills `delete !`, `==`→`!=`, `->bool true`)
+    }
+
+    /// The relic half of C# `HasEventPet()` (`Player.cs:250-256`): Byrdpip
+    /// (`Byrdpip.cs:20`) and PaelsLegion (`PaelsLegion.cs:32`) set `AddsPet`.
+    #[test]
+    fn byrdonis_nest_blocked_by_a_pet_relic() {
+        let mut rs = RunState::new();
+        rs.relics.push(sts2_core::relics::RelicId::Byrdpip);
+        assert!(!byrdonis_nest_allowed(&rs));
+        rs.relics = vec![sts2_core::relics::RelicId::PaelsLegion];
+        assert!(!byrdonis_nest_allowed(&rs));
     }
 
     // --- HP / floor / gold scalar gates ---

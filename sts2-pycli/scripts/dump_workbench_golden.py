@@ -236,7 +236,6 @@ SHOULD: tuple[tuple[str, str], ...] = (
     ("route:/api/live/search_tree", "POST /api/live/search_tree probe"),
     ("route:/api/live/choice-ranker", "POST /api/live/choice-ranker probe"),
     ("route:/api/live/auto-action", "POST /api/live/auto-action probe"),
-    ("route:/api/live/last-move-regret", "POST /api/live/last-move-regret probe"),
     ("route:/api/live/regret-review", "POST /api/live/regret-review probe"),
 )
 
@@ -1160,7 +1159,7 @@ ADVISOR_SEARCH = {
     "hidden_info": "beliefdraw",
     "draw_widening_c": 2.0,
 }
-#: The regret routes re-score every combat position on the line; cheaper.
+#: The regret review re-scores every combat position on the line; cheaper.
 ADVISOR_REGRET = {**ADVISOR_SEARCH, "sims": 24, "seed": 2}
 #: probe kind -> (route, body). The advisor probes never mutate the run.
 _ADVISOR_PROBES: dict[str, tuple[str, dict[str, Any] | None]] = {
@@ -1168,7 +1167,6 @@ _ADVISOR_PROBES: dict[str, tuple[str, dict[str, Any] | None]] = {
     "search_tree": ("/api/live/search_tree", {"config": ADVISOR_SEARCH}),
     "choice_ranker": ("/api/live/choice-ranker", {"config": ADVISOR_SEARCH}),
     "auto_action": ("/api/live/auto-action", None),
-    "last_move_regret": ("/api/live/last-move-regret", {"config": ADVISOR_REGRET}),
     "regret_review": ("/api/live/regret-review", {"config": {**ADVISOR_REGRET, "top_n": 2}}),
 }
 
@@ -1189,12 +1187,10 @@ def standard_probes(max_steps: int) -> list[dict[str, Any]]:
     probes.extend({"at": at, "kind": "state"} for at in range(25, max_steps + 1, 25))
     # M2 advisors: the search-backed routes at a few fixed steps (most land in
     # a combat somewhere along the 150-step scripts; off combat they record a
-    # 409), the coach right after a move, the run review once, "play best" at
-    # the state probes.
+    # 409), the run review once, "play best" at the state probes.
     for at in (30, 55, 80, 105, 130):
         probes.append({"at": at, "kind": "hint"})
         probes.append({"at": at, "kind": "choice_ranker"})
-        probes.append({"at": at + 1, "kind": "last_move_regret"})
     # A whole 48-sim tree is ~35 KB stored; two per scenario keep the fixture
     # under the size budget while still landing in a fight on most scripts.
     for at in (55, 105):

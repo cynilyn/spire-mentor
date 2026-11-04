@@ -252,7 +252,7 @@ pub enum EventId {
     /// Bead `sts2-rs-6ynt.4.4`.
     DrowningBeacon,
     /// `GraveOfTheForgotten` — shared. Confront (Decay + enchant
-    /// `SoulsPower` on a card — deferred) / Accept (Forgotten Soul
+    /// `SoulsPower` on an Exhaust card) / Accept (Forgotten Soul
     /// relic). Bead `sts2-rs-6ynt.4.4`.
     GraveOfTheForgotten,
     /// `HungryForMushrooms` — shared. Big (Big Mushroom relic) /

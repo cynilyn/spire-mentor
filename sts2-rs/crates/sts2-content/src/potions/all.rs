@@ -545,7 +545,7 @@ pub fn alchemize_procure_random_potion(state: &mut CombatState) {
         // `TryToProcure → Player.AddPotionInternal` fills the FIRST open
         // physical slot (`_potionSlots.IndexOf(null)`, `Player.cs:640`);
         // a full belt makes it a no-op.
-        state.player.add_potion_first_free_slot(kind);
+        state.try_procure_potion(kind);
     }
 }
 
@@ -579,7 +579,7 @@ pub fn entropic_brew_fill_belt(state: &mut CombatState) {
         // without compacting (`Player.cs:703-708`) and `AddPotionInternal`
         // takes `_potionSlots.IndexOf(null)` (`Player.cs:640`). So drinking
         // Brew from slot 0 of [Brew, X, _] yields [new1, X, new2].
-        if !state.player.add_potion_first_free_slot(kind) {
+        if !state.try_procure_potion(kind) {
             break;
         }
     }

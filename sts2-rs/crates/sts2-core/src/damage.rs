@@ -556,9 +556,10 @@ pub fn compute_modified_damage(
     // `modify_damage` floors once at the end via `DamageMul::apply` (rational
     // `div_euclid`), matching Python's `math.floor` exactly.
     //
-    // Bead `sts2-rs-6jk` (j87-a): fold the relic_effects-family additive
-    // contribution INTO `raw_damage` before the hooks-family pipeline runs so
-    // multiplicative + cap + floor apply to the combined sum. Mirrors Python
+    // Bead `sts2-rs-6jk` (j87-a): add the relic_effects-family additive
+    // contribution to the pipeline's additive term (after the card
+    // enchantment's stage, GH #1054) so multiplicative + cap + floor apply to
+    // the combined sum. Mirrors Python
     // `hooks.py:79-82` where all `modify_damage_additive` owners sum to a
     // single delta consumed by the multi-stage pipeline. Hooks-family relic
     // listeners (legacy `iter_relic_listeners` arms) still run inside
@@ -584,8 +585,7 @@ pub fn compute_modified_damage(
     } else {
         0
     };
-    let raw_damage_with_relic_additive = raw_damage.saturating_add(relic_additive);
-    hooks::modify_damage(state, raw_damage_with_relic_additive, &ctx)
+    hooks::modify_damage_with_relic_additive(state, raw_damage, relic_additive, &ctx)
 }
 
 /// [`compute_modified_damage`], plus the `AfterModifyingDamageAmount` flashes
@@ -968,9 +968,12 @@ fn apply_damage_with_final_impl(
     // `NecroMasteryPower.AfterCurrentHpChanged` (NecroMasteryPower.cs:17-23)
     // like the enemy-attack redirect in `combat_loop` already does
     // (Necrobinder full seed 4536). The reflect's dealer is the player, and a
-    // Damage from a dead dealer no-ops (CreatureCmd.cs:264).
-    if pet_of_player && modified_hp_loss > 0 && state.player.current_hp > 0 {
-        hooks::dispatch_after_current_hp_changed(state, target, -modified_hp_loss);
+    // Damage from a dead dealer no-ops (CreatureCmd.cs:264). `UnblockedDamage`
+    // is the HP actually lost (`Creature.LoseHpInternal`, Creature.cs:446-457:
+    // `currentHp - CurrentHp`), so an overkill reflects only what the Osty had:
+    // Thorns 5 into a 2-HP Osty reflects 2 (act23 Necrobinder:1008).
+    if pet_of_player && hp_loss > 0 && state.player.current_hp > 0 {
+        hooks::dispatch_after_current_hp_changed(state, target, -hp_loss);
     }
     if just_died
         && state.player.creature_uid != Some(target)
@@ -1019,12 +1022,8 @@ fn apply_damage_with_final_impl(
     } else {
         crate::Side::Player
     };
-    // The death power whose `AfterDeath` handler fired below; its kill tail
-    // (`enemy_death_effects::finish_kill`) runs after the AfterDamageGiven
-    // hooks further down.
-    let mut death_power_fired: Option<crate::PowerKind> = None;
     if just_died && !defer_death {
-        death_power_fired = kill_after_death_powers(state, target, dead_side);
+        kill_after_death_powers(state, target, dead_side);
     }
 
     // Bead `sts2-rs-c7ak`: record per-target hit into the in-flight
@@ -1108,6 +1107,9 @@ fn apply_damage_with_final_impl(
             && state.player_power_amount(crate::PowerKind::Vigor) > 0
         {
             state.player.vigor_latch_card = crate::card_effects::resolving_card_uid(state);
+            if state.player.vigor_latch_card.is_some() {
+                crate::hooks::latch_vigor_start_amount(state);
+            }
         }
         crate::hooks::latch_gigantification(state);
     }
@@ -1119,8 +1121,12 @@ fn apply_damage_with_final_impl(
     // Bead `sts2-rs-osty-attacks-this-turn`.
     if let (CreatureRef::Enemy(dealer_uid), Some(pet_uid)) = (dealer, state.player.pet_uid) {
         if dealer_uid == pet_uid {
-            state.combat_log.osty_attacks_this_turn =
-                state.combat_log.osty_attacks_this_turn.saturating_add(1);
+            // One entry per command: a multi-hit command counts itself once
+            // when it ends (`card_effects::osty_attack_command`).
+            if !state.combat_log.osty_attack_command_open {
+                state.combat_log.osty_attacks_this_turn =
+                    state.combat_log.osty_attacks_this_turn.saturating_add(1);
+            }
             // GH #806: per-target powered-hit tally for GangUp (GangUp.cs:24-29
             // counts the target's powered `DamageReceivedEntry`s from a
             // same-side, non-owner dealer — the Osty).
@@ -1237,8 +1243,12 @@ fn apply_damage_with_final_impl(
     // once per death (GremlinHorn: enemy death → +1 energy + draw 1).
     // Co-op: C# walks every player's relics, so each teammate's hear it too,
     // seated (a teammate's Gremlin Horn draws them a card, GH #989).
+    // The death power whose `AfterDeath` handler fires here; its kill tail
+    // (`enemy_death_effects::finish_kill`) follows.
+    let mut death_power_fired: Option<crate::PowerKind> = None;
     if just_died && !defer_death {
         kill_relic_after_death(state, target, dead_side);
+        death_power_fired = kill_dying_enemy_after_death(state, target, dead_side);
     }
 
     // The kill's tail, after this hit's AfterDamageGiven hooks and the relic
@@ -1300,14 +1310,9 @@ fn kill_before_death(state: &mut CombatState, target: CreatureUid) {
 }
 
 /// The power-side death teardown and `AfterDeath` witnesses of a killed
-/// creature; returns the death power whose kill tail
-/// (`enemy_death_effects::finish_kill`) is still owed.
-fn kill_after_death_powers(
-    state: &mut CombatState,
-    target: CreatureUid,
-    dead_side: crate::Side,
-) -> Option<crate::PowerKind> {
-    let mut fired: Option<crate::PowerKind> = None;
+/// creature. The dying enemy's own on-death power (Stock, Surprise, ...) runs
+/// later, in [`kill_dying_enemy_after_death`].
+fn kill_after_death_powers(state: &mut CombatState, target: CreatureUid, dead_side: crate::Side) {
     remove_constrict_from_dead_applier(state, target);
     remove_shrink_from_dead_applier(state, target);
     remove_hex_from_dead_applier(state, target);
@@ -1331,31 +1336,72 @@ fn kill_after_death_powers(
     // C# `ReattachPower.AfterDeath` arms the dead Decimillipede
     // segment's revive cycle (bead sts2-rs-8lwnq).
     arm_reattach_dead_state(state, target);
-    // Bead `sts2-rs-ybtmu`: cross-creature power `AfterDeath` witness
-    // dispatch (CrabRagePower / SurroundedPower). Fired from the same
-    // death-record chokepoint so it triggers on every kill path.
-    hooks::dispatch_after_death(
+    // Bead `sts2-rs-ybtmu`: the player side's power `AfterDeath` witnesses
+    // (SurroundedPower). The enemies' (CrabRage, Ravenous) come after the
+    // player's relics, in [`kill_dying_enemy_after_death`].
+    hooks::dispatch_after_death_player_powers(
         state,
         &hooks::AfterDeathCtx {
             dead: target,
             dead_side,
         },
     );
-    // Monster-AI `AfterDeath` witnesses (the Queen) react at the death too.
-    crate::combat_loop::dispatch_after_death_listeners_for(state, target);
-    // Bead `sts2-rs-zo6fk`: per-death on-death spawn for the just-killed
-    // enemy. C# `CreatureCmd.Kill` fires the dying creature's power
-    // `AfterDeath` immediately (CreatureCmd.cs:285), and
-    // `StockPower.AfterDeath` spawns a fresh Axebot at the dead bot's
-    // slot the instant it dies — so a mid-combat kill of one of two
-    // Axebots keeps two live enemies. The combat-end `fire_pending`
-    // sweep (check_combat_end) only runs when every enemy is dead, which
-    // is too late for a respawn that must happen while a sibling is
-    // still alive. `fire_for_owner` zeroes the triggering power, so the
-    // combat-end sweep never double-fires it. Enemy deaths only (the
-    // player carries no enemy-death-spawn power).
-    if dead_side == crate::Side::Enemy {
+}
+
+/// The enemy half of the `AfterDeath` walk, after the player's relics and
+/// cards have heard the death: each enemy's powers (a sibling's CrabRage or
+/// Ravenous, the dying enemy's own on-death power), then its monster
+/// (`Queen.AfterDeath`), in `_enemies` order. Then the dying enemy's minions
+/// collapse. Returns the death power whose kill tail
+/// (`enemy_death_effects::finish_kill`) is still owed.
+///
+/// C# `Hook.AfterDeath` is one sequential walk over `IterateHookListeners`
+/// (`Hook.cs:606-619`) in creature order, allies before enemies, each
+/// creature's powers then its monster (`CombatState.cs:115-170`), so a player
+/// relic's `AfterDeath` — Gremlin Horn's draw and the Hellraiser auto-play it
+/// awaits inline — resolves before the dying Axebot's `StockPower.AfterDeath`
+/// spawns its replacement (act23 Ironclad:2169) and before the surviving
+/// Kaiser Crab arm's `CrabRagePower` grants its 99 block (act23
+/// Ironclad:4187). The teammates' `Kill` follows the whole walk
+/// (`CreatureCmd.cs:553-562`; v0.107.1 `:519-529`).
+fn kill_dying_enemy_after_death(
+    state: &mut CombatState,
+    target: CreatureUid,
+    dead_side: crate::Side,
+) -> Option<crate::PowerKind> {
+    let mut fired: Option<crate::PowerKind> = None;
+    let ctx = hooks::AfterDeathCtx {
+        dead: target,
+        dead_side,
+    };
+    // The list is built when the walk starts: a creature Stock spawns
+    // mid-walk does not hear this death.
+    let enemies: smallvec::SmallVec<[CreatureUid; 8]> = state.enemy_uids.iter().copied().collect();
+    let mut monsters = crate::combat_loop::take_after_death_listeners_for(state, target);
+    let mut own_power_fired = false;
+    for owner in enemies {
+        hooks::dispatch_after_death_enemy_powers(state, &ctx, owner);
+        // Bead `sts2-rs-zo6fk`: the dying enemy's own on-death power (Stock
+        // spawns a fresh Axebot at the dead bot's slot), inside the kill, so
+        // a mid-combat kill of one of two Axebots keeps two live enemies.
+        // `fire_for_owner` zeroes the triggering power, so the combat-end
+        // `fire_pending` sweep never double-fires it. Enemy deaths only.
+        if owner == target && dead_side == crate::Side::Enemy {
+            fired = crate::enemy_death_effects::fire_for_owner(state, target);
+            own_power_fired = true;
+        }
+        if let Some(i) = monsters.iter().position(|(o, _)| *o == owner) {
+            let (o, f) = monsters.remove(i);
+            f(state, target, o);
+        }
+    }
+    for (o, f) in monsters {
+        f(state, target, o);
+    }
+    if dead_side == crate::Side::Enemy && !own_power_fired {
         fired = crate::enemy_death_effects::fire_for_owner(state, target);
+    }
+    if dead_side == crate::Side::Enemy {
         // The dying enemy's surviving minions die with it, right away
         // (CreatureCmd.cs:540-543 `Kill(teammates)` inside this Kill), so
         // the rest of the card no longer sees them: a random-target hit
@@ -1380,7 +1426,9 @@ fn kill_after_death_powers(
     fired
 }
 
-/// The relic-side `AfterDeath` bus for a killed creature.
+/// The relic-side `AfterDeath` bus for a killed creature, then the player's
+/// cards (Melancholy), which follow the relics in each player's listener list
+/// (`CombatState.cs:128-160`).
 fn kill_relic_after_death(state: &mut CombatState, target: CreatureUid, dead_side: crate::Side) {
     let ctx = hooks::AfterDeathCtx {
         dead: target,
@@ -1390,6 +1438,7 @@ fn kill_relic_after_death(state: &mut CombatState, target: CreatureUid, dead_sid
     crate::coop::seat_pass(state, &ctx, |state, ctx| {
         let _ = crate::relic_effects::dispatch_after_death(state, ctx);
     });
+    hooks::dispatch_after_death_cards(state, &ctx);
 }
 
 /// Run `body` — the hits of ONE multi-target `CreatureCmd.Damage` — with
@@ -1414,8 +1463,9 @@ pub fn with_deferred_enemy_deaths<R>(
         .unwrap_or_default();
     for target in killed {
         kill_before_death(state, target);
-        let fired = kill_after_death_powers(state, target, crate::Side::Enemy);
+        kill_after_death_powers(state, target, crate::Side::Enemy);
         kill_relic_after_death(state, target, crate::Side::Enemy);
+        let fired = kill_dying_enemy_after_death(state, target, crate::Side::Enemy);
         if let Some(kind) = fired {
             crate::enemy_death_effects::finish_kill(state, target, kind);
         }
@@ -1442,7 +1492,7 @@ pub fn apply_damage_full(
     apply_damage_with_final(state, dealer, target, final_damage, props)
 }
 
-/// Fractional-base twin of [`compute_modified_damage`]: the relic-additive fold
+/// Fractional-base twin of [`compute_modified_damage`]: the relic additive
 /// plus [`hooks::modify_damage_frac`], over a RATIONAL base `base_num/base_den`
 /// (single floor at the end). Used by Thrash's decimal `Damage.BaseValue`.
 /// Bead `sts2-rs-thrash-decimal`.
@@ -1461,8 +1511,9 @@ pub fn compute_modified_damage_frac(
         target: CreatureRef::Enemy(target),
         props,
     };
-    // Relic-additive (MiniatureCannon &c.) reads the integer base; fold it into
-    // the rational numerator over the same denominator before the pipeline.
+    // Relic-additive (MiniatureCannon &c.) reads the integer base and joins
+    // the "other additive" term, after the card enchantment's stage (see
+    // `hooks::modify_damage_with_relic_additive`).
     let int_base = i32::try_from(base_num.div_euclid(base_den)).unwrap_or(i32::MAX);
     let relic_additive = if relic_channel_live(state, PlannedChannel::ModifyDamageAdditive) {
         let relic_additive_md_ctx = crate::relic_effects::ModifyDamageCtx {
@@ -1477,8 +1528,7 @@ pub fn compute_modified_damage_frac(
     } else {
         0
     };
-    let base_num = base_num.saturating_add(i64::from(relic_additive).saturating_mul(base_den));
-    hooks::modify_damage_frac(state, base_num, base_den, &ctx)
+    hooks::modify_damage_frac(state, base_num, base_den, relic_additive, &ctx)
 }
 
 /// Fractional-base twin of [`apply_damage_full`]: composes

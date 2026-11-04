@@ -14,7 +14,7 @@
 //! hint, search tree, choice ranker — are one seeded search over the same
 //! engine state through the same emitter on both hosts, so they are hashed
 //! like everything else. The routes in [`STRUCTURAL_ROUTES`] cannot match by
-//! hash on purpose: the regret routes re-score the parent's NATIVE snapshot
+//! hash on purpose: the regret review re-scores each parent's NATIVE snapshot
 //! where Python re-scores a lossy wire dict, and "play best" off combat asks
 //! the Rust `HeuristicPolicy` where Python asks its own `run_policy`. Those
 //! are held to status + top-level key shape (when the body was stored).
@@ -60,7 +60,6 @@ const ASSETS_BASE: &str = "https://assets.test";
 /// module docs for why each cannot be bit-exact).
 const STRUCTURAL_ROUTES: &[&str] = &[
     "/api/live/auto-action",
-    "/api/live/last-move-regret",
     "/api/live/regret-review",
     // M4 replay: host paths / mtimes, and the exact-state re-searches.
     "/api/runs",
@@ -365,14 +364,6 @@ fn replay_scenario(dir: &Path) -> Vec<String> {
                     py_keys
                         .as_ref()
                         .is_none_or(|py| rust_keys.iter().all(|k| py.contains(k))),
-                ),
-                // The coach assesses every move the oracle does and more:
-                // Python's wire round-trip loses a potion's slot and can lose
-                // the played card, and then answers 409 where the native
-                // snapshot scores the move. Never the reverse.
-                "/api/live/last-move-regret" => (
-                    status == req.status || (req.status == 409 && status == 200),
-                    status != req.status || py_keys.as_ref().is_none_or(|py| *py == rust_keys),
                 ),
                 _ => (
                     status == req.status,

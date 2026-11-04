@@ -7,12 +7,16 @@ use super::prelude::*;
 /// `crates/sts2-core/src/powers/regent.rs` then applies the Strength
 /// loss to the *enemy's* end-of-turn dispatcher.
 pub(crate) fn play_dying_star(state: &mut CombatState, _t: Option<CreatureUid>) -> EffectResult {
+    // C# `DyingStar.OnPlay` snapshots `HittableEnemies` (a `ToList()` copy)
+    // BEFORE `DamageCmd.Attack` and applies DyingStarPower per snapshot
+    // enemy, so a mid-attack spawn (Stock replacement Axebot) is skipped —
+    // same shape as CrushUnder.
+    let targets = hittable_enemy_snapshot(state);
     deal_damage_all_enemies(state, current_damage(state));
     // C# `DyingStar.cs` OnUpgrade bumps StrengthLoss 9→11 alongside the
     // Damage upgrade. Bead `sts2-rs-upqp8`.
     let strength_loss = if current_card_upgraded(state) { 11 } else { 9 };
-    let uids: Vec<CreatureUid> = state.enemy_uids.iter().copied().collect();
-    for uid in uids {
+    for uid in targets {
         if state
             .creatures
             .iter()

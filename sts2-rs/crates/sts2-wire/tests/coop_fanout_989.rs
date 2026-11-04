@@ -55,7 +55,7 @@ fn ally_cards(st: &CombatState, id: CardId) -> usize {
 
 /// The teammate's hand size and energy after our Strike kills a 1-HP Nibbit
 /// beside a healthy one.
-fn after_the_kill(relics: &[&str]) -> (usize, i8) {
+fn after_the_kill(relics: &[&str]) -> (usize, i32) {
     install();
     let nibbit = |uid: u32, hp: i32| {
         json!({"kind": "Nibbit", "uid": uid, "hp": hp, "max_hp": 32, "block": 0,

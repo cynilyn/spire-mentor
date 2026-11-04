@@ -56,7 +56,7 @@ fn can_enchant_card_matches_the_csharp_oracle() {
                 .collect();
             let card = card_pod_from_id(spec.id, false).expect("registry card");
             for (name, id) in &enchantments {
-                let rust = can_enchant_card(&spec, &card, *id);
+                let rust = can_enchant_card(&spec, &card, *id, sts2_core::GameVersion::V0_107_1);
                 let csharp = truth.contains(name.as_str());
                 if rust != csharp {
                     mismatches.push(format!("{}@{name}: rust {rust}, C# {csharp}", spec.name));
