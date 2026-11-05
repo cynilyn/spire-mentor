@@ -2526,9 +2526,10 @@ fn decisions_decisions_resolves_to_three_auto_plays() {
 
 /// A repeated Skill that opens its OWN select (Quasar's choose-a-card) must
 /// resolve it before the next repeat (C# awaits each `CardCmd.AutoPlay`,
-/// `DecisionsDecisions.cs:33-36`, inside one `AutoResolveInline` resume). The
-/// first repeat used to surface, parking Quasar on Play, and repeats 2/3 found
-/// it in no pile — 1 generated card instead of 3 (Regent quick seed 452).
+/// `DecisionsDecisions.cs:33-36`), and each select prompts the player (GH
+/// #1131). The first repeat used to surface, parking Quasar on Play, and
+/// repeats 2/3 found it in no pile — 1 generated card instead of 3 (Regent
+/// quick seed 452).
 #[test]
 fn decisions_decisions_repeats_a_selecting_skill_three_times() {
     crate::cards::dispatch::install_default_registry();
@@ -2548,10 +2549,20 @@ fn decisions_decisions_repeats_a_selecting_skill_three_times() {
     let gen0 = state.player.generated_cards_this_combat;
     let selection: SmallVec<[u8; 4]> = [u8::try_from(pick).expect("fits")].into_iter().collect();
     let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
-    assert!(
-        state.pending_choice.is_none(),
-        "every Quasar pick drained inline"
-    );
+    for repeat in 1..=3 {
+        assert_eq!(
+            state.player.generated_cards_this_combat - gen0,
+            repeat - 1,
+            "repeat {repeat} waits for its pick"
+        );
+        assert!(
+            state.pending_choice.is_some(),
+            "repeat {repeat} surfaces Quasar's choose-a-card"
+        );
+        let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+        let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    }
+    assert!(state.pending_choice.is_none());
     assert_eq!(
         state.player.generated_cards_this_combat - gen0,
         3,
@@ -2561,6 +2572,57 @@ fn decisions_decisions_repeats_a_selecting_skill_three_times() {
         !state.player.play.contains(&q),
         "Quasar not stranded on Play"
     );
+}
+
+/// An AUTO-PLAYED DecisionsDecisions keeps its own tail and its parent's loop
+/// waiting across all three repeats: Catastrophe finishes after them, and
+/// DecisionsDecisions reaches its result pile before Catastrophe does.
+#[test]
+fn auto_played_decisions_decisions_waits_for_each_repeat() {
+    crate::cards::dispatch::install_default_registry();
+    sts2_core::register_card_factory(crate::cards::spec_index::card_pod_from_id);
+    install_pool();
+    let (mut state, _e) = fresh_state_with_enemy(200);
+    let q = push_hand_skill(&mut state, CardId::Quasar);
+    let _v = push_hand_skill(&mut state, CardId::Venerate);
+    let decisions = push_hand_skill(&mut state, CardId::DecisionsDecisions);
+    state.player.hand.retain(|u| *u != decisions);
+    state.player.draw.push(decisions);
+    let catastrophe = push_hand_skill(&mut state, CardId::Catastrophe);
+    state.cards[catastrophe.get() as usize - 1].cost = 0;
+    state.phase = sts2_core::CombatPhase::PlayerPlayPhase;
+    state.side = sts2_core::Side::Player;
+    let hand_index = u8::try_from(state.player.hand.len() - 1).expect("fits");
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::PlayCard {
+            hand_index,
+            target: None,
+        },
+    );
+    let pc = state.pending_choice.as_ref().expect("Decisions' pick");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::AutoPlaySkillFromHand);
+    let pick = pc
+        .options
+        .iter()
+        .position(|o| o.card_uid == Some(q))
+        .expect("Quasar is an option");
+    let gen0 = state.player.generated_cards_this_combat;
+    let selection: SmallVec<[u8; 4]> = [u8::try_from(pick).expect("fits")].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    for repeat in 1..=3 {
+        assert!(state.pending_choice.is_some(), "repeat {repeat} prompts");
+        assert!(state.player.play.contains(&decisions));
+        assert!(state.player.play.contains(&catastrophe));
+        let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+        let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    }
+    assert!(state.pending_choice.is_none());
+    assert_eq!(state.player.generated_cards_this_combat - gen0, 3);
+    assert!(state.pending_autoplay_resume.is_none());
+    assert!(state.pending_play.is_none());
+    assert!(!state.player.play.contains(&decisions));
+    assert!(!state.player.play.contains(&catastrophe));
 }
 
 /// `DecisionsDecisions` with exactly ONE Skill candidate in hand auto-applies

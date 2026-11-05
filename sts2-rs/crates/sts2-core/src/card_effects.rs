@@ -2181,6 +2181,28 @@ pub fn discard_and_draw_with_hooks(
     uids: &[CardUid],
     draw_count: i32,
 ) -> i32 {
+    discard_and_draw_then(state, uids, draw_count, None)
+}
+
+/// [`discard_hand_cards_with_hooks`] for a card whose `OnPlay` goes on after
+/// the discard: `then` runs once every discarded Sly card has auto-played,
+/// which may be after a Sly card's select is answered (GH #1131).
+pub fn discard_hand_cards_then(
+    state: &mut CombatState,
+    uids: &[CardUid],
+    then: Option<crate::LoopThen>,
+) -> i32 {
+    discard_and_draw_then(state, uids, 0, then)
+}
+
+/// [`discard_and_draw_with_hooks`] with a follow-up `then`, run after the
+/// last Sly auto-play. See [`play_discarded_sly`].
+pub fn discard_and_draw_then(
+    state: &mut CombatState,
+    uids: &[CardUid],
+    draw_count: i32,
+    then: Option<crate::LoopThen>,
+) -> i32 {
     // Snapshot the Sly subset (in supplied order) BEFORE the discards, mirroring
     // C#'s `slyCards` collection inside the per-card loop. The keyword check is
     // stable across the pile move, so reading it up front is equivalent.
@@ -2219,22 +2241,78 @@ pub fn discard_and_draw_with_hooks(
     }
     // Auto-play each Sly card BY REFERENCE wherever it now sits (the draw may
     // have reshuffled it from discard into draw/hand) — CardCmd.cs:201-204.
-    // C# `await`s each `AutoPlay(item, SlyDiscard)` to completion before the
-    // next, so a Sly card whose own `OnPlay` opens a select (a
-    // MasterPlanner-Sly Survivor/Acrobatics/Prepared) auto-resolves that select
-    // INLINE within the loop. Hold `autoplay_inline_resolve` so the nested
-    // select drains here instead of surfacing — surfacing would park an
-    // `AutoPlayFinish` resume that this simple loop's next iteration clobbers,
-    // dropping the surfacing card entirely (Silent sweep seeds 481/306/984/1400
-    // once MasterPlanner makes those Skills Sly). Bead
-    // `sts2-rs-masterplanner-sly`.
+    play_discarded_sly(state, &sly, then);
+    discarded
+}
+
+/// Auto-play the discarded Sly `cards` in order, then apply `then`.
+///
+/// C# `await`s each `CardCmd.AutoPlay(item, SlyDiscard)` before the next
+/// (`CardCmd.cs:201-204`), and the discarding card's `OnPlay` goes on only
+/// after the last. So a Sly card whose `OnPlay` opens a select (an Armaments
+/// made Sly by Master Planner) prompts the player, and the rest waits for the
+/// pick. When the auto-play parks its resume, this records the cards not yet
+/// played and `then` as the resume's loop continuation, the BeatDown way, and
+/// returns. The resolver runs [`resume_discarded_sly`] once the pick lands.
+///
+/// Under an already parked auto-play (the discarding card was itself
+/// auto-played and its discard select prompted), that resume is set aside. If
+/// a Sly card parks, the set-aside finish becomes the frame after it, with the
+/// rest of this loop as the frame's continuation, the DecisionsDecisions way.
+/// GH #1131.
+pub fn play_discarded_sly(
+    state: &mut CombatState,
+    cards: &[CardUid],
+    then: Option<crate::LoopThen>,
+) {
+    let outer = state.pending_autoplay_resume.take();
+    // A resume parked mid-draw keeps its draw on the top slot only, so it
+    // can't become a frame. Drain inline there, as before.
+    let nestable = outer.as_ref().is_none_or(|o| o.inner_draw.is_none());
+    debug_assert!(nestable, "a Sly discard under a parked draw");
     let prev_inline = state.autoplay_inline_resolve;
-    state.autoplay_inline_resolve = true;
-    for uid in sly {
+    state.autoplay_inline_resolve = prev_inline || !nestable;
+    for (i, &uid) in cards.iter().enumerate() {
         let _ = crate::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
+        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+            let cont = crate::AutoPlayLoopCont {
+                resume_fn: resume_discarded_sly,
+                iters: 0,
+                uids: cards[i + 1..].iter().copied().collect(),
+                force_exhaust: false,
+                then,
+            };
+            debug_assert!(resume.continuation.is_none());
+            match outer {
+                Some(outer) => {
+                    resume
+                        .parent_chain
+                        .push(crate::combat_loop::AutoPlayParentFrame {
+                            finish: outer.finish,
+                            remaining: outer.remaining,
+                            force_exhaust: outer.force_exhaust,
+                            continuation: Some(cont),
+                        });
+                    resume.parent_chain.extend(outer.parent_chain);
+                    resume.continuation = outer.continuation;
+                }
+                None => resume.continuation = Some(cont),
+            }
+            state.autoplay_inline_resolve = prev_inline;
+            return;
+        }
     }
     state.autoplay_inline_resolve = prev_inline;
-    discarded
+    state.pending_autoplay_resume = outer;
+    if let Some(then) = then {
+        then.run(state);
+    }
+}
+
+/// Loop continuation for [`play_discarded_sly`]: the Sly cards not yet played
+/// and the discarding card's follow-up.
+fn resume_discarded_sly(state: &mut CombatState, cont: &crate::AutoPlayLoopCont) {
+    play_discarded_sly(state, &cont.uids, cont.then);
 }
 
 // ---------------------------------------------------------------------------

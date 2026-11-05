@@ -1639,26 +1639,8 @@ fn auto_play_collect_suspending(
     // and re-entering `auto_play_collect_suspending` with it collects nothing and
     // plays nothing, dropping straight into the turn-start tail once the
     // suspended card and its siblings have finished.
-    for (n, uid) in ap.collected.iter().copied().enumerate() {
-        resolve_auto_played_card(state, uid, ap.force_exhaust);
-        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
-            let rest: smallvec::SmallVec<[crate::CardUid; 8]> =
-                ap.collected[n + 1..].iter().copied().collect();
-            // Same frame choice as the Cascade driver: when the card WE resolved
-            // auto-played a nested card that surfaced FIRST, our siblings belong
-            // to OUR parent-chain frame (they replay after our tail), not to the
-            // inner card's top-level slot.
-            if let Some(parent) = resume.parent_chain.last_mut() {
-                parent.remaining = rest;
-                parent.force_exhaust = ap.force_exhaust;
-            } else {
-                resume.remaining = rest;
-                resume.force_exhaust = ap.force_exhaust;
-            }
-            return Some(crate::PendingAutoplay::default());
-        }
-    }
-    None
+    play_collected_auto_plays(state, &ap.collected, ap.force_exhaust)
+        .then(crate::PendingAutoplay::default)
 }
 
 /// Drain a side-wide relic channel: the seated player's relics, then each
@@ -1982,6 +1964,26 @@ fn run_after_player_turn_start_cluster(
                                 state,
                                 &to_discard,
                             );
+                            // A discarded Sly card's select prompts the player
+                            // (GH #1131), and C# awaits it inside this
+                            // `AfterPlayerTurnStart`. Suspend the cluster the
+                            // way the choice branch below does; the resume
+                            // finishes the Sly loop, then walks on from `i + 1`.
+                            if state.pending_choice.is_some() {
+                                let side_turn_start_fired = fire_side_turn_start_on_setup_pause(
+                                    state,
+                                    side_turn_start_fired,
+                                );
+                                state.pending_cluster_resume = Some(crate::PendingClusterResume {
+                                    snapshot,
+                                    idx: i,
+                                    autoplay: crate::PendingAutoplay::default(),
+                                    side_turn_start_fired,
+                                    mayhem_phase: false,
+                                    relic_start: None,
+                                });
+                                return StepResult::PendingChoice;
+                            }
                         } else {
                             let options: Vec<crate::ChoiceOption> = hand
                                 .iter()
@@ -2414,7 +2416,20 @@ fn finish_turn_start_tail(state: &mut CombatState) -> StepResult {
         crate::EffectResult::NotImplemented,
         crate::relic_effects::dispatch_before_play_phase_start,
     );
+    // The dupe's select prompts the player (GH #1131), and C# awaits it inside
+    // `BeforePlayPhaseStart`, so the rest of the tail waits for the dupe.
+    if state.pending_choice.is_some() {
+        state.pending_play_phase_tail = true;
+        return StepResult::PendingChoice;
+    }
+    finish_play_phase_start(state)
+}
 
+/// The turn-start tail after the `before_play_phase_start` dispatch: the
+/// combat-end re-check and a setup VoidForm's end-turn request. Runs straight
+/// from [`finish_turn_start_tail`], or from the resolver once a HistoryCourse
+/// dupe's select is answered (GH #1131).
+pub(crate) fn finish_play_phase_start(state: &mut CombatState) -> StepResult {
     // Bead `sts2-rs-fogmog-playphase-collapse`: the `before_play_phase_start`
     // dispatch above can AUTO-PLAY a card — HISTORY_COURSE re-plays last round's
     // last Attack/Skill (CardCmd.AutoPlay) — which may kill the last PRIMARY
@@ -7427,15 +7442,136 @@ const END_TURN_CHAIN: [fn(&mut CombatState) -> StepResult; 6] = [
 /// MCTS uses the split to cache the RNG-free prefix of an `EndTurn`
 /// re-application across chance-node widens (perf item M12).
 pub fn end_turn_phase(state: &mut CombatState, phase: usize) -> StepResult {
-    END_TURN_CHAIN[phase](state)
+    run_end_turn_step(state, phase)
+}
+
+/// The [`END_TURN_CHAIN`] indices of the enemy side: `enemy_turn_start`
+/// through `enemy_turn_end`.
+const ENEMY_SIDE_FIRST: usize = 2;
+const ENEMY_SIDE_LAST: usize = 4;
+
+/// One [`END_TURN_CHAIN`] step. The enemy side runs in capture mode when a
+/// player select could open in it (GH #1129, see
+/// [`crate::EnemySideCapture`]).
+fn run_end_turn_step(state: &mut CombatState, phase: usize) -> StepResult {
+    if phase == ENEMY_SIDE_FIRST {
+        begin_enemy_side_capture(state);
+    }
+    let result = END_TURN_CHAIN[phase](state);
+    if (ENEMY_SIDE_FIRST..=ENEMY_SIDE_LAST).contains(&phase)
+        && (phase == ENEMY_SIDE_LAST || !matches!(result, StepResult::Advanced))
+    {
+        return finish_enemy_side_capture(state, result);
+    }
+    result
+}
+
+/// Can a player select open during the enemy side? Only an enemy-turn draw
+/// opens one: Hellraiser auto-playing a drawn Strike with a select, or a
+/// reshuffle's Stratagem grid.
+fn enemy_side_select_possible(state: &CombatState) -> bool {
+    state.player_power_amount(crate::powers::PowerKind::Hellraiser) > 0
+        || state.after_shuffle_choice_listener_active()
+}
+
+fn begin_enemy_side_capture(state: &mut CombatState) {
+    if state.enemy_side_capture.is_some() || !enemy_side_select_possible(state) {
+        return;
+    }
+    let snapshot = Box::new(state.clone());
+    state.enemy_side_capture = Some(Box::new(crate::EnemySideCapture {
+        snapshot,
+        answers: smallvec::SmallVec::new(),
+        next: 0,
+        captured: None,
+    }));
+}
+
+/// End the enemy side's capture. A select with no answer yet replaces the
+/// state with the one captured at it, so the player sees that select; the
+/// rest of the run, which picked option 0 there, is dropped.
+fn finish_enemy_side_capture(state: &mut CombatState, result: StepResult) -> StepResult {
+    let Some(capture) = state.enemy_side_capture.take() else {
+        debug_assert!(
+            !matches!(result, StepResult::Advanced)
+                || state
+                    .pending_choice
+                    .as_ref()
+                    .is_none_or(|pc| pc.kind == crate::ChoiceKind::MonsterCurseSelect),
+            "a player select opened in the enemy side without capture mode"
+        );
+        return result;
+    };
+    let crate::EnemySideCapture {
+        snapshot,
+        answers,
+        captured,
+        ..
+    } = *capture;
+    let Some(mut captured) = captured else {
+        return result;
+    };
+    captured.enemy_side_replay = Some(Box::new(crate::EnemySideReplay { snapshot, answers }));
+    *state = *captured;
+    StepResult::PendingChoice
+}
+
+/// Answer the select an enemy side captured: rerun the side from its snapshot
+/// with every answer so far plus `selection`, then the rest of the end of
+/// turn (GH #1129).
+pub(crate) fn replay_enemy_side(
+    state: &mut CombatState,
+    replay: crate::EnemySideReplay,
+    selection: smallvec::SmallVec<[u8; 4]>,
+) -> StepResult {
+    let legal = crate::legal_actions(state)
+        .into_iter()
+        .any(|a| matches!(&a, crate::Action::ResolveChoice { selection: s } if *s == selection));
+    if !legal {
+        state.enemy_side_replay = Some(Box::new(replay));
+        return StepResult::IllegalPlay;
+    }
+    let crate::EnemySideReplay {
+        snapshot,
+        mut answers,
+    } = replay;
+    answers.push(selection);
+    *state = (*snapshot).clone();
+    state.enemy_side_capture = Some(Box::new(crate::EnemySideCapture {
+        snapshot,
+        answers,
+        next: 0,
+        captured: None,
+    }));
+    end_turn_dispatch_from(state, ENEMY_SIDE_FIRST)
+}
+
+/// In the enemy side's capture mode, hand out the player's next answer for
+/// the select now open, or capture the state at the first one with no answer
+/// (GH #1129). `None` leaves the pick to the caller's default.
+fn enemy_side_answer(state: &mut CombatState) -> Option<smallvec::SmallVec<[u8; 4]>> {
+    if state.vakuu_selector || !choice_prompts_player(state) {
+        return None;
+    }
+    let capture = state.enemy_side_capture.as_mut()?;
+    if let Some(answer) = capture.answers.get(capture.next) {
+        capture.next += 1;
+        return Some(answer.clone());
+    }
+    if capture.captured.is_none() {
+        let mut capture = state.enemy_side_capture.take().expect("checked above");
+        capture.captured = Some(Box::new(state.clone()));
+        state.enemy_side_capture = Some(capture);
+    }
+    None
 }
 
 /// The [`end_turn_dispatch`] chain from phase `first` on (`first ==
 /// END_TURN_PHASE_COUNT` runs nothing), with the same first-non-`Advanced`
 /// short-circuit. `first == 0` is `end_turn_dispatch`.
 pub fn end_turn_dispatch_from(state: &mut CombatState, first: usize) -> StepResult {
-    for step in &END_TURN_CHAIN[first..] {
-        let result = step(state);
+    for phase in first..END_TURN_CHAIN.len() {
+        let result = run_end_turn_step(state, phase);
         // A joint search seated a teammate to play: the turn is not over.
         if !matches!(result, StepResult::Advanced) || state.coop.joint_acting.is_some() {
             return result;
@@ -7856,6 +7992,21 @@ pub struct CardPlayFinish {
     /// choice (replays, `AfterCardPlayed`) still lands on it: C# keeps
     /// `cardPlay.Target` for the whole play.
     card_target: Option<u8>,
+    /// Where the tail resumes: the top, or after the `OnPlay` of a replay
+    /// whose choice parked it in `pending_play` (GH #1131).
+    pub(crate) resume_at: TailResume,
+}
+
+/// Where a parked hand-play tail ([`finish_card_play`]) picks up again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum TailResume {
+    /// The whole tail: the first play's choice (or no choice) parked it.
+    #[default]
+    Start,
+    /// After the `OnPlay` of `extra_plays` replay `i` (0-based).
+    AfterReplayOnPlay(i32),
+    /// After the Echo Form copy's `OnPlay`.
+    AfterEchoOnPlay,
 }
 
 /// Relic-side `Hook.BeforeCardPlayed` for a play that is not the initial hand
@@ -8452,6 +8603,7 @@ fn play_card_resolved(state: &mut CombatState, hand_index: u8, target: Option<u8
         attacks_skills_at_play_start,
         imitation_clone,
         card_target: state.coop.card_target,
+        resume_at: TailResume::Start,
     };
 
     // Bead `sts2-rs-mcts-surface-onplay-select`: a TOP-LEVEL player play whose
@@ -8860,6 +9012,113 @@ pub(crate) fn finish_card_play(state: &mut CombatState, fin: CardPlayFinish) -> 
     result
 }
 
+/// The half of one replay iteration (an `extra_plays` replay or the Echo Form
+/// copy) that runs after the card's `OnPlay` returns: `Enchantment.OnPlay`,
+/// the affliction drain, `History.CardPlayFinished` and `Hook.AfterCardPlayed`
+/// (CardModel.cs:1938-1970). Split out so a replay whose `OnPlay` surfaced a
+/// choice can finish its iteration when the tail resumes (GH #1131).
+///
+/// `pinpoint` keeps the Echo copy's existing behavior: that block has never
+/// shaved Pinpoint.
+#[allow(clippy::too_many_arguments)]
+fn replay_after_on_play(
+    state: &mut CombatState,
+    card: &crate::cards::Card,
+    card_uid: crate::CardUid,
+    weighted_drain: i8,
+    played_ctx: &crate::relic_effects::CardEventCtx,
+    hook_played_ctx: &hooks::CardCtx,
+    pinpoint: bool,
+) {
+    // GH #1021: C# `OnPlayWrapper` runs `Enchantment.OnPlay` after the
+    // card's own `OnPlay` on EVERY play iteration (CardModel.cs:1938-1946),
+    // so a replayed Adroit / Corrupted / Momentum card gains its block,
+    // takes its self-damage and ramps once per play. Swift / Sown stay
+    // first-play-only through their used bits.
+    crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
+    // C# `CardModel.OnPlayWrapper` runs the affliction `OnPlay` INSIDE the
+    // per-iteration `for i < playCount2` loop (CardModel.cs:1513-1522), so a
+    // Weighted card's `LoseEnergy` drain (Afflictions/Weighted.cs:8-11) fires
+    // once PER play — each OneTwoPunch replay drains another `Amount`, not
+    // just the initial play. Mirror the initial-play drain captured above.
+    // Bead `sts2-rs-7ert6`. It follows the enchantment leg, as in C#.
+    if weighted_drain != 0 {
+        state.player.energy = state
+            .player
+            .energy
+            .saturating_sub(i32::from(weighted_drain))
+            .max(0);
+    }
+    // Per-turn play bucket first: C# records `CardPlayFinished` before
+    // `AfterCardPlayed` (see the initial-play site).
+    {
+        let idx = card.card_type.index();
+        state.player.cards_played_this_turn[idx] =
+            state.player.cards_played_this_turn[idx].saturating_add(1);
+    }
+    if card_is_ethereal_at_play(state, card) {
+        note_ethereal_card_played(state);
+    }
+    if pinpoint && card.card_type == crate::cards::CardType::Skill {
+        state.discount_pinpoint_on_skill_played();
+    }
+    dispatch_after_card_played_buses(state, played_ctx, hook_played_ctx);
+    // `Hook.AfterCardPlayed` reaches the card's enchantment on every play
+    // iteration, so a replayed Goopy card ticks once per play (GH #952).
+    // The first-play markers are idempotent.
+    crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
+    bump_brilliant_scarf(state);
+    bump_paels_eye_played(state);
+    // Bead `sts2-rs-wvpjv`: C# `OnPlayWrapper` (CardModel.cs:1472-1523)
+    // calls `History.CardPlayFinished` once PER replay iteration, so each
+    // replay adds its own `CardPlayFinishedEntry`. GoldAxe's
+    // `CalculatedDamageVar` counts those entries — a OneTwoPunch'd card
+    // therefore contributes its play count, not 1. Bump the combat-wide
+    // counter per replay to keep `player_card_plays_this_combat` equal to
+    // `History.CardPlaysFinished.Count` (the initial play was bumped once
+    // above before the effect dispatch).
+    state.combat_log.player_card_plays_this_combat = state
+        .combat_log
+        .player_card_plays_this_combat
+        .saturating_add(1);
+    state.combat_log.card_plays_finished_this_turn = state
+        .combat_log
+        .card_plays_finished_this_turn
+        .saturating_add(1);
+    // v0.111.0: C# records this replay's `CardPlayFinished` BEFORE its
+    // `AfterCardPlayed` (decomp CardModel.cs:1961-1965); this loop bumps the
+    // count after the dispatch above, so re-run PaleBlueDot's idempotent
+    // check against the current count. No-op before v0.111.0.
+    crate::hooks::pale_blue_dot_after_card_played_v0111(state);
+    // Each replay is its own C# `CardPlayFinished`, so the HistoryCourse
+    // slot re-stamps per iteration — keeping the parent last after any
+    // children this replay's dispatch auto-played.
+    stamp_last_attack_skill_played(state, card, card_uid);
+    // C# `CardModel.OnPlayWrapper` runs the SAME per-iteration tail for
+    // a `ModifyCardPlayCount` replay as for an Echo replay (one loop,
+    // CardModel.cs:1472-1523): per-turn play buckets, the combat-long
+    // ethereal tally, and the `Hook.BeforeCardPlayed` cost shaves
+    // (Stomp per Attack, Pinpoint per Skill). Mirror the EchoForm replay
+    // block below verbatim — previously only the combat-wide counter was
+    // bumped here, so a OneTwoPunch'd Attack shaved Stomp once instead
+    // of twice (sweep seed 5404: STOMP cost 3-3=0 in C#, 1 here).
+    // Per-replay `AfterCardPlayedLate` (see the initial-play site).
+    crate::card_effects::fire_late_effects(state, hook_played_ctx);
+}
+
+/// Should a choice a replay's `OnPlay` just opened SURFACE, parking the tail
+/// in `pending_play`, rather than drain inline? The first play surfaces any
+/// choice while combat is live (see [`play_card`]); a replay is another
+/// `OnPlayWrapper` iteration whose `CardSelectCmd` prompts the same way
+/// (GH #1131). A spot with no suspend point (`autoplay_inline_resolve`) and a
+/// pushed Vakuu selector still drain.
+fn replay_choice_should_surface(state: &CombatState) -> bool {
+    state.pending_choice.is_some()
+        && !state.is_over
+        && !state.autoplay_inline_resolve
+        && !state.vakuu_selector
+}
+
 fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepResult {
     let CardPlayFinish {
         card,
@@ -8878,93 +9137,39 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         nostalgia_amount_at_play_start,
         attacks_skills_at_play_start,
         imitation_clone,
-        card_target: _,
+        card_target,
+        resume_at,
     } = fin;
-
-    // ── Enchantment `OnPlay` (bead `sts2-rs-ench-onplay-order`) ──────────
-    // C# `CardModel.OnPlayWrapper` (`CardModel.cs:1930-1943`):
-    //
-    //   await OnPlay(choiceContext, cardPlay);   // the card's own effect
-    //   InvokeExecutionFinished();
-    //   if (Enchantment != null)
-    //       await Enchantment.OnPlay(choiceContext, cardPlay);
-    //   if (Affliction != null)
-    //       await Affliction.OnPlay(choiceContext, target);
-    //   History.CardPlayFinished(...);
-    //   await Hook.AfterCardPlayed(...);
-    //
-    // i.e. the enchantment leg runs AFTER the card body has fully resolved —
-    // and, because `OnPlay` is awaited, after any mid-play `CardSelectCmd`
-    // the body opened. The port previously fired this channel BEFORE the
-    // effect dispatch (following Python's `enchantments.on_card_played`
-    // site), which let Swift's draw land ahead of the card's own
-    // `CardSelectCmd.FromHand`: `BurningPact.OnPlay`
-    // (`MegaCrit.Sts2.Core.Models.Cards/BurningPact.cs:23-32`) is
-    // `CardSelectCmd.FromHand` THEN `CardPileCmd.Draw`, so a Swift(3)
-    // BURNING_PACT offered the 3 real hand cards in C# but 6 here (the hand
-    // PLUS the 3 Swift had already drawn). An injected pick index then
-    // resolved to a DIFFERENT card than the player actually chose and every
-    // subsequent board diverged (mirror corpus records 269/270).
-    //
-    // `finish_card_play` is the single point both the inline path (no choice
-    // opened) and the surfaced-choice resume path (`resolve_choice_action` →
-    // `pending_play`) funnel through, so placing the dispatch here reproduces
-    // the C# await ordering on both. It sits ahead of the
-    // `History.CardPlayFinished` bump and both `after_card_played` buses,
-    // matching the wrapper's statement order.
-    //
-    // Swift / Sown flip their first-play `*_USED_BIT` inside this dispatch, as
-    // C# sets `Status = EnchantmentStatus.Disabled` inside their own `OnPlay`
-    // — so a Music Box clone made in the after-played buses is already spent.
-    crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
-
-    // Affliction `OnPlay` — the captured Weighted energy drain (bead
-    // `sts2-rs-l65km`), which C# runs immediately AFTER the enchantment leg
-    // (`CardModel.cs:1944-1950`). See the capture site in [`play_card`].
-    if weighted_drain != 0 {
-        state.player.energy = state
-            .player
-            .energy
-            .saturating_sub(i32::from(weighted_drain))
-            .max(0);
+    // Park the tail on a replay's surfaced choice: everything this play still
+    // owes runs when the pick lands, from `resume_at` (GH #1131).
+    macro_rules! park_on_choice {
+        ($resume:expr) => {{
+            crate::hooks::grant_latched_skittish(state);
+            state.pending_play = Some(crate::PendingPlay {
+                finish: CardPlayFinish {
+                    card,
+                    card_idx,
+                    card_uid,
+                    target_uid,
+                    resolved_cost,
+                    weighted_drain,
+                    extra_plays,
+                    card_is_ethereal,
+                    corruption_active_pre_dispatch,
+                    feral_returns_to_hand,
+                    echo_form_amount_at_play_start,
+                    first_in_series_before,
+                    rebound_amount_at_play_start,
+                    nostalgia_amount_at_play_start,
+                    attacks_skills_at_play_start,
+                    imitation_clone: None,
+                    card_target,
+                    resume_at: $resume,
+                },
+            });
+            return StepResult::PendingChoice;
+        }};
     }
-
-    // Bead `sts2-rs-rnyme` / play-finish fidelity fix: record this play in
-    // the combat-wide counter NOW — after the effect dispatch, before
-    // `AfterCardPlayed` — mirroring C# `History.CardPlayFinished`
-    // (CardModel.cs:1524). Bumping here (not at play-start) means a GoldAxe
-    // dispatched above read the count WITHOUT its own in-flight play, and a
-    // GoldAxe auto-played by THIS card's `OnPlay` (Havoc / Cascade /
-    // Catastrophe) read it WITHOUT this still-in-flight parent. The replay
-    // loop below bumps once more per replay (each replay is its own C#
-    // `CardPlayFinished`). GoldAxe is the sole reader of this counter.
-    state.combat_log.player_card_plays_this_combat = state
-        .combat_log
-        .player_card_plays_this_combat
-        .saturating_add(1);
-    state.combat_log.card_plays_finished_this_turn = state
-        .combat_log
-        .card_plays_finished_this_turn
-        .saturating_add(1);
-    // Event log (C# `CardPlayFinishedEntry`), which also closes this play's
-    // source frame — see the auto-play twin in `finish_auto_played_card`.
-    crate::event_log::record(
-        state,
-        crate::event_log::EventLogEntry::CardPlayFinished {
-            card: card.card_id,
-            upgraded: card.upgraded,
-        },
-    );
-
-    // Bead `sts2-rs-ummci`: record the last Attack/Skill the player played
-    // this round for `HistoryCourse`'s next-round replay, in C# FINISH order
-    // (`History.CardPlayFinished`, CardModel.cs:1524 — see the bump above).
-    // A parent whose `OnPlay` auto-played children re-stamps here AFTER the
-    // children's post-dispatch stamps, so the slot holds the parent (Havoc /
-    // Cascade / Catastrophe; seeds 5169/5957/4550/3681). HistoryCourse's own
-    // dupe carries `IsDupe` and is filtered, matching C#'s `!e.Card.IsDupe`
-    // scan (seed 5192).
-    stamp_last_attack_skill_played(state, &card, card_uid);
 
     // Bead `sts2-rs-j87`: fire `after_card_played` on the
     // relic-effects bus. This is a fresh runtime site — the legacy
@@ -8992,68 +9197,192 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         card_tags: card.tags,
         card_type: Some(card.card_type),
     };
-    // Record this FINISHED play before the after-played buses. C#
-    // `OnPlayWrapper` calls `History.CardPlayFinished` BEFORE
-    // `Hook.AfterCardPlayed` (CardModel.cs:1959-1966, both builds), so every
-    // after-played listener already sees it: a Stomp that Calamity generates
-    // from this Attack backfills its shave from the tally and must count this
-    // Attack (GH #1054: cost 3 here, 2 in C#). EchoForm / `extra_plays`
-    // replays bump the same bucket once per replay (bead `sts2-rs-r6l9`).
-    // Read by `CombatState::count_player_cards_played_this_turn`.
-    {
-        let idx = card.card_type.index();
-        state.player.cards_played_this_turn[idx] =
-            state.player.cards_played_this_turn[idx].saturating_add(1);
-    }
-    // Combat-long ETHEREAL-played tally (feeds Necrobinder PullFromBelow's
-    // CalculatedVar hit count). Bumped after the body resolves, so a card
-    // never counts itself (C# records the `WasEthereal` entry post-OnPlay).
-    // `WasEthereal` reads the live `Keywords` (CardPlayFinishedEntry.cs:45), so
-    // a Hexed card counts too (HexPower.TryModifyKeywordsInCombat) — use the
-    // play-time predicate, not the static keyword.
-    if card_is_ethereal_at_play(state, &card) {
-        note_ethereal_card_played(state);
-    }
 
-    // Pinpoint costs 1 less per Skill played this turn (C#
-    // `Pinpoint.AfterCardPlayed` → `EnergyCost.AddThisTurn(-1)`), post-body
-    // unlike Stomp's pre-body `BeforeCardPlayed` shave above. Shaved with the
-    // tally, before the buses: a Pinpoint an after-played listener creates
-    // backfills this Skill from the tally and is not a listener of the running
-    // hook, so shaving after the buses would count the Skill twice.
-    if card.card_type == crate::cards::CardType::Skill {
-        state.discount_pinpoint_on_skill_played();
+    // Where this tail starts: the top, or right after the `OnPlay` of the
+    // replay whose choice parked it.
+    let mut first_replay: i32 = 0;
+    let mut echo_done = false;
+    match resume_at {
+        TailResume::Start => {
+            // ── Enchantment `OnPlay` (bead `sts2-rs-ench-onplay-order`) ──────────
+            // C# `CardModel.OnPlayWrapper` (`CardModel.cs:1930-1943`):
+            //
+            //   await OnPlay(choiceContext, cardPlay);   // the card's own effect
+            //   InvokeExecutionFinished();
+            //   if (Enchantment != null)
+            //       await Enchantment.OnPlay(choiceContext, cardPlay);
+            //   if (Affliction != null)
+            //       await Affliction.OnPlay(choiceContext, target);
+            //   History.CardPlayFinished(...);
+            //   await Hook.AfterCardPlayed(...);
+            //
+            // i.e. the enchantment leg runs AFTER the card body has fully resolved —
+            // and, because `OnPlay` is awaited, after any mid-play `CardSelectCmd`
+            // the body opened. The port previously fired this channel BEFORE the
+            // effect dispatch (following Python's `enchantments.on_card_played`
+            // site), which let Swift's draw land ahead of the card's own
+            // `CardSelectCmd.FromHand`: `BurningPact.OnPlay`
+            // (`MegaCrit.Sts2.Core.Models.Cards/BurningPact.cs:23-32`) is
+            // `CardSelectCmd.FromHand` THEN `CardPileCmd.Draw`, so a Swift(3)
+            // BURNING_PACT offered the 3 real hand cards in C# but 6 here (the hand
+            // PLUS the 3 Swift had already drawn). An injected pick index then
+            // resolved to a DIFFERENT card than the player actually chose and every
+            // subsequent board diverged (mirror corpus records 269/270).
+            //
+            // `finish_card_play` is the single point both the inline path (no choice
+            // opened) and the surfaced-choice resume path (`resolve_choice_action` →
+            // `pending_play`) funnel through, so placing the dispatch here reproduces
+            // the C# await ordering on both. It sits ahead of the
+            // `History.CardPlayFinished` bump and both `after_card_played` buses,
+            // matching the wrapper's statement order.
+            //
+            // Swift / Sown flip their first-play `*_USED_BIT` inside this dispatch, as
+            // C# sets `Status = EnchantmentStatus.Disabled` inside their own `OnPlay`
+            // — so a Music Box clone made in the after-played buses is already spent.
+            crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
+
+            // Affliction `OnPlay` — the captured Weighted energy drain (bead
+            // `sts2-rs-l65km`), which C# runs immediately AFTER the enchantment leg
+            // (`CardModel.cs:1944-1950`). See the capture site in [`play_card`].
+            if weighted_drain != 0 {
+                state.player.energy = state
+                    .player
+                    .energy
+                    .saturating_sub(i32::from(weighted_drain))
+                    .max(0);
+            }
+
+            // Bead `sts2-rs-rnyme` / play-finish fidelity fix: record this play in
+            // the combat-wide counter NOW — after the effect dispatch, before
+            // `AfterCardPlayed` — mirroring C# `History.CardPlayFinished`
+            // (CardModel.cs:1524). Bumping here (not at play-start) means a GoldAxe
+            // dispatched above read the count WITHOUT its own in-flight play, and a
+            // GoldAxe auto-played by THIS card's `OnPlay` (Havoc / Cascade /
+            // Catastrophe) read it WITHOUT this still-in-flight parent. The replay
+            // loop below bumps once more per replay (each replay is its own C#
+            // `CardPlayFinished`). GoldAxe is the sole reader of this counter.
+            state.combat_log.player_card_plays_this_combat = state
+                .combat_log
+                .player_card_plays_this_combat
+                .saturating_add(1);
+            state.combat_log.card_plays_finished_this_turn = state
+                .combat_log
+                .card_plays_finished_this_turn
+                .saturating_add(1);
+            // Event log (C# `CardPlayFinishedEntry`), which also closes this play's
+            // source frame — see the auto-play twin in `finish_auto_played_card`.
+            crate::event_log::record(
+                state,
+                crate::event_log::EventLogEntry::CardPlayFinished {
+                    card: card.card_id,
+                    upgraded: card.upgraded,
+                },
+            );
+
+            // Bead `sts2-rs-ummci`: record the last Attack/Skill the player played
+            // this round for `HistoryCourse`'s next-round replay, in C# FINISH order
+            // (`History.CardPlayFinished`, CardModel.cs:1524 — see the bump above).
+            // A parent whose `OnPlay` auto-played children re-stamps here AFTER the
+            // children's post-dispatch stamps, so the slot holds the parent (Havoc /
+            // Cascade / Catastrophe; seeds 5169/5957/4550/3681). HistoryCourse's own
+            // dupe carries `IsDupe` and is filtered, matching C#'s `!e.Card.IsDupe`
+            // scan (seed 5192).
+            stamp_last_attack_skill_played(state, &card, card_uid);
+
+            // Record this FINISHED play before the after-played buses. C#
+            // `OnPlayWrapper` calls `History.CardPlayFinished` BEFORE
+            // `Hook.AfterCardPlayed` (CardModel.cs:1959-1966, both builds), so every
+            // after-played listener already sees it: a Stomp that Calamity generates
+            // from this Attack backfills its shave from the tally and must count this
+            // Attack (GH #1054: cost 3 here, 2 in C#). EchoForm / `extra_plays`
+            // replays bump the same bucket once per replay (bead `sts2-rs-r6l9`).
+            // Read by `CombatState::count_player_cards_played_this_turn`.
+            {
+                let idx = card.card_type.index();
+                state.player.cards_played_this_turn[idx] =
+                    state.player.cards_played_this_turn[idx].saturating_add(1);
+            }
+            // Combat-long ETHEREAL-played tally (feeds Necrobinder PullFromBelow's
+            // CalculatedVar hit count). Bumped after the body resolves, so a card
+            // never counts itself (C# records the `WasEthereal` entry post-OnPlay).
+            // `WasEthereal` reads the live `Keywords` (CardPlayFinishedEntry.cs:45), so
+            // a Hexed card counts too (HexPower.TryModifyKeywordsInCombat) — use the
+            // play-time predicate, not the static keyword.
+            if card_is_ethereal_at_play(state, &card) {
+                note_ethereal_card_played(state);
+            }
+
+            // Pinpoint costs 1 less per Skill played this turn (C#
+            // `Pinpoint.AfterCardPlayed` → `EnergyCost.AddThisTurn(-1)`), post-body
+            // unlike Stomp's pre-body `BeforeCardPlayed` shave above. Shaved with the
+            // tally, before the buses: a Pinpoint an after-played listener creates
+            // backfills this Skill from the tally and is not a listener of the running
+            // hook, so shaving after the buses would count the Skill twice.
+            if card.card_type == crate::cards::CardType::Skill {
+                state.discount_pinpoint_on_skill_played();
+            }
+            dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
+
+            // Bead `sts2-rs-6ynt.11`: enchantment `after_card_played` channel.
+            // Python's `enchantments.after_card_played(card)` runs after the
+            // card body fully resolves so first-play markers (Swift / Sown /
+            // Vigorous / Glam) can flip and Goopy can tick its exhaust
+            // counter. Fires after the power-bus + relic-bus
+            // `after_card_played` walks so enchantment side-effects observe
+            // any state changes those listeners produced.
+            crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
+            bump_brilliant_scarf(state);
+            bump_paels_eye_played(state);
+
+            // GH #806: C# `Hook.AfterCardPlayed` ends with every `AfterCardPlayedLate`
+            // (Hook.cs:431-437) INSIDE `OnPlayWrapper`'s per-play loop, before the card
+            // reaches its result pile (CardModel.cs:1957-1990) — so a RightHandHand that
+            // is itself being played is still in Play, and MakeItSo checks its Skill
+            // count once per replay. Fired here per play, not once after routing.
+            //
+            // Co-op (GH #992): a teammate's Imitation Learning bound to us plays its
+            // clone of this Power card now, after the FIRST play only
+            // (`IsFirstInSeries`). It is an `AfterCardPlayed` listener, so it runs
+            // after `History.CardPlayFinished` (the tallies above) and before every
+            // `AfterCardPlayedLate` and the next play iteration (Hook.cs:422-437,
+            // CardModel.cs:1896-1970). Its place among the other `AfterCardPlayed`
+            // listeners (Rupture, the enchantment, relics) follows C#'s
+            // `IterateHookListeners`, whose body the decompiler did not recover; it
+            // is put after them.
+            crate::coop::imitation_learning_copies(state, imitation_clone);
+            crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+        }
+        TailResume::AfterReplayOnPlay(i) => {
+            replay_after_on_play(
+                state,
+                &card,
+                card_uid,
+                weighted_drain,
+                &played_ctx,
+                &hook_played_ctx,
+                true,
+            );
+            // The loop breaks once a replay ends combat.
+            first_replay = if state.is_over {
+                extra_plays.max(0)
+            } else {
+                i + 1
+            };
+        }
+        TailResume::AfterEchoOnPlay => {
+            replay_after_on_play(
+                state,
+                &card,
+                card_uid,
+                weighted_drain,
+                &played_ctx,
+                &hook_played_ctx,
+                false,
+            );
+            first_replay = extra_plays.max(0);
+            echo_done = true;
+        }
     }
-    dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-
-    // Bead `sts2-rs-6ynt.11`: enchantment `after_card_played` channel.
-    // Python's `enchantments.after_card_played(card)` runs after the
-    // card body fully resolves so first-play markers (Swift / Sown /
-    // Vigorous / Glam) can flip and Goopy can tick its exhaust
-    // counter. Fires after the power-bus + relic-bus
-    // `after_card_played` walks so enchantment side-effects observe
-    // any state changes those listeners produced.
-    crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
-    bump_brilliant_scarf(state);
-    bump_paels_eye_played(state);
-
-    // GH #806: C# `Hook.AfterCardPlayed` ends with every `AfterCardPlayedLate`
-    // (Hook.cs:431-437) INSIDE `OnPlayWrapper`'s per-play loop, before the card
-    // reaches its result pile (CardModel.cs:1957-1990) — so a RightHandHand that
-    // is itself being played is still in Play, and MakeItSo checks its Skill
-    // count once per replay. Fired here per play, not once after routing.
-    //
-    // Co-op (GH #992): a teammate's Imitation Learning bound to us plays its
-    // clone of this Power card now, after the FIRST play only
-    // (`IsFirstInSeries`). It is an `AfterCardPlayed` listener, so it runs
-    // after `History.CardPlayFinished` (the tallies above) and before every
-    // `AfterCardPlayedLate` and the next play iteration (Hook.cs:422-437,
-    // CardModel.cs:1896-1970). Its place among the other `AfterCardPlayed`
-    // listeners (Rupture, the enchantment, relics) follows C#'s
-    // `IterateHookListeners`, whose body the decompiler did not recover; it
-    // is put after them.
-    crate::coop::imitation_learning_copies(state, imitation_clone);
-    crate::card_effects::fire_late_effects(state, &hook_played_ctx);
 
     // ── OneTwoPunch replay loop (bead `sts2-rs-76t5`) ────────────────────
     // Replay the card `extra_plays` additional times (mirrors the
@@ -9067,7 +9396,7 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
     //
     // Combat-end short-circuit: if a replay killed the last enemy,
     // stop replaying to avoid `apply_damage` on an empty board.
-    for _ in 0..extra_plays.max(0) {
+    for i in first_replay..extra_plays.max(0) {
         // v0.111.0: the play loop breaks at the top of an iteration once combat
         // is over or ending (decomp CardModel.cs:1898). No-op before v0.111.0.
         if multi_play_stops_v0111(state) {
@@ -9117,87 +9446,25 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         // the previous iteration left behind.
         hooks::latch_vigor_at_play_start(state, card_uid);
         let _ = crate::card_effects::dispatch_for_card(state, card_uid, card.card_id, target_uid);
-        // Bead `sts2-rs-replay-choice`: resolve THIS replay's choice inline
-        // before `after_card_played` (C# resolves each iteration's `OnPlay`
-        // grid before its `AfterCardPlayed`). Without this, the next replay
-        // overwrites the slot and the selection is lost (SeekerStrike ×N).
+        // Bead `sts2-rs-replay-choice`: this replay's choice resolves before
+        // its `AfterCardPlayed` (C# awaits each iteration's `OnPlay`). It
+        // prompts like the first play's does, so park the tail on it and
+        // finish this iteration when the pick lands (GH #1131).
+        if replay_choice_should_surface(state) {
+            park_on_choice!(TailResume::AfterReplayOnPlay(i));
+        }
         if state.pending_choice.is_some() {
             resolve_inline_auto_play_choices(state);
         }
-        // GH #1021: C# `OnPlayWrapper` runs `Enchantment.OnPlay` after the
-        // card's own `OnPlay` on EVERY play iteration (CardModel.cs:1938-1946),
-        // so a replayed Adroit / Corrupted / Momentum card gains its block,
-        // takes its self-damage and ramps once per play. Swift / Sown stay
-        // first-play-only through their used bits.
-        crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
-        // C# `CardModel.OnPlayWrapper` runs the affliction `OnPlay` INSIDE the
-        // per-iteration `for i < playCount2` loop (CardModel.cs:1513-1522), so a
-        // Weighted card's `LoseEnergy` drain (Afflictions/Weighted.cs:8-11) fires
-        // once PER play — each OneTwoPunch replay drains another `Amount`, not
-        // just the initial play. Mirror the initial-play drain captured above.
-        // Bead `sts2-rs-7ert6`. It follows the enchantment leg, as in C#.
-        if weighted_drain != 0 {
-            state.player.energy = state
-                .player
-                .energy
-                .saturating_sub(i32::from(weighted_drain))
-                .max(0);
-        }
-        // Per-turn play bucket first: C# records `CardPlayFinished` before
-        // `AfterCardPlayed` (see the initial-play site).
-        {
-            let idx = card.card_type.index();
-            state.player.cards_played_this_turn[idx] =
-                state.player.cards_played_this_turn[idx].saturating_add(1);
-        }
-        if card_is_ethereal_at_play(state, &card) {
-            note_ethereal_card_played(state);
-        }
-        if card.card_type == crate::cards::CardType::Skill {
-            state.discount_pinpoint_on_skill_played();
-        }
-        dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-        // `Hook.AfterCardPlayed` reaches the card's enchantment on every play
-        // iteration, so a replayed Goopy card ticks once per play (GH #952).
-        // The first-play markers are idempotent.
-        crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
-        bump_brilliant_scarf(state);
-        bump_paels_eye_played(state);
-        // Bead `sts2-rs-wvpjv`: C# `OnPlayWrapper` (CardModel.cs:1472-1523)
-        // calls `History.CardPlayFinished` once PER replay iteration, so each
-        // replay adds its own `CardPlayFinishedEntry`. GoldAxe's
-        // `CalculatedDamageVar` counts those entries — a OneTwoPunch'd card
-        // therefore contributes its play count, not 1. Bump the combat-wide
-        // counter per replay to keep `player_card_plays_this_combat` equal to
-        // `History.CardPlaysFinished.Count` (the initial play was bumped once
-        // above before the effect dispatch).
-        state.combat_log.player_card_plays_this_combat = state
-            .combat_log
-            .player_card_plays_this_combat
-            .saturating_add(1);
-        state.combat_log.card_plays_finished_this_turn = state
-            .combat_log
-            .card_plays_finished_this_turn
-            .saturating_add(1);
-        // v0.111.0: C# records this replay's `CardPlayFinished` BEFORE its
-        // `AfterCardPlayed` (decomp CardModel.cs:1961-1965); this loop bumps the
-        // count after the dispatch above, so re-run PaleBlueDot's idempotent
-        // check against the current count. No-op before v0.111.0.
-        crate::hooks::pale_blue_dot_after_card_played_v0111(state);
-        // Each replay is its own C# `CardPlayFinished`, so the HistoryCourse
-        // slot re-stamps per iteration — keeping the parent last after any
-        // children this replay's dispatch auto-played.
-        stamp_last_attack_skill_played(state, &card, card_uid);
-        // C# `CardModel.OnPlayWrapper` runs the SAME per-iteration tail for
-        // a `ModifyCardPlayCount` replay as for an Echo replay (one loop,
-        // CardModel.cs:1472-1523): per-turn play buckets, the combat-long
-        // ethereal tally, and the `Hook.BeforeCardPlayed` cost shaves
-        // (Stomp per Attack, Pinpoint per Skill). Mirror the EchoForm replay
-        // block below verbatim — previously only the combat-wide counter was
-        // bumped here, so a OneTwoPunch'd Attack shaved Stomp once instead
-        // of twice (sweep seed 5404: STOMP cost 3-3=0 in C#, 1 here).
-        // Per-replay `AfterCardPlayedLate` (see the initial-play site).
-        crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+        replay_after_on_play(
+            state,
+            &card,
+            card_uid,
+            weighted_drain,
+            &played_ctx,
+            &hook_played_ctx,
+            true,
+        );
         if state.is_over {
             break;
         }
@@ -9219,7 +9486,7 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
     // which dedups the union (COLD_SNAP seed 488).
     let echo_this_card =
         i64::from(first_in_series_before) < i64::from(echo_form_amount_at_play_start);
-    if echo_this_card {
+    if echo_this_card && !echo_done {
         // C# `EchoFormPower.cs:32` calls `Flash()` in
         // `AfterModifyingCardPlayCount`, which `Hook` fires ONLY on the models
         // that actually changed the play count — i.e. exactly when
@@ -9276,71 +9543,23 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             // Re-run the card effect.
             let _ =
                 crate::card_effects::dispatch_for_card(state, card_uid, card.card_id, target_uid);
-            // Bead `sts2-rs-replay-choice`: resolve this Echo replay's choice
-            // inline before `after_card_played`, same as the `extra_plays`
-            // loop above (a choice-card under EchoForm would otherwise lose
-            // every replay's selection to slot-overwrite).
+            // This Echo copy's choice parks the tail like an `extra_plays`
+            // replay's does (GH #1131).
+            if replay_choice_should_surface(state) {
+                park_on_choice!(TailResume::AfterEchoOnPlay);
+            }
             if state.pending_choice.is_some() {
                 resolve_inline_auto_play_choices(state);
             }
-            // GH #1021: the echo is another `OnPlayWrapper` iteration, so the
-            // card's `Enchantment.OnPlay` runs again (see the `extra_plays`
-            // loop above).
-            crate::enchantment_hooks::dispatch_on_card_played(state, card_uid);
-            // C# fires the affliction `OnPlay` once per play iteration
-            // (CardModel.cs:1513-1522), so a Weighted card's `LoseEnergy` drains
-            // another `Amount` on every Echo replay too — same as the
-            // `extra_plays` loop above. Bead `sts2-rs-7ert6`.
-            if weighted_drain != 0 {
-                state.player.energy = state
-                    .player
-                    .energy
-                    .saturating_sub(i32::from(weighted_drain))
-                    .max(0);
-            }
-            // Bead `sts2-rs-r6l9`: count each Echo replay in the
-            // per-turn play buckets — before the dispatch, as at
-            // the initial-play site.
-            {
-                let idx = card.card_type.index();
-                state.player.cards_played_this_turn[idx] =
-                    state.player.cards_played_this_turn[idx].saturating_add(1);
-            }
-            // Combat-long ETHEREAL tally also counts each Echo replay.
-            if card_is_ethereal_at_play(state, &card) {
-                note_ethereal_card_played(state);
-            }
-            // Re-fire both after_card_played buses so Rage / Afterimage /
-            // PhantomBlades / Storm / SerpentForm (hooks) and event-reward
-            // relics (relic_effects) tick once per replay.
-            dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-            // GH #1021: and the enchantment's `AfterCardPlayed` (Goopy grows
-            // once per play, GH #952).
-            crate::enchantment_hooks::dispatch_after_card_played(state, card_uid);
-            bump_brilliant_scarf(state);
-            bump_paels_eye_played(state);
-            // Bead `sts2-rs-wvpjv`: each Echo replay also records a fresh
-            // `CardPlayFinishedEntry` in C# (CardModel.cs:1472-1523 loops
-            // `CardPlayFinished` once per `i < playCount2`). Keep the
-            // combat-wide counter feeding GoldAxe's `CalculatedDamageVar`
-            // equal to `History.CardPlaysFinished.Count`.
-            state.combat_log.player_card_plays_this_combat = state
-                .combat_log
-                .player_card_plays_this_combat
-                .saturating_add(1);
-            state.combat_log.card_plays_finished_this_turn = state
-                .combat_log
-                .card_plays_finished_this_turn
-                .saturating_add(1);
-            // v0.111.0: the finished-play count is current only now (see the
-            // `extra_plays` loop above). No-op before v0.111.0.
-            crate::hooks::pale_blue_dot_after_card_played_v0111(state);
-            // Each Echo replay is its own C# `CardPlayFinished` — re-stamp
-            // the HistoryCourse slot so the parent stays last after any
-            // children this replay auto-played.
-            stamp_last_attack_skill_played(state, &card, card_uid);
-            // Per-replay `AfterCardPlayedLate` (see the initial-play site).
-            crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+            replay_after_on_play(
+                state,
+                &card,
+                card_uid,
+                weighted_drain,
+                &played_ctx,
+                &hook_played_ctx,
+                false,
+            );
             // (EchoForm now grants a single extra play, so there is no replay
             // loop to break out of on a combat-ending replay — the cleanup
             // below already no-ops on an empty board.)
@@ -9824,22 +10043,23 @@ pub fn auto_play_card_from_draw_top(state: &mut CombatState, force_exhaust: bool
     // `Hook.ModifyShuffleOrder` (Perfect Fit floats to the top,
     // CardPileCmd.cs:899) before `AfterShuffle`: Havoc+ on an empty draw
     // pile auto-plays the Perfect Fit card (act23 Ironclad:1012).
-    if state.player.draw.is_empty() && !state.player.discard.is_empty() {
-        let _ = state.reshuffle_into_draw_with_after_shuffle();
-        if state.pending_choice.is_some() {
-            resolve_inline_auto_play_choices(state);
-        }
-    }
-    if state.player.draw.is_empty() {
+    // A reshuffle select that prompts parks the collect (GH #1131); see
+    // [`collect_from_draw_top`].
+    let mut collect = crate::PendingCollectResume {
+        ap: crate::PendingAutoplay {
+            remaining: 1,
+            collected: smallvec::SmallVec::new(),
+            force_exhaust,
+        },
+        batch: false,
+    };
+    if collect_from_draw_top(state, &mut collect) {
+        state.pending_collect_resume = Some(collect);
         return false;
     }
-    // Pop the top of draw and push it onto the Play pile, preserving any
-    // currently-resolving card underneath (e.g. Havoc itself). GH #785:
-    // `pop_top_card` makes the top a chance event over the unknown middle
-    // under BeliefDraw (a pinned top — Headbutt, Imbued — stays
-    // deterministic) and clears the popped card's pin.
-    let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
-    state.player.play.push(top_uid);
+    let Some(&top_uid) = collect.ap.collected.first() else {
+        return false;
+    };
     resolve_auto_played_card(state, top_uid, force_exhaust);
     true
 }
@@ -10098,6 +10318,19 @@ pub fn auto_play_specific_card_from_discard_at_target(
     true
 }
 
+/// C# `CardCmd.AutoPlay` of a pile-less card the caller has just added to
+/// Play (a HistoryCourse dupe, `CardCmd.cs:115-117`), at `target` (`None`
+/// rolls one for an `AnyEnemy` card). The full auto-play: `OnPlayWrapper`'s
+/// replays, the after-played buses and the result pile (`None` for a dupe), and
+/// a select it opens prompts the player like any auto-play's (GH #1131).
+pub fn auto_play_card_on_play(
+    state: &mut CombatState,
+    uid: crate::CardUid,
+    target: Option<CreatureUid>,
+) -> bool {
+    resolve_auto_played_card_at_target(state, uid, target, false)
+}
+
 /// Auto-play one **specific** card (by uid) that currently lives in the
 /// **exhaust** pile, at an EXPLICIT target, mirroring C# `CardCmd.AutoPlay(
 /// choiceContext, card, cardPlay.Target)` for KnifeTrap, whose `OnPlay`
@@ -10157,38 +10390,19 @@ pub fn auto_play_specific_card_from_exhaust_at_target(
 /// `count > 1`, where the per-card-loop-with-reshuffle shape would wrongly
 /// replay discarded cards. Bead `sts2-rs-q6bix` (F-F).
 pub fn auto_play_n_from_draw_top(state: &mut CombatState, count: i32, force_exhaust: bool) {
-    // Phase 1: collect up to `count` top cards into Play.
-    let mut collected: smallvec::SmallVec<[crate::CardUid; 8]> = smallvec::SmallVec::new();
-    for _ in 0..count {
-        if state.player.draw.is_empty() && !state.player.discard.is_empty() {
-            // C# `ShuffleIfNecessary` → `Shuffle` per gather reshuffle:
-            // `ModifyShuffleOrder` (Perfect Fit), then `Hook.AfterShuffle`
-            // (`CardPileCmd.cs:899`, `:939`) — relic bus + Stratagem grid,
-            // resolved inline like the single-card variant above.
-            let _ = state.reshuffle_into_draw_with_after_shuffle();
-            if state.pending_choice.is_some() {
-                resolve_inline_auto_play_choices(state);
-            }
-        }
-        if state.player.draw.is_empty() {
-            break;
-        }
-        // GH #785: the physical top via `pop_top_card` — see
-        // `auto_play_card_from_draw_top`.
-        let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
-        state.player.play.push(top_uid);
-        // Mark this card as a batch-pending play: it now sits on the Play pile
-        // (phase 1) but its own play has NOT started, so the Nostalgia
-        // result-pile redirect must not count it as a started Attack/Skill play
-        // when an EARLIER batch card is routed. Cleared when its play starts in
-        // `resolve_auto_played_card_at_target`. Bead `sts2-rs-1sew4`.
-        {
-            let idx = top_uid.0.get() as usize - 1;
-            if let Some(c) = state.cards.get_mut(idx) {
-                c.set_combat_var(crate::cards::VarKey::PendingBatchAutoPlay, 1);
-            }
-        }
-        collected.push(top_uid);
+    // Phase 1: collect up to `count` top cards into Play. A reshuffle select
+    // that prompts parks the collect (GH #1131); see [`collect_from_draw_top`].
+    let mut collect = crate::PendingCollectResume {
+        ap: crate::PendingAutoplay {
+            remaining: count,
+            collected: smallvec::SmallVec::new(),
+            force_exhaust,
+        },
+        batch: true,
+    };
+    if collect_from_draw_top(state, &mut collect) {
+        state.pending_collect_resume = Some(collect);
+        return;
     }
     // Phase 2: play each collected card in order.
     //
@@ -10197,18 +10411,144 @@ pub fn auto_play_n_from_draw_top(state: &mut CombatState, count: i32, force_exha
     // `pending_autoplay_resume` and returned without finishing its tail). When
     // that happens we must stash the NOT-YET-played remainder on the resume
     // marker and stop — the resolver finishes the suspended card's tail then
-    // plays the remainder (with `autoplay_inline_resolve` set so their further
-    // choices drain inline, mirroring C# `AutoResolveInline` for a resumed
-    // play). Cascade-for-N where the FIRST collected card surfaces leaves N-1
-    // cards on Play to be resumed.
-    let mut it = collected.into_iter();
-    for uid in it.by_ref() {
+    // plays the remainder, whose own selects surface the same way (GH #1131).
+    // Cascade-for-N where the FIRST collected card surfaces leaves N-1 cards on
+    // Play to be resumed.
+    let _ = play_collected_auto_plays(state, &collect.ap.collected, force_exhaust);
+}
+
+/// Phase 1 of a card's draw-pile auto-play: move up to `remaining` top cards
+/// to Play, reshuffling first whenever the draw pile is empty.
+///
+/// C# `CardPileCmd.AutoPlayFromDrawPile` calls `ShuffleIfNecessary` before
+/// each `drawPile.First()`. The reshuffle is C#'s full `CardPileCmd.Shuffle`:
+/// `Hook.ModifyShuffleOrder` (Perfect Fit floats to the top, CardPileCmd.cs:
+/// 899), then **`Hook.AfterShuffle`** (`:857`, `:939`), which runs the relic
+/// after-shuffle bus and `StratagemPower.AfterShuffle`'s grid select before
+/// the top card is taken (sweep seeds 5336/2502; act23 Ironclad:1012).
+///
+/// C# awaits that select, so one that prompts the player stops the collect
+/// here, and this returns `true` with `collect` holding the cards taken so far
+/// (on Play) and the count still owed. The caller parks it on
+/// [`crate::CombatState::pending_collect_resume`], and [`resume_collect`]
+/// picks up after the pick. A select that doesn't prompt, or any select while
+/// selects resolve inline, drains here. GH #1131.
+///
+/// The collected cards sit on **Play**, not discard, so once the draw pile
+/// empties with nothing left in discard the collect stops. That's why Cascade
+/// for 10 on a 2-card draw plays exactly 2 (bead `sts2-rs-q6bix`).
+fn collect_from_draw_top(
+    state: &mut CombatState,
+    collect: &mut crate::PendingCollectResume,
+) -> bool {
+    while collect.ap.remaining > 0 {
+        if state.player.draw.is_empty() && !state.player.discard.is_empty() {
+            let _ = state.reshuffle_into_draw_with_after_shuffle();
+            if state.pending_choice.is_some() {
+                // One parked collect at a time, and a parked draw keeps its
+                // own slot: under either, the select drains inline.
+                if state.pending_collect_resume.is_none()
+                    && state.pending_draw_resume.is_none()
+                    && auto_play_choice_should_surface(state)
+                {
+                    return true;
+                }
+                resolve_inline_auto_play_choices(state);
+            }
+        }
+        if state.player.draw.is_empty() {
+            break;
+        }
+        // GH #785: `pop_top_card` makes the top a chance event over the
+        // unknown middle under BeliefDraw (a pinned top — Headbutt, Imbued —
+        // stays deterministic) and clears the popped card's pin. The card
+        // goes on Play above any currently-resolving card (Havoc itself).
+        let top_uid = cards::pop_top_card(&mut state.player, &mut state.run_rng.shuffle);
+        state.player.play.push(top_uid);
+        // Mark this card as a batch-pending play: it now sits on the Play pile
+        // (phase 1) but its own play has NOT started, so the Nostalgia
+        // result-pile redirect must not count it as a started Attack/Skill play
+        // when an EARLIER batch card is routed. Cleared when its play starts in
+        // `resolve_auto_played_card_at_target`. Bead `sts2-rs-1sew4`.
+        if collect.batch {
+            let idx = top_uid.0.get() as usize - 1;
+            if let Some(c) = state.cards.get_mut(idx) {
+                c.set_combat_var(crate::cards::VarKey::PendingBatchAutoPlay, 1);
+            }
+        }
+        collect.ap.collected.push(top_uid);
+        collect.ap.remaining -= 1;
+    }
+    false
+}
+
+/// Finish a draw-pile auto-play parked on its reshuffle select, once the pick
+/// is in: collect the rest, then play everything collected. GH #1131.
+///
+/// The collect belongs to a card mid-`OnPlay`. When that card is itself an
+/// auto-play, its tail is the parked `pending_autoplay_resume`, which must
+/// wait for everything the collect plays. So that resume is set aside here,
+/// and if a collected card parks a new one, the old one goes under it as the
+/// outermost frames.
+///
+/// Returns `true` when something parked again: another reshuffle select, or a
+/// collected card's select.
+pub(crate) fn resume_collect(
+    state: &mut CombatState,
+    mut collect: crate::PendingCollectResume,
+) -> bool {
+    let outer = state.pending_autoplay_resume.take();
+    if collect_from_draw_top(state, &mut collect) {
+        state.pending_collect_resume = Some(collect);
+        state.pending_autoplay_resume = outer;
+        return true;
+    }
+    let parked = play_collected_auto_plays(state, &collect.ap.collected, collect.ap.force_exhaust);
+    match outer {
+        Some(outer) if parked => nest_outer_resume(state, outer),
+        outer => state.pending_autoplay_resume = outer,
+    }
+    parked
+}
+
+/// Put `outer` under the resume a collected card just parked: its finish
+/// becomes the frame after the new chain, and its own chain and loop
+/// continuation follow, in their existing order.
+fn nest_outer_resume(state: &mut CombatState, outer: crate::PendingAutoplayResume) {
+    let next = state
+        .pending_autoplay_resume
+        .as_mut()
+        .expect("a parked collected card leaves its resume");
+    debug_assert!(
+        outer.inner_draw.is_none(),
+        "a collect and a draw can't both be mid-OnPlay"
+    );
+    debug_assert!(next.continuation.is_none());
+    next.parent_chain.push(AutoPlayParentFrame {
+        finish: outer.finish,
+        remaining: outer.remaining,
+        force_exhaust: outer.force_exhaust,
+        continuation: None,
+    });
+    next.parent_chain.extend(outer.parent_chain);
+    next.continuation = outer.continuation;
+}
+
+/// Await each collected auto-play in order. Returns `true` when one surfaced a
+/// select, after stashing the not-yet-played siblings on the frame that owns
+/// them.
+pub(crate) fn play_collected_auto_plays(
+    state: &mut CombatState,
+    collected: &[crate::CardUid],
+    force_exhaust: bool,
+) -> bool {
+    for (index, uid) in collected.iter().copied().enumerate() {
         // C# `CardCmd.AutoPlay` returns at once when combat `IsOverOrEnding`
         // (CardCmd.cs:54): once a gathered card kills the last enemy, the
         // rest stay in the Play pile unplayed and no `AfterCardPlayed`
         // listener counts them (act23 Ironclad:1012: a lethal Cascade Bash
         // left Twin Strike unplayed; Rust's Iron Club counted it).
-        if !state.enemy_uids.is_empty() && combat_is_ending(state) {
+        if state.is_over || (!state.enemy_uids.is_empty() && combat_is_ending(state)) {
             break;
         }
         resolve_auto_played_card(state, uid, force_exhaust);
@@ -10220,16 +10560,18 @@ pub fn auto_play_n_from_draw_top(state: &mut CombatState, count: i32, force_exha
             // Either way, OUR not-yet-played siblings belong with `uid`'s frame
             // — they must replay only after `uid`'s tail runs — so attach them
             // to the parent frame when present, else the top-level slot.
+            let rest = collected[index + 1..].iter().copied().collect();
             if let Some(parent) = resume.parent_chain.last_mut() {
-                parent.remaining = it.collect();
+                parent.remaining = rest;
                 parent.force_exhaust = force_exhaust;
             } else {
-                resume.remaining = it.collect();
+                resume.remaining = rest;
                 resume.force_exhaust = force_exhaust;
             }
-            return;
+            return true;
         }
     }
+    false
 }
 
 /// C# `ChainsOfBindingPower.BeforeCardPlayed` (ChainsOfBindingPower.cs,
@@ -10449,12 +10791,15 @@ pub fn resolve_inline_auto_play_choices(state: &mut CombatState) {
         // `min_select == 0` choice like Purity's exhaust), THEN take the
         // FINALIZE (empty selection). The outer loop re-enters until
         // `pending_choice` clears at FINALIZE.
+        let answer = enemy_side_answer(state);
         let selection = {
             let pc = state
                 .pending_choice
                 .as_ref()
                 .expect("checked is_some above");
-            if state.vakuu_selector {
+            if let Some(answer) = answer {
+                answer
+            } else if state.vakuu_selector {
                 vakuu_selection(pc)
             } else if pc.max_select > 1 {
                 let target = usize::from(pc.min_select).max(1);
@@ -11170,20 +11515,15 @@ fn resolve_auto_played_card_inner(
     //
     // Parity bug `combat_select_ironclad`: but the FIRST surfacing card-select
     // an auto-play's `OnPlay` opens must NOT be drained — it SURFACES, exactly
-    // like the headless `HeadlessCardSelector` (which auto-resolves inline only
-    // for `count==0`, `count==1 && min>=1`, or while `AutoResolveInline` is set
-    // during a resume — `RunSimulator.cs:4804-4836,2165`). When such a choice is
-    // pending and we are NOT resuming (`autoplay_inline_resolve == false`) and
+    // like `HeadlessCardSelector`, which auto-resolves inline only for
+    // `count==0` or `count==1 && min>=1`. When such a choice is pending and
     // combat is live, suspend: stash this card's post-dispatch tail + the
     // remaining collected cards in `pending_autoplay_resume` and return so
-    // `legal_actions` surfaces the `card_select`. The resume path
-    // (`resolve_choice_action`) raises `autoplay_inline_resolve` so any FURTHER
-    // nested choice drains inline (mirrors C# `AutoResolveInline`, preserving the
-    // `y1fic` chained-auto-play deadlock fix). Only THIS site gates the first
+    // `legal_actions` surfaces the `card_select`. Only THIS site gates the
     // surface; `resolve_inline_auto_play_choices` below (and in the replay loop)
-    // still drains unconditionally — it is reached only once the first-surface
-    // gate has passed (a genuinely-inline reshuffle choice, a nested choice, or
-    // a resume).
+    // still drains unconditionally — it is reached only once the gate has
+    // passed (a genuinely-inline reshuffle choice, or a held
+    // `autoplay_inline_resolve`).
     if auto_play_choice_should_surface(state) {
         let fin = AutoPlayFinish {
             top_uid,
@@ -11201,56 +11541,9 @@ fn resolve_auto_played_card_inner(
             attacks_skills_at_auto_play_start,
             imitation_clone,
             card_target: state.coop.card_target,
+            resume_at: TailResume::Start,
         };
-        // Nested auto-play (seed 2752 DISTILLED_CHAOS → HAVOC → BURNING_PACT):
-        // an INNER auto-play this card dispatched into already surfaced and
-        // parked its own finish on `pending_autoplay_resume`. We are the OUTER
-        // card unwinding up to the SAME gate while that inner select is still
-        // pending. Do NOT clobber the inner finish (that dropped the inner card
-        // entirely — it never left the Play pile); PUSH our tail onto the parent
-        // chain (inner→outer order) so the resume consumer finishes the inner
-        // card first, then us. Bead `sts2-rs` (#181), follow-up to
-        // `sts2-rs-cata-suspend`.
-        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
-            // GH #500: a loop continuation recorded since the inner card
-            // surfaced belongs to THIS card's `OnPlay` — Catastrophe / BeatDown
-            // set it on the resume marker immediately after their
-            // `auto_play_specific_card` call came back suspended, and we are
-            // that very card unwinding to the gate. Move it onto our frame so
-            // the resolver runs the loop's remaining iterations BEFORE our tail
-            // and before the siblings the enclosing batch will attach to us.
-            // Left in the top-level slot it ran AFTER the whole parent chain, so
-            // a Mayhem-batch sibling jumped the queue ahead of Catastrophe's own
-            // next iteration and both engines picked different draw-top cards
-            // from then on (Ironclad seed 189: C# `CATASTROPHE -> SEEKER_STRIKE,
-            // HAVOC -> SEEKER_STRIKE, ARMAMENTS` vs Rust `CATASTROPHE ->
-            // SEEKER_STRIKE, ARMAMENTS, HAVOC -> CATASTROPHE`). The slot keeps
-            // its meaning for a HAND-played loop card, whose tail is
-            // `pending_play` and runs after the chain either way.
-            let continuation = resume.continuation.take();
-            resume.parent_chain.push(AutoPlayParentFrame {
-                finish: fin,
-                remaining: smallvec::SmallVec::new(),
-                force_exhaust,
-                continuation,
-            });
-            return true;
-        }
-        state.pending_autoplay_resume = Some(crate::PendingAutoplayResume {
-            finish: fin,
-            remaining: smallvec::SmallVec::new(),
-            force_exhaust,
-            // The auto-play loop that drove this card (Catastrophe / BeatDown)
-            // fills `continuation` AFTER its `auto_play_specific_card*` call
-            // observes this suspend; the pre-collected draw-top variants
-            // (Cascade / Havoc / Mayhem) leave it `None`.
-            continuation: None,
-            parent_chain: smallvec::SmallVec::new(),
-            // A draw already parked here was suspended INSIDE this card's
-            // `OnPlay` (an outer Hellraiser draw arms its marker only after
-            // this stash), so it belongs to this card's finish.
-            inner_draw: state.pending_draw_resume.take(),
-        });
+        park_auto_play_finish(state, fin, force_exhaust);
         return true;
     }
     resolve_inline_auto_play_choices(state);
@@ -11271,8 +11564,11 @@ fn resolve_auto_played_card_inner(
         attacks_skills_at_auto_play_start,
         imitation_clone,
         card_target: state.coop.card_target,
+        resume_at: TailResume::Start,
     };
-    finish_auto_played_card(state, fin);
+    // A replay's surfaced select parks the tail exactly like the gate above,
+    // so the caller sees the same `pending_autoplay_resume` either way.
+    let _ = finish_auto_played_card(state, fin);
     true
 }
 
@@ -11323,6 +11619,9 @@ pub struct AutoPlayFinish {
     /// Co-op: the teammate an `AnyAlly` auto-play aims at, reinstated for a
     /// tail resumed after a choice — the twin of `CardPlayFinish::card_target`.
     pub(crate) card_target: Option<u8>,
+    /// Where the tail resumes: the top, or after the `OnPlay` of a replay whose
+    /// select parked it (GH #1131).
+    pub(crate) resume_at: TailResume,
 }
 
 impl std::fmt::Debug for AutoPlayFinish {
@@ -11353,6 +11652,7 @@ impl Clone for AutoPlayFinish {
             attacks_skills_at_auto_play_start: self.attacks_skills_at_auto_play_start,
             imitation_clone: self.imitation_clone.clone(),
             card_target: self.card_target,
+            resume_at: self.resume_at,
         }
     }
 }
@@ -11374,6 +11674,7 @@ impl PartialEq for AutoPlayFinish {
             && self.attacks_skills_at_auto_play_start == other.attacks_skills_at_auto_play_start
             && self.imitation_clone == other.imitation_clone
             && self.card_target == other.card_target
+            && self.resume_at == other.resume_at
     }
 }
 
@@ -11421,30 +11722,37 @@ pub struct AutoPlayParentFrame {
 
 /// Should the `pending_choice` an auto-play's `OnPlay` just opened SURFACE
 /// (suspend the auto-play) rather than drain inline? Mirrors the headless
-/// `HeadlessCardSelector.GetSelectedCards` inline-resolution boundary
-/// (`RunSimulator.cs:4804-4836`): inline ONLY when there is no choice, or it
-/// has 0 options, or exactly 1 option with `min_select >= 1`, or while the
-/// engine is RESUMING an auto-play (`autoplay_inline_resolve` — the C#
-/// `AutoResolveInline` mirror). A combat-ending play has no live decision to
+/// `HeadlessCardSelector.GetSelectedCards` inline-resolution boundary: inline
+/// ONLY when there is no choice, or it has 0 options, or exactly 1 option with
+/// `min_select >= 1`, or while a spot with no suspend point holds
+/// `autoplay_inline_resolve`. A combat-ending play has no live decision to
 /// surface, so it drains too. Anything else SURFACES.
 fn auto_play_choice_should_surface(state: &CombatState) -> bool {
     // A pushed `VakuuCardSelector` (Whispering Earring) answers every
     // selection itself, so nothing surfaces while it is active.
-    if state.autoplay_inline_resolve || state.vakuu_selector || state.is_over {
+    // In the enemy side's capture mode every select resolves inline, where C#
+    // awaits it (GH #1129).
+    if state.autoplay_inline_resolve
+        || state.vakuu_selector
+        || state.is_over
+        || state.enemy_side_capture.is_some()
+    {
         return false;
     }
+    choice_prompts_player(state)
+}
+
+/// Does the open choice prompt the player? C# `optList.Count == 0` is an
+/// empty task and `Count == 1 && minSelect >= 1` an auto-select; both
+/// resolve inline.
+fn choice_prompts_player(state: &CombatState) -> bool {
     let Some(pc) = state.pending_choice.as_ref() else {
         return false;
     };
-    // C# `optList.Count == 0` → empty task; `Count == 1 && minSelect >= 1`
-    // → auto-select. Both resolve inline (no surface).
     if pc.options.is_empty() {
         return false;
     }
-    if pc.options.len() == 1 && pc.min_select >= 1 {
-        return false;
-    }
-    true
+    !(pc.options.len() == 1 && pc.min_select >= 1)
 }
 
 /// Post-dispatch tail of a single auto-played card: the combat-wide play
@@ -11456,13 +11764,17 @@ fn auto_play_choice_should_surface(state: &CombatState) -> bool {
 /// select is answered). Statement order is unchanged from the former inline
 /// body, so driving a surfaced choice first-legal reproduces the prior
 /// behavior byte-for-byte.
-pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFinish) {
+///
+/// Returns `true` when a replay's select surfaced and parked the rest of the
+/// tail on `pending_autoplay_resume` (GH #1131).
+pub(crate) fn finish_auto_played_card(state: &mut CombatState, fin: AutoPlayFinish) -> bool {
     let outer = std::mem::replace(&mut state.coop.card_target, fin.card_target);
-    finish_auto_played_card_tail(state, fin);
+    let parked = finish_auto_played_card_tail(state, fin);
     state.coop.card_target = outer;
+    parked
 }
 
-fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
+fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) -> bool {
     let AutoPlayFinish {
         top_uid,
         target_uid,
@@ -11478,69 +11790,14 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
         nostalgia_at_auto_play_start,
         attacks_skills_at_auto_play_start,
         imitation_clone,
-        card_target: _,
+        card_target,
+        resume_at,
     } = fin;
     let top_idx = top_uid.0.get() as usize - 1;
     let top_card = &state.cards[top_idx];
     let top_card_id = top_card.card_id;
     let top_card_type = top_card.card_type;
     let top_card_tags = top_card.tags;
-
-    // C# `CardCmd.AutoPlay` runs the same `OnPlayWrapper` as a hand play, so
-    // the card's `Enchantment.OnPlay` follows its own `OnPlay`, before
-    // `CardPlayFinished` (CardModel.cs:1930-1943, same in v0.111.0). Auto-plays
-    // skipped it: Uproar auto-playing a Sown Strike gained no energy (Defect
-    // QX189: energy 1 vs C# 2).
-    if !skip_dispatch {
-        crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
-    }
-
-    // Bead `sts2-rs-rnyme` follow-up: record this auto-play in the
-    // combat-wide counter NOW — after the on-play dispatch + inline choice
-    // resolution, before `AfterCardPlayed` — mirroring C#
-    // `History.CardPlayFinished` (CardModel.cs:1524), which fires for every
-    // resolved play including auto-plays (`IsAutoPlay = true` flows through
-    // the same wrapper). Runs even when `skip_dispatch` is true
-    // (Enemy-targeted auto-play with no alive enemy), matching C# recording
-    // `CardPlayFinished` unconditionally after `OnPlay`. Unplayable
-    // curses/status returned early above (C# `MoveToResultPileWithoutPlaying`
-    // records no `CardPlayFinished`), so they stay excluded.
-    state.combat_log.player_card_plays_this_combat = state
-        .combat_log
-        .player_card_plays_this_combat
-        .saturating_add(1);
-    state.combat_log.card_plays_finished_this_turn = state
-        .combat_log
-        .card_plays_finished_this_turn
-        .saturating_add(1);
-    // Event log (C# `CardPlayFinishedEntry`) at the same pin, which also
-    // CLOSES this play's source frame so the parent that auto-played it
-    // reclaims attribution for anything it dispatches next.
-    {
-        let up = state.cards[top_idx].upgraded;
-        crate::event_log::record(
-            state,
-            crate::event_log::EventLogEntry::CardPlayFinished {
-                card: top_card_id,
-                upgraded: up,
-            },
-        );
-    }
-
-    // An auto-play is a REAL card play (`!IsDupe`) — C#'s HistoryCourse
-    // scan over `History.CardPlaysFinished` sees it, so a Stampede/Mayhem
-    // auto-played Attack/Skill becomes "last round's last Attack/Skill"
-    // exactly like a hand play (sweep seeds 5645/4095: C# duped the
-    // auto-played PILLAGE/BASH, Rust duped the earlier hand play).
-    if history_course_replays(state.game_version, top_card_type)
-        && state
-            .cards
-            .get(top_idx)
-            .is_some_and(|c| c.combat_var(VarKey::IsDupe) == 0)
-    {
-        let upgraded = state.cards.get(top_idx).is_some_and(|c| c.upgraded);
-        state.combat_log.last_attack_skill_played = Some((top_card_id, upgraded, Some(top_uid)));
-    }
 
     // Fire after_card_played on both buses.
     let played_ctx = crate::relic_effects::CardEventCtx {
@@ -11556,41 +11813,118 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
         card_tags: top_card_tags,
         card_type: Some(top_card_type),
     };
-    // Bead `sts2-rs-distilled-chaos-replay-scale`: per-turn play tally for the
-    // INITIAL auto-play, BEFORE the OneTwoPunch / base_replay replay loop below
-    // — mirroring the hand-play order (combat_loop.rs:4735). A scaling attack
-    // replayed below (Conflagration's `CalculatedDamageVar` counts the player's
-    // Attacks FINISHED this turn) must observe THIS play already counted, so
-    // each replay deals one Attack more than the last (C# records a
-    // `CardPlayFinishedEntry` per OnPlay iteration, CardModel.cs:1524). The
-    // bump previously ran ONCE *after* the replay loop, so a DistilledChaos /
-    // Catastrophe-auto-played Conflagration under OneTwoPunch under-scaled its
-    // replay (seed 1090: VINE_SHAMBLER hp +3). Each replay re-bumps inside the
-    // loop. Stomp/Pinpoint cost shaves + the ethereal tally move with it, and
-    // the formerly-post-loop copy is deleted. Runs ungated on `force_exhaust`
-    // (r6l9: a force-exhausted Havoc play still counts) and on `skip_dispatch`
-    // (C# records `CardPlayFinished` even for an Enemy-targeted no-alive-enemy
-    // play). And it runs BEFORE the after-played buses: C# records
-    // `CardPlayFinished` before `Hook.AfterCardPlayed`, so a Stomp or Pinpoint
-    // a listener creates backfills this play from the tally (GH #1054).
-    auto_play_tally_finished(state, top_card_type, top_idx);
-    dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-    // The enchantment first-play markers (Sown / Swift / Glam / Vigorous) and
-    // Goopy's growth, as after a hand play.
-    if !skip_dispatch {
-        crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
-    }
 
-    // C# `Hook.AfterCardPlayed` ends with every listener's
-    // `AfterCardPlayedLate` (Hook.cs:431-437) — auto-plays included, since
-    // `CardCmd.AutoPlay` runs the same `OnPlayWrapper`. Fired after the tally
-    // so MakeItSo's skill count sees this play (C# records `CardPlayFinished`
-    // before `AfterCardPlayed`), and once per replay below. RightHandHand reads
-    // the `EnergyValue` stamped above (GH #741 follow-up).
-    // Co-op: Imitation Learning plays its clone of an auto-played Power card
-    // here too, after the first play (GH #992; see `finish_card_play`).
-    crate::coop::imitation_learning_copies(state, imitation_clone);
-    crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+    // Where this tail starts: the top, or right after the `OnPlay` of the
+    // replay whose select parked it (GH #1131).
+    let mut first_replay: i32 = 0;
+    match resume_at {
+        TailResume::Start => {
+            // C# `CardCmd.AutoPlay` runs the same `OnPlayWrapper` as a hand play, so
+            // the card's `Enchantment.OnPlay` follows its own `OnPlay`, before
+            // `CardPlayFinished` (CardModel.cs:1930-1943, same in v0.111.0). Auto-plays
+            // skipped it: Uproar auto-playing a Sown Strike gained no energy (Defect
+            // QX189: energy 1 vs C# 2).
+            if !skip_dispatch {
+                crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
+            }
+
+            // Bead `sts2-rs-rnyme` follow-up: record this auto-play in the
+            // combat-wide counter NOW — after the on-play dispatch + inline choice
+            // resolution, before `AfterCardPlayed` — mirroring C#
+            // `History.CardPlayFinished` (CardModel.cs:1524), which fires for every
+            // resolved play including auto-plays (`IsAutoPlay = true` flows through
+            // the same wrapper). Runs even when `skip_dispatch` is true
+            // (Enemy-targeted auto-play with no alive enemy), matching C# recording
+            // `CardPlayFinished` unconditionally after `OnPlay`. Unplayable
+            // curses/status returned early above (C# `MoveToResultPileWithoutPlaying`
+            // records no `CardPlayFinished`), so they stay excluded.
+            state.combat_log.player_card_plays_this_combat = state
+                .combat_log
+                .player_card_plays_this_combat
+                .saturating_add(1);
+            state.combat_log.card_plays_finished_this_turn = state
+                .combat_log
+                .card_plays_finished_this_turn
+                .saturating_add(1);
+            // Event log (C# `CardPlayFinishedEntry`) at the same pin, which also
+            // CLOSES this play's source frame so the parent that auto-played it
+            // reclaims attribution for anything it dispatches next.
+            {
+                let up = state.cards[top_idx].upgraded;
+                crate::event_log::record(
+                    state,
+                    crate::event_log::EventLogEntry::CardPlayFinished {
+                        card: top_card_id,
+                        upgraded: up,
+                    },
+                );
+            }
+
+            // An auto-play is a REAL card play (`!IsDupe`) — C#'s HistoryCourse
+            // scan over `History.CardPlaysFinished` sees it, so a Stampede/Mayhem
+            // auto-played Attack/Skill becomes "last round's last Attack/Skill"
+            // exactly like a hand play (sweep seeds 5645/4095: C# duped the
+            // auto-played PILLAGE/BASH, Rust duped the earlier hand play).
+            if history_course_replays(state.game_version, top_card_type)
+                && state
+                    .cards
+                    .get(top_idx)
+                    .is_some_and(|c| c.combat_var(VarKey::IsDupe) == 0)
+            {
+                let upgraded = state.cards.get(top_idx).is_some_and(|c| c.upgraded);
+                state.combat_log.last_attack_skill_played =
+                    Some((top_card_id, upgraded, Some(top_uid)));
+            }
+
+            // Bead `sts2-rs-distilled-chaos-replay-scale`: per-turn play tally for the
+            // INITIAL auto-play, BEFORE the OneTwoPunch / base_replay replay loop below
+            // — mirroring the hand-play order (combat_loop.rs:4735). A scaling attack
+            // replayed below (Conflagration's `CalculatedDamageVar` counts the player's
+            // Attacks FINISHED this turn) must observe THIS play already counted, so
+            // each replay deals one Attack more than the last (C# records a
+            // `CardPlayFinishedEntry` per OnPlay iteration, CardModel.cs:1524). The
+            // bump previously ran ONCE *after* the replay loop, so a DistilledChaos /
+            // Catastrophe-auto-played Conflagration under OneTwoPunch under-scaled its
+            // replay (seed 1090: VINE_SHAMBLER hp +3). Each replay re-bumps inside the
+            // loop. Stomp/Pinpoint cost shaves + the ethereal tally move with it, and
+            // the formerly-post-loop copy is deleted. Runs ungated on `force_exhaust`
+            // (r6l9: a force-exhausted Havoc play still counts) and on `skip_dispatch`
+            // (C# records `CardPlayFinished` even for an Enemy-targeted no-alive-enemy
+            // play). And it runs BEFORE the after-played buses: C# records
+            // `CardPlayFinished` before `Hook.AfterCardPlayed`, so a Stomp or Pinpoint
+            // a listener creates backfills this play from the tally (GH #1054).
+            auto_play_tally_finished(state, top_card_type, top_idx);
+            dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
+            // The enchantment first-play markers (Sown / Swift / Glam / Vigorous) and
+            // Goopy's growth, as after a hand play.
+            if !skip_dispatch {
+                crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
+            }
+
+            // C# `Hook.AfterCardPlayed` ends with every listener's
+            // `AfterCardPlayedLate` (Hook.cs:431-437) — auto-plays included, since
+            // `CardCmd.AutoPlay` runs the same `OnPlayWrapper`. Fired after the tally
+            // so MakeItSo's skill count sees this play (C# records `CardPlayFinished`
+            // before `AfterCardPlayed`), and once per replay below. RightHandHand reads
+            // the `EnergyValue` stamped above (GH #741 follow-up).
+            // Co-op: Imitation Learning plays its clone of an auto-played Power card
+            // here too, after the first play (GH #992; see `finish_card_play`).
+            crate::coop::imitation_learning_copies(state, imitation_clone);
+            crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+        }
+        TailResume::AfterReplayOnPlay(i) => {
+            auto_replay_after_on_play(
+                state,
+                top_uid,
+                top_card_type,
+                top_idx,
+                &played_ctx,
+                &hook_played_ctx,
+            );
+            first_replay = i + 1;
+        }
+        TailResume::AfterEchoOnPlay => unreachable!("an auto-play has no Echo Form copy"),
+    }
 
     // Bead `sts2-rs-xk9yo`: an AUTO-PLAYED card honors its per-instance
     // `base_replay_count` just like a hand-played one. C#
@@ -11630,7 +11964,7 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
     // comment). Gated on `!skip_dispatch` for symmetry — `extra_plays` is already
     // 0 when `skip_dispatch`, so the guard is belt-and-suspenders.
     if !skip_dispatch {
-        for _ in 0..extra_plays {
+        for i in first_replay..extra_plays {
             if state.is_over {
                 break;
             }
@@ -11675,31 +12009,39 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
                 top_card_id,
                 target_uid,
             );
+            // A replay's select prompts like the first play's does, so park
+            // the tail on it and finish this iteration once the pick lands.
+            if auto_play_choice_should_surface(state) {
+                let fin = AutoPlayFinish {
+                    top_uid,
+                    target_uid,
+                    force_exhaust,
+                    skip_dispatch,
+                    corruption_active_pre_dispatch,
+                    auto_feral_returns_to_hand,
+                    auto_resolved_cost,
+                    auto_card_is_ethereal,
+                    extra_plays,
+                    saved_play_snapshots,
+                    rebound_at_auto_play_start,
+                    nostalgia_at_auto_play_start,
+                    attacks_skills_at_auto_play_start,
+                    imitation_clone: None,
+                    card_target,
+                    resume_at: TailResume::AfterReplayOnPlay(i),
+                };
+                park_auto_play_finish(state, fin, force_exhaust);
+                return true;
+            }
             resolve_inline_auto_play_choices(state);
-            // GH #1021: each replay iteration runs the card's
-            // `Enchantment.OnPlay` (CardModel.cs:1938-1946), as the initial
-            // auto-play does above.
-            crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
-            state.combat_log.player_card_plays_this_combat = state
-                .combat_log
-                .player_card_plays_this_combat
-                .saturating_add(1);
-            state.combat_log.card_plays_finished_this_turn = state
-                .combat_log
-                .card_plays_finished_this_turn
-                .saturating_add(1);
-            // Bead `sts2-rs-distilled-chaos-replay-scale`: each replay is its
-            // own C# `CardPlayFinished`, so re-tally the per-turn play bucket
-            // (+ ethereal / Stomp / Pinpoint) per replay — exactly like the
-            // hand-play replay loop (combat_loop.rs:4828) — so a SECOND replay
-            // of a scaling Attack sees the FIRST replay counted. Before the
-            // buses, as for the initial auto-play.
-            auto_play_tally_finished(state, top_card_type, top_idx);
-            dispatch_after_card_played_buses(state, &played_ctx, &hook_played_ctx);
-            // GH #1021: and the enchantment's `AfterCardPlayed` per replay
-            // (Goopy grows once per play, GH #952).
-            crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
-            crate::card_effects::fire_late_effects(state, &hook_played_ctx);
+            auto_replay_after_on_play(
+                state,
+                top_uid,
+                top_card_type,
+                top_idx,
+                &played_ctx,
+                &hook_played_ctx,
+            );
         }
     }
 
@@ -11936,6 +12278,99 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) {
             }
         }
     }
+    false
+}
+
+/// Park an auto-played card's tail on the select it just surfaced, so the next
+/// `ResolveChoice` finishes it. Used for the select the card's own `OnPlay`
+/// opened and for one a replay of it opened (GH #1131).
+fn park_auto_play_finish(state: &mut CombatState, fin: AutoPlayFinish, force_exhaust: bool) {
+    // Nested auto-play (seed 2752 DISTILLED_CHAOS → HAVOC → BURNING_PACT):
+    // an INNER auto-play this card dispatched into already surfaced and
+    // parked its own finish on `pending_autoplay_resume`. We are the OUTER
+    // card unwinding up to the SAME gate while that inner select is still
+    // pending. Do NOT clobber the inner finish (that dropped the inner card
+    // entirely — it never left the Play pile); PUSH our tail onto the parent
+    // chain (inner→outer order) so the resume consumer finishes the inner
+    // card first, then us. Bead `sts2-rs` (#181), follow-up to
+    // `sts2-rs-cata-suspend`.
+    if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+        // GH #500: a loop continuation recorded since the inner card
+        // surfaced belongs to THIS card's `OnPlay` — Catastrophe / BeatDown
+        // set it on the resume marker immediately after their
+        // `auto_play_specific_card` call came back suspended, and we are
+        // that very card unwinding to the gate. Move it onto our frame so
+        // the resolver runs the loop's remaining iterations BEFORE our tail
+        // and before the siblings the enclosing batch will attach to us.
+        // Left in the top-level slot it ran AFTER the whole parent chain, so
+        // a Mayhem-batch sibling jumped the queue ahead of Catastrophe's own
+        // next iteration and both engines picked different draw-top cards
+        // from then on (Ironclad seed 189: C# `CATASTROPHE -> SEEKER_STRIKE,
+        // HAVOC -> SEEKER_STRIKE, ARMAMENTS` vs Rust `CATASTROPHE ->
+        // SEEKER_STRIKE, ARMAMENTS, HAVOC -> CATASTROPHE`). The slot keeps
+        // its meaning for a HAND-played loop card, whose tail is
+        // `pending_play` and runs after the chain either way.
+        let continuation = resume.continuation.take();
+        resume.parent_chain.push(AutoPlayParentFrame {
+            finish: fin,
+            remaining: smallvec::SmallVec::new(),
+            force_exhaust,
+            continuation,
+        });
+        return;
+    }
+    state.pending_autoplay_resume = Some(crate::PendingAutoplayResume {
+        finish: fin,
+        remaining: smallvec::SmallVec::new(),
+        force_exhaust,
+        // The auto-play loop that drove this card (Catastrophe / BeatDown)
+        // fills `continuation` AFTER its `auto_play_specific_card*` call
+        // observes this suspend; the pre-collected draw-top variants
+        // (Cascade / Havoc / Mayhem) leave it `None`.
+        continuation: None,
+        parent_chain: smallvec::SmallVec::new(),
+        // A draw already parked here was suspended INSIDE this card's
+        // `OnPlay` (an outer Hellraiser draw arms its marker only after
+        // this stash), so it belongs to this card's finish.
+        inner_draw: state.pending_draw_resume.take(),
+    });
+}
+
+/// The half of an auto-played card's replay that runs after its `OnPlay`
+/// returns. Split out so a replay whose select parked the tail can finish its
+/// iteration on resume (GH #1131).
+fn auto_replay_after_on_play(
+    state: &mut CombatState,
+    top_uid: crate::CardUid,
+    top_card_type: cards::CardType,
+    top_idx: usize,
+    played_ctx: &crate::relic_effects::CardEventCtx,
+    hook_played_ctx: &CardCtx,
+) {
+    // GH #1021: each replay iteration runs the card's
+    // `Enchantment.OnPlay` (CardModel.cs:1938-1946), as the initial
+    // auto-play does above.
+    crate::enchantment_hooks::dispatch_on_card_played(state, top_uid);
+    state.combat_log.player_card_plays_this_combat = state
+        .combat_log
+        .player_card_plays_this_combat
+        .saturating_add(1);
+    state.combat_log.card_plays_finished_this_turn = state
+        .combat_log
+        .card_plays_finished_this_turn
+        .saturating_add(1);
+    // Bead `sts2-rs-distilled-chaos-replay-scale`: each replay is its
+    // own C# `CardPlayFinished`, so re-tally the per-turn play bucket
+    // (+ ethereal / Stomp / Pinpoint) per replay — exactly like the
+    // hand-play replay loop (combat_loop.rs:4828) — so a SECOND replay
+    // of a scaling Attack sees the FIRST replay counted. Before the
+    // buses, as for the initial auto-play.
+    auto_play_tally_finished(state, top_card_type, top_idx);
+    dispatch_after_card_played_buses(state, played_ctx, hook_played_ctx);
+    // GH #1021: and the enchantment's `AfterCardPlayed` per replay
+    // (Goopy grows once per play, GH #952).
+    crate::enchantment_hooks::dispatch_after_card_played(state, top_uid);
+    crate::card_effects::fire_late_effects(state, hook_played_ctx);
 }
 
 // ---------------------------------------------------------------------------

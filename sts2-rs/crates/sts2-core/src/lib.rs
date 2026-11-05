@@ -2882,6 +2882,17 @@ pub struct PendingAutoplay {
     pub force_exhaust: bool,
 }
 
+/// A card's draw-pile auto-play parked on its reshuffle select; see
+/// [`CombatState::pending_collect_resume`]. GH #1131.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PendingCollectResume {
+    /// The collect so far: cards on Play, cards still to take.
+    pub ap: PendingAutoplay,
+    /// Mark collected cards batch-pending (Cascade / Distilled Chaos), as
+    /// [`combat_loop::auto_play_n_from_draw_top`] does; Havoc doesn't.
+    pub batch: bool,
+}
+
 /// The turn-start auto-play cluster suspended by a forced card-select. Three
 /// distinct suspend sites share this resume record:
 ///
@@ -2958,14 +2969,12 @@ pub struct PendingPlay {
 /// **Why this exists (parity bug `combat_select_ironclad`).** C#'s
 /// `OnPlayWrapper` `await`s the `ICardSelector` INSIDE `OnPlay`
 /// (`CardModel.cs:1498`). The headless selector
-/// (`HeadlessCardSelector.GetSelectedCards`, `RunSimulator.cs:4804-4836`)
-/// auto-resolves INLINE only when `optList.Count == 0`, or
-/// `optList.Count == 1 && minSelect >= 1`, or the `AutoResolveInline` flag is
-/// set — and `AutoResolveInline` is set ONLY while a combat play is being
-/// RESUMED (`DoSelectCards`, `RunSimulator.cs:2165`). So the FIRST card-select
-/// an auto-play's `OnPlay` opens has `AutoResolveInline == false` and SURFACES
-/// (`HasPending == true`); only FURTHER choices opened by the resumed play
-/// drain inline. The Rust port used to blanket-drain every such choice
+/// (`HeadlessCardSelector.GetSelectedCards`) auto-resolves INLINE only when
+/// `optList.Count == 0`, or `optList.Count == 1 && minSelect >= 1`, like
+/// `CardSelectCmd`'s own fast path. Every other card-select an auto-play's
+/// `OnPlay` opens SURFACES (`HasPending == true`), including one opened while a
+/// resumed play continues (GH #1131). The Rust port used to blanket-drain every
+/// such choice
 /// (`resolve_inline_auto_play_choices`), silently picking option-0 and staying
 /// in `combat` instead of surfacing — e.g. Havoc auto-playing un-upgraded
 /// Armaments with 2+ upgradable hand cards auto-upgraded the first card rather
@@ -2974,10 +2983,9 @@ pub struct PendingPlay {
 /// This captures everything needed to resume `resolve_auto_played_card`'s tail
 /// (after the dispatch + surfaced choice) AND the remaining collected
 /// auto-play cards, so `apply(Action::ResolveChoice)` can finish the play
-/// faithfully. Mirrors the [`PendingPlay`] machinery for top-level plays.
-/// `auto_resolve_inline` is raised on resume so any further nested choice
-/// drains inline (the C# `AutoResolveInline` mirror — preserving the `y1fic`
-/// chained-auto-play deadlock fix). Set together with `pending_choice`; always
+/// faithfully. Mirrors the [`PendingPlay`] machinery for top-level plays. A
+/// later card that surfaces parks a new resume carrying everything still owed
+/// (`resume_owed_auto_plays`). Set together with `pending_choice`; always
 /// cleared before the choice closes, so it never persists across a turn
 /// boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2997,8 +3005,7 @@ pub struct PendingAutoplayResume {
     /// fetching a Skill, Headbutt relocating a discard card) MUST resolve —
     /// mutating the pile — before the next iteration's pick. So such a loop
     /// suspends mid-iteration and records how to re-enter itself here; the
-    /// resolver runs it (under `autoplay_inline_resolve`) once the surfaced
-    /// card's tail + `remaining` finish. `None` for the pre-collected
+    /// resolver runs it once the surfaced card's tail + `remaining` finish. `None` for the pre-collected
     /// draw-top variants (Cascade / Havoc / Mayhem / DistilledChaos), which
     /// only need `remaining`. Bead `sts2-rs-cata-suspend`.
     pub continuation: Option<AutoPlayLoopCont>,
@@ -3090,15 +3097,52 @@ pub enum EndTurnResume {
 /// empty / zero.
 #[derive(Clone, Debug)]
 pub struct AutoPlayLoopCont {
-    /// Re-entry point: `(state, remaining_iters, remaining_uids, force_exhaust)`.
-    pub resume_fn: fn(&mut CombatState, u32, &[CardUid], bool),
+    /// Re-entry point, handed this continuation.
+    pub resume_fn: fn(&mut CombatState, &AutoPlayLoopCont),
     /// Remaining loop iterations for a count-driven loop (Catastrophe).
     pub iters: u32,
     /// Not-yet-played captured cards for a fixed-list loop (BeatDown).
     pub uids: smallvec::SmallVec<[CardUid; 8]>,
     /// `force_exhaust` threaded through the remaining iterations.
     pub force_exhaust: bool,
+    /// What runs after the loop: a Sly discard's discarding card going on
+    /// with its `OnPlay` (Hidden Daggers' Shivs). `None` for Catastrophe /
+    /// BeatDown / Eidolon / DecisionsDecisions.
+    pub then: Option<LoopThen>,
 }
+
+/// Work that waits behind a suspended Sly discard loop: the rest of the
+/// discarding card's `OnPlay`, or the `post_effect` of the discard choice that
+/// started the loop. GH #1131.
+#[derive(Clone, Copy, Debug)]
+pub enum LoopThen {
+    /// A discard choice's follow-up.
+    Effect(PostChoiceEffect),
+    /// A card's own code, given `arg` (the card packs what it needs into it).
+    Call(fn(&mut CombatState, u32), u32),
+}
+
+impl LoopThen {
+    /// Run the follow-up.
+    pub fn run(self, state: &mut CombatState) {
+        match self {
+            Self::Effect(effect) => apply_post_choice_effect(state, Some(effect)),
+            Self::Call(run, arg) => run(state, arg),
+        }
+    }
+}
+
+// Hand-written for the same fn-pointer reason as `AutoPlayLoopCont` below.
+impl PartialEq for LoopThen {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Effect(a), Self::Effect(b)) => a == b,
+            (Self::Call(f, a), Self::Call(g, b)) => *f as usize == *g as usize && a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for LoopThen {}
 
 // `PartialEq`/`Eq` are hand-written rather than derived: deriving `==` over the
 // `resume_fn` field trips the `unpredictable_function_pointer_comparisons` lint
@@ -3112,6 +3156,7 @@ impl PartialEq for AutoPlayLoopCont {
             && self.iters == other.iters
             && self.uids == other.uids
             && self.force_exhaust == other.force_exhaust
+            && self.then == other.then
     }
 }
 impl Eq for AutoPlayLoopCont {}
@@ -3134,6 +3179,55 @@ impl Eq for AutoPlayLoopCont {}
 /// [`crate::combat_loop::resume_enemy_turn_exec`] and finish the walk exactly
 /// where it stopped. Set together with `pending_choice`; always cleared before
 /// the choice closes, so it never persists across a turn boundary.
+/// The enemy side of an end of turn, run so that a player select it opens
+/// can be answered (GH #1129).
+///
+/// C# monster attacks run their hooks under a `BlockingPlayerChoiceContext`
+/// (`AttackCommand.cs:670`), so a select opened during the enemy turn (an
+/// enemy hit triggers Centennial Puzzle, which draws a Seeker Strike that
+/// Hellraiser auto-plays) halts the whole enemy turn until the player picks
+/// (`BlockingPlayerChoiceContext.cs:7-15`). Rust can't suspend in the middle
+/// of a monster move, so it replays the enemy side instead: `snapshot` is the
+/// state as the enemy side began, and a run from it resolves every select
+/// inline at the point C# awaits it, taking the player's `answers` in order.
+/// The first select with no answer yet is `captured` with its choice open,
+/// and that state is what the player sees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnemySideCapture {
+    /// The state as the enemy side began, with no capture or replay set.
+    pub snapshot: Box<CombatState>,
+    /// The player's answers so far, one per `ResolveChoice`, in order.
+    pub answers: SmallVec<[SmallVec<[u8; 4]>; 2]>,
+    /// The next answer to hand out.
+    pub next: usize,
+    /// The state at the first select with no answer, its choice open.
+    pub captured: Option<Box<CombatState>>,
+}
+
+impl CombatState {
+    /// Run `f` on each enemy-side snapshot this state carries (GH #1129). A
+    /// search transform that hides or reseeds information (determinizing a
+    /// root, reseeding a chance outcome) must reach the snapshot too: the
+    /// answer to a captured select replays from it.
+    pub fn for_each_enemy_side_snapshot(&mut self, mut f: impl FnMut(&mut CombatState)) {
+        if let Some(c) = self.enemy_side_capture.as_mut() {
+            f(&mut c.snapshot);
+        }
+        if let Some(r) = self.enemy_side_replay.as_mut() {
+            f(&mut r.snapshot);
+        }
+    }
+}
+
+/// An enemy side waiting for the player's answer to `pending_choice`
+/// (GH #1129): the next `ResolveChoice` reruns it from `snapshot` with
+/// `answers` plus the new one. See [`EnemySideCapture`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnemySideReplay {
+    pub snapshot: Box<CombatState>,
+    pub answers: SmallVec<[SmallVec<[u8; 4]>; 2]>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingEnemyExecResume {
     /// The `(uid, intent)` roster snapshot `enemy_turn_exec` took at entry, in
@@ -4048,6 +4142,12 @@ pub struct CombatState {
     /// hashed, like [`Self::pending_turn_setup_resume`]). See
     /// [`PendingEnemyExecResume`].
     pub pending_enemy_exec_resume: Option<PendingEnemyExecResume>,
+    /// Set while the enemy side runs in capture mode (GH #1129); `None` at
+    /// rest. See [`EnemySideCapture`].
+    pub enemy_side_capture: Option<Box<EnemySideCapture>>,
+    /// Set while a select captured from the enemy side waits for the player
+    /// (GH #1129). See [`EnemySideReplay`].
+    pub enemy_side_replay: Option<Box<EnemySideReplay>>,
     /// Bead `sts2-rs-63mew`: a draw suspended mid-reshuffle by an
     /// `after_shuffle` player choice (Stratagem). C# awaits the
     /// `StratagemPower.AfterShuffle` grid-select INSIDE
@@ -4072,6 +4172,18 @@ pub struct CombatState {
     /// Consumed by `apply(Action::ResolveChoice)`. `None` at rest (not hashed,
     /// like [`Self::pending_draw_resume`]).
     pub pending_cluster_resume: Option<PendingClusterResume>,
+    /// A card's draw-pile auto-play (Havoc, Cascade, Distilled Chaos) parked
+    /// on a reshuffle select that prompts the player (Stratagem's grid). C#
+    /// awaits `Hook.AfterShuffle` inside `AutoPlayFromDrawPile`, so the collect
+    /// goes on after the pick. The resolver runs it before any auto-play tail
+    /// parked around it. `None` at rest. GH #1131.
+    pub pending_collect_resume: Option<PendingCollectResume>,
+    /// The turn-start tail after `before_play_phase_start` waits for a select
+    /// the HistoryCourse dupe opened (GH #1131): C# awaits the dupe's
+    /// `CardCmd.AutoPlay` inside `BeforePlayPhaseStart`. The resolver runs
+    /// [`combat_loop::finish_play_phase_start`] once the dupe is done.
+    /// `false` at rest.
+    pub pending_play_phase_tail: bool,
     /// Turn-start hand draw suspended by a `ForegoneConclusionPower.BeforeHandDraw`
     /// surfacing card-select. C# `ForegoneConclusionPower.BeforeHandDraw` is
     /// awaited by the turn-start sequence: the FromSimpleGrid select runs +
@@ -4162,12 +4274,11 @@ pub struct CombatState {
     /// collected cards. `None` at rest (not hashed, like
     /// [`Self::pending_cluster_resume`]). See [`PendingAutoplayResume`].
     pub pending_autoplay_resume: Option<PendingAutoplayResume>,
-    /// Mirror of the headless `HeadlessCardSelector.AutoResolveInline`
-    /// (`RunSimulator.cs:4803`): while a combat auto-play is being RESUMED
-    /// after a surfaced card-select, any FURTHER nested choice opened by the
-    /// resumed play resolves INLINE at the option-0 prefix rather than
-    /// surfacing again (C# `DoSelectCards`, `RunSimulator.cs:2165`). Raised by
-    /// the resume path, lowered when it returns. `false` at rest (not hashed).
+    /// Answer an auto-play's select with the option-0 prefix instead of
+    /// surfacing it. Held by the spots with no suspend point yet: a draw
+    /// parked behind the play, the Sly discard loop and History Course's dupe.
+    /// The real game prompts at all of them (GH #1131). `false` at rest (not
+    /// hashed).
     pub autoplay_inline_resolve: bool,
     /// Mirror of C# `CardSelectCmd.PushSelector(new VakuuCardSelector())`,
     /// which `WhisperingEarring.AfterAutoPrePlayPhaseEnteredLate` holds for the
@@ -4427,9 +4538,13 @@ impl Default for CombatState {
             pending_curse_choice: None,
             pending_potion_hook_resume: None,
             pending_enemy_exec_resume: None,
+            enemy_side_capture: None,
+            enemy_side_replay: None,
             pending_draw_resume: None,
             pending_snecko_cost_randomize: false,
             pending_cluster_resume: None,
+            pending_collect_resume: None,
+            pending_play_phase_tail: false,
             pending_hand_draw_resume: None,
             pending_relic_hand_draw_resume: None,
             pending_wlp_retain_resume: false,
@@ -7697,6 +7812,11 @@ impl CombatState {
                     );
                     self.player.draw = draw_buf;
                     self.fire_after_shuffle(true);
+                    // In the enemy side's capture mode the grid resolves here,
+                    // where C# awaits it (GH #1129).
+                    if self.pending_choice.is_some() && self.enemy_side_capture.is_some() {
+                        crate::combat_loop::resolve_inline_auto_play_choices(self);
+                    }
                     if self.pending_choice.is_some() {
                         // Suspend: the current card has NOT been drawn.
                         self.pending_draw_resume = Some(PendingDrawResume {
@@ -10037,6 +10157,9 @@ fn apply_action(state: &mut CombatState, action: Action) -> StepResult {
             // bead `sts2-rs-y1fic`) calls it with `flush_played = false`
             // because multiple collected sibling cards sit on the Play pile at
             // once and must NOT be swept by a mid-loop choice resolution.
+            if let Some(replay) = state.enemy_side_replay.take() {
+                return crate::combat_loop::replay_enemy_side(state, *replay, selection);
+            }
             resolve_choice_action(state, &selection, /*flush_played=*/ true)
         }
     }
@@ -10380,6 +10503,142 @@ pub(crate) fn resolve_choice_action(
     resolve_choice_atomic(state, pc, &owned, flush_played)
 }
 
+/// The turn-start tail a HistoryCourse dupe's select held back, once nothing is
+/// left waiting in front of it (GH #1131).
+fn resume_play_phase_tail(state: &mut CombatState) -> Option<StepResult> {
+    if !state.pending_play_phase_tail
+        || state.pending_choice.is_some()
+        || state.pending_autoplay_resume.is_some()
+        || state.pending_collect_resume.is_some()
+        || state.pending_draw_resume.is_some()
+    {
+        return None;
+    }
+    state.pending_play_phase_tail = false;
+    Some(crate::combat_loop::finish_play_phase_start(state))
+}
+
+/// What a resumed auto-play still owes after the suspended card's tail ran.
+struct OwedAutoPlays {
+    remaining: SmallVec<[CardUid; 8]>,
+    force_exhaust: bool,
+    parent_chain: SmallVec<[crate::combat_loop::AutoPlayParentFrame; 4]>,
+    continuation: Option<AutoPlayLoopCont>,
+}
+
+/// Hand what a resumed card still owes to the resume its own tail just parked:
+/// a replay of that card surfaced a select (GH #1131). Its siblings belong to
+/// it, so they attach to its frame (the last one, when a nested card surfaced
+/// first) or to the top slot, exactly as [`crate::combat_loop::
+/// play_collected_auto_plays`] attaches a batch's rest.
+fn carry_owed_onto_parked_tail(state: &mut CombatState, owed: OwedAutoPlays) {
+    let next = state
+        .pending_autoplay_resume
+        .as_mut()
+        .expect("a parked tail leaves its resume");
+    if let Some(frame) = next.parent_chain.last_mut() {
+        frame.remaining = owed.remaining;
+        frame.force_exhaust = owed.force_exhaust;
+    } else {
+        next.remaining = owed.remaining;
+        next.force_exhaust = owed.force_exhaust;
+    }
+    next.parent_chain.extend(owed.parent_chain);
+    debug_assert!(next.continuation.is_none());
+    next.continuation = owed.continuation;
+}
+
+/// Run the auto-plays owed after a resumed card's tail, in C#'s await order:
+/// the card's siblings, each enclosing frame inner to outer (its loop, its tail,
+/// its siblings), then the outermost re-selection loop.
+///
+/// Returns `true` when a card surfaced a select. The new
+/// `pending_autoplay_resume` then carries everything not yet run, so the next
+/// `ResolveChoice` continues here (GH #1131).
+///
+/// The caller sets `autoplay_inline_resolve` for all of it. A frame's card is
+/// already mid-play, so only its loop, its replays and its siblings can suspend.
+fn resume_owed_auto_plays(state: &mut CombatState, owed: OwedAutoPlays) -> bool {
+    let OwedAutoPlays {
+        remaining,
+        force_exhaust,
+        parent_chain,
+        continuation,
+    } = owed;
+    let mut frames = parent_chain.into_iter();
+    // Hands the frames not yet run to the resume a card just parked.
+    let carry = |state: &mut CombatState,
+                 frames: smallvec::IntoIter<[crate::combat_loop::AutoPlayParentFrame; 4]>,
+                 continuation: Option<AutoPlayLoopCont>| {
+        let next = state
+            .pending_autoplay_resume
+            .as_mut()
+            .expect("a suspended auto-play parks its resume");
+        next.parent_chain.extend(frames);
+        debug_assert!(next.continuation.is_none());
+        next.continuation = continuation;
+    };
+    if crate::combat_loop::play_collected_auto_plays(state, &remaining, force_exhaust) {
+        carry(state, frames, continuation);
+        return true;
+    }
+    while let Some(mut frame) = frames.next() {
+        if state.is_over {
+            break;
+        }
+        // GH #500: this frame's own auto-play LOOP first. C#
+        // `Catastrophe.OnPlay` awaits every `CardCmd.AutoPlay` in its `for`
+        // loop, so the loop drains completely before `OnPlay` returns, i.e.
+        // before `OnPlayWrapper` fires `AfterCardPlayed` (`frame.finish`) and
+        // before the enclosing batch moves on to `frame.remaining`.
+        if let Some(cont) = frame.continuation.take() {
+            (cont.resume_fn)(state, &cont);
+            if let Some(next) = state.pending_autoplay_resume.as_mut() {
+                // The loop re-parked its remainder in the top slot. It belongs
+                // to this frame, whose tail must wait for it.
+                frame.continuation = next.continuation.take();
+                next.parent_chain.push(frame);
+                carry(state, frames, continuation);
+                return true;
+            }
+            if state.is_over {
+                break;
+            }
+        }
+        if crate::combat_loop::finish_auto_played_card(state, frame.finish) {
+            carry_owed_onto_parked_tail(
+                state,
+                OwedAutoPlays {
+                    remaining: frame.remaining,
+                    force_exhaust: frame.force_exhaust,
+                    parent_chain: frames.collect(),
+                    continuation,
+                },
+            );
+            return true;
+        }
+        if crate::combat_loop::play_collected_auto_plays(
+            state,
+            &frame.remaining,
+            frame.force_exhaust,
+        ) {
+            carry(state, frames, continuation);
+            return true;
+        }
+    }
+    // Re-selection auto-play-loop continuation (Catastrophe / BeatDown): the
+    // surfaced card has left the pile, so replay the loop's remaining
+    // iterations against the UPDATED pile, mirroring C# `await CardCmd.AutoPlay`
+    // resuming the `OnPlay` loop. The loop re-parks itself on a further select.
+    // Bead `sts2-rs-cata-suspend`.
+    if let Some(cont) = continuation {
+        if !state.is_over {
+            (cont.resume_fn)(state, &cont);
+        }
+    }
+    state.pending_autoplay_resume.is_some()
+}
+
 /// Atomic per-[`ChoiceKind`] resolution of an ALREADY-TAKEN [`PendingChoice`].
 ///
 /// This is the ONE place the kind-resolvers run for a choice. It receives the
@@ -10575,6 +10834,18 @@ fn resolve_choice_atomic(
             );
         }
     }
+    // GH #1131: a card's draw-pile auto-play parked on its reshuffle select
+    // goes on first. It is the innermost thing waiting: the card that started
+    // it is still in its `OnPlay`, so that card's tail (`pending_play`, or the
+    // parked auto-play resume) runs only after everything it collects. So does a potion's `AfterPotionUsed`
+    // (Distilled Chaos) and every resume below.
+    if state.pending_choice.is_none() {
+        if let Some(collect) = state.pending_collect_resume.take() {
+            if crate::combat_loop::resume_collect(state, collect) {
+                return StepResult::PendingChoice;
+            }
+        }
+    }
     // Bead `sts2-rs-63mew`: resume a draw suspended mid-reshuffle
     // by an `after_shuffle` choice (Stratagem). C# awaits the
     // grid-select INSIDE `CardPileCmd.Draw`'s per-card loop, so
@@ -10711,22 +10982,16 @@ fn resolve_choice_atomic(
     // tail (`AfterCardPlayed` buses, replay loop, Play→Discard/Exhaust
     // disposal) and then play any remaining collected cards — exactly the order
     // C#'s `OnPlayWrapper` produces by awaiting the selector inside `OnPlay`
-    // (`CardModel.cs:1498`), then continuing the auto-play loop. `autoplay_inline_resolve`
-    // is raised for the whole resume so any FURTHER nested choice (a chained
-    // auto-play's follow-on screen) drains inline at the option-0 prefix —
-    // mirroring the headless `AutoResolveInline` set during `DoSelectCards`
-    // (`RunSimulator.cs:2165`), which preserves the `y1fic` chained-auto-play
-    // deadlock fix. Ordered BEFORE the generic `pending_play` block.
+    // (`CardModel.cs:1498`), then continuing the auto-play loop. A later card's
+    // select parks a new resume (`resume_owed_auto_plays`), so it surfaces too
+    // (GH #1131). Ordered BEFORE the generic `pending_play` block.
     //
     // The two CAN both be set at once: a HAND-played auto-play card (e.g. Havoc
     // via `play_card`) whose nested auto-play surfaced sets BOTH
     // `pending_autoplay_resume` (the nested Armaments tail) AND `pending_play`
     // (Havoc's own tail, parked by `play_card`). C# resumes the whole stack in
-    // one `DoSelectCards` call with `AutoResolveInline` held true throughout —
-    // the nested auto-play finishes, then the parent play's tail runs, all
-    // inline. We mirror that: finish the auto-play resume, then (still under the
-    // raised flag) finish the parent `pending_play` if present, then restore the
-    // flag. Only when the surfaced pick didn't re-open a nested choice (a
+    // one `await` chain: the nested auto-play finishes, then the parent play's
+    // tail runs. Only when the surfaced pick didn't re-open a nested choice (a
     // chained select keeps the resume parked and re-surfaces).
     // A draw suspended INSIDE the parked auto-played card's own `OnPlay` (an
     // auto-played DecisionsDecisions / ThinkingAhead whose `Draw` reshuffled
@@ -10762,76 +11027,67 @@ fn resolve_choice_atomic(
                 inner_draw,
             } = resume;
             let prev_inline = state.autoplay_inline_resolve;
-            state.autoplay_inline_resolve = true;
+            // A draw parked BEHIND this play (an on-draw Hellraiser draw that
+            // auto-played this card) waits for all of it, so set it aside: the
+            // one `PendingDrawResume` slot is then free for this play's own
+            // draws, and a select anything here opens can prompt (GH #1131).
+            // It goes back once this play parks again or finishes, and the
+            // continuation below resumes it.
+            let outer_draw = state.pending_draw_resume.take();
+            state.autoplay_inline_resolve = prev_inline;
             if let Some(pdr) = inner_draw {
-                // Finish the surfaced card's own suspended draw first; a
-                // further reshuffle select (or a deferred discard) it opens
-                // drains inline like any nested choice under the resume.
+                // Finish the surfaced card's own suspended draw first. C#
+                // awaits it inside `OnPlay`, with whatever it opens: another
+                // reshuffle select, or the card's post-draw select (Thinking
+                // Ahead's put-back). Those prompt, and the card waits again.
                 let _ = state.resume_suspended_draw(pdr);
-                crate::combat_loop::resolve_inline_auto_play_choices(state);
-            }
-            crate::combat_loop::finish_auto_played_card(state, finish);
-            // Play the remaining collected cards (Cascade-for-N where the
-            // surfacing card was not the last). Each runs with inline-resolve on
-            // so its own choices drain rather than re-surface.
-            for uid in remaining {
-                if state.is_over {
-                    break;
-                }
-                crate::combat_loop::resolve_auto_played_card(state, uid, force_exhaust);
-            }
-            // Nested auto-play chain (seed 2752 DISTILLED_CHAOS → HAVOC →
-            // BURNING_PACT): now that the INNER surfacing card's tail has run,
-            // unwind each enclosing auto-play in inner→outer order — finish its
-            // own post-dispatch tail, then play any collected siblings it still
-            // owed. This mirrors C#'s nested `await CardCmd.AutoPlay` returning
-            // up the stack inside one `DoSelectCards`, all under the raised
-            // inline flag so no further select re-surfaces. Runs BEFORE the
-            // re-selection `continuation` (the outermost loop) and the parent
-            // hand-play tail, matching the C# resume order. Bead `sts2-rs`
-            // (#181), follow-up to `sts2-rs-cata-suspend`.
-            for frame in parent_chain {
-                if state.is_over {
-                    break;
-                }
-                // GH #500: this frame's own auto-play LOOP first. C#
-                // `Catastrophe.OnPlay` awaits every `CardCmd.AutoPlay` in its
-                // `for` loop, so the loop drains completely before `OnPlay`
-                // returns — i.e. before `OnPlayWrapper` fires `AfterCardPlayed`
-                // (`frame.finish`) and before the enclosing batch moves on to
-                // the siblings it attached as `frame.remaining`.
-                if let Some(cont) = frame.continuation {
-                    (cont.resume_fn)(state, cont.iters, &cont.uids, cont.force_exhaust);
-                    if state.is_over {
-                        break;
+                if state.pending_choice.is_some() {
+                    if prev_inline {
+                        crate::combat_loop::resolve_inline_auto_play_choices(state);
+                    } else {
+                        state.pending_autoplay_resume = Some(crate::PendingAutoplayResume {
+                            finish,
+                            remaining,
+                            force_exhaust,
+                            continuation,
+                            parent_chain,
+                            inner_draw: state.pending_draw_resume.take(),
+                        });
+                        state.pending_draw_resume = outer_draw;
+                        return StepResult::PendingChoice;
                     }
                 }
-                crate::combat_loop::finish_auto_played_card(state, frame.finish);
-                for uid in frame.remaining {
-                    if state.is_over {
-                        break;
-                    }
-                    crate::combat_loop::resolve_auto_played_card(state, uid, frame.force_exhaust);
-                }
             }
-            // Re-selection auto-play-loop continuation (Catastrophe / BeatDown):
-            // now that the surfaced card's tail has run (the fetched / relocated
-            // card has left the pile), replay the loop's not-yet-run iterations
-            // against the UPDATED pile — mirroring C# `await CardCmd.AutoPlay`
-            // resuming the `OnPlay` loop. Still under the raised inline flag, so
-            // any further nested select in those iterations drains inline rather
-            // than re-surfacing (the loop runs to completion here). Bead
-            // `sts2-rs-cata-suspend`.
-            if let Some(cont) = continuation {
-                if !state.is_over {
-                    (cont.resume_fn)(state, cont.iters, &cont.uids, cont.force_exhaust);
-                }
-            }
+            // C# awaits every `CardCmd.AutoPlay` and every replay's `OnPlay`,
+            // so a replay's select, or a later card's, prompts the player like
+            // the first one did (`CardSelectCmd.FromCombatPile`, GH #1131).
+            let finish_parked = crate::combat_loop::finish_auto_played_card(state, finish);
+            let owed = OwedAutoPlays {
+                remaining,
+                force_exhaust,
+                parent_chain,
+                continuation,
+            };
+            let suspended = if finish_parked {
+                carry_owed_onto_parked_tail(state, owed);
+                true
+            } else {
+                resume_owed_auto_plays(state, owed)
+            };
             // Restore inline-resolve BEFORE the draw continuation below so a
             // further on-draw auto-play in the continued draw surfaces its own
             // select (rather than draining inline). The parent hand-play tail
             // (if any) likewise finishes under the restored flag, matching C#.
             state.autoplay_inline_resolve = prev_inline;
+            // A parked play took its own draw as `inner_draw`, so the slot is
+            // free for the outer draw again.
+            if outer_draw.is_some() {
+                debug_assert!(state.pending_draw_resume.is_none());
+                state.pending_draw_resume = outer_draw;
+            }
+            if suspended {
+                return StepResult::PendingChoice;
+            }
             // Bead `sts2-rs-hellraiser-draw-suspend` (DRAW_ORDER / PILE_COUNT
             // seeds 1586/3453/4081/5754): the auto-play just finished
             // was an on-draw HellraiserPower play whose surfaced select had
@@ -10920,7 +11176,15 @@ fn resolve_choice_atomic(
                     }
                 }
             }
+            if let Some(r) = resume_play_phase_tail(state) {
+                return r;
+            }
             return StepResult::Advanced;
+        }
+    }
+    if flush_played {
+        if let Some(r) = resume_play_phase_tail(state) {
+            return r;
         }
     }
     // Parity bug `combat_select_ironclad`: resume the end-turn dispatch chain
@@ -10934,8 +11198,8 @@ fn resolve_choice_atomic(
     // Top-level resolves only (`flush_played`), like the `pending_play` and
     // cluster arms (GH #500). The `pending_autoplay_resume` arm above `take()`s
     // the resume before finishing the card, so a select that card opens while
-    // it finishes — a replayed Headbutt's second put-back, drained inline under
-    // `AutoResolveInline` — re-enters here with no resume parked, and used to
+    // it finishes — a replayed Headbutt's second put-back, drained inline —
+    // re-enters here with no resume parked, and used to
     // run the whole end-turn chain (the hand flush included) from inside the
     // card's replay loop, before the card reached its result pile. C# finishes
     // `OnPlayWrapper` (result pile, `CheckForEmptyHand`, CardModel.cs:1985-2006)
@@ -11480,19 +11744,17 @@ fn resolve_auto_play_skill_from_hand(
     selection: &[u8],
 ) {
     // C# `DecisionsDecisions` `RepeatVar(3)` — fixed, not upgrade-scaled.
-    const REPEAT: usize = 3;
+    const REPEAT: u32 = 3;
     let Some(uid) = selected_card_uid(pc, selection) else {
         return;
     };
     // C# `DecisionsDecisions.OnPlay` awaits each `CardCmd.AutoPlay`
     // (`DecisionsDecisions.cs:33-36`), so a repeated Skill that opens its own
-    // select (Quasar's choose-a-card) resolves it before the next repeat. This
-    // pick is answered in one headless `DoSelectCards`, which holds
-    // `AutoResolveInline` (the `autoplay_inline_resolve` mirror) for the whole
-    // resume. Without it the first repeat's select SURFACED, leaving the card
-    // parked on Play, so repeats 2/3 found it in no pile and silently no-op'd
-    // (Regent quick seed 452: 1 Quasar card generated instead of 3).
-    let prev_inline = std::mem::replace(&mut state.autoplay_inline_resolve, true);
+    // select (Quasar's choose-a-card) prompts the player and resolves before the
+    // next repeat (GH #1131). A repeat that drained or surfaced without this loop
+    // left the card parked on Play, so repeats 2/3 found it in no pile and
+    // silently no-op'd (Regent quick seed 452: 1 Quasar card instead of 3).
+    //
     // Park the resume markers of the play that surfaced THIS select (an
     // auto-played DecisionsDecisions' tail + its Catastrophe loop, or a
     // hand-played one's tail) while the repeats run: an inline-drained nested
@@ -11501,7 +11763,49 @@ fn resolve_auto_play_skill_from_hand(
     // inside the FIRST repeat (Quasar landing in discard after Splash, seed 452).
     let parked_autoplay = state.pending_autoplay_resume.take();
     let parked_play = state.pending_play.take();
-    for _ in 0..REPEAT {
+    // A draw parked behind this play (one that auto-played DecisionsDecisions)
+    // waits for every repeat, so set it aside: the `PendingDrawResume` slot is
+    // then free for the repeats' own draws, and their selects prompt (GH
+    // #1131). An unfinished draw of DecisionsDecisions' own still has nowhere
+    // to wait across a repeat's select (the parent frame has no `inner_draw`
+    // slot), but its select only opens once that draw is done.
+    let outer_draw = state.pending_draw_resume.take();
+    let prev_inline = state.autoplay_inline_resolve;
+    state.autoplay_inline_resolve = prev_inline
+        || parked_autoplay
+            .as_ref()
+            .is_some_and(|r| r.inner_draw.is_some());
+    decisions_repeat_run(state, uid, REPEAT);
+    state.autoplay_inline_resolve = prev_inline;
+    if outer_draw.is_some() {
+        debug_assert!(state.pending_draw_resume.is_none());
+        state.pending_draw_resume = outer_draw;
+    }
+    state.pending_play = parked_play;
+    let Some(parked) = parked_autoplay else {
+        return;
+    };
+    let Some(next) = state.pending_autoplay_resume.as_mut() else {
+        state.pending_autoplay_resume = Some(parked);
+        return;
+    };
+    // A repeat surfaced. DecisionsDecisions' tail runs after its remaining
+    // repeats, so it becomes the frame that owns them.
+    next.parent_chain
+        .push(crate::combat_loop::AutoPlayParentFrame {
+            finish: parked.finish,
+            remaining: parked.remaining,
+            force_exhaust: parked.force_exhaust,
+            continuation: next.continuation.take(),
+        });
+    next.parent_chain.extend(parked.parent_chain);
+    next.continuation = parked.continuation;
+}
+
+/// Auto-play `uid` up to `iters` more times, parking the rest of the loop on
+/// `pending_autoplay_resume` when a repeat surfaces a select.
+fn decisions_repeat_run(state: &mut CombatState, uid: CardUid, iters: u32) {
+    for n in 0..iters {
         // C# `CardCmd.AutoPlay` replays the SAME card by reference regardless of
         // pile; `auto_play_specific_card_from_discard` re-locates `uid` across
         // Discard/Draw/Hand each iteration (hand on the 1st play, discard on the
@@ -11510,11 +11814,23 @@ fn resolve_auto_play_skill_from_hand(
         // card is gone (e.g. an Exhaust Skill that left no replayable copy) the
         // helper no-ops and the loop simply continues.
         crate::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
+        if let Some(resume) = state.pending_autoplay_resume.as_mut() {
+            resume.continuation = Some(AutoPlayLoopCont {
+                resume_fn: decisions_repeat_resume,
+                iters: iters - n - 1,
+                uids: smallvec::smallvec![uid],
+                force_exhaust: false,
+                then: None,
+            });
+            return;
+        }
     }
-    state.autoplay_inline_resolve = prev_inline;
-    debug_assert!(state.pending_autoplay_resume.is_none() && state.pending_play.is_none());
-    state.pending_autoplay_resume = parked_autoplay;
-    state.pending_play = parked_play;
+}
+
+/// Resume entry point stored on [`AutoPlayLoopCont`]: run the remaining
+/// DecisionsDecisions repeats.
+fn decisions_repeat_resume(state: &mut CombatState, cont: &AutoPlayLoopCont) {
+    decisions_repeat_run(state, cont.uids[0], cont.iters);
 }
 
 /// Resolve a [`ChoiceKind::TransformDrawCardToSoul`] pending choice (Seance:
@@ -11889,8 +12205,13 @@ fn resolve_discard_from_hand(state: &mut CombatState, pc: &PendingChoice, select
                 .and_then(|o| o.card_uid)
         })
         .collect();
-    let _ = crate::card_effects::discard_hand_cards_with_hooks(state, &uids);
-    apply_post_choice_effect(state, pc.post_effect);
+    // The follow-up (HiddenDaggers' Shivs) waits behind every Sly auto-play,
+    // including a Sly select the player answers first (GH #1131).
+    let _ = crate::card_effects::discard_hand_cards_then(
+        state,
+        &uids,
+        pc.post_effect.map(LoopThen::Effect),
+    );
 }
 
 /// Resolve a [`ChoiceKind::DiscardFromHandAndDraw`] pending choice
@@ -11974,9 +12295,7 @@ fn resolve_discard_from_hand_and_draw(
         let _ = state.draw_into_hand_card_effect(discarded);
     }
     // Auto-play each discarded `Sly` card AFTER the draw (CardCmd.cs:157-160).
-    for uid in sly {
-        let _ = crate::combat_loop::auto_play_specific_card_from_discard(state, uid, false);
-    }
+    crate::card_effects::play_discarded_sly(state, &sly, None);
 }
 
 /// Resolve a [`ChoiceKind::MakeFreeInHand`] pending choice

@@ -135,6 +135,7 @@ fn beat_down_run(state: &mut CombatState, cards: &[CardUid], force_exhaust: bool
                 iters: 0,
                 uids: cards[i + 1..].iter().copied().collect(),
                 force_exhaust,
+                then: None,
             });
             return;
         }
@@ -142,10 +143,9 @@ fn beat_down_run(state: &mut CombatState, cards: &[CardUid], force_exhaust: bool
 }
 
 /// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: play the
-/// remaining captured BeatDown discard cards. The `iters` slot is unused by
-/// this fixed-list loop. Bead `sts2-rs-cata-suspend`.
-fn beat_down_resume(state: &mut CombatState, _iters: u32, uids: &[CardUid], force_exhaust: bool) {
-    beat_down_run(state, uids, force_exhaust);
+/// remaining captured BeatDown discard cards. Bead `sts2-rs-cata-suspend`.
+fn beat_down_resume(state: &mut CombatState, cont: &sts2_core::AutoPlayLoopCont) {
+    beat_down_run(state, &cont.uids, cont.force_exhaust);
 }
 
 #[must_use]

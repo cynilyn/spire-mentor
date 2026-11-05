@@ -2843,67 +2843,49 @@ public class RunSimulator
 
         Log($"Card selection: indices [{string.Join(",", indices)}]");
 
-        // In COMBAT, resolving this selection can resume a card play that chains
-        // into an auto-play (Catastrophe/Havoc/Mayhem) whose sub-cards open
-        // FURTHER choices deep inside the resumed play. The manual pump loop
-        // cannot surface those follow-on choices in time — their TCS strands and
-        // the play deadlocks with cards stuck in the PlayPile (seed 1279: an
-        // auto-played Splash's "choose 1 of 3 generated Attacks" screen, leaving
-        // the generated card unadded and Splash/Catastrophe in Play → hand 5v6 +
-        // discard 1v3 vs Rust). Resolve any such nested choice INLINE at the
-        // same option-0 prefix the drain loop uses (and that the Rust engine
-        // uses for its inline auto-play choices), so the play runs to
-        // completion. Combat-only; the first surfaced choice already resolved
-        // above, so this only affects choices opened by the RESUMED play.
-        bool combatResolve = CombatManager.Instance.IsInProgress;
-        if (combatResolve) _cardSelector.AutoResolveInline = true;
-        try
+        _cardSelector.ResolvePendingByIndices(indices);
+        _syncCtx.Pump();
+        // A resumed play can open the next card's select (Catastrophe's
+        // second auto-play, GH #1131). The real game prompts for it, so it
+        // surfaces like the first one; the executor stays busy until then.
+        WaitForActionExecutor(stopOnSelection: true);
+
+        // Await the stashed ChooseLocalOption task so the upgrade is fully
+        // applied before we force-transition to the map.
+        if (_runState?.CurrentRoom is RestSiteRoom)
         {
-            _cardSelector.ResolvePendingByIndices(indices);
-            _syncCtx.Pump();
+            var restSiteTask = _pendingRestSiteTask;
+            _pendingRestSiteTask = null;
+            if (restSiteTask != null) WaitForTask(restSiteTask, 2000, "rest-site task");
             WaitForActionExecutor();
-
-            // Await the stashed ChooseLocalOption task so the upgrade is fully
-            // applied before we force-transition to the map.
-            if (_runState?.CurrentRoom is RestSiteRoom)
-            {
-                var restSiteTask = _pendingRestSiteTask;
-                _pendingRestSiteTask = null;
-                if (restSiteTask != null) WaitForTask(restSiteTask, 2000, "rest-site task");
-                WaitForActionExecutor();
-                // RestSiteSynchronizer.ChooseOption (:202-215) keeps the other
-                // options open when a relic (MiniatureTent) declines
-                // ShouldDisableRemainingRestSiteOptions; RestSiteState only
-                // leaves for the map once none remain.
-                _restSiteOptionTaken = true;
-                Log("Card selection in rest site (SMITH) resolved");
-                return DetectDecisionPoint();
-            }
-
-            // Extra wait for shop card removal: the purchase task needs to finish.
-            // Continuations land on the GameSyncContext, so a passive Wait would
-            // deadlock — WaitForTask drives them.
-            if (_runState?.CurrentRoom is MerchantRoom)
-            {
-                DrivePurchaseTask();
-                Log("Card selection in shop (card removal), refreshing shop state");
-            }
-
-            // Extra wait for an event-relic AfterObtained selection (e.g. Neow's
-            // PrecariousShears → remove 2 cards + lose 16 HP). The suspended
-            // `EventOption.Chosen()` task resumes its post-await effect once the
-            // selection resolves; drive it to completion so the deck removal +
-            // HP damage actually apply before the snapshot / map transition.
-            // (Without this the run reached the map with an unmodified deck and
-            // full HP — the run-parity Neow skew.)
-            DrainEventOptionTaskIfDue();
-
+            // RestSiteSynchronizer.ChooseOption (:202-215) keeps the other
+            // options open when a relic (MiniatureTent) declines
+            // ShouldDisableRemainingRestSiteOptions; RestSiteState only
+            // leaves for the map once none remain.
+            _restSiteOptionTaken = true;
+            Log("Card selection in rest site (SMITH) resolved");
             return DetectDecisionPoint();
         }
-        finally
+
+        // Extra wait for shop card removal: the purchase task needs to finish.
+        // Continuations land on the GameSyncContext, so a passive Wait would
+        // deadlock — WaitForTask drives them.
+        if (_runState?.CurrentRoom is MerchantRoom)
         {
-            if (combatResolve) _cardSelector.AutoResolveInline = false;
+            DrivePurchaseTask();
+            Log("Card selection in shop (card removal), refreshing shop state");
         }
+
+        // Extra wait for an event-relic AfterObtained selection (e.g. Neow's
+        // PrecariousShears → remove 2 cards + lose 16 HP). The suspended
+        // `EventOption.Chosen()` task resumes its post-await effect once the
+        // selection resolves; drive it to completion so the deck removal +
+        // HP damage actually apply before the snapshot / map transition.
+        // (Without this the run reached the map with an unmodified deck and
+        // full HP — the run-parity Neow skew.)
+        DrainEventOptionTaskIfDue();
+
+        return DetectDecisionPoint();
     }
 
     private Dictionary<string, object?> DoSkipSelect(Player player)
@@ -2913,7 +2895,7 @@ public class RunSimulator
             Log("Skipping card selection");
             _cardSelector.CancelPending();
             _syncCtx.Pump();
-            WaitForActionExecutor();
+            WaitForActionExecutor(stopOnSelection: true);
 
             // Same continuation-drain as DoSelectCards: a skipped event-relic
             // AfterObtained selection (e.g. Neow's HeftyTablet → choose 1 of 3
@@ -5250,7 +5232,7 @@ public class RunSimulator
         WaitForActionExecutor();
     }
 
-    private void WaitForActionExecutor()
+    private void WaitForActionExecutor(bool stopOnSelection = false)
     {
         try
         {
@@ -5267,6 +5249,7 @@ public class RunSimulator
             for (int i = 0; i < maxPumps; i++)
             {
                 _syncCtx.Pump();
+                if (stopOnSelection && _cardSelector.HasPending) break;
                 if (!executor.IsRunning)
                 {
                     if (++idleStreak >= idleStreakRequired) break;
@@ -7922,18 +7905,6 @@ public class RunSimulator
 
         public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
 
-        // When set, GetSelectedCards resolves INLINE (returns a completed task)
-        // by picking the same option-0 prefix the parity drain loop would,
-        // instead of going pending. Used while a combat card-play is being
-        // resumed after a prior choice resolution: a chained auto-play
-        // (Catastrophe/Havoc/Mayhem) can open a FURTHER choice deep inside the
-        // resumed play that the manual pump loop cannot surface in time, so its
-        // TCS strands and the play deadlocks with cards stuck in the PlayPile
-        // (seed 1279: auto-played Splash's generated-card screen). Resolving it
-        // inline matches both the harness's own option-0 draining policy and
-        // the Rust engine's inline auto-play choice resolution. Bead to file.
-        public bool AutoResolveInline;
-
         public Task<IEnumerable<CardModel>> GetSelectedCards(
             IEnumerable<CardModel> options, int minSelect, int maxSelect)
         {
@@ -7948,15 +7919,14 @@ public class RunSimulator
             // Pile tracer (STS2_TRACE_PILES): emit the option list IN PRESENTATION
             // ORDER — for a Draw-pile select `CardSelectCmd.FromCombatPile` has
             // already re-sorted it by `orderby c.Rarity, c.Id`, so option[0] is
-            // exactly the card the harness's option-0 drain (or AutoResolveInline)
-            // picks. Diff vs the Rust select order to nail the draw-select pick
+            // exactly the card the harness's option-0 drain picks. Diff vs the Rust select order to nail the draw-select pick
             // key (#184). Card ids use `Id.ToString()` + `+` for upgraded.
             if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("STS2_TRACE_PILES")))
             {
                 var rendered = string.Join(
                     ",", optList.Select(c => c.Id.ToString() + (c.IsUpgraded ? "+" : "")));
                 Console.Error.WriteLine(
-                    $"SELECTTRACE options=[{rendered}] min={minSelect} max={maxSelect} inline={AutoResolveInline}");
+                    $"SELECTTRACE options=[{rendered}] min={minSelect} max={maxSelect}");
             }
             if (optList.Count == 0)
                 return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
@@ -7964,23 +7934,6 @@ public class RunSimulator
             // If only one option and minSelect requires it, auto-select
             if (optList.Count == 1 && minSelect >= 1)
                 return Task.FromResult<IEnumerable<CardModel>>(optList);
-
-            // Nested-choice inline resolution (see AutoResolveInline above):
-            // pick the option-0 prefix [0 .. max(minSelect,1)) — identical to
-            // `_drain_csharp_choices`'s `range(max(min_select, 1))` — so a
-            // chained auto-play's follow-on choice resolves without stranding.
-            // A hook listener's choice (HookPlayerChoiceContext: GamblingChip's
-            // turn-start mulligan after ChoicesParadox's pick) is exempt: the
-            // game pauses it into its own queued hook action, which the pump
-            // starts after the resumed play, so it surfaces as a normal pending
-            // selection instead of being auto-picked.
-            bool hookChoice = choiceCtx is HookPlayerChoiceContext
-                && choicePlayer != null;
-            if (AutoResolveInline && !hookChoice)
-            {
-                int count = Math.Min(Math.Max(minSelect, 1), optList.Count);
-                return Task.FromResult<IEnumerable<CardModel>>(optList.Take(count).ToList());
-            }
 
             if (choiceCtx != null && choicePlayer != null)
                 return SignalledSelection(choiceCtx, choicePlayer, choiceOpts, optList, minSelect, maxSelect,

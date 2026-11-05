@@ -43,7 +43,7 @@ pub(crate) fn play_catastrophe(state: &mut CombatState, _t: Option<CreatureUid>)
 /// live draw, so the remainder can NOT be a fixed card list). The resolver
 /// (`resolve_choice_action`) then re-enters [`catastrophe_resume`] once the
 /// pick lands, replaying the remaining iterations against the updated draw
-/// pile under `autoplay_inline_resolve`. Without the suspend, iteration 2 read
+/// pile. Without the suspend, iteration 2 read
 /// a draw pile that still contained the to-be-fetched Skill (+1 phantom card →
 /// +1 `shuffle` read and a divergent `StableShuffle` pick: seed 1490
 /// `PILE_COUNT|CATASTROPHE`, shuffle cs=45 rs=46). Bead `sts2-rs-cata-suspend`.
@@ -152,6 +152,7 @@ fn catastrophe_run(state: &mut CombatState, iters: u32) {
                 iters: iters - n - 1,
                 uids: SmallVec::new(),
                 force_exhaust: false,
+                then: None,
             });
             return;
         }
@@ -159,15 +160,9 @@ fn catastrophe_run(state: &mut CombatState, iters: u32) {
 }
 
 /// Resume entry point stored on [`sts2_core::AutoPlayLoopCont`]: re-run the
-/// remaining Catastrophe iterations. The `uids` / `force_exhaust` slots are
-/// unused by this count-driven loop. Bead `sts2-rs-cata-suspend`.
-fn catastrophe_resume(
-    state: &mut CombatState,
-    iters: u32,
-    _uids: &[CardUid],
-    _force_exhaust: bool,
-) {
-    catastrophe_run(state, iters);
+/// remaining Catastrophe iterations. Bead `sts2-rs-cata-suspend`.
+fn catastrophe_resume(state: &mut CombatState, cont: &sts2_core::AutoPlayLoopCont) {
+    catastrophe_run(state, cont.iters);
 }
 
 #[must_use]

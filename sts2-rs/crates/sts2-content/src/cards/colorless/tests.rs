@@ -5896,8 +5896,7 @@ fn push_hand_card_id(state: &mut CombatState, card_id: CardId) -> CardUid {
 /// Parity bug `combat_select_ironclad` (supersedes the prior y1fic
 /// inline-drain expectation): the FIRST surfacing card-select an auto-played
 /// card opens must SURFACE, not drain inline. C#'s headless `ICardSelector`
-/// auto-resolves inline only for `count==0`, `count==1 && min>=1`, or while
-/// `AutoResolveInline` is set during a RESUME (`RunSimulator.cs:4804-4836`).
+/// auto-resolves inline only for `count==0` or `count==1 && min>=1`.
 /// Purity's `ExhaustFromHand` over 2 hand cards (count==2) is NOT one of those,
 /// so the auto-played Purity leaves a `pending_choice` and the engine surfaces
 /// a `card_select`. Resolving that choice (the harness/MCTS first-legal pick,
@@ -5920,7 +5919,7 @@ fn auto_played_purity_surfaces_exhaust_choice() {
     // suspended, and NOTHING has been exhausted yet.
     assert!(
         state.pending_choice.is_some(),
-        "auto-played Purity must SURFACE its exhaust choice (C# AutoResolveInline=false on initial pump)"
+        "auto-played Purity must SURFACE its exhaust choice"
     );
     assert!(
         state.pending_autoplay_resume.is_some(),
@@ -5991,11 +5990,11 @@ fn auto_played_purity_surfaces_exhaust_choice() {
 /// where the FIRST collected card opens a surfacing choice, the auto-play
 /// SUSPENDS on that first choice (the second card is stashed as remaining).
 /// Resolving the first choice finishes the first card's tail then plays the
-/// second card — whose own choice now drains INLINE (the resume runs with the
-/// C# `AutoResolveInline` mirror raised). Net: each Purity exhausts one hand
-/// card, matching C#'s single `DoSelectCards` resume.
+/// second card, whose own choice surfaces too: C# awaits each `CardCmd.AutoPlay`
+/// and `FromHand` prompts the player for each (GH #1131). Net: each Purity
+/// exhausts one hand card.
 #[test]
-fn two_auto_played_purities_surface_first_then_resume_inline() {
+fn two_auto_played_purities_each_surface_their_choice() {
     install_pool();
     let (mut state, _euid) = fresh_state(CardId::Finesse, 0, 0);
     add_player_creature(&mut state);
@@ -6028,26 +6027,33 @@ fn two_auto_played_purities_surface_first_then_resume_inline() {
     // Resolve the surfaced choice under the SEQUENTIAL decomposition (bead
     // `sts2-rs-sopgf`): the first Purity's `min0/max3` exhaust takes one
     // incremental `[0]` pick (re-opens, no effect) then FINALIZE `[]` (exhaust
-    // 1, finish the first Purity). The resume then plays the second Purity with
-    // inline-resolve raised — its choice DRAINS via
-    // `resolve_inline_auto_play_choices` (which picks `min_select.max(1) == 1`
-    // option, exhaust 1), not surfaces.
-    let pick0: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
-    let _ = sts2_core::apply(
-        &mut state,
-        sts2_core::Action::ResolveChoice { selection: pick0 },
-    );
-    assert!(
-        state.pending_choice.is_some(),
-        "first Purity's multi-pick re-opens after one incremental pick"
-    );
-    let finalize: smallvec::SmallVec<[u8; 4]> = smallvec::SmallVec::new();
-    let _ = sts2_core::apply(
-        &mut state,
-        sts2_core::Action::ResolveChoice {
-            selection: finalize,
-        },
-    );
+    // 1, finish the first Purity). The resume then plays the second Purity,
+    // whose choice surfaces the same way.
+    for purity in ["first", "second"] {
+        let pick0: smallvec::SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice { selection: pick0 },
+        );
+        assert!(
+            state.pending_choice.is_some(),
+            "{purity} Purity's multi-pick re-opens after one incremental pick"
+        );
+        let finalize: smallvec::SmallVec<[u8; 4]> = smallvec::SmallVec::new();
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: finalize,
+            },
+        );
+        if purity == "first" {
+            assert_eq!(state.player.hand.len(), hand_before - 1);
+            assert!(
+                state.pending_choice.is_some(),
+                "the second Purity surfaces its own exhaust choice"
+            );
+        }
+    }
 
     assert!(
         state.pending_choice.is_none(),
@@ -6057,8 +6063,7 @@ fn two_auto_played_purities_surface_first_then_resume_inline() {
         state.pending_autoplay_resume.is_none(),
         "the suspended two-card auto-play resumed and finished"
     );
-    // Each Purity exhausts one hand card (first surfaced + first-legal, second
-    // inline option-0), so two total.
+    // Each Purity exhausts one hand card, so two total.
     assert_eq!(
         state.player.hand.len(),
         hand_before - 2,

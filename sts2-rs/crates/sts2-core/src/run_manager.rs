@@ -1268,6 +1268,9 @@ impl RunManager {
             point_type,
             point_type.to_room_type(),
         ));
+        // Leaving an event room drops its binding, or the next event room
+        // would reuse this event instead of drawing from the act pool.
+        self.run_state.exit_event_room();
         self.combat = None;
         self.phase = Phase::MapChoice;
         Ok(())
@@ -6093,6 +6096,8 @@ mod tests {
             pending_curse_choice: None,
             pending_potion_hook_resume: None,
             pending_enemy_exec_resume: None,
+            enemy_side_capture: None,
+            enemy_side_replay: None,
             pending_choice: Some(crate::PendingChoice {
                 kind: crate::ChoiceKind::CardSelect,
                 options: Vec::new(),
@@ -10577,66 +10582,69 @@ mod tests {
     /// stamps the victory (`CombatManager.cs:801-806`).
     #[test]
     fn double_boss_first_act3_boss_win_is_not_run_over() {
-        fn base_cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
-            vec![crate::cards::CardId::Bash]
-        }
-        let cb = ContentCallbacks {
-            generate_card_reward_options: Some(base_cards),
-            ..ContentCallbacks::default()
-        };
-        let mut rm =
-            RunManager::with_ascension(0, CharacterId::Ironclad, 10).with_content_callbacks(cb);
-        rm.run_state.act_index = 3;
-        rm.run_state.generate_map();
-        let (boss_coord, second_coord) = {
-            let map = rm.run_state.current_act_map.as_ref().expect("map");
-            (
-                map.point(map.boss.expect("boss")).coord,
-                map.point(map.second_boss.expect("second boss")).coord,
-            )
-        };
-        // Stand on the FIRST boss node with a won combat.
-        let mut room = crate::runstate::Room::new(crate::runstate::RoomType::Boss);
-        room.map_coord = Some(boss_coord);
-        rm.run_state.current_room = Some(room);
-        rm.combat = Some(crate::CombatState {
-            is_over: true,
-            player_won: true,
-            ..crate::CombatState::default()
-        });
-        rm.set_phase(Phase::Combat);
-        let gold_before = rm.run_state.gold;
-        let rewards_before = rm.run_state.rng.rewards.counter();
-        let _ = rm.exit_combat_and_transition();
-        assert_ne!(rm.phase(), Phase::RunOver, "second boss still pending");
-        assert_eq!(rm.phase(), Phase::MapChoice, "no reward screen");
-        assert!(rm.card_reward_options.is_empty(), "no card reward");
-        assert_eq!(rm.run_state.gold, gold_before, "no gold reward");
-        assert_eq!(
-            rm.run_state.rng.rewards.counter(),
-            rewards_before,
-            "an empty set draws nothing on Rewards"
-        );
-        assert!(!rm.run_state.is_over);
-        assert_eq!(
-            rm.run_state.act_index, 3,
-            "no act advance between the two bosses"
-        );
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            fn base_cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+                vec![crate::cards::CardId::Bash]
+            }
+            let cb = ContentCallbacks {
+                generate_card_reward_options: Some(base_cards),
+                ..ContentCallbacks::default()
+            };
+            let mut rm = RunManager::with_ascension(0, CharacterId::Ironclad, 10)
+                .with_game_version(version)
+                .with_content_callbacks(cb);
+            rm.run_state.act_index = 3;
+            rm.run_state.generate_map();
+            let (boss_coord, second_coord) = {
+                let map = rm.run_state.current_act_map.as_ref().expect("map");
+                (
+                    map.point(map.boss.expect("boss")).coord,
+                    map.point(map.second_boss.expect("second boss")).coord,
+                )
+            };
+            // Stand on the FIRST boss node with a won combat.
+            let mut room = crate::runstate::Room::new(crate::runstate::RoomType::Boss);
+            room.map_coord = Some(boss_coord);
+            rm.run_state.current_room = Some(room);
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let gold_before = rm.run_state.gold;
+            let rewards_before = rm.run_state.rng.rewards.counter();
+            let _ = rm.exit_combat_and_transition();
+            assert_ne!(rm.phase(), Phase::RunOver, "second boss still pending");
+            assert_eq!(rm.phase(), Phase::MapChoice, "no reward screen");
+            assert!(rm.card_reward_options.is_empty(), "no card reward");
+            assert_eq!(rm.run_state.gold, gold_before, "no gold reward");
+            assert_eq!(
+                rm.run_state.rng.rewards.counter(),
+                rewards_before,
+                "an empty set draws nothing on Rewards"
+            );
+            assert!(!rm.run_state.is_over);
+            assert_eq!(
+                rm.run_state.act_index, 3,
+                "no act advance between the two bosses"
+            );
 
-        // Now stand on the SECOND boss node with a won combat.
-        let mut room = crate::runstate::Room::new(crate::runstate::RoomType::Boss);
-        room.map_coord = Some(second_coord);
-        rm.run_state.current_room = Some(room);
-        rm.combat = Some(crate::CombatState {
-            is_over: true,
-            player_won: true,
-            ..crate::CombatState::default()
-        });
-        rm.set_phase(Phase::Combat);
-        let _ = rm.exit_combat_and_transition();
-        assert_eq!(rm.phase(), Phase::RunOver, "second boss win ends the run");
-        assert!(rm.run_state.is_over);
-        assert!(rm.run_state.player_won);
+            // Now stand on the SECOND boss node with a won combat.
+            let mut room = crate::runstate::Room::new(crate::runstate::RoomType::Boss);
+            room.map_coord = Some(second_coord);
+            rm.run_state.current_room = Some(room);
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let _ = rm.exit_combat_and_transition();
+            assert_eq!(rm.phase(), Phase::RunOver, "second boss win ends the run");
+            assert!(rm.run_state.is_over);
+            assert!(rm.run_state.player_won);
+        }
     }
 
     /// The first A10 final-act boss gives no rewards: C#
@@ -10646,46 +10654,49 @@ mod tests {
     /// before the second boss.
     #[test]
     fn double_boss_first_act3_boss_win_gives_no_rewards() {
-        fn cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
-            vec![crate::cards::CardId::Bash; 3]
-        }
-        fn gold_and_potion(rs: &mut RunState, _room: crate::runstate::RoomType) {
-            rs.gold += 1000;
-        }
-        let cb = ContentCallbacks {
-            generate_card_reward_options: Some(cards),
-            apply_combat_gold_and_potion: Some(gold_and_potion),
-            ..ContentCallbacks::default()
-        };
-        let mut rm =
-            RunManager::with_ascension(0, CharacterId::Ironclad, 10).with_content_callbacks(cb);
-        rm.run_state.act_index = 3;
-        rm.run_state.generate_map();
-        let boss_coord = {
-            let map = rm.run_state.current_act_map.as_ref().expect("map");
-            map.point(map.boss.expect("boss")).coord
-        };
-        let mut room = crate::runstate::Room::new(crate::runstate::RoomType::Boss);
-        room.map_coord = Some(boss_coord);
-        rm.run_state.current_room = Some(room);
-        rm.combat = Some(crate::CombatState {
-            is_over: true,
-            player_won: true,
-            ..crate::CombatState::default()
-        });
-        rm.set_phase(Phase::Combat);
-        let gold_before = rm.run_state.gold;
-        let rewards_rng_before = rm.run_state.rng.rewards.clone();
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            fn cards(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+                vec![crate::cards::CardId::Bash; 3]
+            }
+            fn gold_and_potion(rs: &mut RunState, _room: crate::runstate::RoomType) {
+                rs.gold += 1000;
+            }
+            let cb = ContentCallbacks {
+                generate_card_reward_options: Some(cards),
+                apply_combat_gold_and_potion: Some(gold_and_potion),
+                ..ContentCallbacks::default()
+            };
+            let mut rm = RunManager::with_ascension(0, CharacterId::Ironclad, 10)
+                .with_game_version(version)
+                .with_content_callbacks(cb);
+            rm.run_state.act_index = 3;
+            rm.run_state.generate_map();
+            let boss_coord = {
+                let map = rm.run_state.current_act_map.as_ref().expect("map");
+                map.point(map.boss.expect("boss")).coord
+            };
+            let mut room = crate::runstate::Room::new(crate::runstate::RoomType::Boss);
+            room.map_coord = Some(boss_coord);
+            rm.run_state.current_room = Some(room);
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let gold_before = rm.run_state.gold;
+            let rewards_rng_before = rm.run_state.rng.rewards.clone();
 
-        let result = rm.exit_combat_and_transition();
-        assert_eq!(result, ActionResult::Advanced);
-        assert_eq!(rm.phase(), Phase::MapChoice, "straight back to the map");
-        assert!(rm.card_reward_options.is_empty(), "no card reward");
-        assert_eq!(rm.run_state.gold, gold_before, "no gold or potion roll");
-        assert_eq!(
-            rm.run_state.rng.rewards, rewards_rng_before,
-            "the Rewards stream is untouched"
-        );
+            let result = rm.exit_combat_and_transition();
+            assert_eq!(result, ActionResult::Advanced);
+            assert_eq!(rm.phase(), Phase::MapChoice, "straight back to the map");
+            assert!(rm.card_reward_options.is_empty(), "no card reward");
+            assert_eq!(rm.run_state.gold, gold_before, "no gold or potion roll");
+            assert_eq!(
+                rm.run_state.rng.rewards, rewards_rng_before,
+                "the Rewards stream is untouched"
+            );
+        }
     }
 
     /// Below A10 the act-3 boss win stays terminal even with a map
@@ -12561,6 +12572,40 @@ mod tests {
         rm.debug_place_on_map(1, coord, Vec::new(), coord.row + 1, 1)
             .expect("placement succeeds");
         assert_eq!(rm.run_state.visited_map_coords, vec![coord]);
+    }
+
+    #[test]
+    fn debug_place_on_map_clears_a_skipped_event() {
+        for version in [crate::GameVersion::V0_107_1, crate::GameVersion::V0_111_0] {
+            let mut rm = RunManager::new(11, CharacterId::Ironclad).with_game_version(version);
+            rm.callbacks.bind_pending_event = Some(|rs| {
+                rs.acts[0].events_visited += 1;
+                rs.enter_event_room(crate::events::EventId::Bugslayer);
+            });
+            let coord = a_row1_coord(&rm);
+            rm.run_state
+                .enter_event_room(crate::events::EventId::CrystalSphere);
+            rm.phase = Phase::Event;
+            let cursor_before = rm.run_state.acts[0].events_visited;
+
+            rm.debug_place_on_map(1, coord, vec![coord], coord.row + 1, 1)
+                .expect("placement parks on the map");
+            assert_eq!(rm.phase(), Phase::MapChoice);
+            assert_eq!(rm.run_state.current_event, None);
+            assert_eq!(rm.run_state.acts[0].events_visited, cursor_before);
+
+            // The next event room draws from the act pool, exactly once.
+            rm.phase = Phase::Event;
+            rm.bind_pending_event();
+            assert_eq!(
+                rm.run_state.current_event,
+                Some(crate::events::EventId::Bugslayer)
+            );
+            let cursor_after = rm.run_state.acts[0].events_visited;
+            assert_eq!(cursor_after, cursor_before + 1);
+            rm.bind_pending_event();
+            assert_eq!(rm.run_state.acts[0].events_visited, cursor_after);
+        }
     }
 
     #[test]

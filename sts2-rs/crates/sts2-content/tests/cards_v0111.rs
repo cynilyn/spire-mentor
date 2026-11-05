@@ -473,15 +473,25 @@ fn eidolon_waits_for_each_auto_played_select_v0111() {
     }
     let i = push_hand(&mut state, CardId::Eidolon, false);
     let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
-    // The first Graveblast's pick surfaces; once it resolves, the rest of
-    // the loop resumes with nested selects draining inline (the C#
-    // `AutoResolveInline` mirror), so the second Graveblast takes its card.
+    // The next Graveblast's select waits until this one is answered.
     let pc = state
         .pending_choice
         .as_ref()
         .expect("the first Graveblast select is open");
     assert_eq!(pc.kind, sts2_core::ChoiceKind::AddFromDiscardToHand);
     assert_eq!(pc.options.len(), 3, "all three discard cards are offered");
+    let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
+    let second = state
+        .pending_choice
+        .as_ref()
+        .expect("the second Graveblast's select surfaces too");
+    assert_eq!(second.kind, sts2_core::ChoiceKind::AddFromDiscardToHand);
+    assert_eq!(
+        second.options.len(),
+        3,
+        "the first Graveblast has reached its result pile"
+    );
     let selection: SmallVec<[u8; 4]> = [0u8].into_iter().collect();
     let _ = sts2_core::apply(&mut state, sts2_core::Action::ResolveChoice { selection });
     let returned = state

@@ -4098,9 +4098,11 @@ fn cascade_stops_gracefully_when_draw_pile_runs_out() {
 /// `autoplay_inline_resolve`, that select SUSPENDS (parks a
 /// `pending_autoplay_resume` with Armaments stranded on Play); the dupe
 /// path's pop then corrupts the pile and Armaments vanishes (C# draw
-/// `[CASCADE, ARMAMENTS]` vs Rust `[CASCADE]`, player block 10 vs 5). The
-/// fix drains the nested select inline, so Armaments resolves (upgrades a
-/// hand card) and disposes to discard, and no choice/resume is left dangling.
+/// `[CASCADE, ARMAMENTS]` vs Rust `[CASCADE]`, player block 10 vs 5).
+///
+/// The select now prompts the player, as C# does (GH #1131): the dupe goes
+/// through the general auto-play path, which parks it under Armaments, and
+/// the answer finishes Armaments and then disposes the dupe.
 #[test]
 fn history_course_dupe_of_cascade_keeps_surfacing_armaments() {
     install_pool();
@@ -4144,11 +4146,17 @@ fn history_course_dupe_of_cascade_keeps_surfacing_armaments() {
     let r = sts2_core::relic_effects::dispatch_before_play_phase_start(&mut state);
     assert_eq!(r, EffectResult::Resolved);
 
-    // The surfacing select drained inline — nothing left dangling.
-    assert!(
-        state.pending_choice.is_none(),
-        "nested Armaments select drained inline, not surfaced"
+    let pc = state.pending_choice.as_ref().expect("Armaments prompts");
+    assert_eq!(pc.kind, sts2_core::ChoiceKind::UpgradeInHand);
+    assert_eq!(pc.options.len(), 2);
+    let _ = sts2_core::apply(
+        &mut state,
+        sts2_core::Action::ResolveChoice {
+            selection: smallvec::smallvec![0],
+        },
     );
+
+    assert!(state.pending_choice.is_none());
     assert!(
         state.pending_autoplay_resume.is_none(),
         "no auto-play resume stranded across the dupe disposal"
@@ -4163,6 +4171,7 @@ fn history_course_dupe_of_cascade_keeps_surfacing_armaments() {
         !state.player.play.contains(&arm_uid),
         "Armaments left the Play pile"
     );
+    assert!(state.player.play.is_empty(), "the dupe is gone too");
     // Its OnPlay ran: 5 block gained + one hand card upgraded (option 0).
     assert_eq!(state.player.block, 5, "Armaments gained its 5 block");
     let upgraded = state.cards[s0.0.get() as usize - 1].upgraded
