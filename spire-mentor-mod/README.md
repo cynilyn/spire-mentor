@@ -184,15 +184,34 @@ settings. Fields (authoritative docs: `SimConfig.cs`):
   `SimSettingsPanel.cs` — and **Report a bug**) and **Workbench ▾** (open
   the browser view, copy state). Click the pill to collapse the strip.
 - **Hotkeys** (`SimHotkeys.cs`) — `F1` help panel (the in-game documentation:
-  current mode, every key, file locations), `Ctrl+L` action-log panel, `Ctrl+H` hides every
+  current mode, every key, file locations), `Ctrl+L` action-log panel (it
+  sits under the advice column and follows it until you drag it; a dragged
+  position is kept across launches, and right-clicking its header puts it back
+  under the column — `LogPanelPlacement.cs`), `Ctrl+H` hides every
   panel down to the toolbar pill (again, or click the pill, to show them), `F4` HUD
   on/off, `F6` AI takes this one decision, `F7` AI plays until you stop,
+  `Shift+F7` autobattle (below),
   `F8` turns the AI on / off in the current style (from Autopilot: stops the
   AI and hands you the controls; the toolbar's Hints / Coach button switches
   style), `F5` peeks at the AI's next pick in the Coach style,
-  `F9`/`F10` game speed −/+, `Ctrl+Z` undo to the start of the
+  `F9`/`F10` game speed −/+ in whole steps, 1x–4x (`SpeedSteps.cs`; the
+  settings slider still sets tenths), `Ctrl+Z` undo to the start of the
   combat turn, `Ctrl+Shift+Z` restart the room, `Ctrl+Shift+C` copy state,
   `Ctrl+Shift+B` report a bug. `F2` and `F11` belong to the game.
+- **Autobattle** (`Autobattle.cs`, `Shift+F7` or the toolbar's
+  **Autobattle**) — the workbench's autobattle mode in the real game: the AI
+  plays the fights (card picks inside a fight included) and every run-level
+  decision — card reward, map, shop, rest site, event, card removal /
+  upgrade / transform, boss relic — waits for you; your pick resumes it. At
+  each stop a chip says what changed since the last one ("Added Inflame ·
+  HP 52/75 (−8) · 14 decisions auto-played"), and after you pick, the
+  coach's choice chip says whether you matched the AI (a match shows too,
+  in autobattle). In the Coach style nothing is shown before you pick, which
+  is the drill; Hints shows the AI's opinion as usual. `pause_on` hand-backs
+  inside a fight wait for your move too, instead of stopping autoplay. F7
+  stops it like any autoplay. Switching it on at 1x raises the speed to 2x;
+  any other speed is yours and stays. Switching it off puts 1x back, unless
+  you changed the speed in between.
 - **Rewind** (`SimSnapshots.cs` / `SimRestore.cs` / `SimCombatUndo.cs`) —
   the mod snapshots every game save (room entry + post-combat) under
   `%LOCALAPPDATA%\SpireMentor\snapshots\` and can reload any of them

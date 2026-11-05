@@ -127,6 +127,12 @@ public sealed class SpireMentorModConfig : SimpleModConfig
     /// <summary>Toolbar strip expanded/collapsed (SimToolbar pill).</summary>
     public static bool ToolbarExpanded { get; set; } = true;
 
+    /// <summary>Where the player dragged the action log ("x,y", viewport
+    /// pixels); blank = under the advice column, following it
+    /// (LogPanelPlacement). Not on the settings page: dragging sets it,
+    /// right-clicking the log's header clears it.</summary>
+    public static string LogPanelPosition { get; set; } = "";
+
     /// <summary>Workbench page the toolbar's button opens. Blank = the
     /// bundled workbench the advisor hosts, else the dev one on :8077 (see
     /// SimWorkbenchLink).</summary>
@@ -220,8 +226,9 @@ public sealed class SpireMentorModConfig : SimpleModConfig
             "F5   Coach style: peek at the AI's next pick\n" +
             "F6   let the AI take just this one decision\n" +
             "F7   let the AI keep playing until you stop it\n" +
+            "Shift+F7   autobattle: the AI fights, you make the run's decisions\n" +
             "F4   show / hide the HUD          Ctrl+L action log\n" +
-            "F9 / F10   game speed down / up   F1   help\n" +
+            "F9 / F10   game speed down / up (1x-4x)   F1   help\n" +
             "Ctrl+H   hide / show all the mod's panels\n" +
             "Ctrl+Shift+B   report a bug (asks for a note, sends only on Send)");
 

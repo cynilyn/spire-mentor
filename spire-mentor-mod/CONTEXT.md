@@ -24,6 +24,10 @@ _Avoid_: API, interface, wire format
 The mode where the bridge acts on the advisor's recommendations itself, without a human in the loop.
 _Avoid_: bot mode, auto, AI mode
 
+**Autobattle**:
+Autoplay limited to the fights: the AI plays every combat, and every run-level decision waits for the human, with a chip saying what changed since the last one. The in-game twin of the workbench's autobattle mode.
+_Avoid_: auto-battler, combat autoplay
+
 **Bug report**:
 A frozen moment sent from the game (`Ctrl+Shift+B`) or a workbench (🐞 Report):
 the position, the start-of-room save, the run log and log tails, in the
