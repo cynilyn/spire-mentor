@@ -10,6 +10,10 @@
 // A host only embarks once the whole party is in the lobby
 // (`--spire-mentor-coop-players N`, default 2): with fewer, the run would
 // start without the players still joining.
+//
+// The AI-partner lane (tools/ai_partner_test.ps1) uses it too: one instance
+// hosts with `--spire-mentor-ai-partners N` (SimAiPartnerSession) instead of
+// `--fastmp`, and this embarks once the partners are in.
 
 using System;
 using System.Collections;
@@ -36,7 +40,7 @@ internal static class SimCoopDummy
 
     public static void InstallIfRequested()
     {
-        if (!SimMp.FastMpLaunch || !SimMp.AutoplayOverride)
+        if (!(SimMp.FastMpLaunch || SimMp.AiPartnersOverride > 0) || !SimMp.AutoplayOverride)
         {
             return;
         }

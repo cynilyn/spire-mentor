@@ -28,6 +28,10 @@ _Avoid_: bot mode, auto, AI mode
 Autoplay limited to the fights: the AI plays every combat, and every run-level decision waits for the human, with a chip saying what changed since the last one. The in-game twin of the workbench's autobattle mode.
 _Avoid_: auto-battler, combat autoplay
 
+**AI partner**:
+A co-op teammate played by the AI inside the host's own game process: a virtual peer that joins the lobby like a remote client, reads its player off the host's state, and sends only the messages a remote client sends (`SimAiPartner`, docs/plans/2026-11-05-ai-coop-partners.md). Not the **dummy** of the co-op test lane, which is a second game instance on autoplay.
+_Avoid_: bot, AI player, fake client
+
 **Bug report**:
 A frozen moment sent from the game (`Ctrl+Shift+B`) or a workbench (🐞 Report):
 the position, the start-of-room save, the run log and log tails, in the
