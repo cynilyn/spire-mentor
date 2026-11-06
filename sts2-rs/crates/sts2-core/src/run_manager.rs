@@ -3364,6 +3364,7 @@ impl RunManager {
                     Vec<crate::cards::CardId>,
                     Vec<bool>,
                     Vec<crate::cards::CardEnchantments>,
+                    Option<crate::runstate::RoomType>,
                 ),
             }
             let queued = match &self.run_state.pending_rewards[i] {
@@ -3378,6 +3379,7 @@ impl RunManager {
                         reward.options.clone(),
                         reward.upgraded.clone(),
                         reward.enchantments.clone(),
+                        reward.for_room,
                     ))
                 }
                 Reward::Card(_) => break, // later drain rolls this one
@@ -3414,8 +3416,22 @@ impl RunManager {
                     // `CardRemovalReward.OnSelect` → `DoLocalCardRemoval` analog.
                     let _ = self.run_state.remove_cards_from_deck(count as usize);
                 }
-                Resolve::SurfaceCard(pre_resolved, pre_upgraded, pre_enchantments) => {
-                    if pre_resolved.is_empty() {
+                Resolve::SurfaceCard(pre_resolved, pre_upgraded, pre_enchantments, for_room) => {
+                    let room_roll = for_room
+                        .filter(|_| pre_resolved.is_empty())
+                        .and_then(|room| {
+                            self.callbacks
+                                .roll_hook_card_reward
+                                .map(|f| f(&mut self.run_state, room))
+                        });
+                    if let Some(reward) = room_roll {
+                        // `CardCreationOptions.ForRoom(player, room)` (Dream
+                        // Catcher's rest-heal card): an `Encounter`-source
+                        // roll with the room's odds, like Prayer Wheel's.
+                        self.card_reward_options = reward.options;
+                        self.card_reward_upgraded = reward.upgraded;
+                        self.card_reward_enchantments = reward.enchantments;
+                    } else if pre_resolved.is_empty() {
                         // Non-combat (`CardCreationSource.Other`) reward: roll
                         // BASE odds, NOT the pity-updating combat roller. These
                         // sentinels (Lost Coffer, Orrery, event card grants)
@@ -3641,12 +3657,19 @@ impl RunManager {
             // `GenerateInitialOptions`: the player is already healed on this
             // screen, not only after the pick. `advance_boss_act` skips its
             // own heal then.
-            if !self.ancient_heal_done {
+            let entering_ancient = !self.ancient_heal_done;
+            if entering_ancient {
                 let _ = self.run_state.apply_ancient_event_heal();
                 self.ancient_heal_done = true;
             }
             if let Some(setup) = self.callbacks.setup_boss_relic_ancient {
                 setup(&mut self.run_state, &self.boss_relic_options);
+            }
+            // The Ancient is an EventRoom: `EventRoom.EnterInternal`
+            // (`EventRoom.cs:81`, both builds) fires `Hook.AfterRoomEntered`
+            // after `BeginEvent` (heal + option roll) — MawBank pays out here.
+            if entering_ancient {
+                self.fire_ancient_room_entered();
             }
             self.phase = Phase::BossRelic;
             return;
@@ -3820,6 +3843,11 @@ impl RunManager {
             }
             let _ = crate::run_effects::dispatch_after_act_entered(&mut self.run_state, new_act);
             self.run_state.current_act_map = Some(act_map);
+            // No Ancient screen opened (empty pool): the Ancient room is still
+            // entered, so fire its `AfterRoomEntered` here (EventRoom.cs:81).
+            if !ancient_heal_done {
+                self.fire_ancient_room_entered();
+            }
             // Pre-roll the new act's boss now that the map is laid out
             // (same timing as the C# game). Mirrors the Act-1 invocation
             // wired in [`Self::with_content_callbacks`].
@@ -5002,6 +5030,20 @@ impl RunManager {
         // Otherwise this is a no-op and the curse drains at the last pick /
         // reward settle point instead.
         self.drain_post_pick_relic_grants_if_settled();
+        // The deferred relic just granted may itself offer rewards
+        // (Kaleidoscope's two card rewards, `OfferCustom` awaited inside
+        // C# `RewardsSet.Offer()`). The route above already chose the map, so
+        // surface them now, as `settle_after_deck_pick` does — before the
+        // curse drain, which must wait for them.
+        if self.phase == Phase::MapChoice
+            && (self.drain_pending_rewards()
+                || self.surface_pending_bundle()
+                || !self.run_state.relic_rewards.is_empty()
+                || !self.run_state.pending_card_selects.is_empty())
+        {
+            self.phase = Phase::CardReward;
+            self.advance_after_card_reward();
+        }
         self.drain_post_pick_deck_cards_if_settled();
         ActionResult::Advanced
     }
@@ -5270,7 +5312,21 @@ impl RunManager {
             act_map.attach_second_boss();
         }
         let _ = crate::run_effects::dispatch_after_act_entered(&mut self.run_state, new_act);
+        // Then the Ancient EventRoom is entered (EventRoom.cs:81).
+        self.fire_ancient_room_entered();
         Some(act_map)
+    }
+
+    /// Fire `after_room_entered(Event)` for the act-2/3 opening Ancient room
+    /// WITHOUT moving `current_room` (Rust keeps the boss room until the next
+    /// map move). C# enters the Ancient as an `EventRoom`, whose
+    /// `EnterInternal` runs `Hook.AfterRoomEntered` (`EventRoom.cs:81`, both
+    /// builds); of the room-entered relics only MawBank reacts to it.
+    fn fire_ancient_room_entered(&mut self) {
+        let _ = crate::run_effects::dispatch_after_room_entered(
+            &mut self.run_state,
+            crate::runstate::RoomType::Event,
+        );
     }
 
     /// Handle the final-boss kill — Act-3 boss-clear is the run-end
@@ -7736,6 +7792,64 @@ mod tests {
                 );
                 assert_eq!(rm.run_state.act_index, 2);
             }
+        }
+    }
+
+    /// The act-2/3 Ancient is an `EventRoom`, and `EventRoom.EnterInternal`
+    /// (`EventRoom.cs:81`, both builds) fires `Hook.AfterRoomEntered` after
+    /// the Ancient heal + option roll. So an Event-room listener (MawBank)
+    /// fires once when the boss-relic screen opens and not again on the
+    /// pick; the empty-pool path (no screen) fires it during the act advance.
+    #[test]
+    fn ancient_room_fires_after_room_entered_once() {
+        use crate::run_effects::{register_after_room_entered, AfterRoomEnteredRunFn};
+        fn listener(rs: &mut RunState, rt: crate::runstate::RoomType) -> crate::EffectResult {
+            if rt == crate::runstate::RoomType::Event {
+                rs.gold += 12;
+            }
+            crate::EffectResult::Resolved
+        }
+        fn pool_stub(_rs: &mut RunState) -> Vec<crate::RelicId> {
+            vec![crate::RelicId::Anchor, crate::RelicId::CallingBell]
+        }
+        fn empty_pool(_rs: &mut RunState) -> Vec<crate::RelicId> {
+            Vec::new()
+        }
+        register_after_room_entered(crate::RelicId::MawBank, listener as AfterRoomEnteredRunFn);
+        for (pool, opens_screen) in [
+            (pool_stub as fn(&mut RunState) -> Vec<crate::RelicId>, true),
+            (empty_pool, false),
+        ] {
+            let cb = ContentCallbacks {
+                generate_boss_relic_pool: Some(pool),
+                ..ContentCallbacks::default()
+            };
+            let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(cb);
+            rm.run_state.act_index = 1;
+            rm.run_state.current_room =
+                Some(crate::runstate::Room::new(crate::runstate::RoomType::Boss));
+            rm.combat = Some(crate::CombatState {
+                is_over: true,
+                player_won: true,
+                ..crate::CombatState::default()
+            });
+            rm.set_phase(Phase::Combat);
+            let before = rm.run_state.gold;
+            let _ = rm.exit_combat_and_transition();
+            while rm.phase() == Phase::CardReward {
+                let _ = rm.take_action(RunAction::PickCardReward { idx: None });
+            }
+            if opens_screen {
+                assert_eq!(rm.phase(), Phase::BossRelic);
+                assert_eq!(rm.run_state.gold, before + 12, "fired as the screen opens");
+                let _ = rm.take_action(RunAction::PickBossRelic { idx: 0 });
+            }
+            assert_eq!(rm.run_state.act_index, 2);
+            assert_eq!(
+                rm.run_state.gold,
+                before + 12,
+                "exactly one Ancient-room entry (screen opened: {opens_screen})"
+            );
         }
     }
 
@@ -11547,6 +11661,42 @@ mod tests {
         );
         assert!(rm.run_state.pending_rewards.is_empty());
         assert_eq!(rm.phase(), Phase::MapChoice);
+    }
+
+    /// A Dream Catcher rest-heal card reward is C#
+    /// `CardReward(CardCreationOptions.ForRoom(player, Monster), 3)`
+    /// (`DreamCatcher.cs:22`): an `Encounter`-source roll with
+    /// RegularEncounter odds (pity, upgrade roll), i.e. the
+    /// `roll_hook_card_reward` roller, not the base-odds non-combat one.
+    #[test]
+    fn rest_heal_for_room_card_reward_rolls_with_encounter_odds() {
+        use crate::runstate::{CardReward, Reward, RoomType};
+        fn hook(_rs: &mut RunState, room: RoomType) -> CardReward {
+            assert_eq!(room, RoomType::Monster);
+            CardReward::from_options(vec![crate::cards::CardId::Anger; 3])
+        }
+        fn noncombat(_rs: &mut RunState) -> Vec<crate::cards::CardId> {
+            vec![crate::cards::CardId::Bash; 3]
+        }
+        let mut callbacks = drain_test_callbacks();
+        callbacks.roll_hook_card_reward = Some(hook);
+        callbacks.generate_noncombat_card_reward_options = Some(noncombat);
+        let mut rm = RunManager::new(0, CharacterId::Ironclad).with_content_callbacks(callbacks);
+        rm.run_state.current_hp = 10;
+        let options = rm.enter_rest_site();
+        let rest = options
+            .into_iter()
+            .find(|o| matches!(o, crate::runstate::RestSiteOption::Rest))
+            .expect("Rest offered");
+        rm.run_state
+            .pending_rewards
+            .push(Reward::Card(CardReward::for_room(RoomType::Monster)));
+        let _ = rm.do_rest_site_action(rest);
+        assert_eq!(rm.phase(), Phase::CardReward);
+        assert_eq!(
+            rm.card_reward_options(),
+            &[crate::cards::CardId::Anger; 3][..]
+        );
     }
 
     #[test]

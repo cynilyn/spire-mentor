@@ -7199,11 +7199,82 @@ fn unsettling_lamp_doubles_first_card_debuffs_then_finishes() {
     );
 }
 
+/// v0.107.1 `PowerCmd.Apply` fires `BeforePowerAmountChanged` BEFORE
+/// Artifact's `ModifyPowerAmountReceived` negation, and the v0.107.1 lamp has
+/// no Artifact gate — so an Artifact-eaten debuff from a card still CAPTURES
+/// the trigger, and that card's later debuffs are doubled. Rust consumed
+/// Artifact ahead of the Before channel, so the lamp never saw the eaten
+/// debuff (random-loadout fuzz v0.107.1 seed 1178: enemy HP 178 vs 176).
+#[test]
+#[serial_test::serial(global_registry)]
+fn unsettling_lamp_captures_an_artifact_eaten_debuff_v0107() {
+    use std::num::NonZeroU32;
+    ensure_installed();
+    register_before_power_amount_changed(
+        RelicId::UnsettlingLamp,
+        on_before_power_amount_changed_unsettling_lamp as BeforePowerAmountChangedFn,
+    );
+    register_modify_power_amount_given(
+        RelicId::UnsettlingLamp,
+        on_modify_power_amount_given_unsettling_lamp as ModifyPowerAmountGivenFn,
+    );
+    let mut state = CombatState {
+        game_version: crate::GameVersion::V0_107_1,
+        ..CombatState::default()
+    };
+    let player_uid = CreatureUid::new(1).unwrap();
+    let enemy = CreatureUid::new(2).unwrap();
+    for (uid, hp) in [(player_uid, 80_i32), (enemy, 50)] {
+        state.creatures.push(crate::Creature {
+            id: uid.0,
+            current_hp: hp,
+            max_hp: hp,
+            block: 0,
+            powers: smallvec::SmallVec::new(),
+            species: None,
+            intent: None,
+            intent_history: crate::IntentHistory::default(),
+            monster_id: crate::MonsterId(""),
+            ai: None,
+        });
+    }
+    state.player.creature_uid = Some(player_uid);
+    state.relics.push(crate::Relic {
+        id: NonZeroU32::new(1).unwrap(),
+        kind: crate::RelicKind::UnsettlingLamp,
+        counter: UNSETTLING_LAMP_ARMED,
+        is_wax: false,
+        is_melted: false,
+    });
+    crate::card_effects::apply_power_to_creature(&mut state, enemy, crate::PowerKind::Artifact, 1);
+    let _resolving = push_resolving_card(&mut state);
+    crate::card_effects::apply_power_to_enemy(&mut state, enemy, crate::PowerKind::Vulnerable, 2);
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Vulnerable),
+        0,
+        "Artifact still eats the debuff"
+    );
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Artifact),
+        0,
+        "and is consumed"
+    );
+    assert_eq!(
+        unsettling_lamp_state(&state),
+        Some(UNSETTLING_LAMP_CAPTURED),
+        "but the lamp captured it first"
+    );
+    crate::card_effects::apply_power_to_enemy(&mut state, enemy, crate::PowerKind::Weak, 1);
+    assert_eq!(
+        enemy_power_amount(&state, enemy, crate::PowerKind::Weak),
+        2,
+        "the same card's next debuff is doubled"
+    );
+}
+
 /// v0.111.0 `UnsettlingLamp.BeforePowerAmountChanged` skips a target with
-/// Artifact (decomp UnsettlingLamp.cs:102). The Rust apply pipeline already
-/// consumes Artifact before the observer channel fires, so an Artifact-eaten
-/// debuff never reaches the lamp in either build: the next debuff is the one
-/// captured and doubled. Pinned under v0.111.0, where it is the C# rule.
+/// Artifact (decomp UnsettlingLamp.cs:102), so an Artifact-eaten debuff is
+/// not captured there: the next debuff is the one captured and doubled.
 #[test]
 #[serial_test::serial(global_registry)]
 fn unsettling_lamp_doubles_first_card_debuffs_then_finishes_v0111() {

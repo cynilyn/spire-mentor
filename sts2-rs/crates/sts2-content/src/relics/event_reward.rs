@@ -109,7 +109,7 @@
 //!
 //! Several event-reward relics carry per-instance counters
 //! (`BingBong._skip_next`, `BoneTea._combats_left`,
-//! `DreamCatcher._procs_left`, `HandDrill._dmg_buff_used`,
+//! `HandDrill._dmg_buff_used`,
 //! `HistoryCourse._uses_left`, `MawBank._spent`,
 //! `MrStruggles._purchases_left`, `WongosMysteryTicket._used`).
 //! Their per-instance counters will live on the runtime `Relic` POD
@@ -499,6 +499,12 @@ fn install_listeners() {
     register_modify_card_reward_options_late(
         RelicId::LavaLamp,
         listener_lava_lamp_card_reward as ModifyCardRewardOptionsLateRunFn,
+    );
+    // C# `LavaLamp.AfterRoomEntered` clears `TookDamageThisCombat` on
+    // every room entry (both builds), so the flag is per-combat.
+    register_after_room_entered(
+        RelicId::LavaLamp,
+        listener_lava_lamp_after_room_entered as AfterRoomEnteredRunFn,
     );
 
     // sts2-rs-v9zer — PaelsTooth: on pickup, stash up to 5
@@ -1405,7 +1411,13 @@ fn listener_hand_drill(state: &mut CombatState, ctx: &DamageGivenCtx) -> EffectR
     // DynamicVars.Vulnerable.BaseValue=2, ...)`. VulnerablePower is
     // StackType=Counter so this stacks additively with any existing
     // Vulnerable.
-    sts2_core::card_effects::apply_power_to_creature(state, ctx.target, PowerKind::Vulnerable, 2);
+    // Its `cardSource` is null, so Unsettling Lamp ignores it.
+    sts2_core::card_effects::apply_power_to_creature_cardless(
+        state,
+        ctx.target,
+        PowerKind::Vulnerable,
+        2,
+    );
     EffectResult::Resolved
 }
 
@@ -1522,7 +1534,6 @@ const FAKE_VENERABLE_TEA_SET_ENERGY: i32 = 1;
 /// (C# `Monsters/Byrdpip.cs` `MinInitialHp == MaxInitialHp == 9999`).
 /// Bead `sts2-rs-4x616`.
 const BYRDPIP_PET_HP: i32 = 9999;
-const DREAM_CATCHER_PROCS: i32 = 3;
 const FRESNEL_LENS_NIMBLE: i32 = 2;
 const WONGOS_COMBATS_NEEDED: i32 = 5;
 const WONGOS_RELICS: usize = 3;
@@ -1536,26 +1547,21 @@ const WONGOS_RELICS: usize = 3;
 // encoding is the canonical resolution.
 const WONGOS_GAVE_SENTINEL: i32 = -1;
 
-/// `DreamCatcher::modify_rest_site_heal_rewards` — push one
-/// `CardReward` per call until `_procs_left` hits zero
-/// (`shop_event.py:1207-1209`, `PROCS=3`). The `_procs_left` counter
-/// lives on `RunState.relic_counters[DreamCatcher]`, initialised
-/// lazily to [`DREAM_CATCHER_PROCS`] on first invocation.
-/// Ownership-gated so the dispatch is a no-op when the player doesn't
-/// carry the relic. Bead `sts2-rs-9wx7`.
+/// `DreamCatcher::modify_rest_site_heal_rewards` — push one `CardReward`
+/// on EVERY rest-site heal (real or mimicked, e.g. Dense Vegetation's
+/// Rest). C# `DreamCatcher.TryModifyRestSiteHealRewards` (identical in
+/// v0.107.1 and v0.111.0) has no counter and no cap. The old Python port's
+/// 3-proc cap kept its count in `relic_counters`, where the end-of-combat
+/// counter flush-back wrote the combat relic's 0 over it, switching the
+/// relic off after its first combat. The card is
+/// `CardReward(CardCreationOptions.ForRoom(player, RoomType.Monster), 3)`:
+/// an `Encounter`-source roll at RegularEncounter odds (pity, upgrade roll),
+/// not a base-odds non-combat one. Ownership-gated. Bead `sts2-rs-9wx7`.
 fn listener_dream_catcher(rs: &mut RunState, rewards: &mut Vec<Reward>) -> EffectResult {
     if !run_owns(rs, RelicId::DreamCatcher) {
         return EffectResult::NotImplemented;
     }
-    let entry = rs
-        .relic_counters
-        .entry(RelicId::DreamCatcher)
-        .or_insert(DREAM_CATCHER_PROCS);
-    if *entry <= 0 {
-        return EffectResult::NotImplemented;
-    }
-    *entry -= 1;
-    rewards.push(Reward::Card(CardReward::empty()));
+    rewards.push(Reward::Card(CardReward::for_room(RoomType::Monster)));
     EffectResult::Resolved
 }
 
@@ -1783,6 +1789,20 @@ fn listener_maw_bank_on_item_purchased(rs: &mut RunState, gold_spent: i32) -> Ef
 }
 
 // ── LavaLamp (bead `sts2-rs-67co3`) ──────────────────────────────────
+
+/// `LavaLamp::after_room_entered` — clear the took-damage flag. C#
+/// `LavaLamp.AfterRoomEntered` sets `TookDamageThisCombat = false` on
+/// every room entry, no room-type filter (`LavaLamp.cs`, v0.107.1 and
+/// v0.111.0). Without it the flag latched by one damaged fight rode the
+/// `enter_combat` seed / `exit_combat` write-back forever, denying the
+/// upgrade after every later clean fight (fuzz v0.111.0 seed 1159).
+fn listener_lava_lamp_after_room_entered(rs: &mut RunState, _rt: RoomType) -> EffectResult {
+    if !run_owns(rs, RelicId::LavaLamp) {
+        return EffectResult::NotImplemented;
+    }
+    rs.relic_counters.insert(RelicId::LavaLamp, 0);
+    EffectResult::Resolved
+}
 
 /// `LavaLamp::modify_card_reward_options_late` — upgrade every card
 /// on the post-combat reward screen iff the player took no damage
@@ -3976,23 +3996,25 @@ mod tests {
 
     // --- Wave 6 (sts2-rs-9wx7) reward-flow retrofits -----------------------
 
-    /// `DreamCatcher` pushes one `CardReward` per `_procs_left`
-    /// (initial 3), then becomes a no-op.
+    /// `DreamCatcher` pushes one `CardReward` on every rest heal, uncapped
+    /// (C# `DreamCatcher.TryModifyRestSiteHealRewards`), and keeps no
+    /// counter: a combat's counter flush-back (which writes the combat
+    /// relic's 0 into `relic_counters`) must not switch it off.
     #[test]
-    fn listener_dream_catcher_pushes_three_card_rewards() {
+    fn listener_dream_catcher_rewards_every_rest_heal() {
         crate::relics::dispatch::ensure_installed();
         let mut rs = RunState::new();
         rs.relics.push(RelicId::DreamCatcher);
-        for expected_len in 1..=3 {
+        for _ in 0..5 {
             let rewards = rs.offer_rest_site_rewards();
-            assert_eq!(rewards.len(), expected_len.min(1));
+            assert_eq!(rewards.len(), 1);
             assert!(matches!(rewards[0], Reward::Card(_)));
         }
-        // Fourth call: counter exhausted, listener is a no-op.
+        // What `exit_combat`'s counter flush-back leaves behind.
+        rs.relic_counters.insert(RelicId::DreamCatcher, 0);
         let rewards = rs.offer_rest_site_rewards();
-        assert!(rewards.is_empty());
-        // Counter latched at 0.
-        assert_eq!(rs.relic_counters[&RelicId::DreamCatcher], 0);
+        assert_eq!(rewards.len(), 1);
+        assert!(matches!(rewards[0], Reward::Card(_)));
     }
 
     /// `DreamCatcher` is a no-op when the player doesn't carry it.
@@ -4357,6 +4379,19 @@ mod tests {
             upgraded: false,
             ..sts2_core::cards::Card::pod_defaults()
         }
+    }
+
+    /// C# `LavaLamp.AfterRoomEntered` clears the took-damage flag on every
+    /// room entry, so a damaged fight does not deny the upgrade after the
+    /// next clean one (fuzz v0.111.0 seed 1159).
+    #[test]
+    fn lava_lamp_flag_resets_on_room_entry() {
+        crate::relics::dispatch::ensure_installed();
+        let mut rs = RunState::new();
+        rs.relics.push(RelicId::LavaLamp);
+        rs.relic_counters.insert(RelicId::LavaLamp, 1);
+        rs.enter_room(sts2_core::runstate::Room::new(RoomType::Monster));
+        assert_eq!(rs.relic_counters[&RelicId::LavaLamp], 0);
     }
 
     /// LavaLamp upgrades every offered card when `relic_counters[LavaLamp]`

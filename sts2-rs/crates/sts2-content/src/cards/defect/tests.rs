@@ -988,6 +988,27 @@ fn all_for_one_stops_at_full_hand_and_reappends_the_rest() {
     assert_eq!(state.player.discard.to_vec(), vec![costly, zero_power]);
 }
 
+/// All for One's filter reads the MODIFIED cost (`GetWithModifiers(All)`,
+/// AllForOne.cs:38): under Corruption a 1-cost Skill costs 0 and is pulled
+/// back; an Attack of the same printed cost is not (random-loadout v0.107.1
+/// seed 1178).
+#[test]
+fn all_for_one_pulls_skills_made_free_by_corruption() {
+    install_pool();
+    let (mut state, euid) = fresh_state(CardId::AllForOne, 10, 0);
+    apply_power_to_player(&mut state, PowerKind::Corruption, 1);
+    let skill = push_arena_card(&mut state, CardId::Zap, 1, CardType::Skill);
+    let attack = push_arena_card(&mut state, CardId::Claw, 1, CardType::Attack);
+    state.player.discard.extend([skill, attack]);
+    let f = lookup(CardId::AllForOne).expect("registered");
+    f(&mut state, Some(euid));
+    assert!(
+        state.player.hand.contains(&skill),
+        "Corruption makes the Skill free"
+    );
+    assert_eq!(state.player.discard.to_vec(), vec![attack]);
+}
+
 #[test]
 fn play_hyperbeam_aoe_damage() {
     install_pool();

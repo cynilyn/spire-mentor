@@ -1703,7 +1703,33 @@ fn listener_toasty_mittens(state: &mut CombatState) -> EffectResult {
     // relic gained entering act 2, so the desync first surfaced at the first
     // act-2 combat. Bead `sts2-rs-70anj.1`.
     let skip_innate = state.round_no() == 1;
-    state.exhaust_top_from_draw_skipping_innate(skip_innate);
+    // `await CardPileCmd.ShuffleIfNecessary` (ToastyMittens.cs:35): a
+    // Stratagem pick its `AfterShuffle` opens resolves before the exhaust and
+    // the Strength, so park both on that pick. The `before_hand_draw` walk
+    // suspends behind it and resumes at the next relic.
+    let had_choice = state.pending_choice.is_some();
+    state.shuffle_before_draw_exhaust();
+    if !had_choice {
+        if let Some(pc) = state.pending_choice.as_mut() {
+            if pc.kind == sts2_core::ChoiceKind::AddFromDrawToHand && pc.post_effect.is_none() {
+                pc.post_effect = Some(sts2_core::PostChoiceEffect::ExhaustDrawCardGainStrength {
+                    skip_innate,
+                    strength: TOASTY_MITTENS_STRENGTH,
+                });
+                return EffectResult::Resolved;
+            }
+        }
+    }
+    let draw_was_suspended = state.pending_draw_resume.is_some();
+    state.exhaust_first_draw_card(skip_innate);
+    // `await CardCmd.Exhaust` (ToastyMittens.cs:48) includes a Dark Embrace
+    // draw that reshuffled into a Stratagem pick: the Strength waits for it.
+    if !draw_was_suspended && state.pending_choice.is_some() {
+        if let Some(pdr) = state.pending_draw_resume.as_mut() {
+            pdr.then_gain_strength += TOASTY_MITTENS_STRENGTH;
+            return EffectResult::Resolved;
+        }
+    }
     if let Some(player_uid) = state.player.creature_uid {
         apply_power_to_creature(
             state,
@@ -4745,25 +4771,28 @@ fn listener_glitter_card_reward(
 /// RunState.Rng.CombatPotionGeneration)` + a `PotionCmd.TryToProcure`
 /// loop into the new slots. The roll uses the `combat_potion_generation`
 /// stream to match C#'s `Rng.CombatPotionGeneration` so the cursor stays
-/// faithful. Closes the previously-deferred fill leg (bead
-/// `sts2-rs-cvbxs`): the run-side procure primitives
-/// (`create_random_potions_out_of_combat` + `add_potion_to_belt`) now
-/// exist.
+/// faithful. Each potion is procured into slot `originalSlotCount + i`
+/// (`add_potion_to_belt_at_slot`), so pre-existing empty slots stay
+/// empty.
 fn listener_alchemical_coffer(rs: &mut RunState) -> EffectResult {
     if rs.last_obtained_relic != Some(RelicId::AlchemicalCoffer) {
         return EffectResult::NotImplemented;
     }
+    let original_slot_count = rs.potion_belt_cap();
     rs.gain_potion_slots(ALCHEMICAL_COFFER_POTION_SLOTS);
     let kinds = crate::potions::all::create_random_potions_out_of_combat(
         &mut rs.rng.combat_potion_generation,
         rs.character_id,
         ALCHEMICAL_COFFER_POTION_SLOTS as usize,
     );
-    for kind in kinds {
-        // Direct `PotionCmd.TryToProcure` loop, NOT a reward screen: C#
-        // drops on TooFull with no discard-to-claim offer, so count the
-        // overflow but never queue a swap (GH #252).
-        if !rs.add_potion_to_belt(kind) {
+    for (i, kind) in kinds.into_iter().enumerate() {
+        // Direct `PotionCmd.TryToProcure(potion, owner, originalSlotCount
+        // + i)` loop, NOT a reward screen: each potion goes into its OWN
+        // new slot (earlier empty slots stay empty), and C# drops on
+        // TooFull with no discard-to-claim offer, so count the overflow
+        // but never queue a swap (GH #252).
+        let slot = u8::try_from(original_slot_count + i).unwrap_or(u8::MAX);
+        if !rs.add_potion_to_belt_at_slot(kind, slot) {
             rs.potions_overflow_dropped += 1;
         }
     }
@@ -6000,6 +6029,19 @@ mod tests {
             RelicId::AlchemicalCoffer.to_python_name(),
             "ALCHEMICAL_COFFER"
         );
+    }
+
+    /// C# `AlchemicalCoffer.AfterObtained` procures into slot
+    /// `originalSlotCount + i`, so an empty old slot stays empty (fuzz
+    /// v0.107.1 seed 1123).
+    #[test]
+    fn alchemical_coffer_fills_only_the_new_slots() {
+        let mut rs = RunState::new();
+        assert!(rs.add_potion_to_belt(sts2_core::potions::PotionKind::FirePotion));
+        rs.last_obtained_relic = Some(RelicId::AlchemicalCoffer);
+        assert_eq!(listener_alchemical_coffer(&mut rs), EffectResult::Resolved);
+        assert_eq!(rs.potions.len(), 5);
+        assert_eq!(rs.potion_slot_indices, vec![0, 3, 4, 5, 6]);
     }
 
     /// `CursedPearl` — pins `GOLD = 333` (and the Greed-curse
@@ -11203,6 +11245,145 @@ mod tests {
             .find(|p| p.kind == PowerKind::Strength)
             .map_or(0, |p| p.amount);
         assert_eq!(strength, TOASTY_MITTENS_STRENGTH);
+    }
+
+    /// v0.107.1 `ToastyMittens.BeforeHandDraw` awaits `ShuffleIfNecessary`
+    /// (ToastyMittens.cs:35), and with it a Stratagem pick the reshuffle
+    /// opens, BEFORE it exhausts the top draw card and gains Strength. Rust
+    /// exhausted and granted the Strength under the open pick, so the
+    /// exhausted card was not the one C# exhausts (act23 random-loadout
+    /// Ironclad v0.107.1 seed 1131).
+    #[test]
+    fn listener_toasty_mittens_waits_for_its_shuffle_stratagem_pick() {
+        use sts2_core::cards::{Card, CardId};
+        use sts2_core::relic_effects::dispatch_before_hand_draw_from;
+        use sts2_core::{CardUid, Power, PowerKind, PowerUid};
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.round = 2;
+        equip_relic(&mut state, RelicKind::ToastyMittens);
+        if state.player.creature_uid.is_none() {
+            let _ = state.init_player_creature();
+        }
+        let pid = std::num::NonZeroU32::new(50).expect("nz");
+        state.powers.push(Power::new(pid, PowerKind::Stratagem, 1));
+        state.player.powers.push(PowerUid(pid));
+        for i in 1..=4u32 {
+            let uid = CardUid::new(i).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: CardId::StrikeIronclad,
+                ..Card::pod_defaults()
+            });
+            state.player.discard.push(uid);
+        }
+
+        let next = dispatch_before_hand_draw_from(&mut state, 0);
+        assert!(next.is_some(), "the walk suspends on the Stratagem pick");
+        assert!(state.pending_choice.is_some());
+        assert!(state.player.exhaust.is_empty(), "no exhaust under the pick");
+        assert_eq!(player_strength(&state), 0, "no Strength under the pick");
+        assert_eq!(state.player.draw.len(), 4);
+
+        let pick = state.pending_choice.as_ref().expect("pick").options[0]
+            .card_uid
+            .expect("uid");
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: smallvec::smallvec![0],
+            },
+        );
+        assert_eq!(state.player.hand.as_slice(), &[pick], "the pick in hand");
+        assert_eq!(state.player.exhaust.len(), 1, "then the exhaust");
+        assert_eq!(state.player.draw.len(), 2);
+        assert_eq!(player_strength(&state), TOASTY_MITTENS_STRENGTH);
+    }
+
+    /// Toasty Mittens exhausts the last draw card; Dark Embrace's draw then
+    /// reshuffles and opens the Stratagem pick. C# awaits the pick inside that
+    /// draw, the draw inside the exhaust hook walk (powers, then relics), and
+    /// the exhaust inside Mittens: the pick lands first, then Dark Embrace's
+    /// card, then Joss Paper's, and only then the Strength. Rust ran Joss
+    /// Paper's draw and the Strength under the open pick (random-loadout
+    /// v0.107.1 seed 1016: hand [DEFEND, pick, ...] vs C# [pick, DEFEND, ...]).
+    #[test]
+    fn mittens_dark_embrace_reshuffle_pick_lands_before_the_draw() {
+        use sts2_core::cards::{Card, CardId};
+        use sts2_core::relic_effects::dispatch_before_hand_draw_from;
+        use sts2_core::{CardUid, Power, PowerKind, PowerUid};
+        crate::cards::dispatch::ensure_installed();
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.player.current_hp = 80;
+        state.round = 2;
+        equip_relic(&mut state, RelicKind::ToastyMittens);
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(2).expect("nz"),
+            kind: RelicKind::JossPaper,
+            counter: 4,
+            is_wax: false,
+            is_melted: false,
+        });
+        if state.player.creature_uid.is_none() {
+            let _ = state.init_player_creature();
+        }
+        let pid = std::num::NonZeroU32::new(50).expect("nz");
+        state.powers.push(Power::new(pid, PowerKind::Stratagem, 1));
+        state.player.powers.push(PowerUid(pid));
+        crate::cards::ironclad::helpers::apply_power_to_player(
+            &mut state,
+            PowerKind::DarkEmbrace,
+            1,
+        );
+        let ids = [
+            CardId::TrueGrit,
+            CardId::StrikeIronclad,
+            CardId::DefendIronclad,
+            CardId::Bash,
+        ];
+        for (i, id) in ids.iter().enumerate() {
+            let uid = CardUid::new(u32::try_from(i + 1).expect("u32")).expect("non-zero");
+            state.cards.push(Card {
+                uid,
+                card_id: *id,
+                ..Card::pod_defaults()
+            });
+            if i == 0 {
+                state.player.draw.push(uid);
+            } else {
+                state.player.discard.push(uid);
+            }
+        }
+
+        let next = dispatch_before_hand_draw_from(&mut state, 0);
+        assert!(next.is_some(), "the walk suspends on the Stratagem pick");
+        assert!(state.pending_choice.is_some());
+        assert!(state.player.hand.is_empty(), "nothing drawn under the pick");
+        assert_eq!(player_strength(&state), 0, "no Strength under the pick");
+        assert_eq!(
+            state
+                .relics
+                .iter()
+                .find(|r| r.kind == RelicKind::JossPaper)
+                .map(|r| r.counter),
+            Some(4),
+            "Joss Paper waits for Dark Embrace's draw"
+        );
+        let pc = state.pending_choice.as_ref().expect("pick");
+        let pick = pc.options[2].card_uid.expect("uid");
+        let _ = sts2_core::apply(
+            &mut state,
+            sts2_core::Action::ResolveChoice {
+                selection: smallvec::smallvec![2],
+            },
+        );
+        // The pick, then Dark Embrace's draw, then Joss Paper's.
+        assert_eq!(state.player.hand.len(), 3, "hand {:?}", state.player.hand);
+        assert_eq!(state.player.hand[0], pick, "the pick lands first");
+        assert_eq!(player_strength(&state), TOASTY_MITTENS_STRENGTH);
     }
 
     fn player_strength(state: &CombatState) -> i32 {

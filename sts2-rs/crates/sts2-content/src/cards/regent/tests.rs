@@ -1961,6 +1961,29 @@ fn stardust_zero_stars_grants_no_block() {
     assert_eq!(state.creatures[0].current_hp, hp0, "no hits");
 }
 
+/// `ResolveStarXValue` folds `Hook.ModifyXValue` (CardModel.cs:1139-1145):
+/// with Chemical X a 0-star Stardust still hits twice (random-loadout
+/// v0.107.1 seed 1142).
+#[test]
+fn stardust_star_x_includes_chemical_x() {
+    install_pool();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    state.player.stars = 0;
+    state.relics.push(sts2_core::Relic {
+        id: std::num::NonZeroU32::new(1).expect("non-zero"),
+        kind: sts2_core::RelicKind::ChemicalX,
+        counter: 0,
+        is_wax: false,
+        is_melted: false,
+    });
+    let _ = push_play_card(&mut state, CardId::Stardust, 4, 0);
+    let hp0 = state.creatures[0].current_hp;
+    let r = dispatch(&mut state, CardId::Stardust, None);
+    assert_eq!(r, EffectResult::Resolved);
+    assert_eq!(state.creatures[0].current_hp, hp0 - 8, "two hits of 4");
+}
+
 /// SummonForth: pure marker.
 #[test]
 fn summon_forth_marker_resolves() {

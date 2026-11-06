@@ -389,6 +389,16 @@ pub enum VarKey {
     /// modifiers and skips the catch-up) carries the count, so it is not shaved
     /// twice. Appended so no existing discriminant moves.
     BansheesCryEtherealCounted,
+    /// C# `CardModel.ExhaustOnNextPlay` left set on a card whose forced-exhaust
+    /// auto-play (Havoc, `CardPileCmd.AutoPlayFromDrawPile` `forceExhaust`) was
+    /// blocked: `MoveToResultPileWithoutPlaying` exhausts it WITHOUT clearing
+    /// the flag (only `GetResultLocationForCardPlay` and `EndOfTurnCleanup`
+    /// clear it, `CardModel.cs:2090-2120`, `:1613`). A Howl from Beyond
+    /// exhausted that way and auto-played again from the exhaust pile at the
+    /// same turn's end therefore exhausts once more instead of landing in
+    /// discard. Cleared at end-of-turn cleanup. Appended so no existing
+    /// discriminant moves.
+    ExhaustOnNextPlay,
 }
 
 /// [`VarKey::SneckoRollLive`]: the Snecko roll raised `CostAbsolutelySet`, so
@@ -2783,6 +2793,20 @@ fn reshuffle_rank(card_id: CardId) -> u16 {
     ranks[card_id as usize]
 }
 
+/// C# `CardModel.CompareTo` (`CardModel.cs:1745-1766`): `ModelId` first
+/// (ordinal [`card_model_entry`], via the O(1) [`reshuffle_rank`]), then
+/// `CurrentUpgradeLevel` ascending (base before upgraded). The `list.Sort()`
+/// key of every card `StableShuffle` (Catastrophe, Beat Down, Uproar, Seeker
+/// Strike, Stone Cracker, Power Cell). Keying on the raw python name instead
+/// misorders the `_CARD`/`_STATUS`-suffixed ids: `THUNDER_CARD` sorts after
+/// `THUNDERCLAP`, while C#'s `THUNDER` sorts before it.
+#[must_use]
+pub fn card_model_compare(a: &Card, b: &Card) -> std::cmp::Ordering {
+    reshuffle_rank(a.card_id)
+        .cmp(&reshuffle_rank(b.card_id))
+        .then_with(|| u8::from(a.upgraded).cmp(&u8::from(b.upgraded)))
+}
+
 /// Reshuffle pre-sort PRIMARY key: the O(1) ordinal rank of a uid's card name
 /// (see [`reshuffle_rank`]). Returns `0` for a uid with no backing `Card`,
 /// matching the `""`-sorts-first semantics of [`card_entry`].
@@ -3436,6 +3460,30 @@ pub fn draw_via_state(state: &mut crate::CombatState, n: i32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// `card_model_compare` is C# `CardModel.CompareTo`: slugified Entry
+    /// (no `_CARD` suffix), then upgrade level.
+    #[test]
+    fn card_model_compare_keys_on_entry_then_upgrade() {
+        let mk = |card_id, upgraded| Card {
+            card_id,
+            upgraded,
+            ..Card::pod_defaults()
+        };
+        let thunder = mk(CardId::ThunderCard, false);
+        let clap = mk(CardId::Thunderclap, false);
+        assert_eq!(
+            card_model_compare(&thunder, &clap),
+            std::cmp::Ordering::Less,
+            "THUNDER < THUNDERCLAP"
+        );
+        let clap_plus = mk(CardId::Thunderclap, true);
+        assert_eq!(
+            card_model_compare(&clap, &clap_plus),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(card_model_compare(&clap, &clap), std::cmp::Ordering::Equal);
+    }
+
     use super::*;
 
     /// C# `StableShuffle` pre-sorts with `CardModel.CompareTo` -> ordinal

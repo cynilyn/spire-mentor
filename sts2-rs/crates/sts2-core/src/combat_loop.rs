@@ -2268,7 +2268,9 @@ fn run_auto_pre_play(
             })
             .collect();
         for uid in auto_exhaust {
-            if state.is_over {
+            // `CardCmd.AutoPlay` returns once `IsOverOrEnding` (CardCmd.cs:54),
+            // so a lethal Bombardment leaves the next one unplayed.
+            if combat_is_ending(state) {
                 break;
             }
             if let Some(pos) = state.player.exhaust.iter().position(|&u| u == uid) {
@@ -2860,7 +2862,11 @@ fn end_player_turn_phase_one_after_auto_post_play_stampede(state: &mut CombatSta
             })
             .collect();
         for uid in howl_exhaust {
-            if state.is_over {
+            // `CardCmd.AutoPlay` returns once `IsOverOrEnding` (CardCmd.cs:54,
+            // both builds): a lethal Howl leaves the next one in the exhaust
+            // pile, unplayed and uncounted (Pen Nib). `is_over` is not set
+            // until `check_combat_end` below.
+            if combat_is_ending(state) {
                 break;
             }
             if let Some(pos) = state.player.exhaust.iter().position(|&u| u == uid) {
@@ -5852,6 +5858,11 @@ pub(crate) fn try_fairy_in_a_bottle_prevent_death(state: &mut CombatState) -> bo
     let revive = (max_hp.saturating_mul(30) / 100).max(1).min(max_hp);
     state.creatures[idx].current_hp = revive;
     state.player.current_hp = revive;
+    // `OnUse` heals through `CreatureCmd.Heal`, whose `AfterCurrentHpChanged`
+    // lets Red Skull re-probe its 50% threshold (as LizardTail's revive does).
+    if crate::relic_effects::helpers::player_owns_relic(state, crate::RelicKind::RedSkull) {
+        crate::relic_effects::helpers::red_skull_check_hp(state);
+    }
     // Bead `sts2-rs-4iy6f`: a `PotionUsage.Automatic` potion is still a potion
     // USE — C# routes FairyInABottle's auto-fire through the same path that
     // raises `Hook.AfterPotionUsed`, so AfterPotionUsed relics react. The Rust
@@ -7864,8 +7875,9 @@ pub fn fire_after_card_exhausted(
         card_tags,
         card_type: Some(card_type),
     };
+    let draw_was_suspended = state.pending_draw_resume.is_some();
     hooks::dispatch_after_card_exhausted(state, &hook_exhaust_ctx, false);
-    let _ = crate::relic_effects::dispatch_after_card_exhausted(state, &exhaust_ctx);
+    state.relic_after_card_exhausted_behind_powers(draw_was_suspended, &exhaust_ctx);
 }
 
 /// `CardCmd.Exhaust` for a card in the Play pile (a play's or an auto-play's
@@ -8007,6 +8019,20 @@ pub(crate) enum TailResume {
     AfterReplayOnPlay(i32),
     /// After the Echo Form copy's `OnPlay`.
     AfterEchoOnPlay,
+}
+
+/// Does a replay iteration's `Hook.BeforeCardPlayed` reach any listener?
+///
+/// C# dispatches it through `IterateCombatHookListeners`, which yields
+/// nothing once `CombatManager.IsOverOrEnding` (decomp Hook.cs:200, both
+/// builds). v0.107.1's play loop keeps replaying after a copy killed the last
+/// enemy (v0.111.0 breaks out, [`multi_play_stops_v0111`]), so the later
+/// copies run with no `BeforeCardPlayed` listener: a lethal replayed Howl
+/// from Beyond counts once for Pen Nib, not twice (random-loadout Ironclad
+/// v0.107.1 seed 1066). Covers every listener the replay sites fire — relics,
+/// powers, Free* stacks, Stomp's shave.
+fn replay_before_card_played_live(state: &CombatState) -> bool {
+    !combat_is_ending(state)
 }
 
 /// Relic-side `Hook.BeforeCardPlayed` for a play that is not the initial hand
@@ -9417,11 +9443,18 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         // too (IntimidatingHelmet, PenNib), with the play's unchanged
         // `Resources.EnergyValue`.
         let before_played_listeners = state.cards.len();
-        dispatch_relic_before_card_played_replay(state, &played_ctx, resolved_cost);
-        crate::hooks::dispatch_before_card_played_powers(state, resolved_cost, card_is_ethereal);
-        // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
-        // (decomp JugglingPower.cs:36). No-op before v0.111.0.
-        crate::hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
+        let before_hooks_live = replay_before_card_played_live(state);
+        if before_hooks_live {
+            dispatch_relic_before_card_played_replay(state, &played_ctx, resolved_cost);
+            crate::hooks::dispatch_before_card_played_powers(
+                state,
+                resolved_cost,
+                card_is_ethereal,
+            );
+            // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
+            // (decomp JugglingPower.cs:36). No-op before v0.111.0.
+            crate::hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
+        }
         // C# records `History.CardPlayStarted` once per play iteration, right
         // after `Hook.BeforeCardPlayed` (CardModel.cs:1926-1929), and
         // `SlothPower.BeforeCardPlayed` bumps its counter per iteration too, so
@@ -9436,10 +9469,12 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
         // replay — mirror the original play's decrement at line ~5336. Without
         // this a replayed Power card left a surviving FreePower zeroing the
         // next Power card's cost (gh#180 PANACHE HAND_COST residual).
-        let _ = consume_free_card_power(state, card.card_type);
+        if before_hooks_live {
+            let _ = consume_free_card_power(state, card.card_type);
+        }
         // Stomp's shave is a `BeforeCardPlayed` hook — pre-body, once per
         // replay iteration (see the initial-play site above).
-        if card.card_type == crate::cards::CardType::Attack {
+        if before_hooks_live && card.card_type == crate::cards::CardType::Attack {
             state.discount_stomp_on_attack_played_among(before_played_listeners);
         }
         // Each replay is its own `AttackCommand`, so it re-latches a Vigor
@@ -9517,15 +9552,18 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             // and re-fires DanseMacabre/SpiritOfAsh/Veilpiercer, same as the
             // `extra_plays` loop above (STORM seed 517; Afterimage seed 262).
             let before_played_listeners = state.cards.len();
-            dispatch_relic_before_card_played_replay(state, &played_ctx, resolved_cost);
-            crate::hooks::dispatch_before_card_played_powers(
-                state,
-                resolved_cost,
-                card_is_ethereal,
-            );
-            // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
-            // (decomp JugglingPower.cs:36). No-op before v0.111.0.
-            crate::hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
+            let before_hooks_live = replay_before_card_played_live(state);
+            if before_hooks_live {
+                dispatch_relic_before_card_played_replay(state, &played_ctx, resolved_cost);
+                crate::hooks::dispatch_before_card_played_powers(
+                    state,
+                    resolved_cost,
+                    card_is_ethereal,
+                );
+                // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
+                // (decomp JugglingPower.cs:36). No-op before v0.111.0.
+                crate::hooks::juggling_before_card_played_v0111(state, card_uid, card.card_type);
+            }
             // Per-iteration `History.CardPlayStarted` (CardModel.cs:1926-1929),
             // same as the `extra_plays` loop above.
             state.player.card_plays_started_this_turn =
@@ -9533,11 +9571,13 @@ fn finish_card_play_tail(state: &mut CombatState, fin: CardPlayFinish) -> StepRe
             // C# `Free*Power.BeforeCardPlayed` decrements per play iteration —
             // consume the matching Free* stack on this Echo replay too, same as
             // the `extra_plays` loop above (gh#180 PANACHE HAND_COST residual).
-            let _ = consume_free_card_power(state, card.card_type);
+            if before_hooks_live {
+                let _ = consume_free_card_power(state, card.card_type);
+            }
             // Bead `sts2-rs-stomp`: Stomp's shave is a `BeforeCardPlayed`
             // hook — pre-body, once per Echo replay (see the initial-play
             // site above).
-            if card.card_type == crate::cards::CardType::Attack {
+            if before_hooks_live && card.card_type == crate::cards::CardType::Attack {
                 state.discount_stomp_on_attack_played_among(before_played_listeners);
             }
             // Re-run the card effect.
@@ -10506,7 +10546,11 @@ pub(crate) fn resume_collect(
     let parked = play_collected_auto_plays(state, &collect.ap.collected, collect.ap.force_exhaust);
     match outer {
         Some(outer) if parked => nest_outer_resume(state, outer),
-        outer => state.pending_autoplay_resume = outer,
+        Some(outer) => state.pending_autoplay_resume = Some(outer),
+        // No outer resume (a hand-played Havoc): keep whatever a collected
+        // card just parked — overwriting it with `None` dropped that card's
+        // tail (random-loadout Ironclad v0.111.0 seed 1165).
+        None => {}
     }
     parked
 }
@@ -10993,6 +11037,13 @@ fn move_auto_play_to_result_pile_without_playing(
     }
     if force_exhaust || crate::card_effects::card_exhausts_inst(card) {
         let (card_id, tags, card_type) = (card.card_id, card.tags, card.card_type);
+        // C# `MoveToResultPileWithoutPlaying` (CardModel.cs:2104-2120) exhausts
+        // without clearing `ExhaustOnNextPlay`; keep it on the card so a later
+        // auto-play this turn (Howl from Beyond out of the exhaust pile)
+        // exhausts again.
+        if force_exhaust {
+            state.cards[uid.0.get() as usize - 1].set_combat_var(VarKey::ExhaustOnNextPlay, 1);
+        }
         let _ = exhaust_from_play(state, uid, None, card_id, tags, card_type);
     } else {
         let _ = cards::move_card(&mut state.player, uid, PileKind::Play, PileKind::Discard);
@@ -11007,6 +11058,18 @@ fn resolve_auto_played_card_inner(
     force_exhaust: bool,
     skip_x_capture: bool,
 ) -> bool {
+    // A lingering C# `ExhaustOnNextPlay` (see [`VarKey::ExhaustOnNextPlay`])
+    // forces this auto-play's result pile to Exhaust. It is consumed here: a
+    // finished play clears it (`GetResultLocationForCardPlay`), and a blocked
+    // one re-stamps it in `move_auto_play_to_result_pile_without_playing`.
+    let force_exhaust = {
+        let card = &mut state.cards[top_uid.0.get() as usize - 1];
+        let lingering = card.combat_var(VarKey::ExhaustOnNextPlay) != 0;
+        if lingering {
+            card.set_combat_var(VarKey::ExhaustOnNextPlay, 0);
+        }
+        force_exhaust || lingering
+    };
     // The enclosing card's attack commands finished before it reached
     // `CardCmd.AutoPlay`, so their `SkittishPower.AfterAttack` (SkittishPower.cs:56-69)
     // already granted: Uproar's 6x2 arms a gardener's block that absorbs the
@@ -11982,22 +12045,27 @@ fn finish_auto_played_card_tail(state: &mut CombatState, fin: AutoPlayFinish) ->
             // auto-played by Cascade/Catastrophe under Afterimage granted block
             // only on its first play (the after-play grant consumes the armed
             // counter; the loop never re-armed it).
-            dispatch_relic_before_card_played_replay(state, &played_ctx, auto_resolved_cost);
-            crate::hooks::dispatch_before_card_played_powers(
-                state,
-                auto_resolved_cost,
-                auto_card_is_ethereal,
-            );
-            // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
-            // (decomp JugglingPower.cs:36). No-op before v0.111.0.
-            crate::hooks::juggling_before_card_played_v0111(state, top_uid, top_card_type);
+            let before_hooks_live = replay_before_card_played_live(state);
+            if before_hooks_live {
+                dispatch_relic_before_card_played_replay(state, &played_ctx, auto_resolved_cost);
+                crate::hooks::dispatch_before_card_played_powers(
+                    state,
+                    auto_resolved_cost,
+                    auto_card_is_ethereal,
+                );
+                // v0.111.0: Juggling's `BeforeCardPlayed` runs per play iteration
+                // (decomp JugglingPower.cs:36). No-op before v0.111.0.
+                crate::hooks::juggling_before_card_played_v0111(state, top_uid, top_card_type);
+            }
             // `FreeAttackPower.BeforeCardPlayed` (and its Skill/Power twins)
             // decrements per play iteration — the replayed card sits in Play,
             // which its pile guard admits — so each replay of an auto-played
             // card spends a Free* stack too, as the hand-play replay loops do
             // (Ironclad seed 4126: Stampede auto-plays Unrelenting under
             // OneTwoPunch, FREE_ATTACK cs=1 rs=2).
-            let _ = consume_free_card_power(state, top_card_type);
+            if before_hooks_live {
+                let _ = consume_free_card_power(state, top_card_type);
+            }
             // Per-iteration `History.CardPlayStarted` (CardModel.cs:1926-1929),
             // same as the hand-play `extra_plays` loop.
             state.player.card_plays_started_this_turn =
@@ -12403,6 +12471,10 @@ fn clear_per_turn_card_vars(state: &mut CombatState) {
         if card.combat_vars.maybe_nonzero(VarKey::StarCostFreeThisTurn) {
             card.combat_vars.zero(VarKey::StarCostFreeThisTurn);
         }
+        // C# `CardModel.EndOfTurnCleanup` (CardModel.cs:1613).
+        if card.combat_vars.maybe_nonzero(VarKey::ExhaustOnNextPlay) {
+            card.combat_vars.zero(VarKey::ExhaustOnNextPlay);
+        }
     }
 }
 
@@ -12504,6 +12576,33 @@ mod tests {
             state.player.potions.is_empty(),
             "the automatic trigger (not the drink arm) consumes the Fairy"
         );
+    }
+
+    /// The Fairy's revive is a `CreatureCmd.Heal` (FairyInABottle.cs OnUse),
+    /// which raises `AfterCurrentHpChanged`: Red Skull re-probes its 50%
+    /// threshold and, at the 30% revive, grants its Strength (random-loadout
+    /// v0.111.0 seed 1026: a Gambit kill revived by the Fairy left C# with
+    /// Strength 3 and Rust with none).
+    #[test]
+    fn fairy_revive_reprobes_red_skull() {
+        let mut state = state_with_cultists(1);
+        state.player.max_hp = 100;
+        state.player.current_hp = 0;
+        let _ = state.init_player_creature();
+        state.relics.push(crate::Relic {
+            id: std::num::NonZeroU32::new(1).unwrap(),
+            kind: crate::RelicKind::RedSkull,
+            counter: 0,
+            is_wax: false,
+            is_melted: false,
+        });
+        state
+            .player
+            .potions
+            .push(crate::potions::PotionKind::FairyInABottle);
+        assert!(try_fairy_in_a_bottle_prevent_death(&mut state));
+        assert_eq!(state.player.current_hp, 30);
+        assert_eq!(state.player_power_amount(crate::PowerKind::Strength), 3);
     }
 
     /// C# skips `AfterDamageReceived` for a target the hit killed

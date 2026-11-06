@@ -1263,10 +1263,7 @@ fn listener_stone_cracker(state: &mut CombatState) -> EffectResult {
         let ia = a.0.get() as usize - 1;
         let ib = b.0.get() as usize - 1;
         let (ca, cb) = (&state.cards[ia], &state.cards[ib]);
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
-            .then_with(|| u8::from(ca.upgraded).cmp(&u8::from(cb.upgraded)))
+        sts2_core::cards::card_model_compare(ca, cb)
     };
     state
         .run_rng
@@ -3911,6 +3908,24 @@ mod tests {
 
     /// Test helper: spawn an alive enemy with the given hp + return
     /// its raw uid. Same Creature-construction idiom as `mercury_setup`.
+    /// C# `LetterOpener.BeforeCombatStart` (LetterOpener.cs:89-94) zeroes the
+    /// skill counter a run carries in from the previous combat
+    /// (random-loadout v0.111.0 seed 1110).
+    #[test]
+    fn letter_opener_counter_resets_before_combat_start() {
+        crate::relics::dispatch::ensure_installed();
+        let mut state = CombatState::default();
+        state.relics.push(sts2_core::Relic {
+            id: std::num::NonZeroU32::new(1).expect("non-zero"),
+            kind: RelicKind::LetterOpener,
+            counter: 2,
+            is_wax: false,
+            is_melted: false,
+        });
+        let _ = sts2_core::relic_effects::dispatch_before_combat_start(&mut state);
+        assert_eq!(state.relics[0].counter, 0);
+    }
+
     #[cfg(test)]
     fn create_test_enemy(state: &mut CombatState, hp: i32) -> u32 {
         use smallvec::SmallVec;

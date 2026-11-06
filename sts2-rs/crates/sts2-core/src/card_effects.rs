@@ -929,7 +929,25 @@ pub fn apply_power_to_creature(
     kind: PowerKind,
     amount: i32,
 ) {
-    apply_power_to_creature_inner(state, target_uid, kind, amount, /*allow_dead=*/ false);
+    apply_power_to_creature_inner(
+        state, target_uid, kind, amount, /*allow_dead=*/ false, false,
+    );
+}
+
+/// [`apply_power_to_creature`] for a relic's own `PowerCmd.Apply(...,
+/// cardSource: null)` that fires while a card is resolving (Hand Drill's
+/// Vulnerable on a block break, `HandDrill.cs`): the apply carries no card
+/// source, so Unsettling Lamp (`cardSource == null` -> return,
+/// `UnsettlingLamp.cs`) neither captures nor doubles it.
+pub fn apply_power_to_creature_cardless(
+    state: &mut CombatState,
+    target_uid: CreatureUid,
+    kind: PowerKind,
+    amount: i32,
+) {
+    apply_power_to_creature_inner(
+        state, target_uid, kind, amount, /*allow_dead=*/ false, true,
+    );
 }
 
 /// Like [`apply_power_to_creature`] but permits a **dead-but-present** target.
@@ -948,7 +966,9 @@ pub fn apply_power_to_creature_allow_dead(
     kind: PowerKind,
     amount: i32,
 ) {
-    apply_power_to_creature_inner(state, target_uid, kind, amount, /*allow_dead=*/ true);
+    apply_power_to_creature_inner(
+        state, target_uid, kind, amount, /*allow_dead=*/ true, false,
+    );
 }
 
 /// Whether a dead creature may still receive powers. C#
@@ -1047,6 +1067,7 @@ fn apply_power_to_creature_inner(
     kind: PowerKind,
     amount: i32,
     allow_dead: bool,
+    cardless: bool,
 ) {
     if amount <= 0 {
         return;
@@ -1066,13 +1087,6 @@ fn apply_power_to_creature_inner(
         return;
     };
 
-    // Bead `sts2-rs-zdjjx`: Artifact negates a debuff destined for its owner
-    // (and consumes a stack) before any apply work. C#-equivalent of
-    // ArtifactPower folded into PowerCmd.Apply's ModifyPowerAmountReceived.
-    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
-        return;
-    }
-
     // Bead `sts2-rs-47jv` + `sts2-rs-7uo4`: C#-canon channel order is
     // `before_power_amount_changed` → modify chain → mutation →
     // `after_modifying_power_amount_*`. The before-channel fires on the
@@ -1088,10 +1102,18 @@ fn apply_power_to_creature_inner(
         kind,
         amount,
         PowerAmountObserverPhase::Before,
-        false,
+        cardless,
     );
+    // Bead `sts2-rs-zdjjx`: Artifact negates a debuff destined for its owner
+    // (and consumes a stack). C# folds ArtifactPower into
+    // `ModifyPowerAmountReceived`, which runs AFTER `BeforePowerAmountChanged`
+    // (`PowerCmd.cs` Apply/ModifyAmount), so a Before listener (Unsettling
+    // Lamp, v0.107.1) still sees — and captures — an Artifact-eaten debuff.
+    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
+        return;
+    }
     let amount =
-        pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount, false);
+        pipe_power_amount_through_modify_chain(state, None, target_uid, kind, amount, cardless);
     // C# `PowerCmd.Apply` scales some enemy powers by the player count.
     let amount = crate::coop::scale_enemy_power(state, target_uid, kind, amount);
     if amount <= 0 {
@@ -1178,7 +1200,7 @@ fn apply_power_to_creature_inner(
             kind,
             amount,
             PowerAmountObserverPhase::After,
-            false,
+            cardless,
         );
         fire_after_power_applied(state, target_uid, kind, amount);
         if let Some(pid) = remove_pid {
@@ -1230,7 +1252,7 @@ fn apply_power_to_creature_inner(
         kind,
         amount,
         PowerAmountObserverPhase::After,
-        false,
+        cardless,
     );
     fire_after_power_applied(state, target_uid, kind, amount);
     // Bead `sts2-rs-ig66w`: monster-power AfterApplied dispatch fires
@@ -1665,13 +1687,6 @@ fn apply_power_to_creature_with_applier_inner(
         return;
     };
 
-    // Bead `sts2-rs-zdjjx`: Artifact debuff-negation gate (see
-    // `apply_power_to_creature`). Scoped to the target creature, so a
-    // player-applied debuff onto an Artifact-bearing monster is consumed here.
-    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
-        return;
-    }
-
     // Bead `sts2-rs-47jv` + `sts2-rs-7uo4`: C#-canon order is
     // Before → Modify → mutation → After, with the real applier
     // threaded through ctx for listeners that gate on it.
@@ -1684,6 +1699,13 @@ fn apply_power_to_creature_with_applier_inner(
         PowerAmountObserverPhase::Before,
         cardless,
     );
+    // Bead `sts2-rs-zdjjx`: Artifact debuff-negation gate, AFTER the Before
+    // channel as in C# (see `apply_power_to_creature_inner`). Scoped to the
+    // target creature, so a player-applied debuff onto an Artifact-bearing
+    // monster is consumed here.
+    if try_consume_artifact_for_debuff(state, creature_idx, kind) {
+        return;
+    }
     let amount =
         pipe_power_amount_through_modify_chain(state, applier, target_uid, kind, amount, cardless);
     // C# `PowerCmd.Apply` scales some enemy powers by the player count.
@@ -2533,6 +2555,34 @@ pub fn spawn_card_into_draw_pile_random(
     // v0.111.0 values for a card minted on a v0.107.1-only path (GH #793).
     card.normalize_for_version(state.game_version);
     state.cards.push(card);
+    add_generated_card_to_draw_random(state, uid, added_by_player);
+    uid
+}
+
+/// Place a card that is ALREADY in the arena (minted by a content-side
+/// sampler such as Metamorphosis's `GetForCombat`) at a uniform-random index
+/// of the draw pile and fire the generation listeners — the
+/// `CardPilePosition.Random` half of C# `CardPileCmd.AddGeneratedCardToCombat`
+/// (one `Shuffle` read, then `Hook.AfterCardGeneratedForCombat`). See
+/// [`spawn_card_into_draw_pile_random`].
+pub fn add_generated_card_to_draw_random(
+    state: &mut CombatState,
+    uid: CardUid,
+    added_by_player: bool,
+) {
+    // C# `CardPileCmd.Add` returns `success = false` before the slot read
+    // when `newPile.IsCombatPile && CombatManager.IsEnding` (CardPileCmd.cs:312
+    // v0.107.1, :379 v0.111.0): a card generated after the last enemy died
+    // never reaches the draw pile and draws no `Shuffle` read. The caller's
+    // `History.CardGenerated` and the generation hook still run (the hook's
+    // listeners are themselves gated on ending), so the tally path below is
+    // kept. Metamorphosis whose Regalite+Juggernaut kills mid-loop: Rust read
+    // one extra `Shuffle` and desynced the next combat's opening shuffle
+    // (random-loadout Ironclad v0.107.1 seed 1001).
+    if crate::combat_loop::combat_is_ending(state) {
+        fire_card_generation_listeners(state, uid, PileKind::Draw, added_by_player);
+        return;
+    }
     // Bead `sts2-rs-09x5n` (F2 `HiddenInfoMode::BeliefDraw`): under a
     // deferred-draw-order pile there is no physical position for a random
     // index to land in — fold the new uid into the canonical (uid-sorted)
@@ -2548,7 +2598,6 @@ pub fn spawn_card_into_draw_pile_random(
         state.player.draw.insert(idx, uid);
     }
     fire_card_generation_listeners(state, uid, PileKind::Draw, added_by_player);
-    uid
 }
 
 /// Fire the player-only `AfterCardGeneratedForCombat` listener cascade that
@@ -2629,9 +2678,10 @@ pub(crate) fn fire_card_generated_for_combat_powers(
     // `IterateCombatHookListeners`, which yields NO listeners if combat is
     // over or ending (`CombatManager.IsOverOrEnding`) when the dispatch
     // begins (`Hook.cs:177-207`, `:395-402`). `AddGeneratedCardsToCombat`
-    // still adds the card and records `History.CardGenerated` (its only
-    // guard is `!IsInProgress`, `CardPileCmd.cs:281-313`), so callers keep
-    // the Supermassive tally outside this gate. A Gunk Up that kills the
+    // still records `History.CardGenerated` (its only guard is
+    // `!IsInProgress`, `CardPileCmd.cs:281-313`), so callers keep the
+    // Supermassive tally outside this gate. (The card itself is NOT added:
+    // `CardPileCmd.Add` bails on `IsEnding`, CardPileCmd.cs:312.) A Gunk Up that kills the
     // last primary enemy and then generates Slimed must NOT roll a
     // TrashToTreasure orb (Defect seed 1016: the extra `combat_orbs` read
     // carried into the next combat).
@@ -2828,16 +2878,20 @@ pub(crate) fn fire_smokestack_on_status_generation(
                 .any(|c| c.id == e.0 && c.current_hp > 0)
         })
         .collect();
-    for target in targets {
-        let _ = crate::damage::apply_damage(
-            state,
-            crate::hooks::CreatureRef::Player,
-            target,
-            amount,
-            crate::hooks::ValueProps::UNPOWERED,
-            None,
-        );
-    }
+    // One multi-target `CreatureCmd.Damage` (SmokestackPower.cs): its kills
+    // die after the last hit.
+    damage::with_deferred_enemy_deaths(state, |state| {
+        for target in targets {
+            let _ = crate::damage::apply_damage(
+                state,
+                crate::hooks::CreatureRef::Player,
+                target,
+                amount,
+                crate::hooks::ValueProps::UNPOWERED,
+                None,
+            );
+        }
+    });
 }
 
 /// C# `TrashToTreasurePower.AfterCardGeneratedForCombat`
@@ -3702,6 +3756,7 @@ pub fn exhaust_card_uid(state: &mut CombatState, uid: CardUid) -> bool {
     // Surgical card-effect-driven exhaust (Stoke, etc.) — not the
     // end-of-turn ethereal sweep, so `caused_by_ethereal = false`. Bead
     // `sts2-rs-umouk`.
+    let draw_was_suspended = state.pending_draw_resume.is_some();
     crate::hooks::dispatch_after_card_exhausted(state, &hook_ctx, false);
 
     let relic_ctx = crate::relic_effects::CardEventCtx {
@@ -3711,7 +3766,7 @@ pub fn exhaust_card_uid(state: &mut CombatState, uid: CardUid) -> bool {
         card_tags,
         energy_spent: 0,
     };
-    let _ = crate::relic_effects::dispatch_after_card_exhausted(state, &relic_ctx);
+    state.relic_after_card_exhausted_behind_powers(draw_was_suspended, &relic_ctx);
     true
 }
 

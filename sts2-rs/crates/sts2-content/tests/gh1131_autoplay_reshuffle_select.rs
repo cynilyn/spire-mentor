@@ -244,3 +244,50 @@ fn distilled_chaos_reshuffle_select_prompts() {
     assert!(state.player.draw.is_empty(), "three auto-played");
     assert_eq!(state.player.discard.len(), 3);
 }
+
+/// A hand-played Havoc has no outer auto-play resume. Its reshuffle prompts;
+/// after the pick it auto-plays an Armaments whose upgrade select prompts and
+/// parks that Armaments' tail. `resume_collect` used to overwrite the fresh
+/// resume with the (absent) outer one, so the Armaments never finished: it
+/// stayed on Play, un-exhausted. Random-loadout Ironclad v0.111.0 seed 1165.
+#[test]
+fn hand_havoc_reshuffle_then_collected_select_keeps_its_resume() {
+    let mut state = fresh();
+    for _ in 0..2 {
+        let uid = new_card(&mut state, CardId::Armaments);
+        state.player.discard.push(uid);
+    }
+    let havoc = new_card(&mut state, CardId::Havoc);
+    state.player.hand.push(havoc);
+    for _ in 0..2 {
+        let uid = new_card(&mut state, CardId::DefendIronclad);
+        state.player.hand.push(uid);
+    }
+
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, None);
+    let pc = state
+        .pending_choice
+        .as_ref()
+        .expect("Stratagem grid prompts");
+    assert_eq!(pc.kind, ChoiceKind::AddFromDrawToHand);
+
+    resolve(&mut state, 0);
+    let pc = state.pending_choice.as_ref().expect("Armaments prompts");
+    assert_eq!(pc.kind, ChoiceKind::UpgradeInHand);
+    assert!(
+        state.pending_autoplay_resume.is_some(),
+        "the Armaments' tail is parked"
+    );
+
+    resolve(&mut state, 0);
+    assert_at_rest(&state);
+    let exhausted: Vec<_> = state
+        .player
+        .exhaust
+        .iter()
+        .map(|u| state.cards[u.0.get() as usize - 1].card_id)
+        .collect();
+    assert_eq!(exhausted, vec![CardId::Armaments], "Havoc's card finished");
+    assert!(state.player.discard.contains(&havoc));
+    assert_eq!(state.cards.iter().filter(|c| c.upgraded).count(), 1);
+}

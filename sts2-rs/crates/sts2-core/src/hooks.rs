@@ -1006,6 +1006,22 @@ pub enum Effect {
         /// `FlameBarrier`: `UNPOWERED`; Poison: `UNBLOCKABLE | UNPOWERED`.
         props: ValueProps,
     },
+    /// One multi-target `CreatureCmd.Damage(HittableEnemies, amount, props,
+    /// dealer)`: hit every enemy alive when the effect APPLIES, in roster
+    /// order, with their deaths deferred until after the last hit
+    /// (CreatureCmd.cs Damage → `Kill(killedCreatures)`, both builds). A
+    /// per-enemy [`Self::DealHpLoss`] run instead kills each enemy before the
+    /// next is hit, so a dying Crusher's Crab Rage block lands on Rocket
+    /// before The Bomb reaches it (random-loadout Ironclad v0.111.0 seed
+    /// 1050). Used by The Bomb and Hailstorm.
+    DealDamageToHittableEnemies {
+        /// The power's owner (C# `base.Owner`).
+        dealer: CreatureRef,
+        /// Damage dealt to each enemy.
+        amount: i32,
+        /// Damage props (`UNPOWERED` for both users).
+        props: ValueProps,
+    },
     /// Kill `target` via the Doom death path: deal a self-lethal,
     /// `UNBLOCKABLE | UNPOWERED` HP-loss tick (identical to the prior
     /// turn-end Doom self-kill) and, if the target dies, fire the
@@ -1416,6 +1432,28 @@ pub fn apply_effect(state: &mut CombatState, effect: Effect) {
             // primary_player or an enemy — Rust collapses both to one
             // helper.
             apply_dealhploss(state, dealer, target, amount, props);
+        }
+        Effect::DealDamageToHittableEnemies {
+            dealer,
+            amount,
+            props,
+        } => {
+            let targets: SmallVec<[CreatureUid; 8]> = state
+                .enemy_uids
+                .iter()
+                .copied()
+                .filter(|uid| {
+                    state
+                        .creatures
+                        .iter()
+                        .any(|c| c.id == uid.0 && c.current_hp > 0)
+                })
+                .collect();
+            crate::damage::with_deferred_enemy_deaths(state, |state| {
+                for uid in targets {
+                    apply_dealhploss(state, dealer, CreatureRef::Enemy(uid), amount, props);
+                }
+            });
         }
         Effect::FlashPower { creature, power } => match creature {
             CreatureRef::Player => crate::event_log::flash_player_power(state, power),
@@ -6092,6 +6130,16 @@ noop_hook!(on_card_drawn, CardDrawnCtx, (), ());
 
 // ── Turn boundary hooks ───────────────────────────────────────────────
 
+/// Is any enemy alive (C# `HittableEnemies` non-empty)?
+fn any_enemy_alive(state: &CombatState) -> bool {
+    state.enemy_uids.iter().any(|uid| {
+        state
+            .creatures
+            .iter()
+            .any(|c| c.id == uid.0 && c.current_hp > 0)
+    })
+}
+
 /// Per-listener `before_turn_end` dispatch. Returns
 /// `Option<SmallVec<[Effect; 4]>>` (P7-7 follow-up `sts2-rs-rnv6`) so
 /// `HailstormPower` can emit one [`Effect::DealHpLoss`] per alive enemy
@@ -6159,19 +6207,12 @@ pub fn before_turn_end(
                     power: PowerKind::Hailstorm,
                 });
             }
-            for enemy_uid in state.enemy_uids.iter().copied() {
-                let alive = state
-                    .creatures
-                    .iter()
-                    .any(|c| c.id == enemy_uid.0 && c.current_hp > 0);
-                if alive {
-                    effects.push(Effect::DealHpLoss {
-                        dealer: owner,
-                        target: CreatureRef::Enemy(enemy_uid),
-                        amount: power.amount,
-                        props: ValueProps::UNPOWERED,
-                    });
-                }
+            if any_enemy_alive(state) {
+                effects.push(Effect::DealDamageToHittableEnemies {
+                    dealer: owner,
+                    amount: power.amount,
+                    props: ValueProps::UNPOWERED,
+                });
             }
             (!effects.is_empty()).then_some(effects)
         }
@@ -6213,19 +6254,14 @@ pub fn before_turn_end(
                     power: PowerKind::TheBomb,
                 });
             }
-            for enemy_uid in state.enemy_uids.iter().copied() {
-                let alive = state
-                    .creatures
-                    .iter()
-                    .any(|c| c.id == enemy_uid.0 && c.current_hp > 0);
-                if alive {
-                    effects.push(Effect::DealHpLoss {
-                        dealer: owner,
-                        target: CreatureRef::Enemy(enemy_uid),
-                        amount: power.counter,
-                        props: ValueProps::UNPOWERED,
-                    });
-                }
+            // One multi-target `CreatureCmd.Damage(HittableEnemies, ..)`
+            // (TheBombPower.cs:56): its kills die after the last hit.
+            if any_enemy_alive(state) {
+                effects.push(Effect::DealDamageToHittableEnemies {
+                    dealer: owner,
+                    amount: power.counter,
+                    props: ValueProps::UNPOWERED,
+                });
             }
             effects.push(Effect::RemovePower { listener });
             Some(effects)
@@ -9795,7 +9831,14 @@ fn after_block_broken_hand_drill_v0111(state: &mut CombatState, ctx: &AfterBlock
     if !by_owner || Some(ctx.broken) == player {
         return;
     }
-    crate::card_effects::apply_power_to_creature(state, ctx.broken, PowerKind::Vulnerable, 2);
+    // `cardSource: null`: Unsettling Lamp ignores it (random-loadout
+    // Ironclad v0.111.0 seed 1117).
+    crate::card_effects::apply_power_to_creature_cardless(
+        state,
+        ctx.broken,
+        PowerKind::Vulnerable,
+        2,
+    );
 }
 
 // ── Creature lifecycle ────────────────────────────────────────────────
@@ -15094,16 +15137,20 @@ pub fn dispatch_after_current_hp_changed(
                 .any(|c| c.id == uid.0 && c.current_hp > 0)
         })
         .collect();
-    for target in targets {
-        crate::damage::apply_damage(
-            state,
-            CreatureRef::Player,
-            target,
-            reflect,
-            ValueProps::UNBLOCKABLE.union(ValueProps::UNPOWERED),
-            None,
-        );
-    }
+    // One multi-target `CreatureCmd.Damage` (NecroMasteryPower.cs): its
+    // kills die after the last hit.
+    crate::damage::with_deferred_enemy_deaths(state, |state| {
+        for target in targets {
+            crate::damage::apply_damage(
+                state,
+                CreatureRef::Player,
+                target,
+                reflect,
+                ValueProps::UNBLOCKABLE.union(ValueProps::UNPOWERED),
+                None,
+            );
+        }
+    });
 }
 
 /// Fire `after_card_played` on every listener, then apply the
@@ -15357,6 +15404,7 @@ const AFTER_CARD_PLAYED_ORDERED_ENEMY_HIT_KINDS: crate::PowerKindSet =
         PowerKind::Haunt,
         PowerKind::Panache,
         PowerKind::Calamity,
+        PowerKind::Juggling,
     ]);
 
 /// C# `SkittishPower.AfterAttack`
@@ -15595,22 +15643,54 @@ pub fn dispatch_after_card_played_ordered_enemy_hits(state: &mut CombatState, ct
                                     .any(|c| c.id == uid.0 && c.current_hp > 0)
                             })
                             .collect();
-                        for enemy_uid in alive_enemies {
-                            crate::damage::apply_damage(
-                                state,
-                                CreatureRef::Player,
-                                enemy_uid,
-                                damage_amount,
-                                ValueProps::UNPOWERED,
-                                None,
-                            );
-                        }
+                        // One multi-target `CreatureCmd.Damage`
+                        // (PanachePower.cs): kills die after the last hit.
+                        crate::damage::with_deferred_enemy_deaths(state, |state| {
+                            for enemy_uid in alive_enemies {
+                                crate::damage::apply_damage(
+                                    state,
+                                    CreatureRef::Player,
+                                    enemy_uid,
+                                    damage_amount,
+                                    ValueProps::UNPOWERED,
+                                    None,
+                                );
+                            }
+                        });
                         if let Some(power) = state.powers.get_mut_by_id(uid.0) {
                             power.counter = 5;
                         }
                     } else if let Some(power) = state.powers.get_mut_by_id(uid.0) {
                         power.counter = new_counter;
                     }
+                }
+            }
+            // Juggling (v0.107.1 only — v0.111.0 moved the count + clone to
+            // `BeforeCardPlayed`, see [`juggling_before_card_played_v0111`]):
+            // C# `JugglingPower.AfterCardPlayed` (v0.107.1 JugglingPower.cs:36)
+            // counts Attacks played this turn in `power.counter` (reset in
+            // `after_turn_end`) and on exactly the 3rd clones the card `Amount`
+            // times to hand. It appends to the hand, so it fires in this
+            // application-order walk: Juggling applied before Calamity puts
+            // the clone ahead of Calamity's conjured Attacks (and vice versa).
+            PowerKind::Juggling
+                if is_attack && state.game_version < crate::GameVersion::V0_111_0 =>
+            {
+                let Some(card_uid) = ctx.card_uid else {
+                    continue;
+                };
+                let (new_counter, amount) = match state.powers.get_mut_by_id(uid.0) {
+                    Some(power) => {
+                        power.counter = power.counter.saturating_add(1);
+                        (power.counter, power.amount)
+                    }
+                    None => continue,
+                };
+                if new_counter == 3 {
+                    // C# `JugglingPower.cs:45` calls `Flash()` inside
+                    // `attacksPlayedThisTurn == 3` (exactly 3, not >= 3).
+                    crate::event_log::flash_player_power(state, PowerKind::Juggling);
+                    clone_card_to_hand(state, card_uid, amount, false);
                 }
             }
             // C# `CalamityPower.AfterCardPlayed` (CalamityPower.cs:41-54):
@@ -16166,54 +16246,9 @@ fn dispatch_after_card_played_player_powers(
         dispatch_after_card_played_ordered_enemy_hits(state, ctx);
     }
 
-    // Juggling: on the 3rd Attack played this turn, clone the card
-    // Amount times to hand. Uses `power.counter` as the per-turn
-    // attacks-played accumulator (seeded at apply by the card handler's
-    // AfterApplied analogue, reset in `after_turn_end`). Walk the
-    // mirror+legacy union (`player_power_uids`) — `apply_power_to_player`
-    // writes the Juggling power onto the mirror creature, so the prior
-    // `state.player.powers` (legacy-only) iteration silently no-op'd it in
-    // real combat (the power never incremented / triggered). Same
-    // mirror-union class as the consume-listener fix
-    // (`feedback_player_consume_must_walk_mirror_union`).
-    //
-    // v0.111.0: the count + clone moved to `BeforeCardPlayed` (decomp
-    // JugglingPower.cs:36) — see [`juggling_before_card_played_v0111`].
-    if is_attack
-        && state.game_version < crate::GameVersion::V0_111_0
-        && power_kind_live(state, PowerKind::Juggling)
-    {
-        if let Some(card_uid) = ctx.card_uid {
-            let mut juggling_clone: Option<(PowerUid, i32)> = None;
-            for puid in player_power_uids.iter().copied() {
-                if let Some(power) = state.powers.get_by_id(puid.0) {
-                    if power.kind == PowerKind::Juggling {
-                        let new_counter = power.counter.saturating_add(1);
-                        if new_counter == 3 {
-                            juggling_clone = Some((puid, power.amount));
-                        }
-                        break;
-                    }
-                }
-            }
-            // Increment counter (outside the read borrow).
-            for puid in player_power_uids.iter().copied() {
-                if let Some(power) = state.powers.get_mut_by_id(puid.0) {
-                    if power.kind == PowerKind::Juggling {
-                        power.counter = power.counter.saturating_add(1);
-                        break;
-                    }
-                }
-            }
-            if let Some((_puid, amount)) = juggling_clone {
-                // C# `JugglingPower.cs:45` calls `Flash()` inside
-                // `attacksPlayedThisTurn == 3` (exactly 3, not >= 3), after the
-                // owner + Attack guards and before the clone loop.
-                crate::event_log::flash_player_power(state, PowerKind::Juggling);
-                clone_card_to_hand(state, card_uid, amount, false);
-            }
-        }
-    }
+    // Juggling (v0.107.1 `AfterCardPlayed`) fires in the ordered walk
+    // above — see the `PowerKind::Juggling` arm of
+    // [`dispatch_after_card_played_ordered_enemy_hits`].
 
     // Tender (HunterKiller TENDERIZING_GOOP debuff): C#
     // `TenderPower.AfterCardPlayed` (TenderPower.cs:42-51) — when the PLAYER
@@ -16851,12 +16886,21 @@ pub fn dispatch_after_card_exhausted(
             }
         }
     }
+    let draw_was_suspended = state.pending_draw_resume.is_some();
     for (kind, power_id, amount) in pending {
         match kind {
             PowerKind::FeelNoPain => {
                 // C# FeelNoPainPower GainBlock uses ValueProp.Unpowered
                 // (Frail/Dex-exempt) — Unpowered-block class. Fires on
-                // every exhaust, ethereal or not.
+                // every exhaust, ethereal or not. Behind a Dark Embrace draw
+                // that suspended on a Stratagem pick, C# still awaits that
+                // draw, so the block waits for it too.
+                if !draw_was_suspended && state.pending_choice.is_some() {
+                    if let Some(pdr) = state.pending_draw_resume.as_mut() {
+                        pdr.then_block_unpowered += amount;
+                        continue;
+                    }
+                }
                 crate::card_effects::gain_block_player_unpowered(state, amount);
             }
             PowerKind::DarkEmbrace => {

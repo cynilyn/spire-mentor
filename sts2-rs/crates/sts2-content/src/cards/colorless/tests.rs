@@ -252,9 +252,8 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
     sorted.sort_by(|&a, &b| {
         let ca = &state_ref.cards[a.0.get() as usize - 1];
         let cb = &state_ref.cards[b.0.get() as usize - 1];
-        ca.card_id
-            .to_python_name()
-            .cmp(cb.card_id.to_python_name())
+        sts2_core::cards::card_model_entry(ca.card_id)
+            .cmp(sts2_core::cards::card_model_entry(cb.card_id))
             .then_with(|| ca.upgraded.cmp(&cb.upgraded))
     });
     let mut rng = state_ref.run_rng.combat_card_selection.clone();
@@ -272,8 +271,8 @@ fn seeker_strike_stable_shuffle_key_is_entry_upgraded_not_uid() {
                     cb.card_id,
                 ))
                 .then_with(|| {
-                    crate::cards::spec_index::card_csharp_entry(ca.card_id)
-                        .cmp(&crate::cards::spec_index::card_csharp_entry(cb.card_id))
+                    sts2_core::cards::card_model_entry(ca.card_id)
+                        .cmp(sts2_core::cards::card_model_entry(cb.card_id))
                 })
         });
     };
@@ -463,7 +462,7 @@ fn entropy_transforms_the_ball_off_the_colorless_pool_v0111() {
 /// GH #1054 item 7: a **Curse** original transforms off the CurseCardPool
 /// (C# `CardFactory.GetDefaultTransformationOptions` -> `original.Pool`; no
 /// rarity filter for Status/Curse; `CanBeGeneratedInCombat` drops only
-/// AscendersBane). The prior port returned `None` for any curse, so Entropy
+/// AscendersBane, and only in v0.111.0). The prior port returned `None` for any curse, so Entropy
 /// left a hand SPORE_MIND untouched and skipped the `CombatCardSelection`
 /// read (Regent seed 1008, THE_KIN_BOSS: C# rolled DECAY).
 #[test]
@@ -495,16 +494,63 @@ fn entropy_transforms_curse_original_off_the_curse_pool() {
         .unwrap()
         .card_id;
     assert_ne!(new_id, CardId::SporeMind, "original id is excluded");
-    assert_ne!(
-        new_id,
-        CardId::AscendersBane,
-        "AscendersBane is not combat-generatable"
-    );
     assert_eq!(
         crate::cards::spec_index::rarity_for_card_id(new_id),
         Some(CardRarity::Curse),
         "curse original must transform into another curse, got {new_id:?}",
     );
+}
+
+/// Transform `original` in hand under `version` across 300 RNG seeds and
+/// return every replacement id rolled.
+fn transform_results(original: CardId, version: sts2_core::GameVersion) -> Vec<CardId> {
+    use super::helpers::transform_card_to_random_for_hook;
+    (0..300)
+        .map(|seed| {
+            let (mut state, _euid) = fresh_state(original, 10, 0);
+            state.game_version = version;
+            state.run_rng = sts2_core::run_rng_set::RunRngSet::new(seed);
+            state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+            let uid = sts2_core::CardUid(NonZeroU32::new(1).expect("nz"));
+            state.player.play.clear();
+            state.player.hand.push(uid);
+            let new_uid = transform_card_to_random_for_hook(&mut state, uid).expect("transforms");
+            state
+                .cards
+                .iter()
+                .find(|c| c.uid == new_uid)
+                .unwrap()
+                .card_id
+        })
+        .collect()
+}
+
+/// AscendersBane overrides `CanBeGeneratedInCombat => false` only in v0.111.0
+/// (AscendersBane.cs:10); in v0.107.1 it heads the in-combat curse pool
+/// (random-loadout v0.107.1 seeds 1008 / 1163).
+#[test]
+fn in_combat_curse_pool_keeps_ascenders_bane_only_in_v0107() {
+    let v107 = transform_results(CardId::SporeMind, sts2_core::GameVersion::V0_107_1);
+    assert!(v107.contains(&CardId::AscendersBane), "{v107:?}");
+    let v111 = transform_results(CardId::SporeMind, sts2_core::GameVersion::V0_111_0);
+    assert!(!v111.contains(&CardId::AscendersBane), "{v111:?}");
+}
+
+/// A Quest-type original (SPOILS_MAP) transforms off the colorless pool
+/// (CardFactory.cs:173 `Type != Quest ? Pool : ColorlessCardPool`), in both
+/// builds (random-loadout v0.107.1 seed 1198: C# FINESSE).
+#[test]
+fn entropy_transforms_quest_original_off_the_colorless_pool() {
+    use super::helpers::colorless_combat_generatable_card_ids;
+    let pool = colorless_combat_generatable_card_ids();
+    for version in [
+        sts2_core::GameVersion::V0_107_1,
+        sts2_core::GameVersion::V0_111_0,
+    ] {
+        for id in transform_results(CardId::SpoilsMap, version) {
+            assert!(pool.contains(&id), "{version:?}: {id:?} is not colorless");
+        }
+    }
 }
 
 /// Bead `sts2-rs-isooo` (cross-character pool fix): a transform-to-random
@@ -696,6 +742,53 @@ fn catastrophe_any_ally_exhaust_card_routes_to_exhaust_not_discard() {
     );
 }
 
+/// Catastrophe's AnyAlly pick with no ally is EXHAUSTED through the real
+/// exhaust path (C# `CardCmd.MoveToResultPileWithoutPlaying` →
+/// `CardModel.MoveToResultPileWithoutPlaying` → `CardCmd.Exhaust`), so
+/// `AfterCardExhausted` listeners fire: Feel No Pain grants its block.
+/// Random-loadout Ironclad v0.107.1 1055 / v0.111.0 1131 (Dark Embrace).
+#[test]
+fn catastrophe_any_ally_exhaust_fires_exhaust_hooks() {
+    crate::cards::dispatch::ensure_installed();
+    let (mut state, _euid) = fresh_state(CardId::Catastrophe, 0, 0);
+    add_player_creature(&mut state);
+    let player = state.player.creature_uid.expect("player");
+    sts2_core::card_effects::apply_power_to_creature(&mut state, player, PowerKind::FeelNoPain, 3);
+    let demonic = push_draw_card_id(&mut state, CardId::DemonicShield);
+    let _ = lookup(CardId::Catastrophe).expect("registered")(&mut state, None);
+    assert!(state.player.exhaust.contains(&demonic));
+    assert_eq!(state.player.block, 3, "Feel No Pain fired on the exhaust");
+}
+
+/// C# `Catastrophe.OnPlay`'s `for` re-reads `DynamicVars.Cards` before each
+/// iteration (Catastrophe.cs:23), so a base Catastrophe upgraded mid-play runs
+/// 3 auto-plays, not 2. Here the only playable draw card is an Apotheosis,
+/// which upgrades the Catastrophe in the Play pile; the next two iterations
+/// fall back to the unplayable Wounds — all three Wounds would need a 4th.
+#[test]
+fn catastrophe_rereads_its_card_count_each_iteration() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Catastrophe, 0, 0);
+    add_player_creature(&mut state);
+    state.player.current_hp = 80;
+    let apo = push_draw_card_id(&mut state, CardId::Apotheosis);
+    let wounds: Vec<_> = (0..3)
+        .map(|_| push_draw_card_id(&mut state, CardId::Wound))
+        .collect();
+    sts2_core::card_effects::register_card_unplayable(CardId::Wound);
+    let _ = lookup(CardId::Catastrophe).expect("registered")(&mut state, None);
+    assert!(
+        state.cards[0].upgraded,
+        "Apotheosis upgraded the Catastrophe"
+    );
+    assert!(!state.player.draw.contains(&apo));
+    let left = wounds
+        .iter()
+        .filter(|w| state.player.draw.contains(w))
+        .count();
+    assert_eq!(left, 1, "3 iterations: Apotheosis + 2 Wounds");
+}
+
 /// Catastrophe (cata-suspend): an auto-played card that opens a *surfacing*
 /// card-select (SecretTechnique fetching a Skill when several Skills sit in
 /// the draw pile) must SUSPEND Catastrophe's loop until that select resolves,
@@ -745,7 +838,12 @@ fn catastrophe_suspends_across_secret_technique_select() {
         .as_ref()
         .expect("loop suspended");
     let cont = resume.continuation.as_ref().expect("continuation recorded");
-    assert_eq!(cont.iters, 1, "one Catastrophe iteration still owed");
+    assert_eq!(cont.iters, 1, "one Catastrophe iteration already run");
+    assert_eq!(
+        cont.uids.as_slice(),
+        &[state.cards[0].uid],
+        "bound by Catastrophe"
+    );
     assert_eq!(
         state.run_rng.shuffle.counter(),
         0,
@@ -1944,6 +2042,52 @@ fn metamorphosis_generated_attacks_are_free_this_combat() {
     }
 }
 
+/// Metamorphosis.cs:31 / Distraction.cs:31 add each generated card through
+/// `CardPileCmd.AddGeneratedCardToCombat(.., Owner)`, which raises
+/// `Hook.AfterCardGeneratedForCombat` per card: Pillar of Creation grants its
+/// block once per generated card. The hand-rolled bodies skipped it.
+#[test]
+fn metamorphosis_and_distraction_fire_card_generation_listeners() {
+    use sts2_core::card_effects::apply_power_to_creature;
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    for (card, generated) in [(CardId::Metamorphosis, 3), (CardId::Distraction, 1)] {
+        let (mut state, _enemy) = fresh_state(card, 0, 0);
+        let player = push_player(&mut state);
+        state.player.character = Some(CharacterId::Ironclad);
+        apply_power_to_creature(&mut state, player, PowerKind::PillarOfCreation, 2);
+        lookup(card).expect("registered")(&mut state, None);
+        assert_eq!(state.player.block, 2 * generated, "{card:?}");
+        assert_eq!(
+            state.count_player_generated_cards_this_combat(),
+            generated as u32,
+            "{card:?} counts each card once for Supermassive"
+        );
+    }
+}
+
+/// Distraction.cs:30 `SetToFreeThisTurn()` on the generated Skill.
+#[test]
+fn distraction_generated_skill_is_free_this_turn() {
+    use sts2_core::potions::CharacterId;
+    install_pool();
+    let (mut state, _enemy) = fresh_state(CardId::Distraction, 0, 0);
+    let _ = push_player(&mut state);
+    state.player.character = Some(CharacterId::Ironclad);
+    let hand_before = state.player.hand.clone();
+    lookup(CardId::Distraction).expect("registered")(&mut state, None);
+    let new: Vec<_> = state
+        .player
+        .hand
+        .iter()
+        .filter(|u| !hand_before.contains(u))
+        .copied()
+        .collect();
+    assert_eq!(new.len(), 1);
+    let c = &state.cards[new[0].0.get() as usize - 1];
+    assert_eq!(c.combat_var(sts2_core::cards::VarKey::FreeThisTurn), 1);
+}
+
 /// `sts2-rs-k2rzs`: Base Metamorphosis still adds 3 (C# `CardsVar(3)`).
 #[test]
 fn k2rzs_metamorphosis_base_generates_three_attacks() {
@@ -2445,6 +2589,23 @@ fn play_wish_surfaces_a_draw_pile_choice() {
         state.player.hand.contains(&rare),
         "the chosen Rare moved to hand"
     );
+}
+
+/// The Wish grid's `c.Id` tiebreak compares `ModelId.Entry` ordinally, and
+/// `Entry` is the SLUGIFIED class name (`ModelDb.GetEntry` =
+/// `StringHelper.Slugify(type.Name)`): `BLOODLETTING` < `BLOOD_WALL` because
+/// `'L'` (0x4C) < `'_'` (0x5F). The PascalCase class names sort the other way
+/// (`BloodWall` < `Bloodletting`), which the port used to key on.
+#[test]
+fn play_wish_orders_same_rarity_cards_by_slugified_entry() {
+    install_pool();
+    let (mut state, _euid) = fresh_state(CardId::Wish, 0, 0);
+    let wall = push_draw_card_id(&mut state, CardId::BloodWall);
+    let letting = push_draw_card_id(&mut state, CardId::Bloodletting);
+    lookup(CardId::Wish).expect("registered")(&mut state, None);
+    let pc = state.pending_choice.clone().expect("Wish opens a select");
+    let order: Vec<_> = pc.options.iter().map(|o| o.card_uid).collect();
+    assert_eq!(order, vec![Some(letting), Some(wall)]);
 }
 
 /// A single draw-pile card is taken without a screen (`FromCombatPile`'s
@@ -4863,6 +5024,27 @@ fn play_hidden_gem_upgraded_increments_replay_count_by_three() {
         super::HIDDEN_GEM_REPLAY_UPGRADED,
         "HiddenGem+ must add HIDDEN_GEM_REPLAY_UPGRADED (=3)"
     );
+}
+
+/// HiddenGem skips a card whose `GetEnchantedReplayCount()` is already >= 1
+/// (HiddenGem.cs:45, both builds): an unused Glam adds its play to the
+/// count (`Glam.EnchantPlayCount`), so a lone Glam Strike gets no Replay.
+/// Random-loadout Ironclad v0.107.1 seed 1183 (Silken Tress Glam cards).
+#[test]
+fn hidden_gem_skips_an_unused_glam_card() {
+    install_pool();
+    let (mut state, _) = fresh_state(CardId::HiddenGem, 0, 0);
+    let spec = crate::cards::ironclad::strike_ironclad::spec();
+    let raw = u32::try_from(state.cards.len() + 1).expect("fits");
+    let uid = CardUid::new(raw).expect("nz");
+    let mut card = card_from_spec(&spec);
+    card.uid = uid;
+    card.set_enchantment(sts2_core::cards::EnchantmentId::Glam, 1);
+    state.cards.push(card);
+    state.player.draw.push(uid);
+    let f = lookup(CardId::HiddenGem).expect("registered");
+    assert_eq!(f(&mut state, None), EffectResult::Resolved);
+    assert_eq!(state.cards[uid.0.get() as usize - 1].base_replay_count, 0);
 }
 
 /// HiddenGem with only a playable Status (FranticEscape) in the draw pile.

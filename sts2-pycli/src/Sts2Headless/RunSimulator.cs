@@ -2544,6 +2544,7 @@ public class RunSimulator
             // (run-parity RP0: cs deck 10 vs rs 11 across all characters).
             DrainEventOptionTaskIfDue();
             DrivePurchaseTask();
+            DrainRestSiteTaskIfDue();
             return DetectDecisionPoint();
         }
 
@@ -2592,6 +2593,7 @@ public class RunSimulator
             // task whose post-await effects (e.g. follow-up grants) must run.
             DrainEventOptionTaskIfDue();
             DrivePurchaseTask();
+            DrainRestSiteTaskIfDue();
             return DetectDecisionPoint();
         }
         if (_pendingCardReward != null)
@@ -3029,10 +3031,17 @@ public class RunSimulator
                 // Wait until the task settles (completes or parks at a selection)
                 // rather than on a fixed 1 s budget — see WaitUntilOptionTaskSettles.
                 WaitUntilOptionTaskSettles(task, "rest-site option task or selection");
-                if (_cardSelector.HasPending)
+                // A heal parks at a card reward too: Dream Catcher's
+                // `ModifyRestSiteHealRewards` card goes through
+                // `RewardsCmd.OfferCustom` INSIDE `ChooseOption`, before its
+                // tail clears the options (`RestSiteSynchronizer.cs:140-149`).
+                if (_cardSelector.HasPending || _cardSelector.HasPendingReward)
                 {
-                    // Stash the task so DoSelectCards can await its completion
-                    // (the upgrade) after the player resolves the selection.
+                    // Stash the task so DoSelectCards / DoSelectCardReward /
+                    // DoSkipCardReward can await its completion (the upgrade,
+                    // the options clear) after the player resolves the selection.
+                    // Dropping it let the tail race the snapshot: the rest site
+                    // came back with HEAL still offered (random-loadout 1044).
                     _pendingRestSiteTask = task;
                     WaitForActionExecutor();
                     return DetectDecisionPoint();
@@ -5306,6 +5315,28 @@ public class RunSimulator
     }
 
     /// <summary>
+    /// Finish a rest-site option task stashed at a card reward (Dream Catcher's
+    /// heal card): its tail clears the options (`RestSiteSynchronizer.cs:140-149`)
+    /// so the rest site then leaves for the map. Re-stashes if the task parks at
+    /// a further selection.
+    /// </summary>
+    private void DrainRestSiteTaskIfDue()
+    {
+        var task = _pendingRestSiteTask;
+        if (task == null || _runState?.CurrentRoom is not RestSiteRoom) return;
+        _pendingRestSiteTask = null;
+        WaitUntilOptionTaskSettles(task, "rest-site option task after reward");
+        if (!task.IsCompleted && AnySelectionPending())
+        {
+            _pendingRestSiteTask = task;
+            return;
+        }
+        WaitForTask(task, 2000, "rest-site option task");
+        WaitForActionExecutor();
+        _restSiteOptionTaken = true;
+    }
+
+    /// <summary>
     /// Poll a Task to completion, pumping the sync context each iteration.
     /// Continuations of awaited Tasks are typically posted back to the
     /// GameSyncContext, so a passive Wait would deadlock — this drives them.
@@ -5919,6 +5950,12 @@ public class RunSimulator
         // NCombatRoom.Instance unguarded from its Died handler, so KILLING one abandons
         // the card play inside CreatureCmd.Kill before the win-condition check.
         PatchSoulNexusDeathAnim();
+
+#if !GAME_V0111
+        // v0.107.1 LordsParasol.PurchaseEverything derefs NRun.Instance unguarded in
+        // its relic loop; v0.111.0 made it null-safe. See PatchLordsParasol.
+        PatchLordsParasol();
+#endif
 
         // Patch Whirlwind.OnPlay + FlashOfSteel.OnPlay to headless-safe
         // reimplementations. Both deref combat-room / target scene nodes for
@@ -7161,6 +7198,45 @@ public class RunSimulator
             Console.Error.WriteLine($"[WARN] Failed to patch SoulNexus.AfterDeath: {ex.Message}");
         }
     }
+
+#if !GAME_V0111
+    // v0.107.1 LordsParasol.PurchaseEverything (LordsParasol.cs) skips its UI block
+    // under TestMode, but its RELIC loop still calls
+    // `NRun.Instance.GlobalUi.TopBar.Map.Enable()` with no `?.`. NRun.Instance is null
+    // headless, so the first relic throws, `TaskHelper.RunSafely` swallows it, and
+    // the oracle buys the cards only: no relics, no potions, no forced card removal.
+    // The real game has an NRun and buys everything; v0.111.0 added `?.` throughout
+    // the same body. Replace the v0.107.1 body with the same purchases minus the UI
+    // calls (Rust already models the full purchase). Seeds v0.107.1 1119/1143/1199.
+    private static void PatchLordsParasol()
+    {
+        try
+        {
+            var harmony = new Harmony("sts2headless.lordsparasol");
+            // GetTypes() throws when any type in the assembly fails to load (some
+            // Godot-bound types do under the stubs); the loadable ones are still usable.
+            Type?[] loadable;
+            try { loadable = typeof(RelicModel).Assembly.GetTypes(); }
+            catch (System.Reflection.ReflectionTypeLoadException tle) { loadable = tle.Types; }
+            var parasol = loadable.OfType<Type>()
+                .FirstOrDefault(t => t.Name == "LordsParasol" && typeof(RelicModel).IsAssignableFrom(t));
+            var m = parasol == null ? null : AccessTools.Method(parasol, "PurchaseEverything");
+            var pre = typeof(YieldPatches).GetMethod(nameof(YieldPatches.LordsParasolPurchaseEverythingPrefix),
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+            if (m == null || pre == null)
+            {
+                Console.Error.WriteLine("[WARN] Could not find LordsParasol.PurchaseEverything - relic-loop NRE not patched");
+                return;
+            }
+            harmony.Patch(m, new HarmonyMethod(pre));
+            Console.Error.WriteLine("[INFO] Patched LordsParasol.PurchaseEverything (unguarded NRun deref in relic loop)");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] Failed to patch LordsParasol.PurchaseEverything: {ex.Message}");
+        }
+    }
+#endif
 
     // CrystalSphere is the one remaining event whose block is a real MINIGAME, not a
     // missing `?.`:
@@ -8432,6 +8508,41 @@ public class RunSimulator
                 Console.Error.WriteLine($"[WARN] SlumberingBeetle AfterAddedToRoom safe: {ex.Message}");
             }
         }
+
+#if !GAME_V0111
+        /// <summary>
+        /// Lord's Parasol's v0.107.1 shop sweep without the Godot UI it touches
+        /// (see PatchLordsParasol). Order: in-stock character cards, in-stock
+        /// colorless cards, every relic, every potion (each purchase followed by
+        /// the 0.25 s beat), and the non-cancelable card removal last.
+        /// </summary>
+        public static bool LordsParasolPurchaseEverythingPrefix(
+            RelicModel __instance,
+            MerchantInventory inventory,
+            ref Task __result)
+        {
+            __result = SweepShopForParasol(__instance.Owner, inventory);
+            return false;
+        }
+
+        private static async Task SweepShopForParasol(Player owner, MerchantInventory shop)
+        {
+            if (shop.Player != owner) return;
+            IEnumerable<MerchantEntry> stockedCards = shop.CharacterCardEntries
+                .Concat(shop.ColorlessCardEntries)
+                .Where(card => card.IsStocked);
+            IEnumerable<MerchantEntry> sweep = stockedCards
+                .Concat(shop.RelicEntries)
+                .Concat(shop.PotionEntries);
+            foreach (MerchantEntry offer in sweep)
+            {
+                await offer.OnTryPurchaseWrapper(shop, true);
+                await Cmd.Wait(0.25f);
+            }
+            MerchantCardRemovalEntry? removal = shop.CardRemovalEntry;
+            if (removal is not null) await removal.OnTryPurchaseWrapper(shop, true, false);
+        }
+#endif
 
         /// <summary>
         /// Harmony prefix: headless-safe Whirlwind.OnPlay. The original

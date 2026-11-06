@@ -3508,6 +3508,47 @@ fn stoke_exhausts_hand_and_generates_random_ironclad_cards() {
     }
 }
 
+/// Stoke.cs:33 adds its cards through `CardPileCmd.AddGeneratedCardsToCombat
+/// (cards, Hand, Owner)`, which raises `Hook.AfterCardGeneratedForCombat`
+/// per card — Pillar of Creation's block fires once per generated card. The
+/// hand-rolled body dispatched only the entered-combat bus.
+#[test]
+fn stoke_fires_card_generated_for_combat_listeners() {
+    install_pool();
+    let (mut state, _) = fresh_state_with_enemy(50);
+    state.player.character = Some(sts2_core::potions::CharacterId::Ironclad);
+    let puid = state.init_player_creature();
+    sts2_core::card_effects::apply_power_to_creature(
+        &mut state,
+        puid,
+        PowerKind::PillarOfCreation,
+        2,
+    );
+    let _ = push_play_card(&mut state, CardId::Stoke, 0, 0);
+    for _ in 0..3 {
+        let raw = u32::try_from(state.cards.len() + 1).expect("nz");
+        let uid = sts2_core::CardUid::new(raw).expect("nz");
+        state.cards.push(Card {
+            uid,
+            card_id: CardId::StrikeIronclad,
+            cost: 1,
+            card_type: CardType::Attack,
+            target_type: TargetType::Enemy,
+            base_damage: 6,
+            ..Card::pod_defaults()
+        });
+        state.player.hand.push(uid);
+    }
+    let _ = dispatch(&mut state, CardId::Stoke, None);
+    assert_eq!(state.player.hand.len(), 3);
+    assert_eq!(
+        state.player.block,
+        2 * 3,
+        "Pillar of Creation per Stoke card"
+    );
+    assert_eq!(state.count_player_generated_cards_this_combat(), 3);
+}
+
 /// `PrimalForce` (bead `sts2-rs-6ynt.7`): every Attack in hand
 /// transforms into a `GiantRock`; non-Attack cards are left alone.
 /// Mirrors `sts2-rl-agent@01c094d:sts2_env/cards/ironclad.py:1947-1953`.
@@ -5523,6 +5564,56 @@ fn cinder_killing_blow_exhausts_nothing_joss_paper_counts() {
         counter,
         Some(4),
         "no exhaust is counted once the fight is ending"
+    );
+}
+
+/// Exhaust a Defend with Joss Paper (one exhaust from its draw) and Burning
+/// Sticks equipped in `relics` order; returns the hand's card ids.
+fn joss_paper_and_burning_sticks_hand(relics: [sts2_core::RelicKind; 2]) -> Vec<CardId> {
+    install_pool();
+    crate::cards::dispatch::ensure_installed();
+    crate::relics::dispatch::ensure_installed();
+    let (mut state, _enemy) = fresh_state_with_enemy(200);
+    state.init_player_creature();
+    for (i, kind) in relics.into_iter().enumerate() {
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(u32::try_from(i + 1).expect("fits")).expect("non-zero"),
+            kind,
+            counter: if kind == sts2_core::RelicKind::JossPaper {
+                4
+            } else {
+                0
+            },
+            is_wax: false,
+            is_melted: false,
+        });
+    }
+    push_draw_tail(&mut state, CardId::StrikeIronclad, CardType::Attack, 6);
+    let defend = push_hand_card_typed(&mut state, CardId::DefendIronclad, CardType::Skill);
+    assert!(sts2_core::card_effects::exhaust_card_uid(
+        &mut state, defend
+    ));
+    state
+        .player
+        .hand
+        .iter()
+        .map(|u| state.cards[u.0.get() as usize - 1].card_id)
+        .collect()
+}
+
+/// C# `Hook.AfterCardExhausted` reaches relics in equip order: Joss Paper
+/// equipped first draws before Burning Sticks adds its clone, and vice versa
+/// (random-loadout v0.107.1 seed 1176).
+#[test]
+fn after_card_exhausted_relics_fire_in_equip_order() {
+    use sts2_core::RelicKind::{BurningSticks, JossPaper};
+    assert_eq!(
+        joss_paper_and_burning_sticks_hand([JossPaper, BurningSticks]),
+        vec![CardId::StrikeIronclad, CardId::DefendIronclad]
+    );
+    assert_eq!(
+        joss_paper_and_burning_sticks_hand([BurningSticks, JossPaper]),
+        vec![CardId::DefendIronclad, CardId::StrikeIronclad]
     );
 }
 

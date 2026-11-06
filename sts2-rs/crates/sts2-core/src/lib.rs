@@ -2774,6 +2774,12 @@ pub enum PostChoiceEffect {
         count: u8,
         upgraded: bool,
     },
+    /// Exhaust the first draw card ([`CombatState::exhaust_first_draw_card`])
+    /// and gain `strength` Strength. v0.107.1 Toasty Mittens: its
+    /// `ShuffleIfNecessary` opened a Stratagem pick, which C# awaits before
+    /// the exhaust and the Strength (ToastyMittens.cs:35-50), so both ride
+    /// the pick.
+    ExhaustDrawCardGainStrength { skip_innate: bool, strength: i32 },
 }
 
 /// A potion's `Hook.AfterPotionUsed` dispatch deferred because the potion's
@@ -2860,6 +2866,20 @@ pub struct PendingDrawResume {
     /// (BrightestFlame.cs:29-31, both builds), so the player's max HP drops
     /// once the resumed draw finishes. `0` = no deferred loss.
     pub then_lose_max_hp_from_card: i32,
+    /// The rest of an exhaust's `Hook.AfterCardExhausted` walk, owed because
+    /// Dark Embrace's draw (a power, so ahead of these in the walk) suspended
+    /// on a reshuffle's Stratagem pick. C# awaits that draw before the walk
+    /// moves on (`Hook.AfterCardExhausted` -> `IterateHookListeners`: the
+    /// player's powers, then their relics), so a later Feel No Pain block
+    /// and the relic listeners (Joss Paper's draw) run once the resumed draw
+    /// finishes. `then_block_unpowered` is the deferred Feel No Pain block;
+    /// `then_relic_after_card_exhausted` the deferred relic bus.
+    pub then_block_unpowered: i32,
+    pub then_relic_after_card_exhausted: Option<relic_effects::CardEventCtx>,
+    /// Strength owed by the code that awaited the exhaust: v0.107.1 Toasty
+    /// Mittens gains it only after `CardCmd.Exhaust` returns
+    /// (ToastyMittens.cs:48-50). `0` = none.
+    pub then_gain_strength: i32,
     /// [`CombatState::last_drawn_card`] when the draw suspended, restored
     /// before the resume: a draw that suspended AFTER taking its card (an
     /// on-draw Hellraiser auto-play that opened a select) still reports that
@@ -3099,7 +3119,9 @@ pub enum EndTurnResume {
 pub struct AutoPlayLoopCont {
     /// Re-entry point, handed this continuation.
     pub resume_fn: fn(&mut CombatState, &AutoPlayLoopCont),
-    /// Remaining loop iterations for a count-driven loop (Catastrophe).
+    /// Loop-iteration count for a count-driven loop. Catastrophe stores the
+    /// iterations already RUN (its bound is re-read each step from the card in
+    /// `uids[0]`); DecisionsDecisions stores the repeats still owed.
     pub iters: u32,
     /// Not-yet-played captured cards for a fixed-list loop (BeatDown).
     pub uids: smallvec::SmallVec<[CardUid; 8]>,
@@ -8011,6 +8033,27 @@ impl CombatState {
         }
         // The suspended draw is complete: run the awaited code that followed
         // it in C#. A step whose own draw suspends hands the later steps on.
+        // First the rest of the exhaust walk whose Dark Embrace draw this was.
+        if pdr.then_block_unpowered > 0 {
+            crate::card_effects::gain_block_player_unpowered(self, pdr.then_block_unpowered);
+        }
+        if let Some(ctx) = pdr.then_relic_after_card_exhausted {
+            let _ = crate::relic_effects::dispatch_after_card_exhausted(self, &ctx);
+            let rest = PendingDrawResume {
+                then_block_unpowered: 0,
+                then_relic_after_card_exhausted: None,
+                ..pdr
+            };
+            if self.carry_into_resuspended_draw(&rest) {
+                return Some(StepResult::PendingChoice);
+            }
+        }
+        if pdr.then_gain_strength != 0 {
+            apply_post_choice_effect(
+                self,
+                Some(PostChoiceEffect::GainStrength(pdr.then_gain_strength)),
+            );
+        }
         if pdr.then_pillage_loop {
             self.pillage_draw_loop(true);
             let rest = PendingDrawResume {
@@ -8092,7 +8135,37 @@ impl CombatState {
         again.then_draw += pdr.then_draw;
         again.then_pillage_loop |= pdr.then_pillage_loop;
         again.then_lose_max_hp_from_card += pdr.then_lose_max_hp_from_card;
+        again.then_gain_strength += pdr.then_gain_strength;
+        // The exhaust-walk tail is not merged: a re-suspension carries it only
+        // when the draw that re-suspended is the one that still owes it.
+        if again.then_relic_after_card_exhausted.is_none() {
+            again.then_relic_after_card_exhausted = pdr.then_relic_after_card_exhausted;
+            again.then_block_unpowered += pdr.then_block_unpowered;
+        }
         true
+    }
+
+    /// The relic half of an exhaust's `Hook.AfterCardExhausted`, run after
+    /// the power half ([`crate::hooks::dispatch_after_card_exhausted`]).
+    /// `draw_was_suspended` is whether [`Self::pending_draw_resume`] was set
+    /// BEFORE the power half: if the power half suspended a draw (Dark
+    /// Embrace reshuffling into a Stratagem pick), C# is still awaiting it,
+    /// so the relic listeners are parked on that draw and run once it
+    /// finishes ([`Self::resume_suspended_draw`]).
+    pub(crate) fn relic_after_card_exhausted_behind_powers(
+        &mut self,
+        draw_was_suspended: bool,
+        ctx: &relic_effects::CardEventCtx,
+    ) {
+        if !draw_was_suspended && self.pending_choice.is_some() {
+            if let Some(pdr) = self.pending_draw_resume.as_mut() {
+                if pdr.then_relic_after_card_exhausted.is_none() {
+                    pdr.then_relic_after_card_exhausted = Some(*ctx);
+                    return;
+                }
+            }
+        }
+        let _ = relic_effects::dispatch_after_card_exhausted(self, ctx);
     }
 
     /// Pillage's attack-draw loop, after its hit. C# `Pillage.OnPlay`
@@ -9189,11 +9262,27 @@ impl CombatState {
     /// pile is empty (C# `await ShuffleIfNecessary`), then no-ops if both piles
     /// are empty. Bead `sts2-rs-70anj.1` (ToastyMittens before-draw timing fix).
     pub fn exhaust_top_from_draw_skipping_innate(&mut self, skip_innate: bool) {
+        self.shuffle_before_draw_exhaust();
+        self.exhaust_first_draw_card(skip_innate);
+    }
+
+    /// The `ShuffleIfNecessary` half of
+    /// [`Self::exhaust_top_from_draw_skipping_innate`]: reshuffle the discard
+    /// pile into an empty draw pile. Its `AfterShuffle` can open a Stratagem
+    /// pick, which C# `ToastyMittens.BeforeHandDraw` awaits before the
+    /// exhaust (ToastyMittens.cs:35, v0.107.1); the caller parks
+    /// [`Self::exhaust_first_draw_card`] behind it.
+    pub fn shuffle_before_draw_exhaust(&mut self) {
         // An already-ending combat doesn't reshuffle (`exhaust_may_begin`).
-        if !crate::combat_loop::exhaust_may_begin(self) {
-            return;
+        if crate::combat_loop::exhaust_may_begin(self) {
+            self.exhaust_from_draw_reshuffle_step();
         }
-        self.exhaust_from_draw_reshuffle_step();
+    }
+
+    /// The exhaust half of [`Self::exhaust_top_from_draw_skipping_innate`],
+    /// with no reshuffle: exhaust the first non-Innate draw card when
+    /// `skip_innate`, else (or failing that) the top card.
+    pub fn exhaust_first_draw_card(&mut self, skip_innate: bool) {
         // C# `ToastyMittens.BeforeHandDraw` awaits `ShuffleIfNecessary`
         // before `CardCmd.Exhaust`, whose check (`CardCmd.cs:239`) runs only
         // then: the reshuffle's reactions (The Abacus' block firing
@@ -9266,6 +9355,7 @@ impl CombatState {
         // Exhaust-from-draw (count-based, e.g. Stratagem) — not the
         // end-of-turn ethereal sweep, so `caused_by_ethereal = false`.
         // Bead `sts2-rs-umouk`.
+        let draw_was_suspended = self.pending_draw_resume.is_some();
         crate::hooks::dispatch_after_card_exhausted(self, &hook_ctx, false);
 
         let exhaust_ctx = crate::relic_effects::CardEventCtx {
@@ -9275,7 +9365,7 @@ impl CombatState {
             card_tags,
             energy_spent: 0,
         };
-        let _ = crate::relic_effects::dispatch_after_card_exhausted(self, &exhaust_ctx);
+        self.relic_after_card_exhausted_behind_powers(draw_was_suspended, &exhaust_ctx);
     }
 
     /// Exhaust every card currently in the player's hand. Mirrors
@@ -10728,6 +10818,8 @@ fn resolve_choice_atomic(
                     // A Stratagem shuffle select: the relic `AfterShuffle`
                     // listeners it held back run now, before the draw resumes.
                     state.fire_deferred_after_shuffle_relics();
+                    // Then the rest of whatever shuffled (Toasty Mittens).
+                    apply_post_choice_effect(state, pc.post_effect);
                 }
                 ChoiceKind::ForegoneConclusionFromDraw => {
                     resolve_foregone_conclusion_from_draw(state, &pc, selection);
@@ -10829,6 +10921,24 @@ fn resolve_choice_atomic(
         if let Some((draw_count, next_relic, side_fired)) =
             state.pending_relic_hand_draw_resume.take()
         {
+            // A draw the suspending relic itself was awaiting goes on first:
+            // Toasty Mittens' exhaust fired Dark Embrace, whose draw
+            // reshuffled into this pick. C# finishes that draw (and the rest
+            // of the exhaust) inside the relic before the walk moves on.
+            if state.pending_autoplay_resume.is_none()
+                && state
+                    .pending_draw_resume
+                    .is_some_and(|p| !p.resume_turn_setup)
+            {
+                if let Some(pdr) = state.pending_draw_resume.take() {
+                    let _ = state.resume_suspended_draw(pdr);
+                    if state.pending_choice.is_some() {
+                        state.pending_relic_hand_draw_resume =
+                            Some((draw_count, next_relic, side_fired));
+                        return StepResult::PendingChoice;
+                    }
+                }
+            }
             return crate::combat_loop::resume_before_hand_draw_relics(
                 state, draw_count, next_relic, side_fired,
             );
@@ -12124,6 +12234,13 @@ fn apply_post_choice_effect(state: &mut CombatState, effect: Option<PostChoiceEf
             } else {
                 apply_player_power_legacy(state, kind, amount);
             }
+        }
+        Some(PostChoiceEffect::ExhaustDrawCardGainStrength {
+            skip_innate,
+            strength,
+        }) => {
+            state.exhaust_first_draw_card(skip_innate);
+            apply_post_choice_effect(state, Some(PostChoiceEffect::GainStrength(strength)));
         }
         Some(PostChoiceEffect::SpawnInHand {
             card_id,

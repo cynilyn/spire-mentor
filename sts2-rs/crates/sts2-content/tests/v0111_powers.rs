@@ -373,6 +373,48 @@ fn juggling_clones_before_play_v0111() {
     assert_eq!(juggled_fiend_fire(GameVersion::V0_111_0), (0, 4));
 }
 
+/// Strike as the turn's 3rd Attack under Juggling(1) and Calamity(1), the two
+/// powers applied in `juggling_first` order. Returns the hand's card ids.
+fn juggled_with_calamity(juggling_first: bool) -> Vec<CardId> {
+    let (mut state, _) = fresh(GameVersion::V0_107_1);
+    let p = player_uid(&state);
+    if juggling_first {
+        give(&mut state, p, PowerKind::Juggling, 1);
+        give(&mut state, p, PowerKind::Calamity, 1);
+    } else {
+        give(&mut state, p, PowerKind::Calamity, 1);
+        give(&mut state, p, PowerKind::Juggling, 1);
+    }
+    for pid in state.player_power_uids() {
+        if let Some(pw) = state.powers.get_mut_by_id(pid.0) {
+            if pw.kind == PowerKind::Juggling {
+                pw.counter = 2;
+            }
+        }
+    }
+    add_to_hand(&mut state, CardId::StrikeIronclad);
+    let _ = sts2_core::combat_loop::play_card(&mut state, 0, Some(0));
+    state
+        .player
+        .hand
+        .iter()
+        .filter_map(|u| sts2_core::card_by_uid(&state.cards, *u).map(|c| c.card_id))
+        .collect()
+}
+
+/// C# `Hook.AfterCardPlayed` walks the owner's powers in application order
+/// (`CombatState.IterateHookListeners`), so in v0.107.1 Juggling's clone and
+/// Calamity's conjured Attack land in the order the powers were applied.
+#[test]
+fn juggling_and_calamity_add_to_hand_in_application_order_v0107() {
+    let hand = juggled_with_calamity(true);
+    assert_eq!(hand.len(), 2);
+    assert_eq!(hand[0], CardId::StrikeIronclad, "{hand:?}");
+    let hand = juggled_with_calamity(false);
+    assert_eq!(hand.len(), 2);
+    assert_eq!(hand[1], CardId::StrikeIronclad, "{hand:?}");
+}
+
 // ── PaleBlueDotPower rework ───────────────────────────────────────────────
 
 /// Play `n` Defends under PaleBlueDot(1); returns the DrawCardsNextTurn stack.

@@ -4878,6 +4878,7 @@ pub const fn var_key_wire_name(k: VarKey) -> &'static str {
         VarKey::StarCostFreeThisTurn => "star_cost_free_this_turn",
         VarKey::MomentumDamage => "momentum_damage",
         VarKey::BansheesCryEtherealCounted => "banshees_cry_ethereal_counted",
+        VarKey::ExhaustOnNextPlay => "exhaust_on_next_play",
     }
 }
 
@@ -4915,6 +4916,7 @@ pub fn var_key_from_wire(name: &str) -> Option<VarKey> {
         VarKey::StarCostFreeThisTurn,
         VarKey::MomentumDamage,
         VarKey::BansheesCryEtherealCounted,
+        VarKey::ExhaustOnNextPlay,
     ];
     ALL.iter().copied().find(|k| var_key_wire_name(*k) == name)
 }

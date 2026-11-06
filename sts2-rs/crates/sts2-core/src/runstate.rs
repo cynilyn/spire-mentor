@@ -336,6 +336,12 @@ pub struct CardReward {
     /// SilkenTress's Glam), and C# adds that very card to the deck on pick
     /// (`CardReward.OnSelect` → `CardPileCmd.Add(result.Card, Deck)`). GH #806.
     pub enchantments: Vec<crate::cards::CardEnchantments>,
+    /// For an unrolled sentinel (empty [`Self::options`]): `Some(room)` when
+    /// C# builds it with `CardCreationOptions.ForRoom(player, room)` (an
+    /// `Encounter`-source roll with that room's odds: pity, upgrade roll),
+    /// e.g. Dream Catcher's rest-heal card. `None` rolls as a non-combat
+    /// (`CardCreationSource.Other`) base-odds reward.
+    pub for_room: Option<RoomType>,
 }
 
 impl CardReward {
@@ -346,6 +352,18 @@ impl CardReward {
             options: Vec::new(),
             upgraded: Vec::new(),
             enchantments: Vec::new(),
+            for_room: None,
+        }
+    }
+
+    /// An unrolled `CardReward(CardCreationOptions.ForRoom(player, room), 3)`,
+    /// rolled at its queue position like an [`Self::empty`] sentinel but with
+    /// the room's encounter odds.
+    #[must_use]
+    pub fn for_room(room: RoomType) -> Self {
+        Self {
+            for_room: Some(room),
+            ..Self::empty()
         }
     }
 
@@ -354,8 +372,7 @@ impl CardReward {
     pub fn from_options(options: Vec<CardId>) -> Self {
         Self {
             options,
-            upgraded: Vec::new(),
-            enchantments: Vec::new(),
+            ..Self::empty()
         }
     }
 
@@ -367,6 +384,7 @@ impl CardReward {
             options: cards.iter().map(|c| c.card_id).collect(),
             upgraded: cards.iter().map(|c| c.upgraded).collect(),
             enchantments: cards.iter().map(|c| c.enchantments).collect(),
+            for_room: None,
         }
     }
 }
@@ -1300,7 +1318,7 @@ pub struct RunState {
     /// Per-relic counter store for run-side relics. Mirrors the
     /// per-instance counters Python `RelicInstance` subclasses keep
     /// (e.g. `WongosMysteryTicket._combats_finished` /
-    /// `_gave_relic`, `DreamCatcher._procs_left`). The combat-side
+    /// `_gave_relic`). The combat-side
     /// `Relic.counter` POD covers in-combat relics; this map covers
     /// the run-side ones whose lifecycle is between-combat. Defaults
     /// to empty.
@@ -2652,6 +2670,33 @@ impl RunState {
         let mut slot: u8 = 0;
         while self.potion_slot_indices.contains(&slot) {
             slot += 1;
+        }
+        let pos = self
+            .potion_slot_indices
+            .iter()
+            .position(|&s| s > slot)
+            .unwrap_or(self.potions.len());
+        self.potions.insert(pos, kind);
+        self.potion_slot_indices.insert(pos, slot);
+        true
+    }
+
+    /// Add `kind` into the specific physical potion slot `slot` — C#
+    /// `PotionCmd.TryToProcure(potion, player, slotIndex)` /
+    /// `Player.AddPotionInternal(potion, slotIndex)` with an explicit
+    /// `slotIndex >= 0`: the potion goes into THAT slot (not the first
+    /// empty one) and fails `TooFull` when the slot is occupied. Returns
+    /// `false` (potion not added) when the slot is filled or outside
+    /// [`Self::potion_belt_cap`]. Alchemical Coffer is the only caller
+    /// (`AlchemicalCoffer.cs`, both v0.107.1 and v0.111.0).
+    pub fn add_potion_to_belt_at_slot(
+        &mut self,
+        kind: crate::potions::PotionKind,
+        slot: u8,
+    ) -> bool {
+        self.sync_potion_slot_indices();
+        if usize::from(slot) >= self.potion_belt_cap() || self.potion_slot_indices.contains(&slot) {
+            return false;
         }
         let pos = self
             .potion_slot_indices
@@ -5112,6 +5157,32 @@ impl RunState {
         let _ = crate::run_effects::dispatch_on_gold_gained(self, delta);
     }
 
+    /// [`Self::gain_gold`] for a C# `decimal` amount with a fractional part,
+    /// given exactly as `numer / denom` (`denom > 0`). C# `PlayerCmd.GainGold`
+    /// (`PlayerCmd.cs:141-170`, both builds) applies `ModifyGoldGained`
+    /// (Bowler Hat x1.25) to the decimal and truncates ONCE on
+    /// `player.Gold += (int)amount`; truncating before the x1.25 loses a gold
+    /// whenever the fraction pushes the product over an integer (Jungle Maze
+    /// 150 + float swing). Non-positive amounts are a no-op, as in C#.
+    pub fn gain_gold_decimal(&mut self, numer: i128, denom: i128) {
+        debug_assert!(denom > 0, "gain_gold_decimal: denom must be positive");
+        if numer <= 0 || denom <= 0 {
+            return;
+        }
+        let base = i32::try_from(numer / denom).unwrap_or(i32::MAX);
+        if !crate::run_effects::dispatch_should_gain_gold(self, base) {
+            return;
+        }
+        let (numer, denom) = if self.owns_active_relic(RelicId::BowlerHat) {
+            (numer * 5, denom * 4)
+        } else {
+            (numer, denom)
+        };
+        let delta = i32::try_from(numer / denom).unwrap_or(i32::MAX);
+        self.gold = self.gold.saturating_add(delta);
+        let _ = crate::run_effects::dispatch_on_gold_gained(self, delta);
+    }
+
     /// Offer a potion reward through the `should_procure_potion` veto
     /// channel. Returns `true` and pushes a [`Reward::Potion`] when the
     /// channel allows, `false` when any relic listener vetoes (e.g.
@@ -5650,7 +5721,10 @@ impl RunState {
             .iter()
             .map(|&i| {
                 let c = &self.master_deck[i];
-                (c.card_id.to_python_name(), u8::from(c.upgraded))
+                (
+                    crate::cards::card_model_entry(c.card_id),
+                    u8::from(c.upgraded),
+                )
             })
             .collect();
         // `candidates` and `keyed` are parallel (built in the same deck
@@ -8350,6 +8424,48 @@ mod tests {
                 PotionKind::BlockPotion,
                 PotionKind::EnergyPotion,
                 PotionKind::WeakPotion,
+            ]
+        );
+    }
+
+    /// C# `Player.AddPotionInternal(potion, slotIndex)` with an explicit
+    /// slot fills THAT slot, leaving earlier holes empty, and fails on an
+    /// occupied or out-of-range slot (Alchemical Coffer, random-loadout
+    /// fuzz v0.107.1 seed 1123).
+    #[test]
+    fn potion_belt_add_at_slot_targets_that_slot() {
+        use crate::potions::PotionKind;
+        let mut rs = RunState::new();
+        assert!(rs.add_potion_to_belt(PotionKind::FirePotion));
+        rs.gain_potion_slots(4);
+        assert!(rs.add_potion_to_belt_at_slot(PotionKind::BlockPotion, 4));
+        assert!(rs.add_potion_to_belt_at_slot(PotionKind::WeakPotion, 3));
+        assert!(
+            !rs.add_potion_to_belt_at_slot(PotionKind::EnergyPotion, 3),
+            "occupied"
+        );
+        assert!(
+            !rs.add_potion_to_belt_at_slot(PotionKind::EnergyPotion, 7),
+            "out of range"
+        );
+        assert_eq!(
+            rs.potions,
+            vec![
+                PotionKind::FirePotion,
+                PotionKind::WeakPotion,
+                PotionKind::BlockPotion
+            ]
+        );
+        // Slots 1 and 2 stay empty: the next first-empty add lands at 1,
+        // listing between Fire@0 and Weak@3.
+        assert!(rs.add_potion_to_belt(PotionKind::EnergyPotion));
+        assert_eq!(
+            rs.potions,
+            vec![
+                PotionKind::FirePotion,
+                PotionKind::EnergyPotion,
+                PotionKind::WeakPotion,
+                PotionKind::BlockPotion,
             ]
         );
     }

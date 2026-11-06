@@ -1043,18 +1043,57 @@ fn beat_down_vetoed_targets_read(version: GameVersion) -> (u32, i32) {
     (state.run_rng.combat_targets.counter() - before, lost)
 }
 
-/// v0.107.1 port: the target roll sits after the `ShouldPlay` gate.
+/// BeatDown rolls the `AnyEnemy` target before `CardCmd.AutoPlay` (decomp
+/// Cards/BeatDown.cs:32-35, the same in both builds), so the read happens
+/// though the play is vetoed. Parity fuzz Regent seed 272 (ChainsOfBinding's
+/// Bound, GH #798); random-loadout Ironclad v0.107.1 seeds 1027 / 1120.
 #[test]
-fn beat_down_vetoed_play_rolls_no_target_v0107() {
-    assert_eq!(beat_down_vetoed_targets_read(V107), (0, 0));
+fn beat_down_vetoed_play_still_rolls_target() {
+    assert_eq!(beat_down_vetoed_targets_read(V107), (1, 0));
+    assert_eq!(beat_down_vetoed_targets_read(V111), (1, 0));
 }
 
-/// v0.111.0: BeatDown rolls the `AnyEnemy` target before `CardCmd.AutoPlay`
-/// (decomp Cards/BeatDown.cs:32-35), so the read happens though the play is
-/// vetoed. Parity fuzz Regent seed 272 (ChainsOfBinding's Bound, GH #798).
+// ── Havoc + Howl from Beyond: a blocked forced-exhaust play ───────────────
+
+/// Havoc auto-plays a Smog-afflicted Howl from Beyond under Smoggy, so
+/// `ShouldPlay` vetoes it: `MoveToResultPileWithoutPlaying` exhausts it and
+/// leaves `ExhaustOnNextPlay` set (CardModel.cs:2104-2120). At turn end Howl
+/// auto-plays out of the exhaust pile, is vetoed again, and so exhausts again
+/// instead of landing in discard. Random-loadout Ironclad v0.111.0 seed 1148.
+fn havoc_blocked_howl_pile_after_turn_end(version: GameVersion) {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    add_player_power(&mut state, 50, PowerKind::Smoggy, 1);
+    let howl = new_card(&mut state, CardId::HowlFromBeyond, false);
+    state.cards[howl.0.get() as usize - 1].affliction =
+        Some(sts2_core::card_afflictions::CardAffliction::new(
+            sts2_core::card_afflictions::CardAfflictionKind::Smog,
+            1,
+        ));
+    state.player.draw.push(howl);
+    let i = push_hand(&mut state, CardId::Havoc, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert!(
+        state.player.exhaust.contains(&howl),
+        "Havoc exhausts the vetoed Howl"
+    );
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::EndTurn);
+    assert!(
+        state.player.exhaust.contains(&howl),
+        "the vetoed end-of-turn Howl auto-play exhausts again ({version:?})"
+    );
+    assert!(!state.player.discard.contains(&howl));
+    assert_eq!(
+        state.cards[howl.0.get() as usize - 1]
+            .combat_var(sts2_core::cards::VarKey::ExhaustOnNextPlay),
+        0,
+        "EndOfTurnCleanup clears the flag"
+    );
+}
+
 #[test]
-fn beat_down_vetoed_play_rolls_target_v0111() {
-    assert_eq!(beat_down_vetoed_targets_read(V111), (1, 0));
+fn havoc_blocked_howl_keeps_exhaust_on_next_play() {
+    havoc_blocked_howl_pile_after_turn_end(V107);
+    havoc_blocked_howl_pile_after_turn_end(V111);
 }
 
 // ── Generated / folded card values follow the build ───────────────────────
@@ -1156,4 +1195,166 @@ fn escape_plan_drawing_a_quest_card_grants_no_block() {
     let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
     assert!(state.player.hand.contains(&egg), "the egg was drawn");
     assert_eq!(state.player.block, 0);
+}
+
+// ── Pen Nib + a lethal end-of-turn Howl from Beyond ───────────────────────
+
+/// A replayed Howl from Beyond auto-plays out of the exhaust pile at turn end
+/// (`HowlFromBeyond.AfterAutoPostPlayPhaseEntered`) and its first copy kills
+/// the last enemy. Pen Nib counts that copy (`PenNib.BeforeCardPlayed`):
+/// 8 -> 9. v0.107.1 still runs the replay, but its `Hook.BeforeCardPlayed`
+/// reaches no listener once combat is ending (Hook.cs:200); v0.111.0 breaks
+/// out of the play loop. Random-loadout Ironclad v0.107.1 seed 1066.
+fn pen_nib_after_lethal_howl(version: GameVersion) -> i32 {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    state.creatures[0].current_hp = 5;
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::PenNib,
+        counter: 8,
+        is_wax: false,
+        is_melted: false,
+    });
+    let howl = new_card(&mut state, CardId::HowlFromBeyond, false);
+    state.cards[howl.0.get() as usize - 1].base_replay_count = 1;
+    state.player.exhaust.push(howl);
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::EndTurn);
+    assert!(state.is_over, "the Howl is lethal ({version:?})");
+    state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::PenNib)
+        .expect("pen nib")
+        .counter
+}
+
+#[test]
+fn lethal_howl_counts_once_for_pen_nib() {
+    assert_eq!(pen_nib_after_lethal_howl(V107), 9);
+    assert_eq!(pen_nib_after_lethal_howl(V111), 9);
+}
+
+// ── Unsettling Lamp ignores Hand Drill's cardless Vulnerable ──────────────
+
+/// A Strike breaks the enemy's block, so Hand Drill applies Vulnerable 2 with
+/// `cardSource: null` (HandDrill.cs): Unsettling Lamp bails on a null source
+/// (UnsettlingLamp.cs `BeforePowerAmountChanged`), so it neither doubles nor
+/// spends its trigger. The next card's debuff (Bash's Vulnerable 2) is the
+/// one doubled. Random-loadout Ironclad v0.111.0 seed 1117.
+fn lamp_vulnerable_after_hand_drill(version: GameVersion) -> (i32, i32) {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    state.creatures[0].block = 3;
+    for (raw, kind) in [
+        (1, sts2_core::RelicKind::HandDrill),
+        (2, sts2_core::RelicKind::UnsettlingLamp),
+    ] {
+        state.relics.push(sts2_core::Relic {
+            id: NonZeroU32::new(raw).expect("nz"),
+            kind,
+            counter: kind.initial_counter(),
+            is_wax: false,
+            is_melted: false,
+        });
+    }
+    let enemy = state.enemy_uids[0];
+    let i = push_hand(&mut state, CardId::StrikeIronclad, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    let after_drill = enemy_power(&state, enemy, PowerKind::Vulnerable);
+    let i = push_hand(&mut state, CardId::Bash, false);
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, Some(0));
+    (
+        after_drill,
+        enemy_power(&state, enemy, PowerKind::Vulnerable),
+    )
+}
+
+#[test]
+fn unsettling_lamp_ignores_hand_drill_vulnerable() {
+    assert_eq!(lamp_vulnerable_after_hand_drill(V107), (2, 6));
+    assert_eq!(lamp_vulnerable_after_hand_drill(V111), (2, 6));
+}
+
+// ── Two exhausted Howls from Beyond, the first lethal ─────────────────────
+
+/// Each Howl from Beyond in the exhaust pile auto-plays at turn end through
+/// `CardCmd.AutoPlay`, which returns at once when `IsOverOrEnding`
+/// (CardCmd.cs:54, both builds). The first Howl kills the last enemy, so the
+/// second never plays and Pen Nib counts once (8 -> 9). Rust's loop broke
+/// only on `is_over`, which the kill does not set until `check_combat_end`, so
+/// the second Howl played and Pen Nib wrapped. Random-loadout Ironclad
+/// v0.111.0 seed 1048.
+fn pen_nib_after_two_exhausted_howls(version: GameVersion) -> i32 {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    state.creatures[0].current_hp = 5;
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::PenNib,
+        counter: 8,
+        is_wax: false,
+        is_melted: false,
+    });
+    for _ in 0..2 {
+        let howl = new_card(&mut state, CardId::HowlFromBeyond, false);
+        state.player.exhaust.push(howl);
+    }
+    let _ = sts2_core::apply(&mut state, sts2_core::Action::EndTurn);
+    assert!(state.is_over, "the first Howl is lethal ({version:?})");
+    state
+        .relics
+        .iter()
+        .find(|r| r.kind == sts2_core::RelicKind::PenNib)
+        .expect("pen nib")
+        .counter
+}
+
+#[test]
+fn second_exhausted_howl_does_not_play_after_a_lethal_first() {
+    assert_eq!(pen_nib_after_two_exhausted_howls(V107), 9);
+    assert_eq!(pen_nib_after_two_exhausted_howls(V111), 9);
+}
+
+// ── Metamorphosis whose own generations end the combat ────────────────────
+
+/// Metamorphosis adds its attacks one at a time through
+/// `AddGeneratedCardToCombat(.., Draw, .., Random)`. Each add draws one
+/// `Shuffle` read for the slot, then Regalite's block fires Juggernaut. Once
+/// that kills the last enemy, `CardPileCmd.Add` returns at once on
+/// `CombatManager.IsEnding` (CardPileCmd.cs:312 v0.107.1, :379 v0.111.0), so
+/// the remaining cards draw no slot and never reach the draw pile. Rust kept
+/// inserting, one extra `Shuffle` read that desynced the next combat's
+/// opening shuffle. Random-loadout Ironclad v0.107.1 seed 1001.
+fn metamorphosis_lethal_mid_generation(version: GameVersion) -> (u32, usize) {
+    let mut state = fresh(version, CharacterId::Ironclad);
+    // The first Juggernaut hit (6) kills it; the other two generations are
+    // post-lethal. (v0.111.0 Regalite fires once per turn, so one hit is all
+    // both builds share.)
+    state.creatures[0].current_hp = 6;
+    add_player_power(&mut state, 50, PowerKind::Juggernaut, 6);
+    state.relics.push(sts2_core::Relic {
+        id: NonZeroU32::new(1).expect("nz"),
+        kind: sts2_core::RelicKind::Regalite,
+        counter: sts2_core::RelicKind::Regalite.initial_counter(),
+        is_wax: false,
+        is_melted: false,
+    });
+    for _ in 0..5 {
+        push_draw(&mut state, CardId::DefendIronclad);
+    }
+    let i = push_hand(&mut state, CardId::Metamorphosis, false);
+    let before = state.run_rng.shuffle.counter();
+    let _ = sts2_core::combat_loop::play_card(&mut state, i, None);
+    assert!(
+        sts2_core::combat_loop::combat_is_ending(&state),
+        "the first Juggernaut hit is lethal ({version:?})"
+    );
+    (
+        state.run_rng.shuffle.counter() - before,
+        state.player.draw.len(),
+    )
+}
+
+#[test]
+fn metamorphosis_stops_adding_once_its_generations_end_the_combat() {
+    assert_eq!(metamorphosis_lethal_mid_generation(V107), (1, 6));
+    assert_eq!(metamorphosis_lethal_mid_generation(V111), (1, 6));
 }

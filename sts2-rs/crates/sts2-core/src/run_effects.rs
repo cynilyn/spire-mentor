@@ -803,8 +803,7 @@ pub fn dispatch_on_card_added_to_deck(
 // `RunState::offer_rest_site_rewards`. Listeners mutate the rewards
 // vector in place. Python: `Relic.modify_rest_site_heal_rewards(owner,
 // rewards, run_state) -> list[object]`. `DreamCatcher` appends a
-// `CardReward` for each `_procs_left` rest-site visit
-// (`shop_event.py:1207-1209`).
+// `CardReward` on every rest-site heal, uncapped (C# `DreamCatcher.cs`).
 run_hook_channel!(
     ModifyRestSiteHealRewardsRunFn,
     HOOK_MODIFY_REST_SITE_HEAL_REWARDS_RUN,

@@ -2834,17 +2834,58 @@ pub fn dispatch_before_card_played(state: &mut CombatState, ctx: &CardEventCtx) 
     }
 }
 
-/// Dispatch `after_card_exhausted` to every registered listener.
+/// Dispatch `after_card_exhausted` to every registered listener, in player
+/// EQUIP order (`state.relics` order).
+///
+/// C# `Hook.AfterCardExhausted` walks `IterateHookListeners`, which yields the
+/// player's relics in the order they were obtained, so e.g. BurningSticks and
+/// JossPaper react to one exhaust in equip order (random-loadout v0.107.1 seed
+/// 1176). The handler set is exactly the guarded walk's (the plan's call bits,
+/// or every handler without a plan); only the order changes: handlers of an
+/// owned relic sort by its first non-melted equip slot, the rest (unowned,
+/// self-no-op) keep `RelicId` order after them.
 pub fn dispatch_after_card_exhausted(state: &mut CombatState, ctx: &CardEventCtx) -> EffectResult {
     if is_empty_after_card_exhausted() {
         return EffectResult::NotImplemented;
     }
-    walk_guarded_event(
-        registry_after_card_exhausted(),
-        GuardedChannel::AfterCardExhausted,
-        state,
-        |f, state| f(state, ctx),
-    )
+    let registry = registry_after_card_exhausted();
+    let equip_slot = |state: &CombatState, id: RelicId| {
+        id.to_relic_kind()
+            .and_then(|k| {
+                state
+                    .relics
+                    .iter()
+                    .position(|r| !r.is_melted && r.kind == k)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    let mut calls: smallvec::SmallVec<[(usize, AfterCardExhaustedFn); 8]> =
+        smallvec::SmallVec::new();
+    if let Some((frozen, mut bits)) =
+        guarded_plan(registry, GuardedChannel::AfterCardExhausted, state)
+    {
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            calls.push((equip_slot(state, frozen[i].0), frozen[i].1));
+        }
+    } else {
+        for (id, f) in registry.listeners() {
+            calls.push((equip_slot(state, id), f));
+        }
+    }
+    calls.sort_by_key(|(slot, _)| *slot);
+    let mut any_resolved = false;
+    for (_, f) in calls {
+        if f(state, ctx) == EffectResult::Resolved {
+            any_resolved = true;
+        }
+    }
+    if any_resolved {
+        EffectResult::Resolved
+    } else {
+        EffectResult::NotImplemented
+    }
 }
 
 /// Dispatch `after_room_entered` to every registered listener.

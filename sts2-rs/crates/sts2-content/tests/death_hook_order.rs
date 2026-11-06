@@ -182,3 +182,58 @@ fn gremlin_horn_draw_resolves_before_a_siblings_crab_rage() {
         );
     }
 }
+
+/// The Bomb detonates on Crusher (lethal) and Rocket, which holds
+/// `CrabRagePower`. `TheBombPower.BeforeSideTurnEnd` is ONE multi-target
+/// `CreatureCmd.Damage(HittableEnemies, ..)` (TheBombPower.cs:56, both
+/// builds), which applies every hit before `Kill(killedCreatures)`, so Rocket
+/// takes the full 40 before Crusher's death gives it CrabRage's 99 block.
+/// Rust killed Crusher before hitting Rocket, whose new block ate the bomb.
+/// Random-loadout Ironclad v0.111.0 seed 1050.
+#[test]
+fn the_bomb_hits_every_enemy_before_a_kill_triggers_crab_rage() {
+    for v in BOTH {
+        let mut state = fresh(v);
+        state
+            .creatures
+            .push(enemy(2, 5, MonsterKind::Crusher, "Crusher"));
+        state
+            .creatures
+            .push(enemy(3, 60, MonsterKind::Rocket, "Rocket"));
+        let crusher = CreatureUid(NonZeroU32::new(2).expect("nz"));
+        let rocket = CreatureUid(NonZeroU32::new(3).expect("nz"));
+        state.enemy_uids.push(crusher);
+        state.enemy_uids.push(rocket);
+        sts2_core::card_effects::apply_power_to_creature(
+            &mut state,
+            rocket,
+            PowerKind::CrabRage,
+            1,
+        );
+        let p = state.player.creature_uid.expect("player");
+        sts2_core::card_effects::apply_power_to_creature(&mut state, p, PowerKind::TheBomb, 1);
+        for pw in &mut state.powers {
+            if pw.kind == PowerKind::TheBomb {
+                pw.counter = 40;
+            }
+        }
+
+        sts2_core::hooks::dispatch_before_turn_end(
+            &mut state,
+            &sts2_core::hooks::TurnSideCtx {
+                side: sts2_core::Side::Player,
+            },
+        );
+
+        let hp_block = |uid: CreatureUid| {
+            let c = state.creatures.iter().find(|c| c.id == uid.0).expect("c");
+            (c.current_hp, c.block)
+        };
+        assert_eq!(hp_block(crusher).0, 0, "{v:?}: the bomb killed Crusher");
+        assert_eq!(
+            hp_block(rocket),
+            (20, 99),
+            "{v:?}: the bomb hit Rocket before CrabRage's block"
+        );
+    }
+}

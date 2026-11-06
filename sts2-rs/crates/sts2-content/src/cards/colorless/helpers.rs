@@ -960,11 +960,16 @@ pub fn transform_card_to_random_for_hook(
         .any(|f| f().id == original_id)
         || (state.game_version >= sts2_core::GameVersion::V0_111_0
             && original_id == CardId::TheBall);
-    // Event / Ancient / **Token** originals are FORCED onto the
+    // Quest / Event / Ancient / **Token** originals are FORCED onto the
     // ColorlessCardPool by C#
     // (`(Type != Quest && Rarity not in {Event,Ancient,Token}) ? Pool :
-    // ColorlessCardPool`; the Quest-TYPE arm of that condition has no Rust
-    // counterpart — no Quest-type card is modelled). The Token arm is the
+    // ColorlessCardPool`, CardFactory.cs:173). `CardType.Quest` has no Rust
+    // variant (Quest cards are modelled as Unplayable Skills), but every
+    // Quest-TYPE card (ByrdonisEgg, LanternKey, SpoilsMap, Dowsing) is also
+    // `CardRarity.Quest` and no other card is, so the rarity stands in for the
+    // type: Entropy on SPOILS_MAP rolls the colorless pool (random-loadout
+    // v0.107.1 seed 1198: C# FINESSE, not the character pool's DARK_EMBRACE).
+    // The Token arm is the
     // fix for bead `sts2-rs-p52dg`: the per-combat token cards (GiantRock,
     // Shiv, Soul, the Regent minion cards, …) were mis-tagged `Status` and
     // fell into the StatusCardPool branch below, so Entropy transformed a
@@ -977,7 +982,7 @@ pub fn transform_card_to_random_for_hook(
     let use_colorless_pool = is_colorless_original
         || matches!(
             rarity,
-            Some(CardRarity::Ancient | CardRarity::Event | CardRarity::Token)
+            Some(CardRarity::Quest | CardRarity::Ancient | CardRarity::Event | CardRarity::Token)
         );
     let pool: SmallVec<[CardSpec; 96]> = if matches!(rarity, Some(CardRarity::Status)) {
         use crate::cards::status_specs_generated as st;
@@ -1009,10 +1014,16 @@ pub fn transform_card_to_random_for_hook(
         // C# `CurseCardPool.GenerateAllCards()` order (CurseCardPool.cs:20-40,
         // identical in v0.107.1 / v0.111.0). `GetFilteredTransformationOptions`
         // skips the rarity filter for Status/Curse (CardFactory.cs,
-        // `(uint)(rarity - 8) > 1u`) and `CanBeGeneratedInCombat` drops only
-        // AscendersBane (AscendersBane.cs overrides it to false); no curse has
-        // a multiplayer constraint. Minus the original id that leaves 16.
+        // `(uint)(rarity - 8) > 1u`) and keeps `CanBeGeneratedInCombat`; no
+        // curse has a multiplayer constraint. AscendersBane (listed first)
+        // overrides `CanBeGeneratedInCombat => false` only in v0.111.0
+        // (AscendersBane.cs:10); v0.107.1 overrides just
+        // `CanBeGeneratedByModifiers`, so it stays in the in-combat pool there
+        // (random-loadout v0.107.1 seeds 1008 / 1163). Minus the original id
+        // that leaves 17 (v0.107.1) / 16 (v0.111.0).
+        let keep_ascenders_bane = state.game_version < sts2_core::GameVersion::V0_111_0;
         [
+            st::ascenders_bane,
             st::bad_luck,
             st::clumsy,
             st::curse_of_the_bell,
@@ -1033,6 +1044,7 @@ pub fn transform_card_to_random_for_hook(
         ]
         .iter()
         .map(|f| f())
+        .filter(|s| keep_ascenders_bane || s.id != CardId::AscendersBane)
         .filter(|s| s.id != original_id)
         .collect()
     } else if use_colorless_pool {
