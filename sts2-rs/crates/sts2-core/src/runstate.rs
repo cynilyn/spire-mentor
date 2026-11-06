@@ -4311,6 +4311,14 @@ impl RunState {
         }
     }
 
+    /// Strip `relic_id` from both grab bags: the bag half of C#
+    /// `RelicCmd.Obtain` (`RelicCmd.cs:41-45`), for a debug graft that owns a
+    /// relic without obtaining it.
+    pub fn remove_relic_from_grab_bags(&mut self, relic_id: RelicId) {
+        self.remove_relic_from_player_grab_bag(relic_id);
+        self.remove_relic_from_shared_grab_bag(relic_id);
+    }
+
     /// Strip `relic_id` from the PLAYER bag's per-rarity deques. Mirrors C#
     /// `RelicGrabBag.Remove` (`RelicGrabBag.cs:185-193`), which walks only
     /// `_deques` — not the multiplayer fallback deque, so the

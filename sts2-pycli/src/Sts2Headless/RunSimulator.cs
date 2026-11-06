@@ -1003,6 +1003,13 @@ public class RunSimulator
                             var mutable = model.ToMutable();
                             mutable.Owner = player;
                             list.Add(mutable);
+                            // RelicCmd.Obtain's bag bookkeeping, without its
+                            // hooks: an owned relic must not be offered again.
+                            if (!mutable.IsStackable)
+                            {
+                                player.RelicGrabBag.Remove(mutable);
+                                _runState.SharedRelicGrabBag.Remove(mutable);
+                            }
                         }
                     }
                 }

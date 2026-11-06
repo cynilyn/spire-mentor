@@ -84,6 +84,8 @@ from typing import Any
 
 from full_state_diff import diff_full, path_class, project_csharp, project_rust
 from parity_audit import assert_wheel_fresh, cs_version_namespace
+from parity_fuzz import _csharp_card_id
+from parity_fuzz_scenario import Loadout, generate_loadout
 from run_parity import (
     Divergence,
     RunResult,
@@ -415,6 +417,48 @@ def _pin(g: Any, r: Any, hp: int) -> None:
     r.set_player(hp=hp, max_hp=hp)
 
 
+def _relic_ids(view: dict[str, Any]) -> list[str]:
+    """The Rust view's relic ids, bare (``BURNING_BLOOD``), in owned order."""
+    relics = (view.get("player") or {}).get("relics") or []
+    return [str(r["id"]).removeprefix("RELIC.") for r in relics]
+
+
+def _graft_loadout(g: Any, r: Any, lo: Loadout, rs_view: dict[str, Any]) -> list[str]:
+    """Install ``lo`` on both engines; return what stopped them matching it.
+
+    Replaces the deck and potions, and adds to the relics already owned, so the
+    starter and Neow relics stay. ``set_player`` fires no on-obtain hook on
+    either engine and draws no RNG: anything the graft bypasses (a Potion
+    Belt's extra slots, a Whetstone's upgrades) is bypassed on both sides. It
+    does take the relics out of the grab bags, so they aren't offered again.
+
+    C# skips an id it doesn't know, so an unusable pool entry would otherwise
+    surface later as an engine divergence. It's checked here instead.
+    """
+    owned = _relic_ids(rs_view)
+    relics = owned + [x for x in lo.relics if x not in owned]
+    potions = list(lo.potions[: r.rm.max_potion_slots()])
+    cs_reply = g.set_player(
+        deck=[_csharp_card_id(c) for c in lo.deck],
+        relics=relics,
+        potions=potions,
+        gold=lo.gold,
+    )
+    if _is_err(cs_reply):
+        return [f"C# set_player failed: {cs_reply.get('message')!r}"]
+    rs_reply = r.set_player(deck=list(lo.deck), relics=relics, potions=potions, gold=lo.gold)
+    if _is_err(rs_reply):
+        return [f"Rust set_player failed: {rs_reply.get('message')!r}"]
+    cs, rs = Snap.of(cs_reply, "cs"), Snap.of(rs_reply, "rs")
+    problems = [f for f in diff_snaps(cs, rs) if not f.startswith("phase")]
+    for side, snap in (("cs", cs), ("rs", rs)):
+        if snap.deck_size != len(lo.deck):
+            problems.append(f"{side} deck_size {snap.deck_size} != loadout {len(lo.deck)}")
+        if len(snap.relics) != len(relics):
+            problems.append(f"{side} relics {len(snap.relics)} != loadout {len(relics)}")
+    return problems
+
+
 @dataclass
 class InvRun:
     """One invincible-lockstep run: a ``run_parity.RunResult`` plus the extra
@@ -437,6 +481,8 @@ class InvRun:
     full_split: FullSplit | None = None
     # Acts whose checkpoint this run wrote (``checkpoint_dir``).
     checkpoints: list[int] = field(default_factory=list)
+    # ``random_loadout``: what the run was grafted with.
+    loadout: Loadout | None = None
 
 
 @dataclass
@@ -643,6 +689,7 @@ def run_one_invincible(
     from_checkpoint: Path | None = None,
     branch: int = 0,
     survival_policy: bool = True,
+    random_loadout: bool = False,
 ) -> InvRun:
     """Drive a single invincible lockstep run; return an :class:`InvRun`.
 
@@ -665,6 +712,10 @@ def run_one_invincible(
     Neow. ``branch`` picks the walk from there: each branch seeds the random
     policy differently, so one checkpoint yields many act-2/3 trials. With
     ``from_checkpoint``, ``max_steps`` counts the steps after the checkpoint.
+
+    ``random_loadout`` replaces the deck, potions and gold, and adds relics, at
+    the run's first map (see ``_graft_loadout``). The loadout is a pure
+    function of ``(seed, character)``, so rerunning the seed reproduces it.
     """
     full_state = full_state or trace_split
     meta: dict[str, Any] | None = None
@@ -992,6 +1043,18 @@ def run_one_invincible(
                     )
                 return out
 
+            # Past Neow, and the diff above just passed: both engines take the
+            # loadout from the same state.
+            if random_loadout and out.loadout is None and cs_dec == "map_select":
+                out.loadout = generate_loadout(seed, character)
+                problems = _graft_loadout(g, r, out.loadout, rs_view)
+                if verbose:
+                    res.trace.append(f"[{step:04d}] graft {out.loadout}")
+                if problems:
+                    res.divergence = Divergence(step, cs_snap.phase, problems, "harness")
+                    res.terminal = "error"
+                    return out
+
             # Checkpoint here: the diff above just passed, and HP isn't pinned
             # for this step yet, so a resume replays the pin exactly as now.
             ck_act = _act_of(cs_view) or 0
@@ -1184,6 +1247,7 @@ def sweep(
     from_checkpoints: list[Path] | None = None,
     branches: int = 1,
     survival_policy: bool = True,
+    random_loadout: bool = False,
 ) -> SweepReport:
     rep = SweepReport()
     common: dict[str, Any] = {
@@ -1197,6 +1261,7 @@ def sweep(
         "checkpoint_acts": checkpoint_acts,
         "stop_at_checkpoint": stop_at_checkpoint,
         "survival_policy": survival_policy,
+        "random_loadout": random_loadout,
     }
     if from_checkpoints is not None:
         # Every branch of every checkpoint is its own trial.
@@ -1375,6 +1440,13 @@ def main() -> int:
         help="pick uniformly at random even when a SURVIVAL_CARDS card is "
         "playable (the pre-2026-11 walk, which dies to The Insatiable)",
     )
+    ap.add_argument(
+        "--random-loadout",
+        action="store_true",
+        help="at the first map, replace the deck, potions and gold and add relics "
+        "from the full pools, on both engines, without on-obtain hooks; the "
+        "seed reproduces the loadout. Not with --from-checkpoints",
+    )
     ap.add_argument("--seed", help="single verbose run for this seed (overrides sweep)")
     ap.add_argument("--verbose", action="store_true", help="dump per-step trace (single run)")
     add_game_version_arg(ap)
@@ -1392,6 +1464,9 @@ def main() -> int:
     args.character = args.character or "Ironclad"
     args.ascension = 0 if args.ascension is None else args.ascension
     chars = ALL_CHARACTERS if args.all_characters else [args.character]
+    if args.random_loadout and args.from_checkpoints:
+        # A checkpoint already carries whatever its run was grafted with.
+        ap.error("--random-loadout starts at Neow, so it can't take --from-checkpoints")
     ckpt_acts = frozenset(int(a) for a in args.checkpoint_acts.split(",") if a.strip())
     from_ckpts: list[Path] | None = None
     if args.from_checkpoints is not None:
@@ -1425,6 +1500,7 @@ def main() -> int:
             checkpoint_acts=ckpt_acts,
             stop_at_checkpoint=args.stop_at_checkpoint,
             survival_policy=not args.uniform_policy,
+            random_loadout=args.random_loadout,
         )
         res = out.result
         if args.verbose:
@@ -1479,6 +1555,7 @@ def main() -> int:
         from_checkpoints=from_ckpts,
         branches=args.branches,
         survival_policy=not args.uniform_policy,
+        random_loadout=args.random_loadout,
     )
     print_report(rep)
     n_div = sum(len(v) for k, v in rep.buckets.items() if not k.startswith("clean:"))

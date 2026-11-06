@@ -7,6 +7,7 @@ used to answer the second screen itself with option 0.
 
 from __future__ import annotations
 
+
 def _hand_catastrophe(view: dict) -> int | None:
     hand = view.get("hand") or []
     return next((i for i, c in enumerate(hand) if c["id"] == "CARD.CATASTROPHE"), None)

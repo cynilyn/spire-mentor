@@ -1024,6 +1024,72 @@ impl PyRunManager {
         self.inner.debug_set_player(hp, max_hp, gold);
     }
 
+    /// Debug/coverage override mirroring the C# headless `set_player`
+    /// `deck` / `relics` keys: REPLACE the master deck and the relic list,
+    /// silently. Unlike [`Self::force_add_relic`] it fires no `after_obtained`
+    /// (so no RNG draw and no on-obtain effect), because C# `set_player`
+    /// doesn't either, and an asymmetry here would diverge the streams of a
+    /// lockstep run. Relics do leave the grab bags, on both engines. Deck entries are `ID` or `ID+1`, as in the C# command.
+    /// Used by `act23_state_parity.py --random-loadout`. Never call on a
+    /// trace-recorded run.
+    #[pyo3(signature = (deck = None, relics = None))]
+    fn debug_set_loadout(
+        &mut self,
+        deck: Option<Vec<String>>,
+        relics: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let deck = deck
+            .map(|names| {
+                let factory = sts2_core::lookup_card_factory()
+                    .ok_or_else(|| PyValueError::new_err("no card factory registered"))?;
+                names
+                    .iter()
+                    .map(|name| {
+                        let (base, upgraded) = match name.strip_suffix("+1") {
+                            Some(base) => (base, true),
+                            None => (name.as_str(), false),
+                        };
+                        factory(card_id_from_str(base)?, upgraded).ok_or_else(|| {
+                            PyValueError::new_err(format!("no card spec for {name:?}"))
+                        })
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        let relics = relics
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|name| {
+                        let stripped = name.strip_prefix("RELIC.").unwrap_or(name);
+                        // The parser's roster omits `RelicId::V0111_ONLY`, but a
+                        // v0.111 run can already own one (Neow's Sacrifice).
+                        sts2_content::names::relic_id_from_str(stripped)
+                            .or_else(|| {
+                                let owned = self.inner.run_state.relics.iter();
+                                owned.copied().find(|r| r.to_python_name() == stripped)
+                            })
+                            .ok_or_else(|| {
+                                PyValueError::new_err(format!("unknown relic id {name:?}"))
+                            })
+                    })
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?;
+        // Parsed in full first: a bad id must not leave half a loadout.
+        let rs = &mut self.inner.run_state;
+        if let Some(deck) = deck {
+            rs.master_deck = deck.into_iter().collect();
+        }
+        if let Some(relics) = relics {
+            for &relic in &relics {
+                rs.remove_relic_from_grab_bags(relic);
+            }
+            rs.relics = relics.into_iter().collect();
+        }
+        Ok(())
+    }
+
     /// Install `state` (e.g. from `build_scenario_state`) as this run's live
     /// fight in a `room_type` room ("monster" / "elite" / "boss"), so a run
     /// agent (`MctsCombatAgent.step`) plays it with the deployed combat

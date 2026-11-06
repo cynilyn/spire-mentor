@@ -227,6 +227,42 @@ def generate_v2(seed: int, character: str = "Ironclad") -> Scenario:
     )
 
 
+@dataclass(frozen=True)
+class Loadout:
+    """A random deck, relic and potion set to graft onto a whole run."""
+
+    deck: tuple[str, ...]
+    relics: tuple[str, ...]
+    potions: tuple[str, ...]
+    gold: int
+
+
+def generate_loadout(
+    seed: str, character: str = "Ironclad", game_version: str | None = None
+) -> Loadout:
+    """The ``generate_v2`` pools as a whole-run start, not a single fight.
+
+    A run outlives one fight, so it carries more relics than a scenario does
+    (rewards, shops and rest sites are what the graft exists to exercise), and
+    gold, so shops get bought from. Deterministic per
+    ``(seed, character, game_version)``.
+
+    Lives apart from ``generate_v2`` because that function's rng stream keys
+    the committed trace cache.
+    """
+    rng = random.Random(f"loadout:{seed}:{character}")
+    pool = _v2_card_pool(character, game_version)
+    return Loadout(
+        deck=tuple(
+            c + ("+1" if rng.random() < 0.25 else "")
+            for c in (rng.choice(pool) for _ in range(rng.randint(8, 25)))
+        ),
+        relics=tuple(rng.sample(ALL_RELICS, rng.randint(3, 12))),
+        potions=tuple(rng.sample(ALL_POTIONS, rng.randint(0, 3))),
+        gold=rng.randint(0, 999),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exhaustive coverage sweep (2026-05-30)
 # ---------------------------------------------------------------------------
